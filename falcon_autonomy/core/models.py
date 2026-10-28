@@ -195,8 +195,10 @@ def decode_detections(outputs: list, m: dict, back: dict) -> list:
 
 
 def decode_segmentation(outputs: list, m: dict, back: dict, size: tuple) -> np.ndarray:
-    """Logits (1, C, h, w) or (C, h, w) to an H × W map of Falcon class ids (class_map: model class → Falcon tag)."""
+    """Logits (1, C, h, w) or (C, h, w) to an H × W map of Falcon class ids. class_map: model class → Falcon class,
+    by name (as detectors' maps: 'car') or by id (14); a model class without one is 255 (not scored)."""
     import cv2
+    from .groundtruth import CLASS_ID
     logits = np.asarray(outputs[0])
     logits = logits[0] if logits.ndim == 4 else logits
     lab = np.argmax(logits, axis=0).astype(np.int32)
@@ -208,7 +210,9 @@ def decode_segmentation(outputs: list, m: dict, back: dict, size: tuple) -> np.n
     cmap = m.get('class_map') or {}
     lut = np.full(max(len(classes), int(lab.max()) + 1), 255, np.int32)
     for i, name in enumerate(classes):
-        v = cmap.get(name)
+        v = cmap.get(name, name if name in CLASS_ID else None)
+        if isinstance(v, str):
+            v = CLASS_ID.get(v)
         if v is not None:
             lut[i] = int(v)
     return lut[lab]

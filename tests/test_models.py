@@ -76,6 +76,9 @@ def test_segmentation_logits():
     back = {'kx': 1, 'ky': 1, 'px': 0, 'py': 0, 'model_w': 4, 'model_h': 4}
     lab = M.decode_segmentation([logits], m, back, (8, 8))
     assert lab.shape == (8, 8) and (lab[:4] == 14).all() and (lab[4:] == 1).all()
+    by_name = dict(m, class_map={'road': 'road', 'car': 'car'})           # names, as the harness and docs use
+    assert (M.decode_segmentation([logits], by_name, back, (8, 8)) == lab).all()
+    assert (M.decode_segmentation([logits], dict(m, class_map={}), back, (8, 8)) == lab).all()   # Falcon names
 
 
 def test_validation_refuses_agpl_and_fetch_checks_the_hash(tmp_path):

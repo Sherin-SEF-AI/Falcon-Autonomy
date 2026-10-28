@@ -96,7 +96,6 @@ def collect(runs: list, m: dict, workspace: str = '', camera: str | None = None,
     seg = m['kind'] == 'segmenter'
     classes = model_classes(m)
     cmap = m.get('class_map') or {}
-    names = m.get('classes') or []
     jobs = []
     for run in loaded:
         cams = [c for c in run.cams if is_pinhole(run, c)] or list(run.cams)
@@ -113,13 +112,6 @@ def collect(runs: list, m: dict, workspace: str = '', camera: str | None = None,
     for c in classes:
         if c in GT.CLASS_ID:
             keep[GT.CLASS_ID[c]] = True
-    seg_lut = None
-    if seg:          # model class index -> Falcon class id (255: a class Falcon does not score)
-        seg_lut = np.full(max(len(names), 1) + 1, 255, np.uint8)
-        for i, nm in enumerate(names):
-            fc = cmap.get(nm, nm)
-            if fc in GT.CLASS_ID:
-                seg_lut[i] = GT.CLASS_ID[fc]
     frames, lat, conds = [], [], {}
     fh = open(out_path, 'w', encoding='utf-8') if out_path else None
     try:
@@ -145,8 +137,7 @@ def collect(runs: list, m: dict, workspace: str = '', camera: str | None = None,
                 pred = np.asarray(out)
                 if pred.shape != rgb.shape[:2]:
                     raise HarnessError(f'the segmenter returned {pred.shape}, the image is {rgb.shape[:2]}')
-                if m['runtime'] != 'python':       # model indices -> Falcon ids
-                    pred = seg_lut[np.clip(pred, 0, len(seg_lut) - 1)]
+                # a plug-in returns Falcon ids; a runtime model's map is decoded to them (models.decode_segmentation)
                 gt = cv2.imread(run.p(run.file(rec, cid, 'semantic')), cv2.IMREAD_UNCHANGED)
                 gt = np.where(keep[gt], gt, 255).astype(np.uint8)
                 conf = M.confusion_matrix(gt, pred.astype(np.int64), n_cls, ignore_index=255)
