@@ -125,6 +125,7 @@ class Drive(Worker):
         n = late = 0
         sim_t0 = None
         label_warnings = []
+        every = max(int(cfg.get('record_every', 1)), 1)
         if raster is not None:
             label_warnings.append('ground labelled from the map: CARLA\'s label cameras do not see a generated '
                                   'OpenDRIVE world\'s road mesh (depth: nothing; tags: sky), so its pixels were '
@@ -147,7 +148,9 @@ class Drive(Worker):
                 yaw_rate = 0.0 if prev_yaw is None else ((yaw - prev_yaw + 180.0) % 360.0 - 180.0) * fps0 * \
                     math.pi / 180.0
                 prev_yaw = yaw
-                boxes = camgt.scene_boxes(self, world, ego, level) if need_gt else None
+                record = i % every == 0                  # record_every: simulate every step, write every n-th
+                rec['recorded'] = record
+                boxes = camgt.scene_boxes(self, world, ego, level) if need_gt and record else None
                 for r in self.recorders:
                     s = r.s
                     deliver = faults.delivery(s['id'], i, rec['sim_t'])
@@ -158,7 +161,7 @@ class Drive(Worker):
                     imgs = r.collect(frame)
                     if r is depth_rec:
                         depth_now = imgs[0]['depth']
-                    if deliver == 'drop':
+                    if deliver == 'drop' or not record:
                         continue
                     keys = [f'{s["id"]}/{k}' for k in r.kinds()]
                     if deliver == 'freeze' and all(k in faults.last for k in keys):
@@ -198,7 +201,7 @@ class Drive(Worker):
         perf = {'steps': n, 'wall_s': round(wall, 3), 'steps_per_s': round(n / max(wall, 1e-6), 3),
                 'sim_s': round(sim_s, 3), 'realtime_factor': round(sim_s / max(wall, 1e-6), 3),
                 'mpx_per_step': round(mpx, 3), 'mpx_per_s': round(mpx * n / max(wall, 1e-6), 2),
-                'camera_frames': n * len(self.recorders), 'encoder_waits': late, 'source': 'measured'}
+                'camera_frames': -(-n // every) * len(self.recorders), 'record_every': every, 'encoder_waits': late, 'source': 'measured'}
         for k, unit in (('steps_per_s', '1/s'), ('realtime_factor', '×'), ('mpx_per_s', 'Mpx/s')):
             self.emit.metric(k, perf[k], unit)
         write_json(os.path.join(self.out_dir, 'dataset.json'), scene.dataset_doc(
