@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "falcon-autonomy"
+dynamic = ["version"]
+description = "One application for the loop of building a self-driving AI on the CARLA simulator: worlds, live driving, scenarios, labelled data, training, evaluation and stack testing"
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.12"
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# The GUI and CLI (system Python). CARLA's own Python needs only: carla==0.9.16, numpy, opencv-python-headless.
+dependencies = [
+    "PyQt6>=6.5",
+    "numpy>=1.26",
+    "opencv-python>=4.8",
+    "jsonschema>=4.18",
+    "pyqtgraph>=0.13",
+    "PyOpenGL>=3.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+package = ["pyinstaller>=6"]
+
+[project.scripts]
+falcon = "falcon_autonomy.cli:main"
+
+[project.gui-scripts]
+falcon-gui = "falcon_autonomy.ui.app:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "falcon_autonomy.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["falcon_autonomy", "falcon_autonomy.*"]
+
+[tool.setuptools.package-data]
+falcon_autonomy = ["schemas/*.json", "resources/fonts/*.ttf", "resources/fonts/OFL.txt", "resources/icons/*.png"]

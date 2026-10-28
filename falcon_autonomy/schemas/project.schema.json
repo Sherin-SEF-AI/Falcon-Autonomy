@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://falcon-autonomy.local/schemas/project.schema.json",
+  "title": "Falcon Autonomy project",
+  "description": "A Falcon Autonomy project file (*.falcon.json), format version 1. Large data lives in the workspace folder beside the file, never here. docs/project-format.md documents every field.",
+  "type": "object",
+  "required": ["format", "version", "name", "worlds", "traffic_profiles", "rigs", "scenarios", "dataset_specs", "models", "experiments", "loop"],
+  "additionalProperties": false,
+  "properties": {
+    "format": {"const": "falcon.project"},
+    "version": {"const": 1},
+    "name": {"type": "string", "minLength": 1, "maxLength": 200},
+    "created": {"type": "string"},
+    "modified": {"type": "string"},
+    "app_version": {"type": "string"},
+    "worlds": {"type": "array", "items": {"$ref": "#/$defs/world"}},
+    "traffic_profiles": {"type": "array", "items": {"$ref": "#/$defs/traffic_profile"}},
+    "rigs": {"type": "array", "items": {"$ref": "#/$defs/rig"}},
+    "scenarios": {"type": "array", "items": {"$ref": "#/$defs/named"}},
+    "dataset_specs": {"type": "array", "items": {"$ref": "#/$defs/named"}},
+    "models": {"type": "array", "items": {"$ref": "#/$defs/named"}},
+    "experiments": {"type": "array", "items": {"$ref": "#/$defs/named"}},
+    "loop": {
+      "type": "object",
+      "properties": {
+        "model": {"type": ["string", "null"]},
+        "odd": {"type": ["object", "null"]},
+        "iterations": {"type": "array", "items": {"type": "object"}}
+      },
+      "required": ["iterations"]
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"},
+    "named": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {"id": {"$ref": "#/$defs/id"}, "name": {"type": "string", "minLength": 1}}
+    },
+    "weather": {
+      "type": "object",
+      "description": "A CARLA preset by name, optionally overridden parameter by parameter (CARLA's WeatherParameters fields).",
+      "properties": {
+        "preset": {"type": "string"},
+        "cloudiness": {"type": "number", "minimum": 0, "maximum": 100},
+        "precipitation": {"type": "number", "minimum": 0, "maximum": 100},
+        "precipitation_deposits": {"type": "number", "minimum": 0, "maximum": 100},
+        "wind_intensity": {"type": "number", "minimum": 0, "maximum": 100},
+        "sun_azimuth_angle": {"type": "number", "minimum": 0, "maximum": 360},
+        "sun_altitude_angle": {"type": "number", "minimum": -90, "maximum": 90},
+        "fog_density": {"type": "number", "minimum": 0, "maximum": 100},
+        "fog_distance": {"type": "number", "minimum": 0},
+        "fog_falloff": {"type": "number", "minimum": 0},
+        "wetness": {"type": "number", "minimum": 0, "maximum": 100},
+        "scattering_intensity": {"type": "number", "minimum": 0},
+        "mie_scattering_scale": {"type": "number", "minimum": 0},
+        "rayleigh_scattering_scale": {"type": "number", "minimum": 0},
+        "dust_storm": {"type": "number", "minimum": 0, "maximum": 100}
+      },
+      "additionalProperties": false
+    },
+    "world": {
+      "type": "object",
+      "required": ["id", "name", "kind"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["town", "osm", "xodr"]},
+        "town": {"type": "string"},
+        "osm": {"type": "object", "description": "OpenStreetMap import: the source (file path or bbox) and the converter's settings."},
+        "xodr": {"type": "string", "description": "An OpenDRIVE file in the workspace (relative path)."},
+        "weather": {"$ref": "#/$defs/weather"},
+        "traffic_profile": {"type": "string"}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "town"}}}, "then": {"required": ["town"]}},
+        {"if": {"properties": {"kind": {"const": "osm"}}}, "then": {"required": ["osm"]}}
+      ]
+    },
+    "traffic_profile": {
+      "type": "object",
+      "required": ["id", "name", "vehicles", "walkers", "fleet", "behaviour"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string", "minLength": 1},
+        "handedness": {"enum": ["map", "right", "left"], "description": "map: whatever the loaded map's lanes say. right/left: the profile's assertion, checked against the map before a run."},
+        "vehicles": {"type": "integer", "minimum": 0, "maximum": 500},
+        "walkers": {"type": "integer", "minimum": 0, "maximum": 500},
+        "fleet": {"type": "object", "description": "Share of each vehicle class (weights, normalised at run time).", "additionalProperties": {"type": "number", "minimum": 0}},
+        "behaviour": {"type": "object"}
+      }
+    },
+    "pose": {
+      "type": "object",
+      "description": "Sensor pose in the vehicle frame: metres from the vehicle origin (CARLA's: the bounding-box centre on the ground), x forward, y right (CARLA's left-handed axes), z up; degrees.",
+      "required": ["x", "y", "z", "roll", "pitch", "yaw"],
+      "properties": {
+        "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"},
+        "roll": {"type": "number"}, "pitch": {"type": "number"}, "yaw": {"type": "number"}
+      },
+      "additionalProperties": false
+    },
+    "sensor": {
+      "type": "object",
+      "required": ["id", "name", "type", "pose"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string", "minLength": 1},
+        "type": {"enum": ["camera.pinhole", "camera.fisheye", "lidar", "radar", "gnss", "imu"]},
+        "pose": {"$ref": "#/$defs/pose"},
+        "width": {"type": "integer", "minimum": 16, "maximum": 8192},
+        "height": {"type": "integer", "minimum": 16, "maximum": 8192},
+        "fov": {"type": "number", "exclusiveMinimum": 0, "maximum": 360},
+        "rate_hz": {"type": "number", "exclusiveMinimum": 0},
+        "labels": {"type": "array", "items": {"enum": ["semantic", "instance", "depth", "boxes2d", "boxes3d"]}, "uniqueItems": true}
+      }
+    },
+    "rig": {
+      "type": "object",
+      "required": ["id", "name", "vehicle", "sensors"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string", "minLength": 1},
+        "vehicle": {"type": "string", "pattern": "^vehicle\\."},
+        "sensors": {"type": "array", "items": {"$ref": "#/$defs/sensor"}}
+      }
+    }
+  }
+}
