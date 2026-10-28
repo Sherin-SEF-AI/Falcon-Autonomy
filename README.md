@@ -5,10 +5,10 @@ One desktop application for the whole loop of building a self-driving AI on the
 generate perfectly labelled data where models are weak, train and evaluate, and test a full AV stack — with every
 number traceable to the run that produced it.
 
-**Status: milestones 1–4 of 8 (foundation; worlds and live; rigs and data engine; scenarios and rare cases).** What works today is listed under *What works*; everything else in the
+**Status: milestones 1–5 of 8 (foundation; worlds and live; rigs and data engine; scenarios and rare cases; models and the sim-to-real gap).** What works today is listed under *What works*; everything else in the
 [roadmap](docs/roadmap.md) is planned, not present. The app shows only pages that do what they say.
 
-## What works (0.4.0)
+## What works (0.5.0)
 
 - **The app shell** (PyQt6): a page navigator, Jobs and Log docks, undo and redo for every project edit, a command
   palette (Ctrl+K), dark and light themes, a status bar with the CARLA server, the GPU and memory.
@@ -35,6 +35,14 @@ number traceable to the run that produced it.
   distance, required deceleration), resumable sweeps, rare-case search (Bayesian optimisation, CMA-ES, adaptive
   sampling) with ranked, replayable failures and a failure-region map, OpenSCENARIO import/export
   ([scenarios](docs/scenarios.md)).
+- **Models and the gap**: register a detector or segmenter (ONNX, TorchScript or a plug-in; licence shown, weights
+  downloaded only on request and checked by SHA-256), score it on drives with COCO AP/AR or mIoU and bootstrap
+  intervals over whole drives (pycocotools' numbers exactly), breakdowns by range, occlusion and size, a condition
+  heat map, a failure gallery and paired regression tests between versions ([models](docs/models.md)); the
+  sim-to-real gap against KITTI, nuScenes, BDD100K or COCO images — appearance statistics, Fréchet and kernel
+  distances next to their real-vs-real floor, and measured appearance matching ([sim-to-real](docs/sim-to-real.md));
+  optical flow, scene flow, occupancy with visibility, BEV maps, future trajectories, clips and grounded captions and
+  QA derived from drives ([world model](docs/world-model.md)).
 - **Worlds**: CARLA's towns with weather presets and sliders (sun, cloud, rain, wetness, puddles, fog, wind), and
   **real places imported from OpenStreetMap** (.osm or .osm.pbf, offline) with a road-graph preview, a lane check
   against OSM, **left-hand traffic** (verified on the server) and the **Indian mixed-traffic profile**
@@ -79,7 +87,8 @@ FALCON_REAL_CARLA=1 python3 -m pytest -m real_server     # also against a real C
 
 [The manual](docs/index.md) · [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
 [project format](docs/project-format.md) · [CLI and exit codes](docs/cli.md) · [methods](docs/methods.md) ·
-[CARLA lessons](docs/carla-lessons.md) · [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
+[CARLA lessons](docs/carla-lessons.md) · [models](docs/models.md) · [sim-to-real](docs/sim-to-real.md) ·
+[world model](docs/world-model.md) · [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
 
 ## Licence
 

@@ -8,7 +8,7 @@ Each milestone ends with its tests passing, its docs and a demo. Pages appear in
 | 2 | Worlds and Live | towns and weather; OpenStreetMap import (central Bengaluru first) with the road-graph preview; the Indian traffic profile and verified traffic handedness; the live view, manual driving, live events, recording | **done (0.2.0)** |
 | 3 | Rigs and data engine | map-based ground relabelling for imported worlds; the rig editor (pinhole, fisheye, lidar, radar, GNSS, IMU), every label type, exports checked with the official devkits, the dataset browser, coverage specs | **done (0.3.0)** |
 | 4 | Scenarios and rare cases | the studio, built-in scenarios (including the Indian ones), criticality measures, sweeps, search | **done (0.4.0)** |
-| 5 | Models and the gap | optical flow and scene flow; model plug-ins, the test harness, sweeps, sim-to-real gap, BEV / occupancy / world-model data, language data | next |
-| 6 | Training lab | perception fine-tuning, the Gymnasium environment, imitation and reinforcement learning, Leaderboard-style evaluation | |
+| 5 | Models and the gap | optical flow and scene flow; model plug-ins, the test harness, sweeps, sim-to-real gap, BEV / occupancy / world-model data, language data | **done (0.5.0)** |
+| 6 | Training lab | perception fine-tuning (with mixed sim/real training experiments), the Gymnasium environment, imitation and reinforcement learning, Leaderboard-style evaluation | next |
 | 7 | Stack, replay, hardware | ROS 2 stack testing, log replay with changes, Jetson in the loop | |
 | 8 | The loop | the home-page orchestrator, reports, packaging, release 1.0 | |

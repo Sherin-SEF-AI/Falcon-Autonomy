@@ -19,6 +19,11 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon sweep PROJECT --scenario S --name N [--grid K \| --samples K] [--seed N] [--world W] [--rig R]` | a scenario sweep (a study; resumable) |
 | `falcon search PROJECT --scenario S --name N [--method bayes\|cmaes\|adaptive\|random] [--budget B] [--batch K] [--threshold T]` | a rare-case search in a study (resumes, and starts from its sweeps) |
 | `falcon schema` | prints the project schema's path |
+| `falcon model fetch PROJECT ID` | downloads a registered model's pinned weights (URL, licence and SHA-256 printed first; refused on a hash mismatch) |
+| `falcon evaluate PROJECT --model ID --run RUN... --out DIR [--camera C] [--every N] [--boot N] [--seed S] [--grid X,Y]` | scores a model on drives: COCO AP/AR (or mIoU) with drive-level bootstrap CIs, breakdowns, a condition heat map, the worst frames ([models](models.md)) |
+| `falcon evaluate --compare EVAL_A EVAL_B --out DIR [--boot N]` | a paired bootstrap of every number's change B − A; regressions and improvements |
+| `falcon gap --sim RUN... --real KIND:PATH --out DIR [--labels FILE] [--images N] [--features --workspace W] [--match]` | the sim-to-real gap; `falcon gap --fetch --workspace W` downloads the feature extractor ([sim-to-real](sim-to-real.md)) |
+| `falcon derive worldmodel\|language RUN --out DIR [--option K=V]...` | world-model data (occupancy, BEV, scene flow, futures, actions, clips) or grounded language data ([world model](world-model.md)) |
 | `falcon export RUN... --format F --out DIR [--split-json FILE] [--option K=V]... [--overwrite]` | exports runs as `coco`, `yolo`, `kitti`, `nuscenes` (with lidarseg and panoptic), `waymo` (a documented Waymo-style JSON layout, not TFRecords), `bdd_lanes` or `mcap` (ROS 2); `falcon_export.json` in DIR says what was filled, left out and why |
 
 Commands that need CARLA start Falcon's own server when none is running and stop it at the end (`--keep-server`

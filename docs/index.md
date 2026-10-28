@@ -105,6 +105,17 @@ Search a scenario's parameters for where it becomes critical (Bayesian optimisat
 random): the curve of the search, the failing cases ranked — replay one, export it as OpenSCENARIO, browse its run —
 and the failure region over two parameters.
 
+### Models
+Register a perception model (ONNX, TorchScript or a plug-in; its licence and pinned SHA-256 shown, AGPL refused,
+weights downloaded only when asked), **evaluate** it on checked drives — AP/AR or mIoU with a 95 % bootstrap interval
+over whole drives, breakdowns by range, occlusion, truncation and height, AP over a grid of two conditions, the
+worst frames with their misses and false positives — and **compare** two evaluations (a paired bootstrap: a
+regression is a drop whose whole interval is below zero). **Sim-to-real gap**: the drives' images against a real
+dataset (KITTI, nuScenes, BDD100K, COCO or a folder), statistic by statistic and in a fixed feature space, each
+distance next to its real-vs-real floor; optional appearance matching with its effect measured. See
+[models](models.md) and [sim-to-real](sim-to-real.md). World-model and language data are derived from drives by
+`falcon derive` ([world model](world-model.md)).
+
 ### Data
 **Record** a drive (see *Getting started*). **Browse** recorded runs: choose the camera and the layer, scrub the
 frames, set the overlay's opacity. A cancelled or failed run keeps only `run.json` (why it ended) and its input,

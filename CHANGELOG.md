@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.0 — milestone 5: models and the sim-to-real gap
+
+- Optical flow as a camera label (CARLA's optical-flow camera decoded as measured on 0.9.16: median error 0.43 / 0.23
+  px against the flow predicted from depth and the camera's motion).
+- Evaluation metrics (`core.metrics`): COCO AP/AR with attribute breakdowns, nuScenes mAP/NDS, mIoU, CLEAR-MOT and
+  HOTA, TuSimple and CULane, calibration; bootstrap and paired bootstrap over whole drives. Equal to pycocotools
+  (maximum difference 0.0 over 54 values) and nuscenes-devkit (1.1e-16 over 183).
+- The model test harness and the Models page: registration (AGPL refused; weights on request, SHA-256 checked),
+  evaluation with intervals, breakdowns, a condition heat map, a failure gallery, paired regression tests;
+  `falcon evaluate`, `falcon model fetch`. A synthetic detector (ground truth with planted weaknesses) to test it.
+  An evaluation over fewer than five drives says its interval is not reliable.
+- The sim-to-real gap: KITTI, nuScenes, BDD100K, COCO and folders read in place; appearance and object statistics;
+  Fréchet and kernel distances in a pinned ResNet-50 feature space next to their real-vs-real floor; appearance
+  matching with its effect measured; `falcon gap`. Measured, CARLA against KITTI raw: FD 184.8 against a floor of
+  23.1; matching brings brightness, contrast, colour and noise most of the way and does not reduce FD (195.3) — the
+  gap is content and rendering.
+- World-model data (occupancy with lidar visibility, BEV maps, scene flow, future trajectories, ego actions, clips)
+  and grounded language data (captions and QA whose every phrase names its CARLA ids; a paraphrase hook that only
+  uses a client you pass in); `falcon derive`. On a real server: every product of an 8 s Town10 drive in 26 s.
+- Fixed: actors.jsonl logged kinematic scenario actors as standing still (CARLA's snapshot with physics off); the
+  language data's lane relations across road ids and inside junctions (found on a real lead_brake run).
+- Not yet: mixed sim/real training experiments run in the training lab (milestone 6); learned style transfer is not
+  planned.
+
 ## 0.4.0 — milestone 4: scenarios and rare cases
 
 - The scenario model (actors, a timeline of triggers and actions, parameters as distributions, seeded sampling) and

@@ -39,6 +39,7 @@ from . import metrics as M
 SCHEMA = 'falcon.evaluation/1'
 MIN_PIXELS = 20
 MAX_OCCLUDED = 0.9
+MIN_DRIVES = 5                 # fewer drives: the drive-level interval is flagged as not reliable
 HEADLINE = ('AP', 'AP50', 'AP75', 'AR100')
 CONDITIONS = ('fog_density', 'precipitation', 'sun_altitude_angle', 'cloudiness', 'wetness')
 
@@ -223,7 +224,14 @@ def score(frames: list, kind: str = 'detector', n_boot: int = 1000, seed: int = 
         recs = M.coco_match(frames, breakdowns=bd)
         boot = M.bootstrap(_det_numbers, recs, n=n_boot, seed=seed, unit=unit)
         full = M.coco_summarise(recs)
-    return {'unit': unit, 'n_units': boot.get('n_units'), 'n_boot': n_boot, 'seed': seed,
+    n_units = boot.get('n_units')
+    note = None
+    if unit == 'drive' and n_units is not None and n_units < MIN_DRIVES:
+        note = (f'only {n_units} drives: a bootstrap over so few units has few distinct resamples, so its interval '
+                f'is not reliable (it can collapse onto the estimate); evaluate on {MIN_DRIVES} or more drives')
+    elif unit == 'image':
+        note = 'one drive: the interval is over frames, which are not independent — it is too narrow'
+    return {'unit': unit, 'n_units': n_units, 'n_boot': n_boot, 'seed': seed, 'note': note,
             'table': M.summary_table(boot), 'full': _clean(full)}
 
 

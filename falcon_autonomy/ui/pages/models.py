@@ -641,8 +641,9 @@ class ModelsPage(Page):
         self.ev_info.set('Ran on', ', '.join(e.get('providers') or ()))
         self.ev_info.set('Latency (this machine)', f'median {lat.get("median", 0):.3g} ms, p90 '
                                                    f'{lat.get("p90", 0):.3g} ms per frame')
-        self.ev_info.set('Note', 'SYNTHETIC test model: these numbers say nothing about a real detector'
-                         if e.get('synthetic_model') else '')
+        notes = (['SYNTHETIC test model: these numbers say nothing about a real detector']
+                 if e.get('synthetic_model') else []) + ([sc['note']] if sc.get('note') else [])
+        self.ev_info.set('Note', ' · '.join(notes))
         for r in sc['table']:
             ci = '—' if r['ci_low'] is None else f'{_fmt(r["ci_low"])} – {_fmt(r["ci_high"])}'
             self.table.addTopLevelItem(QTreeWidgetItem([r['metric'], _fmt(r['value']), ci, _fmt(r.get('n'))]))

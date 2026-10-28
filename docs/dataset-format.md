@@ -10,7 +10,8 @@ run/
   dataset.json        sensors (K, lens, views, planned pose, streams), label encodings and classes, provenance
   frames.jsonl        one line per simulation step (below)
   lanes.json          the map's driving lanes and lane graph (labelled drives)
-  actors.jsonl        every vehicle and walker at every step: pose, velocity, box, category (CARLA world frame)
+  actors.jsonl        every vehicle and walker at every step: pose, velocity, box, category (CARLA world frame);
+                      actors a kinematic scenario moves carry the director's velocity (CARLA reports them still)
   rgb/<camera>/<n>.jpg
   semantic/<camera>/<n>.png      uint8 class per pixel
   instance/<camera>/<n>.png      uint16: 0 none, else an object's id in objects/

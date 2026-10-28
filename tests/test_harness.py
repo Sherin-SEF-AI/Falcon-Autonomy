@@ -65,6 +65,7 @@ def test_oracle_scores_one_and_synthetic_is_a_regression(drives, tmp_path):
     t_o = {r['metric']: r for r in ev_o['scores']['table']}
     assert ev_o['n_frames'] == 60 and ev_o['scores']['unit'] == 'drive' and ev_o['scores']['n_units'] == 3
     assert t_o['AP']['value'] == pytest.approx(1.0) and t_o['AP']['ci_low'] == pytest.approx(1.0)
+    assert 'not reliable' in ev_o['scores']['note']                 # three drives: below MIN_DRIVES
     assert ev_o['gallery'] == [] and ev_o['providers'] == ['python']
     n_gt = sum(1 for f in H.read_predictions(str(tmp_path / 'o' / 'predictions.jsonl')) for g in f['gt']
                if not g['ignore'])
@@ -132,7 +133,7 @@ def test_segmenter_iou_against_the_labels(drives, tmp_path):
         scored += int(keep.sum())
     assert scored > 0 and t['IoU.road']['value'] == pytest.approx(road / scored)
     assert t['IoU.car']['value'] == pytest.approx(0.0)
-    assert ev['scores']['unit'] == 'image'
+    assert ev['scores']['unit'] == 'image' and 'too narrow' in ev['scores']['note']
 
 
 def test_evaluate_command(drives, tmp_path):
