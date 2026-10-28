@@ -79,10 +79,33 @@ Drive a world in real time. **Start** opens a session (a job like any other: the
   falls below 1. Measured on the reference machine: one 1280 × 720 chase view at 20.0 frames/s, real-time factor 1.0,
   no drops; 19.7 frames/s while also recording a 1280 × 720 camera with semantic labels.
 
+### Rigs
+A rig is CARLA's car with its sensors: pinhole and fisheye cameras, lidar, radar, GNSS, IMU. Set each pose by numbers
+or drag the sensor in the 3D view (Shift: height); the view orbits on a drag and zooms with the wheel (OpenGL, or a
+software fallback). Each sensor shows its **cost** — the megapixels it renders per step against the render budget —
+and the rig is checked for problems (duplicate ids, poses far from the car, sizes, lidar fields of view). A fisheye
+is rendered as the pinhole views its lens needs (cube faces, 3° of overlap feathered across the seams) and remapped.
+
+**Labels** per camera: any of semantic, instance, depth, 2D boxes, 3D boxes renders CARLA's instance and depth cameras
+beside each view; lidars record point labels from a semantic lidar. **Import / export**: Falcon's rig JSON, ROS URDF
+and static TF, nuScenes calibration (CARLA's left-handed frame converted through rotation matrices).
+
+**Faults of known size** per sensor: a mount turned or moved, a clock offset, dropped or frozen frames, noise, dirt or
+rain on the lens, glare, rolling shutter, compression, motion blur. Outputs keep the planned calibration, as a real
+faulty rig's would; each frame says which faults touched it.
+
 ### Data
 **Record** a drive (see *Getting started*). **Browse** recorded runs: choose the camera and the layer, scrub the
 frames, set the overlay's opacity. A cancelled or failed run keeps only `run.json` (why it ended) and its input,
 never half a dataset.
+
+**Datasets**: a dataset spec sets targets — objects per class, over worlds × weathers — and the engine **plans** the
+drives that fill them (how many, from the yield measured on the dataset's own drives, or a stated prior before any),
+shows their **cost**, and **runs** them; each drive's folder is named by its cache key, so re-running resumes and
+never repeats a finished drive. The **coverage** dashboard shows what the dataset has against its targets, per class
+and distance bin. A **version** freezes the finished drives with a train/validation/test split by drive or by place
+that never puts one drive (or world) in two splits. **Browse** shows any label layer (semantic, instance, range,
+boxes) and the frame's objects. The format is in [dataset format](dataset-format.md).
 
 ### Settings
 Where CARLA and its Python are; Falcon's ports, the server's memory cap and quality; the render budget; the theme;
