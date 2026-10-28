@@ -76,6 +76,32 @@ def test_known_answers_counts_distances_lead_ttc():
     assert 'in the lane to your right' in texts and 'oncoming lane' in texts
 
 
+def test_the_lane_continues_across_roads_and_through_a_junction():
+    """Measured on a real lead_brake run: the lead car straight ahead in the ego's lane was called "in the lane to your
+    right", then "in a crossing lane" — its lane had another road id, and a junction's turning lane overlapped it.
+    Here road 1 leads to road 2 (lanes.json graph); road 3's lane −1 runs beside road 2's at +3.5 m; a junction lane
+    (road 4) crosses road 2 at x = 40 heading +y."""
+    pts = []
+    for road, x0, x1 in ((1, -20, 20), (2, 22, 80)):
+        for x in range(x0, x1 + 1, 2):
+            pts.append([float(x), 0.0, 0.0, 0.0, 3.5, road, 0, -1, float(x), 'Broken', 'White', 'Solid', 'White'])
+    for x in range(22, 81, 2):
+        pts.append([float(x), 3.5, 0.0, 0.0, 3.5, 3, 0, -1, float(x), 'Broken', 'White', 'Solid', 'White'])
+    for y in range(-20, 21, 2):
+        pts.append([40.0, float(y), 0.0, 90.0, 3.5, 4, 0, -1, float(y), 'NONE', 'White', 'NONE', 'White'])
+    lanes = {'columns': COLS, 'points': pts, 'step_m': 2.0, 'graph': [[[1, 0, -1, 40.0], [2, 0, -1, 0.0]]]}
+    ahead = _row(30, 40.0, 0.0)                 # on road 2 (the continuation), inside the junction lane too
+    beside = _row(31, 40.0, 3.5)                # road 3, beside road 2
+    crossing = _row(32, 40.0, -10.0, yaw=90.0)  # on the junction lane
+    st = L.build_state(0, 0.0, dict(EGO, vx=10.0), [ahead, beside, crossing], lanes)
+    g = {a['id']: a for a in st['agents']}
+    assert g[30]['lane_rel'] == 'ego' and st['lead_id'] == 30
+    assert (g[31]['lane_rel'], g[31]['lanes_over']) == ('right', 1)
+    assert g[32]['lane_rel'] == 'crossing'
+    no_graph = dict(lanes, graph=[])            # without the graph: same direction, no lane over: the same lane
+    assert {a['id']: a['lane_rel'] for a in L.build_state(0, 0.0, EGO, [ahead], no_graph)['agents']} == {30: 'ego'}
+
+
 def test_left_and_right_in_the_left_handed_frame():
     """+y in the ego frame is the RIGHT (CARLA is left-handed); heading world +y, the ego's right is world −x."""
     for ego_yaw, right_xy, left_xy in ((0.0, (10.0, 3.0), (10.0, -3.0)), (90.0, (-3.0, 10.0), (3.0, 10.0))):

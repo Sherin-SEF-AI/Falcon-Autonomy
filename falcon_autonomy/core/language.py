@@ -16,12 +16,15 @@ run has them. Units in the text: metres, m/s (the ego's speed also km/h), second
 What CARLA's recorded state supports, and what is said:
 * Positions, distances, directions, speeds, closing rates, counts, TTC — exact from the state. Velocities are
   actors.jsonl's (the world snapshot's), except in a kinematic scenario run (run.json scenario.motion): its director
-  places the vehicles with set_transform, physics off, and the snapshot reports them standing still — there the
+  places the vehicles with set_transform, physics off, and CARLA's snapshot reports them standing still (runs
+  recorded before Falcon 0.5.0 logged that; since, actors.jsonl carries the director's velocity) — there the
   director's own velocities (trajectories.json) are used for its actors and the ego, and the central difference of
   the positions for any other actor (the manifest's "velocities" says which).
 * Lanes (lanes.json: driving-lane waypoints with width and heading): an object's lane is the driving lane whose
-  waypoint stretch contains it (|lateral| ≤ width/2, |along| ≤ step·¾). Relative to the ego's lane: "your lane"
-  (the same road, section and lane), same direction left/right with the lane count (lateral offset of the lane
+  waypoint stretch contains it (|lateral| ≤ width/2, |along| ≤ step·¾; where lanes overlap, as a junction's turning
+  lanes over its straight ones, the lane whose heading is nearest the object's). Relative to the ego's lane: "your
+  lane" (the same road, section and lane, or its continuation within four links of lanes.json's graph either way, or
+  a same-direction lane at no lane's offset), same direction left/right with the lane count (lateral offset of the lane
   centres ÷ the ego lane's width, rounded), "oncoming" (heading differs by more than 135°), "crossing" (45°–135°),
   or off the roadway (no driving lane: a sidewalk, a verge). Heuristic on curves (the offset is measured along the
   ego lane's right at its waypoint). Without lanes.json no lane is named; the ego's path is then a corridor of the
@@ -138,9 +141,15 @@ class LaneIndex:
         r = np.radians(self.yaw)
         self.fwd = np.stack([np.cos(r), np.sin(r)], 1)
         self.right = np.stack([-np.sin(r), np.cos(r)], 1)
+        self.succ = {}                    # lane key -> the lane keys it leads to (lanes.json graph)
+        for e in lanes.get('graph') or ():
+            a, b = tuple(e[0][:3]), tuple(e[1][:3])
+            self.succ.setdefault(a, set()).add(b)
 
-    def locate(self, x: float, y: float):
-        """Index of the waypoint whose lane stretch contains (x, y), or None (off the driving lanes)."""
+    def locate(self, x: float, y: float, yaw: float | None = None):
+        """Index of the waypoint whose lane stretch contains (x, y), or None (off the driving lanes). Where lanes
+        overlap (a junction's turning lanes over its straight ones), the one whose heading is nearest the actor's
+        yaw (when given), then the nearest."""
         if not len(self.P):
             return None
         d = np.array([x, y]) - self.P
@@ -150,7 +159,21 @@ class LaneIndex:
         if not ok.any():
             return None
         k = np.flatnonzero(ok)
-        return int(k[np.argmin(np.hypot(lon[k], lat[k]))])
+        cost = np.hypot(lon[k], lat[k])
+        if yaw is not None:
+            dyaw = np.abs((self.yaw[k] - yaw + 180.0) % 360.0 - 180.0)
+            cost = cost + 1000.0 * (dyaw > 45.0) + dyaw / 90.0
+        return int(k[np.argmin(cost)])
+
+    def follows(self, a: tuple, b: tuple, hops: int = 4) -> bool:
+        """Whether lane b is lane a's continuation within `hops` successor links (lanes.json graph)."""
+        seen, front = {a}, {a}
+        for _ in range(hops):
+            front = {n for k in front for n in self.succ.get(k, ())} - seen
+            if b in front:
+                return True
+            seen |= front
+        return False
 
     def relation(self, e, a) -> tuple:
         """(relation, lanes over) of lane waypoint a to the ego's lane waypoint e: ('ego', 0), ('left'|'right', n),
@@ -159,15 +182,18 @@ class LaneIndex:
             return None, None
         if a is None:
             return 'off_road', None
-        if self.key[a] == self.key[e]:
+        ka, ke = self.key[a], self.key[e]
+        if ka == ke or self.follows(ke, ka) or self.follows(ka, ke):    # the ego's lane, or its continuation
             return 'ego', 0
         dyaw = abs((self.yaw[a] - self.yaw[e] + 180.0) % 360.0 - 180.0)
         off = float((self.P[a] - self.P[e]) @ self.right[e])
-        n = max(1, int(round(abs(off) / max(self.width[e], 0.5))))
+        n = int(round(abs(off) / max(self.width[e], 0.5)))
         if dyaw > 135.0:
-            return 'oncoming', n
+            return 'oncoming', max(n, 1)
         if dyaw > 45.0:
             return 'crossing', 0
+        if n == 0:                        # same direction, no lane over: the same lane under another road id
+            return 'ego', 0
         return ('right' if off > 0 else 'left'), n
 
 
@@ -203,7 +229,7 @@ def build_state(step: int, sim_t: float, ego: dict, actors, lanes=None, frame=No
     ve = np.array([ego.get('vx', 0.0), ego.get('vy', 0.0), ego.get('vz', 0.0)], float)
     ego8 = _row8(ce, ego['yaw'], ve, ext_e)
     foot_e = C.box_corners(ce[0], ce[1], ego['yaw'], 2 * ext_e[0], 2 * ext_e[1])
-    e_lane = li.locate(*ce[:2]) if li is not None else None
+    e_lane = li.locate(ce[0], ce[1], ego['yaw']) if li is not None else None
     speed = float(np.hypot(ve[0], ve[1]))
     half_corr = ext_e[1] + o['corridor_margin_m']
     look = max(10.0, speed * o['path_lookahead_s']) + ext_e[0]
@@ -218,7 +244,7 @@ def build_state(step: int, sim_t: float, ego: dict, actors, lanes=None, frame=No
         foot = C.box_corners(c[0], c[1], a['yaw'], 2 * ext[0], 2 * ext[1])
         dist = C.box_distance(foot_e, foot)
         ttc = C.ttc(ego8, _row8(c, a['yaw'], va, ext), o['ttc_horizon_s'])
-        a_lane = li.locate(*c[:2]) if li is not None else None
+        a_lane = li.locate(c[0], c[1], a['yaw']) if li is not None else None
         rel, n = li.relation(e_lane, a_lane) if li is not None else (None, None)
         group = WM.bev_class_of(a.get('category'))
         if li is not None and rel is not None:
@@ -240,9 +266,12 @@ def build_state(step: int, sim_t: float, ego: dict, actors, lanes=None, frame=No
                        'length': round(2 * float(ext[0]), 3), 'width': round(2 * float(ext[1]), 3),
                        'ttc_s': None if not math.isfinite(ttc) else round(ttc, 3),
                        'lane_rel': rel, 'lanes_over': n, 'in_path': in_path, 'entering_path': entering,
+                       'in_lane_ahead': bool(in_path_now and ahead),
                        'direction': direction_of(float(p[0]), float(p[1]))})
     agents.sort(key=lambda g: (g['distance_m'], g['id']))
-    lead = next((g for g in sorted(agents, key=lambda g: g['x']) if g['in_path'] and g['group'] in
+    # the lead: the nearest vehicle or cyclist ahead in the ego's lane (or corridor) within radius_m — not only within
+    # the braking look-ahead, which is shorter than the radius the captions state
+    lead = next((g for g in sorted(agents, key=lambda g: g['x']) if g['in_lane_ahead'] and g['group'] in
                  ('vehicle', 'cyclist') and g['range_m'] <= o['radius_m']), None)
     return {'step': step, 'frame': frame, 'sim_t': sim_t, 'ego_id': ego.get('id'),
             'ego': {'speed_mps': round(speed, 3), 'yaw': ego['yaw'], 'length': round(2 * float(ext_e[0]), 3),
