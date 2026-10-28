@@ -52,7 +52,7 @@ def window(qapp, tmp_path, project):
 
 def test_pages_and_navigation(window, qapp):
     keys = [p.key for p in window.pages]
-    assert keys == ['home', 'worlds', 'live', 'data', 'settings', 'help']
+    assert keys == ['home', 'worlds', 'live', 'rigs', 'data', 'settings', 'help']
     assert window.go('data') is window.stack.currentWidget()
     window.actions_['page_worlds'].trigger()
     assert window.stack.currentWidget().key == 'worlds'
@@ -242,3 +242,31 @@ def test_import_a_place(window, qapp, tmp_path):
     assert 'RHT' in page.verify_kv.vals['Handedness'].text()
     window.undo.undo()
     assert len(window.project.doc['worlds']) == n
+
+
+def test_rig_editor(window, qapp):
+    page = window.go('rigs')
+    assert page.view.backend == 'software'                    # offscreen: the software 3D view
+    rig = window.project.doc['rigs'][0]
+    page.add_sensor('lidar')
+    assert rig['sensors'][-1]['type'] == 'lidar' and page.sensors.count() == 2
+    page.sensors.setCurrentRow(0)
+    page.set_pose(0, {'yaw': 25.0})
+    assert rig['sensors'][0]['pose']['yaw'] == 25.0
+    page.view.poseDropped.emit(rig['sensors'][0]['id'], dict(rig['sensors'][0]['pose'], x=2.0, y=0.4))
+    assert rig['sensors'][0]['pose']['x'] == 2.0
+    window.undo.undo()
+    assert rig['sensors'][0]['pose']['x'] == 1.5
+    page.toggle_label(0, 'instance', True)
+    assert rig['sensors'][0]['labels'] == ['instance', 'semantic']
+    from falcon_autonomy.core import budget
+    assert f'{budget.rig_mpx(rig):.1f} of 200 Mpx' in page.budget_lbl.text()
+    page.set_field(0, 'width', 8192)
+    page.set_field(0, 'height', 8192)
+    assert 'over the render budget' in page.problems.text()
+    page.view.resize(500, 400)
+    img = page.view.grab()
+    assert not img.isNull()
+    for _ in range(5):
+        window.undo.undo()
+    assert len(rig['sensors']) == 1
