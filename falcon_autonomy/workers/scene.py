@@ -255,11 +255,20 @@ class Cameras:
                 continue                                   # fisheye, lidar, radar, GNSS, IMU: milestone 3
             kinds = [('rgb', 'sensor.camera.rgb')] + ([(k, 'sensor.camera.' + c) for k, c in label_kinds(s)]
                                                        if with_labels else [])
+            from ..core import faults as F
+            pose = F.actual_pose(s['pose'], s.get('faults'))           # mount faults: CARLA spawns it moved
+            blur = next((f for f in s.get('faults') or [] if f.get('kind') == 'motion_blur'), None)
+            attrs = {} if blur is None else {'motion_blur_intensity': blur.get('intensity', 0.45),
+                                             'motion_blur_max_distortion': blur.get('max_distortion', 0.35)}
             self.cams.append((s, {k: self.spawn(world, lib, bp, s['width'], s['height'], s['fov'],
-                                                camera_transform(self.w.carla, s['pose']), ego) for k, bp in kinds}))
+                                                camera_transform(self.w.carla, pose), ego,
+                                                attrs=attrs if k == 'rgb' else None) for k, bp in kinds}))
 
-    def spawn(self, world, lib, bp_id, width, height, fov, tf, parent=None, attachment=None):
+    def spawn(self, world, lib, bp_id, width, height, fov, tf, parent=None, attachment=None, attrs=None):
         bp = lib.find(bp_id)
+        for k, v in (attrs or {}).items():
+            if bp.has_attribute(k):
+                bp.set_attribute(k, str(v))
         bp.set_attribute('image_size_x', str(int(width)))
         bp.set_attribute('image_size_y', str(int(height)))
         bp.set_attribute('fov', str(float(fov)))
@@ -308,9 +317,15 @@ class Cameras:
     def remove(self, sensor):
         self.queues.pop(sensor.id, None)
 
-    def submit_write(self, kind, data, path):
+    def submit_write(self, kind, data, path, image_faults=None):
+        """Write a frame in the background; image_faults: (faults, rng, K, omega) applied to an RGB image first."""
         import numpy as np
         a = np.frombuffer(data.raw_data, np.uint8).reshape(data.height, data.width, 4).copy()
+        if image_faults is not None and kind == 'rgb':
+            from ..core import faults as F
+            fl, rng, K, omega = image_faults
+            bgr, _ = F.apply_image(np.ascontiguousarray(a[:, :, :3]), fl, rng, K, omega)
+            a = np.dstack([bgr, a[:, :, 3]])
         self.pending.append(self.pool.submit(write_frame, kind, a, path))
 
     def flush(self, keep):
@@ -338,6 +353,18 @@ def write_frame(kind, bgra, path):
 def intrinsics(width, height, fov):
     f = width / (2.0 * math.tan(math.radians(fov) / 2.0))
     return [[f, 0.0, width / 2.0], [0.0, f, height / 2.0], [0.0, 0.0, 1.0]]
+
+
+def yaw_rate_optical(s: dict, yaw_rate: float):
+    """The vehicle's yaw rate (rad/s, turning right positive) as an angular velocity in a camera's optical frame
+    (x right, y down, z forward): about the world's down axis seen from the camera (pitch and roll rates are not
+    used — the rolling-shutter model is yaw-driven)."""
+    import numpy as np
+    from ..core.rig import carla_rotation
+    p = s['pose']
+    Rb = carla_rotation(p['roll'], p['pitch'], p['yaw'])
+    down = Rb.T @ np.array([0.0, 0.0, -1.0])                 # world down in the camera's body axes
+    return [yaw_rate * down[1], yaw_rate * -down[2], yaw_rate * down[0]]
 
 
 def ego_state(ego) -> dict:
@@ -460,3 +487,45 @@ class Others:
         for fh in self.files.values():
             fh.close()
         self.files.clear()
+
+
+
+class FaultState:
+    """Per-sensor fault bookkeeping in a run: a seeded generator per sensor, the last delivered files (freeze), what
+    was applied (run.json "faults_applied")."""
+
+    def __init__(self, sensors, seed: int):
+        import zlib
+        import numpy as np
+        self.f = {s['id']: list(s.get('faults') or []) for s in sensors if s.get('faults')}
+        self.rng = {sid: np.random.default_rng([int(seed), zlib.crc32(sid.encode())]) for sid in self.f}
+        self.last = {}
+        self.applied = {sid: {} for sid in self.f}
+
+    def count(self, sid, kind):
+        self.applied[sid][kind] = self.applied[sid].get(kind, 0) + 1
+
+    def delivery(self, sid, step, sim_t):
+        from ..core import faults as F
+        if sid not in self.f:
+            return 'ok'
+        d = F.delivery(self.f[sid], step, sim_t, self.rng[sid])
+        if d != 'ok':
+            self.count(sid, d)
+        return d
+
+    def image(self, sid, K, omega):
+        from ..core import faults as F
+        fl = [f for f in self.f.get(sid, []) if f.get('kind') in F.IMAGE_FAULTS]
+        if not fl:
+            return None
+        for f in fl:
+            self.count(sid, f['kind'])
+        return fl, self.rng[sid], K, omega
+
+    def stamp(self, sid, sim_t):
+        from ..core import faults as F
+        return sim_t + F.clock_offset_s(self.f.get(sid))
+
+    def report(self) -> dict:
+        return {sid: {'planned': self.f[sid], 'frames': self.applied[sid]} for sid in self.f}

@@ -288,8 +288,58 @@ class RigsPage(Page):
                 cb.toggled.connect(lambda on, lb=lb: self.toggle_label(j, lb, on))
                 row.addWidget(cb)
             f.row('Labels', row)
+        self.fault_editor(f, j, s)
         c = R.sensor_cost(s)
         self.cost.set('Cost', f'{c["mpx"]:.2f} Mpx per step — {c["note"]}' if c['mpx'] else c['note'])
+
+    FAULT_TEMPLATES = {'mount_rotation': {'deg': [0.0, 0.0, 1.0]}, 'mount_translation': {'m': [0.0, 0.0, 0.02]},
+                       'clock_offset': {'ms': 20}, 'drop': {'rate': 0.05}, 'freeze': {'from_s': 2.0, 'to_s': 3.0},
+                       'noise': {'sigma': 3.0}, 'dirt': {'cover': 0.1}, 'rain': {'cover': 0.1},
+                       'glare': {'strength': 0.5, 'u': 0.5, 'v': 0.25}, 'rolling_shutter': {'readout_ms': 30},
+                       'compression': {'quality': 40}, 'motion_blur': {'intensity': 0.45, 'max_distortion': 0.35}}
+
+    def fault_editor(self, f, j, s):
+        """The sensor's faults as JSON (one object per fault), added from templates, validated before applying."""
+        from PyQt6.QtWidgets import QPlainTextEdit
+        from ...core import faults as FL
+        box = QVBoxLayout()
+        ed = QPlainTextEdit(json.dumps(s.get('faults') or [], indent=1))
+        ed.setFixedHeight(110)
+        box.addWidget(ed)
+        row = QHBoxLayout()
+        add = QToolButton()
+        add.setText('Add fault')
+        add.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        m = QMenu(add)
+        kinds = FL.FAULTS if s['type'].startswith('camera.') else ('mount_rotation', 'mount_translation',
+                                                                     'clock_offset', 'drop', 'freeze')
+        for k in kinds:
+            m.addAction(k.replace('_', ' '), lambda k=k: self.set_faults(j, (s.get('faults') or []) +
+                                                                      [dict({'kind': k}, **self.FAULT_TEMPLATES[k])]))
+        add.setMenu(m)
+        row.addWidget(add)
+        msg = label('', small=True, wrap=True)
+
+        def apply():
+            try:
+                fl = json.loads(ed.toPlainText() or '[]')
+                probs = FL.validate(fl) if isinstance(fl, list) else ['a list of faults is needed']
+            except ValueError as e:
+                probs = [f'not JSON: {e}']
+            if probs:
+                msg.setText('⚠ ' + '; '.join(probs))
+                return
+            self.set_faults(j, fl)
+        row.addWidget(button('Apply', apply))
+        row.addStretch(1)
+        box.addLayout(row)
+        box.addWidget(msg)
+        f.row('Faults', box, 'outputs keep the planned calibration')
+
+    def set_faults(self, j, fl):
+        s = self.rig()['sensors'][j]
+        if (s.get('faults') or []) != fl:
+            self.edit(['sensors', j, 'faults'], fl, f'{s["name"]}: faults')
 
     # ------------------------------------------------------------------ edits
     def set_rig_field(self, key, value):

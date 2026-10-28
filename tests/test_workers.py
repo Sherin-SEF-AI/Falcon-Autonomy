@@ -318,3 +318,24 @@ def test_lidar_labels_proven_and_checked(project, tmp_path):
     assert any('rad/radar' in f['files'] for f in frames)
     assert len((out / 'imu' / 'imu.jsonl').read_text().splitlines()) >= 19
     assert (out / 'gnss' / 'gnss.jsonl').read_text().count('lat') >= 9
+
+
+def test_faults_in_a_drive(project, tmp_path):
+    cam = project.doc['rigs'][0]['sensors'][0]
+    cam['faults'] = [{'kind': 'mount_rotation', 'deg': [0, 0, 5.0]}, {'kind': 'drop', 'rate': 0.3},
+                     {'kind': 'freeze', 'from_s': 0.3, 'to_s': 0.5}, {'kind': 'noise', 'sigma': 4.0},
+                     {'kind': 'clock_offset', 'ms': 40}]
+    code, _, err = _run(_cfg(project, tmp_path / 'run', seconds=1.0, seed=2))
+    assert code == P.OK, err
+    out = tmp_path / 'run'
+    run = json.loads((out / 'run.json').read_text())
+    fa = run['faults_applied']['cam-front']
+    assert fa['frames']['drop'] >= 2 and fa['frames']['noise'] >= 10 and fa['planned'] == cam['faults']
+    frames = [json.loads(x) for x in (out / 'frames.jsonl').read_text().splitlines()]
+    dropped = [f for f in frames if f.get('faults', {}).get('cam-front') == 'drop']
+    assert dropped and all('cam-front/rgb' not in f['files'] for f in dropped)
+    frozen = [f for f in frames if f.get('faults', {}).get('cam-front') == 'freeze']
+    assert all(f['files']['cam-front/rgb'] == frozen[0]['files']['cam-front/rgb'] for f in frozen)
+    assert all(f['stamps']['cam-front'] == pytest.approx(f['sim_t'] + 0.04) for f in frames)
+    ds = json.loads((out / 'dataset.json').read_text())
+    assert ds['sensors'][0]['pose']['yaw'] == 0.0                # the planned calibration, not the faulty mount

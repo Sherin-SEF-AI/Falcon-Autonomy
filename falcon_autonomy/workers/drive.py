@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import time
 
@@ -114,6 +115,8 @@ class Drive(Worker):
         n = late = 0
         sim_t0 = None
         label_warnings = []
+        faults = scene.FaultState(cfg['rig']['sensors'], int(cfg.get('seed', 0)))
+        prev_yaw = None
         try:
             for i in range(steps):
                 self.check()
@@ -124,19 +127,37 @@ class Drive(Worker):
                 rec = {'step': i, 'frame': int(frame), 'sim_t': round(snap_t - sim_t0, 6), 'files': {}}
                 rec.update(scene.ego_state(ego))
                 depth_now = None
+                yaw = rec['ego']['yaw']
+                yaw_rate = 0.0 if prev_yaw is None else ((yaw - prev_yaw + 180.0) % 360.0 - 180.0) * fps0 * \
+                    math.pi / 180.0
+                prev_yaw = yaw
                 for s, sensors in cams.cams:
+                    deliver = faults.delivery(s['id'], i, rec['sim_t'])
+                    if s['id'] in faults.f:
+                        rec.setdefault('stamps', {})[s['id']] = round(faults.stamp(s['id'], rec['sim_t']), 6)
+                        if deliver != 'ok':
+                            rec.setdefault('faults', {})[s['id']] = deliver
+                    img_faults = faults.image(s['id'], scene.intrinsics(s['width'], s['height'], s['fov']),
+                                              scene.yaw_rate_optical(s, yaw_rate))
                     for kind, sensor in sensors.items():
                         data = cams.get(sensor.id, frame)
                         if kind == 'depth' and s is depth_cam:
                             depth_now = data
+                        key = f'{s["id"]}/{kind}'
+                        if deliver == 'drop':
+                            continue
+                        if deliver == 'freeze' and key in faults.last:
+                            rec['files'][key] = faults.last[key]
+                            continue
                         if kind == 'semantic' and i == 0 and s['pose']['pitch'] <= 5.0:
                             warn = scene.ground_label_check(data)
                             if warn:
                                 self.note(warn)
                                 label_warnings.append(warn)
                         rel = os.path.join(kind, s['id'], f'{i:06d}.{"jpg" if kind == "rgb" else "png"}')
-                        rec['files'][f'{s["id"]}/{kind}'] = rel
-                        cams.submit_write(kind, data, os.path.join(self.out_dir, rel))
+                        rec['files'][key] = rel
+                        faults.last[key] = rel
+                        cams.submit_write(kind, data, os.path.join(self.out_dir, rel), img_faults)
                 for k, L in enumerate(self.lidars):
                     m_raw = L.step(frame, rec['sim_t'], self.out_dir, rec)
                     if k == 0 and depth_now is not None and i % 5 == 0:
@@ -177,7 +198,7 @@ class Drive(Worker):
             self.emit.log(f'lidar {c["sensor"]}: {m["exact_slices"]} of {m["slices"]} slices matched by order '
                           f'(worst direction {m["max_dir_err_deg"]:.2g}°), points in vehicle boxes labelled vehicle: '
                           f'{c["box_label_share"]}')
-        return {'performance': perf, 'lidar_checks': lidar_checks, 'summary': {'steps': n, 'cameras': len(cams.cams), 'town': cfg.get('town'),
+        return {'performance': perf, 'lidar_checks': lidar_checks, 'faults_applied': faults.report(), 'summary': {'steps': n, 'cameras': len(cams.cams), 'town': cfg.get('town'),
                                                   'steps_per_s': perf['steps_per_s'],
                                                   'realtime_factor': perf['realtime_factor']},
                 'name': cfg.get('name', 'drive'), 'config_sha256': sha256_json(cfg)}

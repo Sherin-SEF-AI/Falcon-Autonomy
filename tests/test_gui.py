@@ -264,6 +264,9 @@ def test_rig_editor(window, qapp):
     page.set_field(0, 'width', 8192)
     page.set_field(0, 'height', 8192)
     assert 'over the render budget' in page.problems.text()
+    page.set_faults(0, [{'kind': 'noise', 'sigma': 3.0}])
+    assert rig['sensors'][0]['faults'][0]['kind'] == 'noise'
+    window.undo.undo()
     page.view.resize(500, 400)
     img = page.view.grab()
     assert not img.isNull()
