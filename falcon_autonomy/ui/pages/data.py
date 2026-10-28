@@ -155,7 +155,8 @@ class BrowseTab(QWidget):
         top = QHBoxLayout()
         self.sensor = QComboBox()
         self.layer = QComboBox()
-        self.layer.addItems(['semantic'])
+        self.layer.addItems(['semantic', 'instance', 'range', 'boxes', 'none'])
+        self.layer.currentIndexChanged.connect(lambda _: self.load_frame(self.slider.value()))
         self.opacity = QSlider(Qt.Orientation.Horizontal)
         self.opacity.setRange(0, 100)
         self.opacity.setValue(50)
@@ -189,6 +190,13 @@ class BrowseTab(QWidget):
         self.info = KeyValues()
         info.add(self.info)
         lower.addWidget(info, 1)
+        objs = Section('Objects in this frame')
+        self.objects = QTreeWidget()
+        self.objects.setHeaderLabels(['Track', 'Class', 'Box', 'Occluded', 'Truncated', 'Range'])
+        self.objects.setRootIsDecorated(False)
+        self.objects.setMinimumHeight(140)
+        objs.add(self.objects)
+        rv.addWidget(objs)
         rv.addLayout(lower)
         split.addWidget(right)
         split.setSizes([300, 900])
@@ -280,26 +288,63 @@ class BrowseTab(QWidget):
         files = {k.split('/')[1]: os.path.join(self.run_dir, v) for k, v in f['files'].items()
                  if k.split('/')[0] == s}
 
+        layer = self.layer.currentText()
+
         def load():
             import cv2
             rgb = cv2.imread(files['rgb'])[:, :, ::-1] if 'rgb' in files else None
             tags = cv2.imread(files['semantic'], cv2.IMREAD_UNCHANGED) if 'semantic' in files else None
-            return i, s, rgb, tags
+            col = None
+            if layer == 'semantic' and tags is not None:
+                col = labels.colorize(np.minimum(tags, 28))
+            elif layer == 'instance' and 'instance' in files:
+                inst = cv2.imread(files['instance'], cv2.IMREAD_UNCHANGED).astype(np.int64)
+                rnd = np.random.default_rng(7).integers(40, 255, (65536, 3), dtype=np.uint8)
+                rnd[0] = 0
+                col = rnd[inst]
+            elif layer == 'range' and 'range' in files:
+                r = cv2.imread(files['range'], cv2.IMREAD_UNCHANGED).astype(np.float32) / 256.0
+                v = np.clip(np.log1p(r) / np.log1p(100.0), 0, 1)
+                col = cv2.applyColorMap((255 * (1 - v)).astype(np.uint8), cv2.COLORMAP_TURBO)[:, :, ::-1]
+                col[r <= 0] = 0
+            objs = []
+            if 'objects' in files:
+                with open(files['objects'], encoding='utf-8') as fh:
+                    objs = json.load(fh).get('objects', [])
+            if layer == 'boxes' and rgb is not None:
+                col = rgb.copy()
+                for o in objs:
+                    x0, y0, x1, y1 = (int(round(v)) for v in o['bbox'])
+                    cv2.rectangle(col, (x0, y0), (x1 - 1, y1 - 1), (0, 220, 90), 2)
+                    if o.get('bbox_full'):
+                        a0, b0, a1, b1 = (int(round(v)) for v in o['bbox_full'])
+                        cv2.rectangle(col, (a0, b0), (a1, b1), (255, 150, 0), 1)
+            return i, s, rgb, tags, col, objs
         tasks.run(self, load, self._loaded)
 
     def _loaded(self, res):
-        i, s, rgb, tags = res
+        i, s, rgb, tags, col, objs = res
         if i != self.slider.value() or s != self.sensor.currentText():
             return                                 # a newer frame was asked for meanwhile
-        self.cache = (rgb, None if tags is None else labels.colorize(tags), tags)
+        self.cache = (rgb, col, tags)
         self.compose()
         self.show_legend(tags)
+        self.objects.clear()
+        for o in objs:
+            def f(v):
+                return '—' if v is None else f'{v:.2f}'
+            it = QTreeWidgetItem([str(o.get('track_id')), o.get('class', ''),
+                                  ' '.join(f'{v:.0f}' for v in o['bbox']), f(o.get('occluded')),
+                                  f(o.get('truncated')), f'{o.get("range_m", 0):.1f} m'])
+            self.objects.addTopLevelItem(it)
 
     def compose(self):
         if not self.cache or self.cache[0] is None:
             return
         rgb, col, _ = self.cache
         a = self.opacity.value() / 100.0
+        if self.layer.currentText() == 'boxes' and col is not None:
+            a = 1.0                                       # boxes are drawn on the image itself
         out = rgb if col is None or a <= 0 else (rgb * (1 - a) + col * a).astype(np.uint8)
         self.view.set_rgb(out)
 
@@ -310,6 +355,7 @@ class BrowseTab(QWidget):
                 it.widget().deleteLater()
         if tags is None:
             return
+        tags = np.minimum(tags, 28)
         vals, counts = np.unique(tags, return_counts=True)
         order = np.argsort(-counts)
         total = float(tags.size)
@@ -342,16 +388,20 @@ class DataPage(Page):
         v.addWidget(label(self.title, title=True))
         v.addWidget(label(self.about, muted=True))
         self.tabs = QTabWidget()
+        from .datasets import DatasetsTab
         self.record = RecordTab(self)
         self.browse = BrowseTab(self)
+        self.datasets = DatasetsTab(self)
         self.tabs.addTab(scroll(self.record), 'Record')
         self.tabs.addTab(self.browse, 'Browse')
+        self.tabs.addTab(scroll(self.datasets), 'Datasets')
         v.addWidget(self.tabs, 1)
         self.refresh()
 
     def refresh(self):
         self.record.refresh()
         self.browse.refresh()
+        self.datasets.refresh()
 
     def show_run(self, path):
         self.tabs.setCurrentWidget(self.browse)
@@ -361,3 +411,4 @@ class DataPage(Page):
     def on_run_finished(self, job):
         self.browse.refresh()
         self.record.update_cost()
+        self.datasets.on_run_finished(job)

@@ -273,3 +273,35 @@ def test_rig_editor(window, qapp):
     for _ in range(5):
         window.undo.undo()
     assert len(rig['sensors']) == 1
+
+
+def test_datasets_tab_and_browser_layers(window, qapp, tmp_path):
+    window.project.path = str(tmp_path / 'proj.falcon.json')
+    window.save()
+    window.service.set_workspace(window.workspace())
+    window.project.doc['rigs'][0]['sensors'][0]['labels'] = ['semantic', 'boxes2d']
+    data = window.go('data')
+    tab = data.datasets
+    tab.add_spec()
+    tab.set('drive_s', 0.5)
+    tab.set('record_every', 2)
+    tab.set('targets', {'car': 10})
+    tab.make_plan()
+    assert tab.run_btn.isEnabled() and 'heuristic' in tab.plan_kv.vals['Yield'].text()
+    assert 'typical' in tab.plan_kv.vals['Cost'].text()
+    tab.run()
+    jobs = [j for j in window.queue.jobs if j.spec.kind == 'drive']
+    assert jobs and pump(qapp, lambda: all(j.state in ('done', 'failed') for j in jobs), 120)
+    assert all(j.state == 'done' for j in jobs), [j.log for j in jobs]
+    _, spec = tab.current()
+    tab.show_coverage(spec)
+    assert pump(qapp, lambda: tab.bars.rows and tab.bars.rows[0][1] > 0, 20)
+    tab.new_version()
+    assert tab.versions.count() == 1 and 'v1' in tab.versions.item(0).text()
+    run_dir = jobs[0].spec.run_dir
+    data.show_run(run_dir)
+    b = data.browse
+    b.layer.setCurrentText('boxes')
+    assert pump(qapp, lambda: b.objects.topLevelItemCount() > 0, 20)
+    b.layer.setCurrentText('range')
+    assert pump(qapp, lambda: b.cache is not None and b.cache[1] is not None, 20)
