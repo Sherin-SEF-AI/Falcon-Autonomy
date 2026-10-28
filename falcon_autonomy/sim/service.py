@@ -157,6 +157,22 @@ class CarlaService:
         spec = self.worker_spec('live', [path], title, 'live', run_dir, meta={'config': path})
         return self.queue.submit(spec)
 
+    def submit_osm_import(self, cfg: dict, title: str = ''):
+        """An OSM import (CARLA's Python for carla.Osm2Odr; no server, so no CARLA lock)."""
+        run_dir = ensure_dir(cfg['out'])
+        path = os.path.join(run_dir, 'import-config.json')
+        write_json(path, cfg)
+        spec = self.worker_spec('osm_import', [path], title or f'Import {os.path.basename(cfg["source"])}',
+                                'osm_import', run_dir, needs_carla=False, memory_gb=1.5, meta={'config': path})
+        return self.queue.submit(spec)
+
+    def submit_handedness(self, cfg: dict, title: str = 'Verify traffic handedness'):
+        run_dir = ensure_dir(cfg['out'])
+        path = os.path.join(run_dir, 'handedness.json')
+        write_json(path, cfg)
+        spec = self.worker_spec('handedness', [path], title, 'handedness', run_dir, meta={'config': path})
+        return self.queue.submit(spec)
+
     def submit_probe(self, wait_s: float = 10.0):
         spec = self.worker_spec('probe', ['--port', self.port, '--wait', wait_s], f'Probe port {self.port}', 'probe',
                                 memory_gb=0.3)

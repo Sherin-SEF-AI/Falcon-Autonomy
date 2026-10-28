@@ -12,4 +12,5 @@ WORKERS = {
     'drive': 'falcon_autonomy.workers.drive',
     'live': 'falcon_autonomy.workers.live',
     'handedness': 'falcon_autonomy.workers.handedness',
+    'osm_import': 'falcon_autonomy.workers.osm_import',
 }

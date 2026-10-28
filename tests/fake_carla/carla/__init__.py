@@ -1538,3 +1538,81 @@ class Client:
 
     def get_client_version(self):
         return __version__
+
+
+# ---------------------------------------------------------------------------------------------------- OSM conversion
+class Osm2OdrSettings:
+    def __init__(self):
+        self.proj_string = '+proj=tmerc'
+        self.center_map = True
+        self.use_offsets = False
+        self.offset_x = self.offset_y = 0.0
+        self.default_lane_width = 3.35
+        self.elevation_layer_height = 0.0
+        self.generate_traffic_lights = True
+        self.all_junctions_with_traffic_lights = False
+        self._way_types = None
+
+    def set_osm_way_types(self, types):
+        self._way_types = list(types)
+
+    def set_traffic_light_excluded_way_types(self, types):
+        pass
+
+
+class Osm2Odr:
+    """A stand-in for SUMO's netconvert: every converted highway way becomes one road per travel direction along its
+    nodes (line geometries), right lanes only, the lane count from its OSM tags (default 1), projected with the
+    settings' tmerc centre (an equirectangular approximation: metres, not PROJ-exact), no junctions. Like the real
+    converter it writes no rule (right-hand) and the street's name."""
+
+    @staticmethod
+    def convert(osm_text, settings):
+        import re
+        import xml.etree.ElementTree as ET
+        from xml.sax.saxutils import quoteattr
+        m0 = re.search(r'lat_0=([-\d.]+)', settings.proj_string)
+        m1 = re.search(r'lon_0=([-\d.]+)', settings.proj_string)
+        lat0, lon0 = (float(m0.group(1)), float(m1.group(1))) if m0 and m1 else (0.0, 0.0)
+        root = ET.fromstring(osm_text)
+        nodes = {n.get('id'): (float(n.get('lat')), float(n.get('lon'))) for n in root.iter('node')}
+        kx, ky = 111319.49 * math.cos(math.radians(lat0)), 110574.0
+        types = settings._way_types or ['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified',
+                                        'residential', 'motorway_link', 'trunk_link', 'primary_link',
+                                        'secondary_link', 'tertiary_link']
+        roads, rid = [], 1
+        for w in root.iter('way'):
+            tags = {t.get('k'): t.get('v') for t in w.iter('tag')}
+            if tags.get('highway') not in types:
+                continue
+            pts = [nodes[nd.get('ref')] for nd in w.iter('nd') if nd.get('ref') in nodes]
+            xy = [((lon - lon0) * kx, (lat - lat0) * ky) for lat, lon in pts]
+            if len(xy) < 2:
+                continue
+            ow = tags.get('oneway') in ('yes', '1', 'true') or tags.get('junction') == 'roundabout'
+            rev = tags.get('oneway') == '-1'
+            total = int(tags['lanes']) if tags.get('lanes', '').isdigit() else None
+            fwd = int(tags.get('lanes:forward', 0) or 0) or (total if ow or rev else (total // 2 if total else 1))
+            bwd = int(tags.get('lanes:backward', 0) or 0) or (total // 2 if total and not (ow or rev) else 1)
+            dirs = [(xy[::-1] if rev else xy, max(fwd, 1))] + ([] if ow or rev else [(xy[::-1], max(bwd, 1))])
+            for line, n in dirs:
+                geo, s = [], 0.0
+                for (x0, y0), (x1, y1) in zip(line, line[1:]):
+                    L = math.hypot(x1 - x0, y1 - y0)
+                    if L < 1e-3:
+                        continue
+                    geo.append(f'<geometry s="{s:.4f}" x="{x0:.4f}" y="{y0:.4f}" hdg="{math.atan2(y1 - y0, x1 - x0):.6f}" '
+                               f'length="{L:.4f}"><line/></geometry>')
+                    s += L
+                if not geo:
+                    continue
+                lanes = ''.join(f'<lane id="-{k}" type="driving" level="true"><link/><width sOffset="0" '
+                                f'a="{settings.default_lane_width}" b="0" c="0" d="0"/></lane>' for k in range(1, n + 1))
+                roads.append(f'<road name={quoteattr(tags.get("name", ""))} length="{s:.4f}" id="{rid}" '
+                             f'junction="-1"><link/><planView>{"".join(geo)}</planView><lanes><laneSection s="0">'
+                             f'<center><lane id="0" type="none" level="true"><link/></lane></center>'
+                             f'<right>{lanes}</right></laneSection></lanes></road>')
+                rid += 1
+        return ('<?xml version="1.0" encoding="UTF-8"?>\n<OpenDRIVE><header revMajor="1" revMinor="4" name="" '
+                f'version="1.00"><geoReference><![CDATA[{settings.proj_string}]]></geoReference></header>'
+                + ''.join(roads) + '</OpenDRIVE>')

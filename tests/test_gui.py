@@ -208,3 +208,37 @@ def test_live_session_in_the_gui(window, qapp):
     data = window.go('data')
     data.show_run(page.recordings[0])
     assert data.browse.sensor.currentText() == 'cam-front'
+
+
+def test_import_a_place(window, qapp, tmp_path):
+    from falcon_autonomy.core import osm as O
+    from falcon_autonomy.ui.osmimport import ImportDialog
+    src = os.path.join(os.path.dirname(__file__), 'data', 'blr_small.osm')
+    dlg = ImportDialog(window, src)
+    assert pump(qapp, lambda: dlg.data is not None, 15)
+    assert dlg.picker.lines and 'roads' in dlg.report.vals['State'].text()
+    dlg.size.setValue(200)
+    dlg.bbox_from_centre()
+    assert dlg.picker.rect_m is not None and 'N 12.9' in dlg.bbox_lbl.text()
+    dlg.convert()
+    assert pump(qapp, lambda: dlg.job.state in ('done', 'failed', 'cancelled'), 60), dlg.job.log
+    assert dlg.job.state == 'done', dlg.job.log
+    assert dlg.add_btn.isEnabled() and dlg.graph.lines
+    assert 'left-hand' in dlg.report.vals['Traffic'].text()
+    assert 'agree' in dlg.report.vals['Lanes against OSM'].text()
+    n = len(window.project.doc['worlds'])
+    dlg.add_world()
+    worlds = window.project.doc['worlds']
+    assert len(worlds) == n + 1 and worlds[-1]['kind'] == 'osm' and worlds[-1]['osm']['handedness'] == 'LHT'
+    from falcon_autonomy.core.project import validate
+    assert validate(window.project.doc) == []
+    page = window.go('worlds')
+    page.list.setCurrentRow(page.list.count() - 1)
+    assert page.place.isVisibleTo(page) and page.graph.lines and not page.town.isEnabled()
+    assert 'not verified' in page.verify_kv.vals['Handedness'].text()
+    page.verify()
+    assert pump(qapp, lambda: page.verify_job.state in ('done', 'failed'), 120), page.verify_job.log
+    # the fake keeps its own right-hand road whatever the file says: the verification reports what it measured
+    assert 'RHT' in page.verify_kv.vals['Handedness'].text()
+    window.undo.undo()
+    assert len(window.project.doc['worlds']) == n

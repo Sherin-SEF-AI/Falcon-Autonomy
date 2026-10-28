@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLineEdit, QListWidget, QLi
 from ...core import weather as W
 from ...core.project import Edit, new_id
 from .. import icons
-from ..widgets import Form, Page, Section, SliderField, button, label
+from ..widgets import Form, KeyValues, Page, Section, SliderField, button, label
 
 # the towns of CARLA 0.9.16's base package (the "_Opt" variants have layers that can be unloaded; Town10HD_Opt is the
 # default map). Town06, 07 and 11–15 come with CARLA's additional-maps package: once a probe has listed the server's
@@ -37,6 +37,7 @@ class WorldsPage(Page):
         left.addWidget(self.list, 1)
         bl = QHBoxLayout()
         bl.addWidget(button('Add town', self.add_world))
+        bl.addWidget(button('Import a place…', self.import_place))
         self.remove_btn = button('Remove', self.remove_world)
         bl.addWidget(self.remove_btn)
         left.addLayout(bl)
@@ -61,6 +62,27 @@ class WorldsPage(Page):
         f.row('Traffic profile', self.traffic)
         sec.add(f)
         ev.addWidget(sec)
+
+        self.place = Section('Imported place', 'An OpenDRIVE world: roads, lanes, sidewalks and junctions only — no '
+                                               'buildings, vegetation or textures (docs/worlds.md: the full-fidelity '
+                                               'path).')
+        from ..osmimport import RoadGraphView
+        self.graph = RoadGraphView()
+        self.graph.setMinimumHeight(280)
+        self.place.add(self.graph)
+        self.place_kv = KeyValues()
+        self.place.add(self.place_kv)
+        pb = QHBoxLayout()
+        self.verify_btn = button('Verify traffic handedness', self.verify, tip='Load the world, run traffic and '
+                                                                               'measure which side it keeps')
+        pb.addWidget(self.verify_btn)
+        pb.addStretch(1)
+        self.place.add(pb)
+        self.verify_kv = KeyValues()
+        self.place.add(self.verify_kv)
+        ev.addWidget(self.place)
+        self.verify_job = None
+        win.bridge.finished.connect(self.on_verify)
 
         ws = Section('Weather and time of day', LIMITS)
         wf = Form()
@@ -125,6 +147,8 @@ class WorldsPage(Page):
             wd.blockSignals(True)
         self.name.setText(w['name'])
         self.town.setCurrentText(w.get('town', ''))
+        self.town.setEnabled(w['kind'] == 'town')
+        self.show_place(w)
         k = self.traffic.findData(w.get('traffic_profile'))
         self.traffic.setCurrentIndex(max(k, 0))
         wt = w.get('weather') or {}
@@ -136,6 +160,76 @@ class WorldsPage(Page):
         self.traffic_editor.show_profile(w.get('traffic_profile'))
         for wd in (self.name, self.town, self.preset, self.traffic):
             wd.blockSignals(False)
+
+    def show_place(self, w):
+        import json
+        import os
+        self.place.setVisible(w['kind'] != 'town')
+        if w['kind'] == 'town':
+            return
+        d = os.path.join(self.win.workspace(), os.path.dirname(w.get('xodr', '')))
+        self.place_kv.clear()
+        self.verify_kv.clear()
+        try:
+            with open(os.path.join(d, 'graph.json'), encoding='utf-8') as fh:
+                self.graph.set_graph(json.load(fh))
+            with open(os.path.join(d, 'import.json'), encoding='utf-8') as fh:
+                rep = json.load(fh)
+        except (OSError, ValueError):
+            self.place_kv.set('State', f'the import\'s files are missing from the workspace ({d})')
+            return
+        from ..osmimport import show_report
+        show_report(self.place_kv, rep)
+        self.place_kv.set('State', f'imported from {os.path.basename(rep["source"])}')
+        try:
+            with open(os.path.join(d, 'verify', 'run.json'), encoding='utf-8') as fh:
+                self.show_verify(json.load(fh))
+        except (OSError, ValueError):
+            self.verify_kv.set('Handedness', 'not verified yet')
+
+    def show_verify(self, run):
+        h = run.get('handedness')
+        if not h:
+            self.verify_kv.set('Handedness', f'{run.get("status")}: {run.get("error") or ""}')
+            return
+        self.verify_kv.set('Handedness', f'{h["verdict"]}: {100 * h["keep_left_share"]:.1f} % of {h["samples"]} '
+                                         f'samples of {h["vehicles"]} vehicles keep left, '
+                                         f'{100 * h["with_lane_share"]:.1f} % move with their lane (measured)')
+        self.verify_kv.set('Method', h.get('method', ''))
+
+    def verify(self):
+        import os
+        from PyQt6.QtWidgets import QMessageBox
+        from ...core.drive import drive_config
+        from ...core.project import ProjectError
+        i, w = self.current()
+        if w is None:
+            return
+        d = os.path.join(self.win.workspace(), os.path.dirname(w['xodr']), 'verify')
+        try:
+            cfg = drive_config(self.win.project, w['id'], self.win.project.doc['rigs'][0]['id'], d,
+                               self.win.service.port, self.win.service.tm_port, seed=0,
+                               traffic_id='tp-default', workspace=self.win.workspace())
+        except ProjectError as e:
+            QMessageBox.warning(self, 'Verify', str(e))
+            return
+        cfg.update(seconds=30.0, vehicles=30)
+        self.verify_job = self.win.service.submit_handedness(cfg)
+        self.verify_kv.set('Handedness', 'queued…')
+
+    def on_verify(self, job):
+        if job is self.verify_job:
+            import json
+            import os
+            try:
+                with open(os.path.join(job.spec.run_dir, 'run.json'), encoding='utf-8') as fh:
+                    self.show_verify(json.load(fh))
+            except (OSError, ValueError):
+                self.verify_kv.set('Handedness', job.summary())
+
+    def import_place(self):
+        from ..osmimport import ImportDialog
+        ImportDialog(self.win).exec()
 
     # ------------------------------------------------------------------ edits
     def set_field(self, path, value, merge_key=''):

@@ -247,3 +247,25 @@ def test_handedness_of_the_fakes_right_hand_road(project, tmp_path):
     rep = json.loads((tmp_path / 'h' / 'run.json').read_text())['handedness']
     assert rep['verdict'] == 'RHT' and rep['keep_left_share'] == 0.0 and rep['samples'] > 10
     assert rep['map_left_lanes_along_plus_s_share'] == 0.0
+
+
+def test_osm_import_of_central_bengaluru_sample(tmp_path):
+    """The fixture (300 m of central Bengaluru): cropped, converted, made left-hand, checked against OSM's lanes."""
+    from falcon_autonomy.core import osm as O
+    from falcon_autonomy.core.worlds import import_config
+    src = os.path.join(os.path.dirname(__file__), 'data', 'blr_small.osm')
+    d = O.read_osm(src)
+    lat0, lon0 = O.summary(d)['centre']
+    cfg = import_config(src, str(tmp_path / 'w'), bbox=O.bbox_around(lat0, lon0, 200.0), lht=True)
+    p = tmp_path / 'imp.json'
+    p.write_text(json.dumps(cfg))
+    r = subprocess.run([sys.executable, '-m', 'falcon_autonomy.workers', 'osm_import', str(p)], capture_output=True,
+                       text=True, env=worker_env(), timeout=120)
+    assert r.returncode == P.OK, r.stderr
+    rep = json.loads((tmp_path / 'w' / 'import.json').read_text())
+    assert rep['handedness'] == 'LHT' and rep['proj'].startswith('+proj=tmerc +lat_0=')
+    assert rep['lane_check']['comparable'] >= 3 and rep['lane_check']['agreement'] == 1.0
+    assert rep['not_represented']['text'].startswith('an OpenDRIVE world is roads')
+    for f in ('area.osm', 'raw.xodr', 'world.xodr', 'graph.json', 'run.json'):
+        assert (tmp_path / 'w' / f).is_file()
+    assert 'rule="LHT"' in (tmp_path / 'w' / 'world.xodr').read_text()
