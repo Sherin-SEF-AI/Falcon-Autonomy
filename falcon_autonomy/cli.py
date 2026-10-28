@@ -12,6 +12,8 @@
     falcon reproduce RUN [--into DIR]          re-run a run from its own config and compare within a tolerance
     falcon runs PROJECT [--rebuild]            the runs in a project's catalogue
     falcon export RUN... --format F --out DIR  COCO, YOLO, KITTI, nuScenes, waymo, bdd_lanes or mcap
+    falcon derive worldmodel|language RUN --out DIR   occupancy, BEV, flow, futures, clips / grounded captions & QA
+    falcon model fetch PROJECT ID   download a registered model's pinned weights (SHA-256 checked)
     falcon evaluate PROJECT --model M --run RUN... --out DIR   score a model (or --compare A B)
     falcon gap --sim RUN... --real KIND:PATH --out DIR   the sim-to-real gap of camera images
     falcon sweep PROJECT --scenario S --name N [--grid K | --samples K]   a parameter sweep (resumable)
@@ -291,6 +293,9 @@ def parser() -> argparse.ArgumentParser:
     ru.add_argument('--rebuild', action='store_true')
     sub.add_parser('schema', help='print the project schema\'s path')
     sub.add_parser('export', help='export runs: falcon export RUN... --format F --out DIR (see docs/cli.md)')
+    sub.add_parser('derive', help='world-model or language data from a drive: falcon derive worldmodel|language RUN '
+                                  '--out DIR')
+    sub.add_parser('model', help='download a registered model\'s pinned weights: falcon model fetch PROJECT ID')
     sub.add_parser('evaluate', help='score a registered model on recorded drives, or compare two evaluations '
                                     '(see docs/cli.md)')
     sub.add_parser('gap', help='the sim-to-real gap: falcon gap --sim RUN --real KIND:PATH --out DIR (see docs/cli.md)')
@@ -299,11 +304,55 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
+
+def main_derive(argv) -> int:
+    """`falcon derive worldmodel|language RUN --out DIR [--option KEY=VALUE]...`: world-model data (core.worldmodel)
+    or grounded language data (core.language) from a recorded drive. 0 ok, 2 failed."""
+    import argparse
+    import json
+    ap = argparse.ArgumentParser(prog='falcon derive', description='derive training data from a recorded drive')
+    ap.add_argument('what', choices=('worldmodel', 'language'))
+    ap.add_argument('run')
+    ap.add_argument('--out', '-o', required=True)
+    ap.add_argument('--option', action='append', default=[], metavar='KEY=VALUE')
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit as e:
+        return 0 if e.code == 0 else 2
+    opts = {}
+    for kv in a.option:
+        k, eq, v = kv.partition('=')
+        if not eq:
+            print(f'failed: option {kv!r} is not KEY=VALUE', flush=True)
+            return 2
+        try:
+            opts[k] = json.loads(v)
+        except ValueError:
+            opts[k] = v
+    try:
+        if a.what == 'worldmodel':
+            from .core.worldmodel import derive
+            doc = derive(a.run, a.out, opts)
+        else:
+            from .core.language import derive_language
+            doc = derive_language(a.run, a.out, opts)      # no paraphrase client: template text only
+    except (OSError, ValueError, KeyError) as e:
+        print(f'failed: {e}', flush=True)
+        return 2
+    skipped = doc.get('skipped') or {}
+    print(f'wrote {a.what} data to {a.out}' + (f'; skipped: {json.dumps(skipped)}' if skipped else ''), flush=True)
+    return 0
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ['export']:                    # its own parser (core.exporters.main_export)
         from .core.exporters import main_export
         return main_export(argv[1:])
+    if argv[:1] == ['derive']:                    # world-model and language data (core.worldmodel, core.language)
+        return main_derive(argv[1:])
+    if argv[:1] == ['model']:                     # registered models (core.models)
+        from .core.models import main_model
+        return main_model(argv[1:])
     if argv[:1] == ['evaluate']:                  # the model test harness (core.harness)
         from .core.harness import main_evaluate
         return main_evaluate(argv[1:])

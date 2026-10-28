@@ -6,6 +6,7 @@ import os
 import time
 
 import pytest
+from PyQt6.QtCore import Qt
 
 pytestmark = pytest.mark.gui
 
@@ -55,7 +56,7 @@ def window(qapp, tmp_path, project):
 
 def test_pages_and_navigation(window, qapp):
     keys = [p.key for p in window.pages]
-    assert keys == ['home', 'worlds', 'live', 'rigs', 'scenarios', 'data', 'rarecases', 'settings', 'help']
+    assert keys == ['home', 'worlds', 'live', 'rigs', 'scenarios', 'data', 'rarecases', 'models', 'settings', 'help']
     assert window.go('data') is window.stack.currentWidget()
     window.actions_['page_worlds'].trigger()
     assert window.stack.currentWidget().key == 'worlds'
@@ -343,3 +344,56 @@ def test_scenario_studio_and_rare_cases(window, qapp, tmp_path):
     assert len(rc.curve.values) == 4 and rc.px.count() >= 2
     rc.heat.resize(400, 300)
     assert not rc.heat.grab().isNull()
+
+
+def test_models_page_evaluates_compares_and_measures_the_gap(window, qapp, tmp_path):
+    window.project.path = str(tmp_path / 'proj.falcon.json')
+    window.project.doc['rigs'][0]['sensors'][0].update(width=320, height=180,
+                                                       labels=['semantic', 'instance', 'depth', 'boxes2d'])
+    window.save()
+    window.service.set_workspace(window.workspace())
+    data = window.go('data')
+    data.record.seconds.setValue(1.0)
+    data.record.record()
+    job = window.queue.jobs[-1]
+    assert pump(qapp, lambda: job.state in ('done', 'failed', 'cancelled'), 120), job.log
+    assert job.state == 'done', job.log
+    page = window.go('models')
+    page.add_synthetic()
+    assert page.models.topLevelItemCount() == 1 and page.models.topLevelItem(0).text(4) == 'plug-in'
+    assert window.project.doc['models'][0]['entry'].endswith(':SyntheticDetector')
+    assert page.runs.count() == 1
+    page.runs.item(0).setCheckState(Qt.CheckState.Checked)
+    page.boot.setValue(50)
+
+    def run_job(fn):
+        fn()
+        j = window.queue.jobs[-1]
+        assert pump(qapp, lambda: j.state in ('done', 'failed', 'cancelled'), 180), j.log
+        assert j.state == 'done', j.log
+        assert pump(qapp, lambda: j.id not in page.jobs, 5)
+        return j
+    j = run_job(page.evaluate)
+    assert not j.spec.needs_gpu                       # a plug-in: no GPU lock
+    page.every.setValue(4)
+    run_job(page.evaluate)
+    assert page.ev.count() == 2 and page.table.topLevelItemCount() > 4
+    assert 'SYNTHETIC' in page.ev_info.vals['Note'].text()
+    page.cmp_a.setCurrentIndex(1)
+    page.cmp_b.setCurrentIndex(0)
+    run_job(page.compare)
+    assert page.cmp.count() == 1 and page.cmp_table.topLevelItemCount() > 4
+    run_dir = page.runs.item(0).data(256)
+    page.real_kind.setCurrentIndex(page.real_kind.findData('folder'))
+    page.real_path.setText(os.path.join(run_dir, 'rgb'))
+    page.gap_images.setValue(20)
+    page.match.setChecked(True)
+    run_job(page.gap)
+    assert page.gapsel.count() == 1 and page.gap_table.topLevelItemCount() == 11
+    assert page.gap_info.vals['Fréchet distance'].text() == 'not measured'
+    for w in (page.gridview, page.frame):
+        w.resize(400, 260)
+        assert not w.grab().isNull()
+    if page.gal.topLevelItemCount():
+        page.gal.setCurrentItem(page.gal.topLevelItem(0))
+        assert page.frame.pixmap() is not None and not page.frame.pixmap().isNull()

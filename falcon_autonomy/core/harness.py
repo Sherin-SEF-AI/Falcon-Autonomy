@@ -259,6 +259,7 @@ def condition_grid(frames: list, x: str, y: str, bins: int = 4, min_gt: int = 10
     if not ok:
         raise HarnessError(f'no frame has both {x} and {y}')
     ex, ey = _edges([xs[i] for i in ok], bins), _edges([ys[i] for i in ok], bins)
+    vx, vy = (sorted({v[i] for i in ok}) for v in (xs, ys))
     cells = []
     for j in range(len(ey) - 1):
         row = []
@@ -268,6 +269,8 @@ def condition_grid(frames: list, x: str, y: str, bins: int = 4, min_gt: int = 10
             n_gt = sum(1 for f in sel for g in f['gt'] if not g['ignore'])
             ap = M.coco_evaluate(sel)['AP'] if sel and n_gt >= min_gt else None
             row.append({'x': [float(ex[i]), float(ex[i + 1])], 'y': [float(ey[j]), float(ey[j + 1])],
+                        'x_value': float(vx[i]) if len(vx) <= bins else None,       # a sweep's own value
+                        'y_value': float(vy[j]) if len(vy) <= bins else None,
                         'n_frames': len(sel), 'n_gt': n_gt, 'AP': ap,
                         'note': None if ap is not None else f'fewer than {min_gt} objects'})
         cells.append(row)

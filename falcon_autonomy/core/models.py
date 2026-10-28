@@ -259,3 +259,44 @@ class Runner:
         if self.m['kind'] == 'segmenter':
             return decode_segmentation(outs, self.m, back, rgb.shape[:2])
         return decode_detections(outs, self.m, back)
+
+
+def main_model(argv) -> int:
+    """`falcon model fetch PROJECT ID`: download a registered model's pinned weights into the project's workspace
+    (its URL, licence and SHA-256 printed first); protocol lines on stdout; 0 ok, 2 failed."""
+    import argparse
+    from . import protocol as P
+    from .paths import workspace_for
+    from .project import Project, ProjectError
+    ap = argparse.ArgumentParser(prog='falcon model', description='registered models')
+    ap.add_argument('action', choices=('fetch',))
+    ap.add_argument('project')
+    ap.add_argument('model')
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit as e:
+        return P.OK if e.code == 0 else P.FAILED
+    em = P.Emitter()
+    em.hello('model')
+    try:
+        proj = Project.load(a.project)
+    except (OSError, ProjectError) as e:
+        print(f'failed: {e}', flush=True)
+        return P.FAILED
+    m = proj.item('models', a.model)
+    if m is None:
+        print(f'failed: no model {a.model!r} in the project', flush=True)
+        return P.FAILED
+    problems = validate(m)
+    if problems:
+        print(f'failed: {"; ".join(problems)}', flush=True)
+        return P.FAILED
+    src = m.get('source') or {}
+    em.log(f'downloading {src.get("url")} (licence {m.get("licence") or "not stated"}; SHA-256 {src.get("sha256")})')
+    try:
+        path = fetch(m, workspace_for(a.project), lambda f: em.progress(f, 'download'))
+    except (OSError, ValueError) as e:
+        print(f'failed: {e}', flush=True)
+        return P.FAILED
+    em.result('ok', path=path)
+    return P.OK
