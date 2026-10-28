@@ -48,3 +48,31 @@ def test_search_space_and_validation():
     bad = SC.builtin('cut_in')
     bad['timeline'][0]['actions'][0]['actor'] = 'ghost'
     assert any('ghost' in e for e in SC.validate(bad))
+
+
+@pytest.mark.parametrize('key', sorted(SC.LIBRARY))
+def test_openscenario_round_trip(key):
+    from falcon_autonomy.core import openscenario as X
+    conc = SC.sample(SC.builtin(key), 3)
+    xml = X.export_xosc(conc)
+    assert xml.startswith('<?xml') and '<OpenSCENARIO>' in xml and 'RelativeLanePosition' in xml
+    back = X.import_xosc(xml)
+    assert back['duration_s'] == pytest.approx(conc['duration_s'])
+    assert back['ego']['speed_kmh'] == pytest.approx(conc['ego']['speed_kmh'])
+    for a, b in zip(conc['actors'], back['actors']):
+        assert (a['id'], a['kind'], a['heading'], a['start']) == (b['id'], b['kind'], b['heading'], b['start'])
+        assert b['place']['lane'] == a['place']['lane']
+        assert b['place']['ahead_m'] == pytest.approx(float(a['place']['ahead_m']))
+        assert b['speed_kmh'] == pytest.approx(float(a['speed_kmh']) if a['start'] == 'moving' else 0.0)
+    assert len(back['timeline']) == len(conc['timeline'])
+    for ea, eb in zip(conc['timeline'], back['timeline']):
+        assert ea['trigger']['type'] == eb['trigger']['type']
+        assert [x['do'] for x in ea['actions']] == [x['do'] for x in eb['actions']]
+    assert set(back['values']) == set(conc['values'])
+
+
+def test_openscenario_refuses_outside_the_subset():
+    from falcon_autonomy.core import openscenario as X
+    xml = X.export_xosc(SC.sample(SC.builtin('lead_brake'), 1)).replace('RelativeLanePosition', 'WorldPosition')
+    with pytest.raises(ValueError, match='subset'):
+        X.import_xosc(xml)
