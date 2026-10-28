@@ -149,6 +149,10 @@ def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
         w.own(a)
         a.set_autopilot(True, w.tm.get_port())
         apply_behaviour(w.tm, a, beh)
+        if beh.get('speed_spread_pct') and hasattr(w.tm, 'vehicle_percentage_speed_difference'):
+            spread = float(beh['speed_spread_pct'])
+            w.tm.vehicle_percentage_speed_difference(
+                a, float(beh.get('speed_difference_pct', 0.0)) + float(rng.uniform(-spread, spread)))
         placed.append((a, kind))
     w.alive()
     if len(placed) < n:
@@ -158,6 +162,51 @@ def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
         counts[kind] = counts.get(kind, 0) + 1
     w.run.setdefault('traffic', {})['placed'] = counts
     return placed
+
+
+def spawn_walkers(w, world, lib, rng, prof: dict) -> list:
+    """prof['walkers'] pedestrians at seeded points of the navigation mesh, each walking to another under CARLA's
+    walker AI; prof['behaviour']['walker_crossing_factor'] of them cross roads anywhere."""
+    from .common import ROLE_WALKER
+    n = int(prof.get('walkers', 0))
+    if n <= 0:
+        return []
+    carla = w.carla
+    beh = prof.get('behaviour') or {}
+    if hasattr(world, 'set_pedestrians_cross_factor'):
+        world.set_pedestrians_cross_factor(float(beh.get('walker_crossing_factor', 0.0)))
+    bps = sorted(lib.filter('walker.pedestrian.*'), key=lambda b: b.id)
+    ctrl_bp = lib.find('controller.ai.walker')
+    out = []
+    for _ in range(n * 3):
+        if len(out) >= n:
+            break
+        loc = world.get_random_location_from_navigation()
+        if loc is None:
+            continue
+        bp = bps[int(rng.integers(len(bps)))]
+        if bp.has_attribute('is_invincible'):
+            bp.set_attribute('is_invincible', 'false')
+        bp.set_attribute('role_name', ROLE_WALKER)
+        walker = world.try_spawn_actor(bp, carla.Transform(loc))
+        if walker is None:
+            continue
+        w.own(walker)
+        ctrl = world.spawn_actor(ctrl_bp, carla.Transform(), walker)
+        w.own(ctrl)
+        out.append((walker, ctrl))
+    world.tick()                                         # controllers start after a step
+    for walker, ctrl in out:
+        ctrl.start()
+        dest = world.get_random_location_from_navigation()
+        if dest is not None:
+            ctrl.go_to_location(dest)
+        ctrl.set_max_speed(float(rng.uniform(1.0, 1.8)))
+    w.alive()
+    if len(out) < n:
+        w.note(f'{len(out)} of {n} pedestrians placed (the map\'s navigation mesh had no room for more)')
+    w.run.setdefault('traffic', {})['walkers'] = len(out)
+    return out
 
 
 def apply_behaviour(tm, a, beh: dict):

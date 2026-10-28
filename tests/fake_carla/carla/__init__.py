@@ -321,7 +321,9 @@ VEHICLES = {'vehicle.audi.a2': ('car', 3.705, 1.789, 1.549, -1.256, 1.25),
 # found by name only (Blueprint.find), outside the library's listing, so the traffic the tests' seeds draw stays as it
 # was: the car critscene stands a car target in with
 NAMED_ONLY = {'vehicle.mini.cooper_s': ('car', 3.806, 1.970, 1.475, -1.367, 1.144),
-              'vehicle.lincoln.mkz_2020': ('car', 4.901, 2.106, 1.510, -1.390, 1.450)}   # Falcon's default rig car
+              'vehicle.lincoln.mkz_2020': ('car', 4.901, 2.106, 1.510, -1.390, 1.450),   # Falcon's default rig car
+              'vehicle.micro.microlino': ('car', 2.540, 1.480, 1.460, -0.800, 0.800),
+              'vehicle.mitsubishi.fusorosa': ('bus', 10.270, 3.930, 3.790, -3.300, 3.300)}
 VEHICLES_ALL = dict(VEHICLES, **NAMED_ONLY)
 # two-wheelers (base type, length, width, height): their rider is part of them, as in CARLA (tags 19/18 and 13)
 TWO_WHEELERS = {'vehicle.diamondback.century': ('bicycle', 1.656, 0.582, 1.620),
@@ -380,6 +382,9 @@ class BlueprintLibrary:
         if bps is None:
             bps = [ActorBlueprint(k, {'base_type': v[0], 'number_of_wheels': 4, 'role_name': 'autopilot',
                                       'generation': 2}, ['vehicle', v[0]]) for k, v in VEHICLES.items()]
+            bps += [ActorBlueprint(k, {'base_type': v[0], 'number_of_wheels': 4, 'role_name': 'autopilot',
+                                      'generation': 2}, ['vehicle', v[0]]) for k, v in NAMED_ONLY.items()
+                    if k in ('vehicle.micro.microlino', 'vehicle.mitsubishi.fusorosa')]
             bps += [ActorBlueprint(k, {'base_type': v[0], 'number_of_wheels': 2, 'role_name': 'autopilot',
                                        'generation': 2}, ['vehicle', v[0]]) for k, v in TWO_WHEELERS.items()]
             bps += [ActorBlueprint(k, {'age': v[0], 'role_name': 'pedestrian', 'is_invincible': 'true', 'speed': '1.4'},
@@ -912,6 +917,9 @@ class Map:
         self.name = f'Carla/Maps/{name}'
         self._lanes = [(y, yaw) for _, y, yaw in LANES]
 
+    def to_opendrive(self):
+        return getattr(self, '_xodr', f'<OpenDRIVE><!-- {self.name} --></OpenDRIVE>')
+
     def get_spawn_points(self):
         out = []
         for y, yaw in self._lanes:
@@ -924,11 +932,9 @@ class Map:
         return Waypoint(lid, float(np.clip(location.x, *ROAD_X)))
 
     def generate_waypoints(self, distance):
-        out = []
-        for y, yaw in self._lanes:
-            for x in np.arange(-150.0, 150.0, distance):
-                out.append(_Waypoint(Transform(Location(float(x), y, 0.0), Rotation(0.0, yaw, 0.0)), 3.5))
-        return out
+        """Every driving lane's waypoints, distance apart (as CARLA's: full Waypoint objects)."""
+        return [Waypoint(lid, float(x)) for lid, _, _ in LANES
+                for x in np.arange(ROAD_X[0], ROAD_X[1], distance)]
 
 
 class TrafficManager:
@@ -1436,6 +1442,15 @@ def render(o, D, boxes) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------------------------------- the client
+class OpendriveGenerationParameters:
+    def __init__(self, vertex_distance=2.0, max_road_length=50.0, wall_height=1.0, additional_width=0.6,
+                 smooth_junctions=True, enable_mesh_visibility=True, enable_pedestrian_navigation=True):
+        self.vertex_distance, self.max_road_length, self.wall_height = vertex_distance, max_road_length, wall_height
+        self.additional_width, self.smooth_junctions = additional_width, smooth_junctions
+        self.enable_mesh_visibility = enable_mesh_visibility
+        self.enable_pedestrian_navigation = enable_pedestrian_navigation
+
+
 class _Response:
     def __init__(self, actor_id=0, error=''):
         self.actor_id, self.error = actor_id, error
@@ -1470,6 +1485,14 @@ class Client:
     def get_world(self):
         if STATE['world'] is None:
             STATE['world'] = World()
+        return STATE['world']
+
+    def generate_opendrive_world(self, opendrive, parameters=None, reset_settings=True):
+        """An OpenDRIVE world. The fake keeps its own straight road (it does not build meshes from the file) but the
+        map remembers the file, as Map.to_opendrive() returns it on CARLA."""
+        STATE['world'] = World('OpenDriveMap')
+        STATE['world']._map._xodr = opendrive
+        LOG.append(('generate_opendrive_world', len(opendrive)))
         return STATE['world']
 
     def load_world(self, name, reset_settings=True):

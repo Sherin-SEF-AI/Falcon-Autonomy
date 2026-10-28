@@ -11,4 +11,5 @@ WORKERS = {
     'tidy': 'falcon_autonomy.workers.tidy',
     'drive': 'falcon_autonomy.workers.drive',
     'live': 'falcon_autonomy.workers.live',
+    'handedness': 'falcon_autonomy.workers.handedness',
 }

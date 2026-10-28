@@ -127,6 +127,7 @@ class Live(Worker):
         self.ego = scene.spawn_ego(self, world, self.lib, spawns, order, cfg['rig']['vehicle'],
                                    autopilot=self.mode == 'autopilot')
         scene.spawn_traffic(self, world, self.lib, spawns, order, self.rng, cfg.get('traffic') or {})
+        scene.spawn_walkers(self, world, self.lib, self.rng, cfg.get('traffic') or {})
         if cfg.get('policy'):
             from ..plugins import load
             self.policy = load(cfg['policy'], **(cfg.get('policy_params') or {}))

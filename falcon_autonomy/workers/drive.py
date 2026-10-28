@@ -80,6 +80,7 @@ class Drive(Worker):
         order = list(rng.permutation(len(spawns)))
         ego = scene.spawn_ego(self, world, lib, spawns, order, cfg['rig']['vehicle'])
         scene.spawn_traffic(self, world, lib, spawns, order, rng, cfg.get('traffic') or {})
+        scene.spawn_walkers(self, world, lib, rng, cfg.get('traffic') or {})
         cams = self.cameras
         cams.spawn_rig(world, lib, ego, cfg['rig']['sensors'])
         self.check()

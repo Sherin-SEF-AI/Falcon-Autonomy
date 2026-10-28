@@ -79,6 +79,8 @@ class WorldsPage(Page):
         wf.row('Reads as', self.summary)
         ws.add(wf)
         ev.addWidget(ws)
+        self.traffic_editor = TrafficEditor(self)
+        ev.addWidget(self.traffic_editor)
         ev.addStretch(1)
         row.addWidget(self.editor, 1)
         self.refresh()
@@ -131,6 +133,7 @@ class WorldsPage(Page):
         for field, s in self.sliders.items():
             s.setValue(vals[field])
         self.summary.setText(W.describe(wt))
+        self.traffic_editor.show_profile(w.get('traffic_profile'))
         for wd in (self.name, self.town, self.preset, self.traffic):
             wd.blockSignals(False)
 
@@ -173,3 +176,104 @@ class WorldsPage(Page):
         if w is None or len(self.worlds()) <= 1:
             return
         self.win.edit(Edit('remove', ['worlds'], index=i, text=f'Remove {w["name"]}'))
+
+
+class TrafficEditor(Section):
+    """The world's traffic profile: counts, fleet shares, behaviour. Edits go to the profile (shared by every world
+    that uses it)."""
+    BEHAVIOUR = (('distance_to_leading_m', 'Gap to the vehicle ahead', 0.0, 20.0, 'm'),
+                 ('speed_spread_pct', 'Speed spread (±, per vehicle)', 0.0, 80.0, '%'),
+                 ('speed_difference_pct', 'Speed below the limit', -50.0, 80.0, '%'),
+                 ('ignore_lights_pct', 'Ignore traffic lights', 0.0, 100.0, '%'),
+                 ('ignore_signs_pct', 'Ignore signs', 0.0, 100.0, '%'),
+                 ('random_left_lanechange_pct', 'Random lane changes (left)', 0.0, 100.0, '%'),
+                 ('random_right_lanechange_pct', 'Random lane changes (right)', 0.0, 100.0, '%'),
+                 ('walker_crossing_factor', 'Walkers crossing anywhere', 0.0, 1.0, 'share'))
+
+    def __init__(self, page):
+        super().__init__('Traffic profile', 'Shared by every world that uses it. Fleet shares are weights per CARLA '
+                                            'base type, normalised at run time.')
+        self.page = page
+        self.pid = None
+        top = QHBoxLayout()
+        self.add_india = button('Add the Indian mixed-traffic profile', self.add_preset)
+        top.addWidget(self.add_india)
+        top.addStretch(1)
+        self.add(top)
+        self.form_host = QWidget()
+        self.form = Form()
+        self.form_host.setLayout(self.form)
+        self.add(self.form_host)
+        self.notes = label('', muted=True, wrap=True, small=True)
+        self.add(self.notes)
+
+    def profile(self):
+        doc = self.page.win.project.doc
+        for i, tp in enumerate(doc['traffic_profiles']):
+            if tp['id'] == self.pid:
+                return i, tp
+        return None, None
+
+    def show_profile(self, pid):
+        from ...core.traffic import INDIA_MIXED, fleet_label
+        self.pid = pid
+        self.add_india.setVisible(self.page.win.project.item('traffic_profiles', INDIA_MIXED['id']) is None)
+        while self.form.count():
+            it = self.form.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        self.form.n = 0
+        i, tp = self.profile()
+        if tp is None:
+            return
+        from PyQt6.QtWidgets import QDoubleSpinBox, QSpinBox
+        for key, text, hi in (('vehicles', 'Vehicles', 500), ('walkers', 'Walkers', 500)):
+            sb = QSpinBox()
+            sb.setRange(0, hi)
+            sb.setValue(int(tp.get(key, 0)))
+            sb.editingFinished.connect(lambda k=key, w=sb: self.set(['traffic_profiles', i, k], w.value()))
+            self.form.row(text, sb)
+        hand = QComboBox()
+        hand.addItems(['map', 'left', 'right'])
+        hand.setCurrentText(tp.get('handedness', 'map'))
+        hand.activated.connect(lambda _: self.set(['traffic_profiles', i, 'handedness'], hand.currentText()))
+        self.form.row('Handedness', hand, 'left or right is checked against the map before every run')
+        for k, v in sorted(tp.get('fleet', {}).items()):
+            sb = QDoubleSpinBox()
+            sb.setRange(0, 1)
+            sb.setDecimals(2)
+            sb.setSingleStep(0.01)
+            sb.setValue(float(v))
+            sb.editingFinished.connect(lambda k=k, w=sb: self.set(['traffic_profiles', i, 'fleet', k], w.value()))
+            self.form.row(f'Fleet: {fleet_label(k, tp)}', sb)
+        beh = tp.get('behaviour', {})
+        for k, text, lo, hi, unit in self.BEHAVIOUR:
+            sb = QDoubleSpinBox()
+            sb.setRange(lo, hi)
+            sb.setDecimals(2)
+            sb.setSuffix(f' {unit}')
+            sb.setValue(float(beh.get(k, 0.0)))
+            sb.editingFinished.connect(lambda k=k, w=sb: self.set(['traffic_profiles', i, 'behaviour', k],
+                                                                   w.value()))
+            self.form.row(text, sb)
+        notes = []
+        if tp.get('fleet_source'):
+            notes.append(f'Fleet shares: {tp["fleet_source"]}.')
+        if tp.get('fleet_labels'):
+            notes.append('CARLA 0.9.16 has no autorickshaw: the Microlino (a small three-door car) stands in and is '
+                         'labelled as a substitute. Lane-splitting by two-wheelers is not reproduced by the traffic '
+                         'manager.')
+        self.notes.setText(' '.join(notes))
+
+    def set(self, path, value):
+        cur = self.page.win.project.doc
+        for k in path[:-1]:
+            cur = cur[k]
+        if cur.get(path[-1]) == value:
+            return
+        self.page.win.edit(Edit('set', path, value, text=f'Traffic: {path[-1]}'))
+
+    def add_preset(self):
+        from ...core.traffic import preset
+        tp = preset('tp-india-mixed')
+        self.page.win.edit(Edit('insert', ['traffic_profiles'], tp, text='Add the Indian mixed-traffic profile'))

@@ -44,12 +44,17 @@ def drive_config(project: Project, world_id: str, rig_id: str, out_dir: str, por
                                'page first')
     tp_id = traffic_id or world.get('traffic_profile') or 'tp-default'
     traffic = project.item('traffic_profiles', tp_id) or {}
+    from .traffic import check_handedness
+    rule = (world.get('osm') or {}).get('handedness', 'RHT') if xodr else 'RHT'
+    ok, why = check_handedness(traffic, rule)
+    if not ok:
+        raise ProjectError(why)
     return {
         'schema': DRIVE_SCHEMA, 'name': name or f'{world["name"]} / {rig["name"]}',
         'host': host, 'port': int(port), 'tm_port': int(tm_port),
         'town': world.get('town', '') if not xodr else '', 'xodr': xodr,
         'opendrive': copy.deepcopy((world.get('osm') or {}).get('mesh') or {}),
-        'handedness': (world.get('osm') or {}).get('handedness', 'RHT') if xodr else 'RHT',
+        'handedness': rule,
         'weather': W.resolve(world.get('weather')),
         'weather_source': copy.deepcopy(world.get('weather') or {}),
         'rig': copy.deepcopy(rig), 'traffic': copy.deepcopy(traffic),

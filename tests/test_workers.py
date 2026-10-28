@@ -197,3 +197,53 @@ def test_unknown_worker_is_a_usage_error():
     r = subprocess.run([sys.executable, '-m', 'falcon_autonomy.workers', 'nope'], capture_output=True, text=True,
                        env=worker_env(), timeout=60)
     assert r.returncode == P.FAILED and 'usage' in r.stderr
+
+
+def test_left_hand_profile_is_refused_on_a_right_hand_town(project):
+    from falcon_autonomy.core.project import ProjectError
+    from falcon_autonomy.core.traffic import preset
+    project.doc['traffic_profiles'].append(preset('tp-india-mixed'))
+    project.doc['worlds'][0]['traffic_profile'] = 'tp-india-mixed'
+    with pytest.raises(ProjectError, match='left-hand traffic but the map'):
+        drive_config(project, 'world-town10', 'rig-default', '/tmp/x', 2310, 8310)
+
+
+def test_indian_fleet_on_an_imported_left_hand_world(project, tmp_path):
+    """An imported (OpenDRIVE) world: generated from its file, the Indian fleet drawn by its weights (the autorickshaw
+    substitute included), walkers on the navigation mesh."""
+    from falcon_autonomy.core.traffic import preset
+    ws = tmp_path / 'test.falcon'
+    ws.mkdir(exist_ok=True)
+    (ws / 'blr.xodr').write_text('<OpenDRIVE><header/></OpenDRIVE>')
+    prof = preset('tp-india-mixed')
+    prof.update(vehicles=12, walkers=4)
+    project.doc['traffic_profiles'].append(prof)
+    project.doc['worlds'].append({'id': 'w-blr', 'name': 'Bengaluru', 'kind': 'osm', 'xodr': 'blr.xodr',
+                                  'osm': {'handedness': 'LHT'}, 'traffic_profile': 'tp-india-mixed',
+                                  'weather': {'preset': 'ClearNoon'}})
+    cfg = drive_config(project, 'w-blr', 'rig-default', str(tmp_path / 'run'), 2310, 8310, seconds=0.5, seed=5,
+                       workspace=str(ws))
+    assert cfg['xodr'].endswith('blr.xodr') and cfg['handedness'] == 'LHT' and not cfg['town']
+    p = tmp_path / 'run.json.cfg'
+    p.write_text(json.dumps(cfg))
+    code, _, err = _run(str(p))
+    assert code == P.OK, err
+    run = json.loads((tmp_path / 'run' / 'run.json').read_text())
+    placed = run['traffic']['placed']
+    assert sum(placed.values()) == 12 and placed.get('motorcycle', 0) >= 2
+    assert set(placed) <= {'motorcycle', 'bicycle', 'car', 'van', 'bus', 'truck', 'blueprint:vehicle.micro.microlino'}
+    assert run['traffic']['walkers'] == 4
+    assert run['provenance']['inputs']['xodr']['sha256']
+
+
+def test_handedness_of_the_fakes_right_hand_road(project, tmp_path):
+    cfg = drive_config(project, 'world-town10', 'rig-default', str(tmp_path / 'h'), 2310, 8310, seed=1)
+    cfg.update(seconds=8.0, vehicles=6)
+    p = tmp_path / 'h.json'
+    p.write_text(json.dumps(cfg))
+    r = subprocess.run([sys.executable, '-m', 'falcon_autonomy.workers', 'handedness', str(p)], capture_output=True,
+                       text=True, env=worker_env(), timeout=120)
+    assert r.returncode == P.OK, r.stderr
+    rep = json.loads((tmp_path / 'h' / 'run.json').read_text())['handedness']
+    assert rep['verdict'] == 'RHT' and rep['keep_left_share'] == 0.0 and rep['samples'] > 10
+    assert rep['map_left_lanes_along_plus_s_share'] == 0.0
