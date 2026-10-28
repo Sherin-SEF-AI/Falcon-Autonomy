@@ -587,3 +587,51 @@ def write_lanes(w, cmap, out_dir, step: float = 2.0):
     with open(os.path.join(out_dir, 'lanes.json'), 'w', encoding='utf-8') as fh:
         json.dump(doc, fh, separators=(',', ':'))
     return len(rows)
+
+
+
+class ActorLog:
+    """actors.jsonl: every vehicle and walker at every recorded step, in CARLA's world frame, from the world snapshot
+    of that frame — {step, frame, sim_t, actors: [{id, type_id, category, role, x, y, z, roll, pitch, yaw, vx, vy, vz,
+    extent [ex, ey, ez], bbox_center [cx, cy, cz] (in the actor's frame)}]}. Boxes and categories are read once per
+    actor (they do not change)."""
+
+    def __init__(self, w, path):
+        self.w = w
+        self.fh = open(path, 'w', encoding='utf-8')
+        self.static = {}
+
+    def step(self, world, i, frame, sim_t):
+        import json
+        from ..core.groundtruth import category_of
+        snap = world.get_snapshot()
+        rows = []
+        for a in world.get_actors():
+            tid = a.type_id
+            if not tid.startswith(('vehicle.', 'walker.')):
+                continue
+            st = self.static.get(a.id)
+            if st is None:
+                try:
+                    bb = a.bounding_box
+                    attrs = dict(getattr(a, 'attributes', {}) or {})
+                except RuntimeError:
+                    continue
+                st = self.static[a.id] = {'type_id': tid, 'category': category_of(tid, attrs),
+                                          'role': attrs.get('role_name', ''),
+                                          'extent': [round(bb.extent.x, 4), round(bb.extent.y, 4), round(bb.extent.z, 4)],
+                                          'bbox_center': [round(bb.location.x, 4), round(bb.location.y, 4),
+                                                          round(bb.location.z, 4)]}
+            sa = snap.find(a.id)
+            if sa is None:
+                continue
+            t, v = sa.get_transform(), sa.get_velocity()
+            rows.append(dict({'id': a.id, 'x': round(t.location.x, 4), 'y': round(t.location.y, 4),
+                              'z': round(t.location.z, 4), 'roll': round(t.rotation.roll, 4),
+                              'pitch': round(t.rotation.pitch, 4), 'yaw': round(t.rotation.yaw, 4),
+                              'vx': round(v.x, 4), 'vy': round(v.y, 4), 'vz': round(v.z, 4)}, **st))
+        self.fh.write(json.dumps({'step': i, 'frame': int(frame), 'sim_t': sim_t, 'actors': rows},
+                                 separators=(',', ':')) + '\n')
+
+    def close(self):
+        self.fh.close()

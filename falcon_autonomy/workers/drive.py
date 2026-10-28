@@ -141,6 +141,7 @@ class Drive(Worker):
         max_wall = float(cfg.get('max_wall_s', 0) or 0)
         mpx = rig_mpx(cfg['rig'])
         index = open(os.path.join(self.out_dir, 'frames.jsonl'), 'w', encoding='utf-8')
+        actor_log = scene.ActorLog(self, os.path.join(self.out_dir, 'actors.jsonl'))
         t_rec = time.monotonic()
         n = late = 0
         sim_t0 = None
@@ -206,6 +207,7 @@ class Drive(Worker):
                         L.range_check(np.frombuffer(m_raw.raw_data, np.float32).reshape(-1, 4)[:, :3]
                                       .astype(np.float64), depth_cam, depth_now, M_cam_from_lidar)
                 self.others.step(frame, rec['sim_t'], self.out_dir, rec)
+                actor_log.step(world, i, frame, rec['sim_t'])
                 index.write(json.dumps(rec, separators=(',', ':')) + '\n')
                 n += 1
                 wall = time.monotonic() - t_rec
@@ -220,6 +222,7 @@ class Drive(Worker):
             cams.flush(0)
         finally:
             index.close()
+            actor_log.close()
             self.others.close()
         wall = time.monotonic() - t_rec
         sim_s = n / fps
