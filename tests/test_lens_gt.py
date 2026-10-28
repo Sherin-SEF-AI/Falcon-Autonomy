@@ -204,7 +204,7 @@ def test_cube_faces_their_size_cost_and_feathering_across_seams():
         assert x['width'] / 2 - L.FACE_MARGIN_PX >= x['f_px'] * t - 1e-6
         assert x['attributes']['lens_k'] == 0.0 and x['attributes']['exposure_mode'] == 'manual'
     assert p['render_mpx'] == pytest.approx(5 * L.face_px(100.0) ** 2 / 1e6)
-    assert L.camera_mpx(FISHEYE, p) == pytest.approx(4 * p['render_mpx'])        # image + 3 label cameras
+    assert L.camera_mpx(FISHEYE, p) == pytest.approx(3 * p['render_mpx'])        # image + instance + depth
     blend = L.blend_tuple(p)
     idx, bx, by, bw = blend
     assert len(idx) > 500 and np.allclose(bw.sum(1), 1, atol=1e-6) and bw[:, 0].min() > 1 / 3 - 1e-6

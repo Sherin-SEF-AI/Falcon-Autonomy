@@ -124,7 +124,7 @@ def match(raw, raw_counts, sem, sem_counts, columns: int, hfov: float):
 class LidarRecorder:
     """One rig lidar: its two sensors, the sweep being collected, the proof statistics and the checks."""
 
-    def __init__(self, w, world, lib, ego, s: dict, cameras, role):
+    def __init__(self, w, world, lib, ego, s: dict, cameras, role, raster=None):
         self.w, self.s, self.ego = w, s, ego
         from .scene import camera_transform
         tf = camera_transform(w.carla, s['pose'])
@@ -136,6 +136,8 @@ class LidarRecorder:
             cameras.queues[a.id] = q
             a.listen(q.put)
         self.cameras = cameras
+        self.raster = raster                # an imported world's lanes: its mesh's points come tagged 0
+        self.ground_relabelled = 0
         self.nch = int(s['channels'])
         self.steps_per_sweep = 1
         self.mount = mount_matrix(s['pose'])
@@ -174,6 +176,15 @@ class LidarRecorder:
             S['count_mismatch'] += st.get('count_mismatch', 0)
         et = self.ego.get_transform()
         M_ws = transform_matrix(et.location, et.rotation) @ self.mount
+        if self.raster is not None:
+            # measured: a generated OpenDRIVE world's road mesh is hit by the semantic lidar with tag 0 and id 0;
+            # such points within 0.3 m of the map's ground plane take the class of its lanes there
+            Pw = raw[:, :3].astype(np.float64) @ M_ws[:3, :3].T + M_ws[:3, 3]
+            g = (tag == 0) & (idx == 0) & (np.abs(Pw[:, 2] - self.raster.z0) < 0.3)
+            if g.any():
+                tag = tag.copy()
+                tag[g] = self.raster.lookup(Pw[g, :2])
+                self.ground_relabelled += int(g.sum())
         self.box_check(raw[:, :3].astype(np.float64), tag, idx, M_ws)
         self.slices.append((raw[:, :3].astype(np.float64), raw[:, 3].copy(), tag, idx, M_ws))
         if len(self.slices) >= self.steps_per_sweep:
@@ -272,7 +283,7 @@ class LidarRecorder:
                              method='by order when the points per channel are equal and every direction is within '
                                     f'{DIR_TOL_DEG}°; else per channel by azimuth (counted as fallback)'),
                'box_label_share': None if not self.box_in else round(self.box_vehicle / self.box_in, 5),
-               'box_points': self.box_in,
+               'box_points': self.box_in, 'ground_relabelled_points': self.ground_relabelled,
                'box_rule': f'grown {BOX_MARGIN_M} m outward, bottom raised {BOX_GROUND_M} m; the ego excluded'}
         if self.range_diffs:
             d = np.asarray(self.range_diffs)

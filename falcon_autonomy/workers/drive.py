@@ -33,7 +33,7 @@ import time
 from ..core import protocol as P
 from ..core.budget import check_budget, rig_mpx
 from ..core.provenance import read_json, sha256_json, write_json
-from . import scene
+from . import camgt, scene
 from .common import ROLE_SENSOR, Failed, Worker
 from .lidar import LidarRecorder, mount_matrix
 
@@ -80,19 +80,27 @@ class Drive(Worker):
         if not spawns:
             raise Failed(f'the map {cfg.get("town") or cfg.get("xodr")} has no spawn points')
         order = list(rng.permutation(len(spawns)))
+        rig_cams = [x for x in cfg['rig']['sensors'] if x['type'] in ('camera.pinhole', 'camera.fisheye')]
+        need_gt = any(camgt.wants_gt(x) for x in rig_cams)
+        level = camgt.level_boxes(self, world) if need_gt else []      # before any vehicle is spawned
+        raster = camgt.LaneRaster(carla, world.get_map()) if cfg.get('xodr') and (
+            need_gt or any(x['type'] == 'lidar' for x in cfg['rig']['sensors'])) else None
         ego = scene.spawn_ego(self, world, lib, spawns, order, cfg['rig']['vehicle'])
         scene.spawn_traffic(self, world, lib, spawns, order, rng, cfg.get('traffic') or {})
         scene.spawn_walkers(self, world, lib, rng, cfg.get('traffic') or {})
         cams = self.cameras
-        cams.spawn_rig(world, lib, ego, cfg['rig']['sensors'])
+        from ..core import faults as F
+        self.recorders = [camgt.CameraRecorder(self, world, lib, ego, x, cams, F.actual_pose(x['pose'], x.get('faults')))
+                          for x in rig_cams]
         fps0 = float(cfg.get('fps', 20.0))
-        self.lidars = [LidarRecorder(self, world, lib, ego, s, cams, ROLE_SENSOR)
+        self.lidars = [LidarRecorder(self, world, lib, ego, s, cams, ROLE_SENSOR, raster)
                        for s in cfg['rig']['sensors'] if s['type'] == 'lidar']
         for L in self.lidars:
             L.set_rate(fps0)
         self.others = scene.Others(self, world, lib, ego, cfg['rig']['sensors'], cams)
-        # the range check: the first camera with a depth label camera, against the first lidar
-        depth_cam = next((s for s, k in cams.cams if 'depth' in k), None)
+        # the range check: the first pinhole camera with ground truth (its depth view), against the first lidar
+        depth_rec = next((r for r in self.recorders if r.gt and r.s['type'] == 'camera.pinhole'), None)
+        depth_cam = depth_rec.s if depth_rec is not None else None
         M_cam_from_lidar = None
         if depth_cam is not None and self.lidars:
             M_cam_from_lidar = np.linalg.inv(mount_matrix(depth_cam['pose'])) @ mount_matrix(self.lidars[0].s['pose'])
@@ -115,6 +123,12 @@ class Drive(Worker):
         n = late = 0
         sim_t0 = None
         label_warnings = []
+        if raster is not None:
+            label_warnings.append('ground labelled from the map: CARLA\'s label cameras do not see a generated '
+                                  'OpenDRIVE world\'s road mesh (depth: nothing; tags: sky), so its pixels were '
+                                  'given their range and class by their ray\'s hit on the map\'s (flat) ground and '
+                                  'a 0.25 m raster of its lanes; lidar points of the mesh (tag 0) likewise '
+                                  '(objects.json "ground_relabelled", run.json lidar_checks)')
         faults = scene.FaultState(cfg['rig']['sensors'], int(cfg.get('seed', 0)))
         prev_yaw = None
         try:
@@ -131,33 +145,31 @@ class Drive(Worker):
                 yaw_rate = 0.0 if prev_yaw is None else ((yaw - prev_yaw + 180.0) % 360.0 - 180.0) * fps0 * \
                     math.pi / 180.0
                 prev_yaw = yaw
-                for s, sensors in cams.cams:
+                boxes = camgt.scene_boxes(self, world, ego, level) if need_gt else None
+                for r in self.recorders:
+                    s = r.s
                     deliver = faults.delivery(s['id'], i, rec['sim_t'])
                     if s['id'] in faults.f:
                         rec.setdefault('stamps', {})[s['id']] = round(faults.stamp(s['id'], rec['sim_t']), 6)
                         if deliver != 'ok':
                             rec.setdefault('faults', {})[s['id']] = deliver
-                    img_faults = faults.image(s['id'], scene.intrinsics(s['width'], s['height'], s['fov']),
-                                              scene.yaw_rate_optical(s, yaw_rate))
-                    for kind, sensor in sensors.items():
-                        data = cams.get(sensor.id, frame)
-                        if kind == 'depth' and s is depth_cam:
-                            depth_now = data
-                        key = f'{s["id"]}/{kind}'
-                        if deliver == 'drop':
-                            continue
-                        if deliver == 'freeze' and key in faults.last:
-                            rec['files'][key] = faults.last[key]
-                            continue
-                        if kind == 'semantic' and i == 0 and s['pose']['pitch'] <= 5.0:
-                            warn = scene.ground_label_check(data)
-                            if warn:
-                                self.note(warn)
-                                label_warnings.append(warn)
-                        rel = os.path.join(kind, s['id'], f'{i:06d}.{"jpg" if kind == "rgb" else "png"}')
-                        rec['files'][key] = rel
-                        faults.last[key] = rel
-                        cams.submit_write(kind, data, os.path.join(self.out_dir, rel), img_faults)
+                    imgs = r.collect(frame)
+                    if r is depth_rec:
+                        depth_now = imgs[0]['depth']
+                    if deliver == 'drop':
+                        continue
+                    keys = [f'{s["id"]}/{k}' for k in r.kinds()]
+                    if deliver == 'freeze' and all(k in faults.last for k in keys):
+                        for k in keys:
+                            rec['files'][k] = faults.last[k]
+                        continue
+                    img_faults = faults.image(s['id'], r.plan['K'], scene.yaw_rate_optical(s, yaw_rate))
+                    for kind in r.kinds():
+                        ext = {'rgb': 'jpg', 'objects': 'json'}.get(kind, 'png')
+                        rel = os.path.join(kind, s['id'], f'{i:06d}.{ext}')
+                        rec['files'][f'{s["id"]}/{kind}'] = rel
+                        faults.last[f'{s["id"]}/{kind}'] = rel
+                    cams.pending.append(cams.pool.submit(r.write, imgs, i, self.out_dir, boxes, raster, img_faults))
                 for k, L in enumerate(self.lidars):
                     m_raw = L.step(frame, rec['sim_t'], self.out_dir, rec)
                     if k == 0 and depth_now is not None and i % 5 == 0:
@@ -172,7 +184,7 @@ class Drive(Worker):
                 f = (wall / max_wall) if max_wall else (i + 1) / steps
                 self.emit.progress(0.05 + 0.9 * f, f'step {i + 1}{"" if max_wall else f" of {steps}"} '
                                                    f'({(i + 1) / max(wall, 1e-6):.1f} steps/s)')
-                if len(cams.pending) > MAX_IN_FLIGHT * max(len(cams.cams), 1):
+                if len(cams.pending) > MAX_IN_FLIGHT * max(len(self.recorders), 1):
                     late += 1
                     cams.flush(MAX_IN_FLIGHT)
             cams.flush(0)
@@ -184,11 +196,11 @@ class Drive(Worker):
         perf = {'steps': n, 'wall_s': round(wall, 3), 'steps_per_s': round(n / max(wall, 1e-6), 3),
                 'sim_s': round(sim_s, 3), 'realtime_factor': round(sim_s / max(wall, 1e-6), 3),
                 'mpx_per_step': round(mpx, 3), 'mpx_per_s': round(mpx * n / max(wall, 1e-6), 2),
-                'camera_frames': n * len(cams.cams), 'encoder_waits': late, 'source': 'measured'}
+                'camera_frames': n * len(self.recorders), 'encoder_waits': late, 'source': 'measured'}
         for k, unit in (('steps_per_s', '1/s'), ('realtime_factor', '×'), ('mpx_per_s', 'Mpx/s')):
             self.emit.metric(k, perf[k], unit)
         write_json(os.path.join(self.out_dir, 'dataset.json'), scene.dataset_doc(
-            cfg.get('name', 'drive'), cams.cams, n, fps, self.run,
+            cfg.get('name', 'drive'), self.recorders, n, fps, self.run,
             {'town': cfg.get('town'), 'xodr': cfg.get('xodr'), 'weather': cfg.get('weather'),
              'label_warnings': label_warnings}))
         self.emit.progress(1.0, f'recorded {n} steps in {wall:.1f} s', force=True)

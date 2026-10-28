@@ -517,12 +517,18 @@ class Live(Worker):
         base = self.cfg.get('recordings_dir') or os.path.join(self.out_dir, 'recordings')
         d = os.path.join(base, f'{os.path.basename(self.out_dir)}-rec-{n:03d}')
         os.makedirs(d, exist_ok=True)
+        from . import camgt
         cams = scene.Cameras(self)
-        cams.spawn_rig(world, self.lib, self.ego, self.cfg['rig']['sensors'])
+        rig_cams = [x for x in self.cfg['rig']['sensors'] if x['type'] in ('camera.pinhole', 'camera.fisheye')]
+        if not hasattr(self, 'level'):
+            self.level = []                     # (level boxes are read before vehicles exist: not mid-session)
+            self.raster = camgt.LaneRaster(self.carla, self.map) if self.cfg.get('xodr') else None
+        recs = [camgt.CameraRecorder(self, world, self.lib, self.ego, x, cams, x['pose']) for x in rig_cams]
         t0 = world.get_snapshot().timestamp.elapsed_seconds
         run = new_run('live-recording', self.argv, self.cfg.get('seed', 0), self.cfg)
         run['provenance']['host'].update(self.run['provenance']['host'])
-        self.rec = {'dir': d, 'cams': cams, 'n': 0, 't0': t0, 'run': run, 'started': time.monotonic(), 'warnings': [],
+        self.rec = {'dir': d, 'cams': cams, 'recs': recs, 'n': 0, 't0': t0, 'run': run, 'started': time.monotonic(),
+                    'warnings': ([] if self.raster is None else ['ground relabelled from the map (see docs/worlds.md)']),
                     'index': open(os.path.join(d, 'frames.jsonl'), 'w', encoding='utf-8'),
                     'events': open(os.path.join(d, 'events.jsonl'), 'w', encoding='utf-8')}
         self.log_event('record', {'on': True, 'dir': d})
@@ -537,42 +543,41 @@ class Live(Worker):
             self.world.get_snapshot().timestamp.elapsed_seconds - r['t0'], 6), 'files': {}, 'mode': self.mode}
         rec.update(scene.ego_state(self.ego))
         rec['control'] = self.control_applied
-        for s, sensors in cams.cams:
+        from . import camgt
+        boxes = camgt.scene_boxes(self, self.world, self.ego, self.level) if any(c.gt for c in r['recs']) else None
+        for c in r['recs']:
+            s = c.s
             failed = self.failures.get(s['id'])
-            for kind, sensor in sensors.items():
-                data = cams.get(sensor.id, frame)
-                if kind == 'semantic' and i == 0:
-                    warn = scene.ground_label_check(data)
-                    if warn:
-                        r['warnings'].append(warn)
-                        self.emit.log(warn, 'warning')
-                if failed is not None and failed[0] == 'drop':
-                    continue
-                rel = os.path.join(kind, s['id'], f'{i:06d}.{"jpg" if kind == "rgb" else "png"}')
-                rec['files'][f'{s["id"]}/{kind}'] = rel
-                if failed is not None and kind == 'rgb':
-                    rec.setdefault('faults', {})[s['id']] = failed[0]
-                cams.submit_write(kind, data, os.path.join(r['dir'], rel))
+            imgs = c.collect(frame)
+            if failed is not None and failed[0] == 'drop':
+                continue
+            if failed is not None:
+                rec.setdefault('faults', {})[s['id']] = failed[0]
+            for kind in c.kinds():
+                ext = {'rgb': 'jpg', 'objects': 'json'}.get(kind, 'png')
+                rec['files'][f'{s["id"]}/{kind}'] = os.path.join(kind, s['id'], f'{i:06d}.{ext}')
+            cams.pending.append(cams.pool.submit(c.write, imgs, i, r['dir'], boxes, self.raster))
         r['index'].write(json.dumps(rec, separators=(',', ':')) + '\n')
         r['n'] += 1
-        if len(cams.pending) > 8 * max(len(cams.cams), 1):
+        if len(cams.pending) > 8 * max(len(r['recs']), 1):
             cams.flush(8)
 
     def stop_recording(self):
         r, self.rec = self.rec, None
         r['cams'].flush(0)
         r['cams'].stop()
-        for s, sensors in r['cams'].cams:
-            for sensor in sensors.values():
-                sensor.stop()
-                sensor.destroy()
-                if sensor in self.spawned:
-                    self.spawned.remove(sensor)
+        for c in r['recs']:
+            for d in c.views:
+                for sensor in d.values():
+                    sensor.stop()
+                    sensor.destroy()
+                    if sensor in self.spawned:
+                        self.spawned.remove(sensor)
         r['index'].close()
         r['events'].close()
         wall = time.monotonic() - r['started']
         write_json(os.path.join(r['dir'], 'dataset.json'), scene.dataset_doc(
-            f'{self.cfg.get("name", "live")} recording', r['cams'].cams, r['n'], 1.0 / self.dt, r['run'],
+            f'{self.cfg.get("name", "live")} recording', r['recs'], r['n'], 1.0 / self.dt, r['run'],
             {'town': self.cfg.get('town'), 'xodr': self.cfg.get('xodr'), 'live': True, 'events': 'events.jsonl',
              'label_warnings': r['warnings']}))
         run = r['run']
@@ -581,7 +586,7 @@ class Live(Worker):
                    performance={'steps': r['n'], 'wall_s': round(wall, 3), 'sim_s': round(r['n'] * self.dt, 3),
                                 'realtime_factor': round(r['n'] * self.dt / max(wall, 1e-6), 3),
                                 'source': 'measured'},
-                   summary={'steps': r['n'], 'cameras': len(r['cams'].cams), 'live': True})
+                   summary={'steps': r['n'], 'cameras': len(r['recs']), 'live': True})
         write_json(os.path.join(r['dir'], 'run.json'), run)
         self.recordings.append(r['dir'])
         self.emit.send({'t': 'recording', 'path': r['dir'], 'steps': r['n']})

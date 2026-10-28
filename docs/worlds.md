@@ -97,13 +97,19 @@ represented*.
 | import to a recorded drive with traffic | 12–17 s (the acceptance asks for under 5 minutes) |
 | handedness, measured | **left**: 100 % of 1044 samples of 40 vehicles keep left, 98.4 % move with their lane; 100 % of 3234 sampled map lanes run the left-hand way; the server removed 11 vehicles at dead ends of the cut area during the 40 s |
 
-## Semantic labels in an imported world (a CARLA limit, reported)
-CARLA 0.9.16's semantic camera labels the road and sidewalk meshes that `generate_opendrive_world` builds as **sky
-(tag 11)** — 100 % of the lower third of a forward camera's image in the Bengaluru drive — whereas its towns label them
-road (1) and sidewalk (2). Vehicles, walkers, poles and traffic lights are labelled correctly. Every drive and recording
-checks its first semantic frame and, when the ground reads as sky, writes a warning into `dataset.json` and
-`run.json`, shown in Data ▸ Browse. Map-based ground relabelling (the lane polygons from the map, the depth camera
-for each pixel's position) comes with the data engine in milestone 3.
+## Labels in an imported world (a CARLA limit, worked around)
+Measured on CARLA 0.9.16 in central Bengaluru with a car parked 10 m ahead: the road and sidewalk mesh that
+`generate_opendrive_world` builds is drawn by the RGB camera but **not by the label cameras** — the depth camera sees
+nothing there (99.998 % of the lower third at its 1000 m far limit), the instance and semantic cameras tag it sky
+(11) — while actors are seen normally (the car: 1346 instance pixels and 1340 depth pixels at a median 6.1 m). The
+semantic lidar does hit the mesh, with tag 0.
+
+Falcon labels the ground of such worlds from the map instead. These worlds are flat (OpenStreetMap has no elevation):
+a pixel tagged sky whose ray meets the map's ground plane within 250 m gets that point's range and the class of the
+map's lanes there, from a 0.25 m raster (driving lanes → road, sidewalks → sidewalk, other lane types → ground); lidar
+points tagged 0 within 0.3 m of the plane are named the same way. Each frame's `objects.json` (`ground_relabelled`)
+and each run's lidar checks count them, and `dataset.json` states the method. In the Bengaluru drive this labelled
+about 45 % of each frame (the rest sky); vehicles, walkers, poles and lights keep CARLA's own labels.
 
 ## The full-fidelity path (external, advanced)
 For a place with its buildings, vegetation and textures, build a CARLA map package:

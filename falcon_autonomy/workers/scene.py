@@ -377,22 +377,36 @@ def ego_state(ego) -> dict:
 
 
 def dataset_doc(name, cams, n, fps, run, extra=None) -> dict:
-    from ..core.labels import TAGS
+    """dataset.json of a recording. cams: camera recorders (camgt.CameraRecorder) or (sensor, {kind: …}) pairs."""
+    from ..core.groundtruth import classes_doc
     sensors = []
-    for s, kinds in cams:
+    for c in cams:
+        if isinstance(c, tuple):
+            s, kinds = c
+            K, lens_doc, views = intrinsics(s['width'], s['height'], s['fov']), None, 1
+        else:
+            s, kinds = c.s, c.kinds()
+            K, lens_doc, views = [list(map(float, r)) for r in c.plan['K']], c.plan['summary'].get('lens'), \
+                len(c.plan['views'])
         sensors.append({'id': s['id'], 'name': s['name'], 'type': s['type'], 'width': s['width'],
-                        'height': s['height'], 'fov': s['fov'], 'K': intrinsics(s['width'], s['height'], s['fov']),
+                        'height': s['height'], 'fov': s.get('fov'), 'K': K, 'lens': lens_doc, 'views': views,
                         'pose': s['pose'], 'streams': sorted(kinds)})
     doc = {'schema': 'falcon.dataset/1', 'layout': 'falcon-raw', 'name': name, 'frames': n, 'fps': fps,
            'sensors': sensors,
-           'labels': {'semantic': {'encoding': 'uint8 PNG, the CARLA 0.9.16 semantic tag per pixel',
-                                   'classes': {str(k): {'name': v[0], 'color': v[1]} for k, v in TAGS.items()}}},
+           'labels': {'semantic': {'encoding': 'uint8 PNG, a class per pixel (CARLA 0.9.16 semantic tags; 29 = the '
+                                               'ego vehicle)', 'classes': classes_doc()},
+                      'instance': {'encoding': 'uint16 PNG, 0 = none, else the id of an object in objects/'},
+                      'range': {'encoding': 'uint16 PNG, round(range_m × 256) along each pixel\'s ray, 0 = nothing '
+                                            'within 256 m'},
+                      'objects': {'encoding': 'JSON per frame: id, track_id, class, category, bbox, bbox_full, '
+                                              'truncated, occluded, range_m, pixels, box3d (vehicle frame), rle'},
+                      'lidar': {'encoding': 'float32 x y z intensity (sensor frame); .labels.bin: uint8 tag then '
+                                            'uint32 actor id per point'}},
            'frames_index': 'frames.jsonl',
-           'coordinates': 'CARLA world frame (x forward, y right, z up; left-handed), metres and degrees',
+           'coordinates': 'CARLA frames (x forward, y right, z up; left-handed), metres and degrees',
            'provenance': run['provenance']}
     doc.update(extra or {})
     return doc
-
 
 GROUND_AS_SKY_SHARE = 0.5
 

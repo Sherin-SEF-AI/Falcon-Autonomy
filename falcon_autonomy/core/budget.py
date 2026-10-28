@@ -16,8 +16,10 @@ from __future__ import annotations
 import math
 
 RENDER_BUDGET_MPX = 200.0
-LABEL_CAMERAS = {'semantic': 'semantic_segmentation', 'instance': 'instance_segmentation', 'depth': 'depth',
-                 'boxes2d': 'instance_segmentation'}      # 2D tight boxes come from the instance image
+# every label layer of a recorded camera comes from two CARLA cameras beside each view: the instance camera (its red
+# channel is the semantic tag; green + 256·blue the actor id) and the depth camera (range, occlusion, 3D points)
+GT_LABELS = ('semantic', 'instance', 'depth', 'boxes2d', 'boxes3d')
+GT_CAMERAS = ('depth', 'instance_segmentation')
 
 # The reference machine (RTX 5080 16 GB, CARLA 0.9.16 capped at 12 GB): six fisheyes at half size (960 × 768) with
 # instance and depth ground truth, 77 Mpx rendered per step: 602 labelled camera frames (100 steps) in 114 s.
@@ -31,8 +33,9 @@ TYPICAL = {
 
 
 def label_cameras(labels) -> list:
-    """The CARLA label cameras a set of label kinds needs (each rendered once)."""
-    return sorted({LABEL_CAMERAS[k] for k in labels or () if k in LABEL_CAMERAS})
+    """The CARLA label cameras a set of label kinds needs (each rendered once per view): the instance and the depth
+    camera for any of them."""
+    return list(GT_CAMERAS) if any(k in GT_LABELS for k in labels or ()) else []
 
 
 def fisheye_focal_px(s: dict) -> float:

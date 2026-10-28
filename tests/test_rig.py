@@ -83,6 +83,6 @@ def test_json_round_trip_and_validation():
 
 def test_costs():
     s = R.new_sensor('camera.pinhole', 'c', 'c')
-    assert R.sensor_cost(s)['mpx'] == pytest.approx(1280 * 720 * 2 / 1e6)
+    assert R.sensor_cost(s)['mpx'] == pytest.approx(1280 * 720 * 3 / 1e6)          # image + instance + depth
     assert R.sensor_cost(R.new_sensor('lidar', 'l', 'l'))['mpx'] == 0.0
     assert '60 k points' in R.sensor_cost(R.new_sensor('lidar', 'l', 'l'))['note']

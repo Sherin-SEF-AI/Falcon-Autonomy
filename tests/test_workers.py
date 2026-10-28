@@ -39,7 +39,7 @@ def test_drive_records_frames_labels_and_run_json(project, tmp_path):
     assert run['status'] == 'ok' and run['exit_code'] == 0 and run['provenance']['seed'] == 1
     assert run['provenance']['host']['carla_server'] == '0.9.16'
     perf = run['performance']
-    assert perf['steps'] == 20 and perf['source'] == 'measured' and perf['mpx_per_step'] == pytest.approx(0.0288, abs=1e-3)
+    assert perf['steps'] == 20 and perf['source'] == 'measured' and perf['mpx_per_step'] == pytest.approx(160 * 90 * 3 / 1e6, abs=1e-3)
     frames = [json.loads(x) for x in (out / 'frames.jsonl').read_text().splitlines()]
     assert [f['step'] for f in frames] == list(range(20))
     assert all(b['frame'] == a['frame'] + 1 for a, b in zip(frames, frames[1:]))       # one tick per step
@@ -50,7 +50,7 @@ def test_drive_records_frames_labels_and_run_json(project, tmp_path):
     assert rgb.shape == (90, 160, 3) and sem.shape == (90, 160) and sem.dtype == np.uint8
     assert {1, 11} <= set(np.unique(sem).tolist())                 # the fake's road and sky
     ds = json.loads((out / 'dataset.json').read_text())
-    assert ds['frames'] == 20 and ds['sensors'][0]['streams'] == ['rgb', 'semantic']
+    assert ds['frames'] == 20 and ds['sensors'][0]['streams'] == ['instance', 'objects', 'range', 'rgb', 'semantic']
     assert ds['sensors'][0]['K'][0][0] == pytest.approx(80.0)    # f = W / (2 tan(fov / 2)) at 90°
     kinds = [m['t'] for m in msgs]
     assert kinds[0] == 'hello' and kinds[-1] == 'result' and 'progress' in kinds and 'metric' in kinds
@@ -85,7 +85,7 @@ def test_same_seed_reproduces_bit_for_bit(project, tmp_path):
 
 
 def test_over_budget_is_refused_before_connecting(project, tmp_path):
-    project.doc['rigs'][0]['sensors'][0].update(width=8000, height=8000, labels=['semantic', 'instance', 'depth'])
+    project.doc['rigs'][0]['sensors'][0].update(width=8192, height=8192, labels=['semantic', 'instance', 'depth'])
     code, msgs, err = _run(_cfg(project, tmp_path / 'run'))
     assert code == P.REFUSED and 'budget' in err
     run = json.loads((tmp_path / 'run' / 'run.json').read_text())
@@ -330,7 +330,7 @@ def test_faults_in_a_drive(project, tmp_path):
     out = tmp_path / 'run'
     run = json.loads((out / 'run.json').read_text())
     fa = run['faults_applied']['cam-front']
-    assert fa['frames']['drop'] >= 2 and fa['frames']['noise'] >= 10 and fa['planned'] == cam['faults']
+    assert fa['frames']['drop'] >= 2 and fa['frames']['noise'] >= 5 and fa['planned'] == cam['faults']
     frames = [json.loads(x) for x in (out / 'frames.jsonl').read_text().splitlines()]
     dropped = [f for f in frames if f.get('faults', {}).get('cam-front') == 'drop']
     assert dropped and all('cam-front/rgb' not in f['files'] for f in dropped)

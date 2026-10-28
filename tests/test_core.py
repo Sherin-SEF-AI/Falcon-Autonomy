@@ -113,10 +113,11 @@ def test_tilde():
 def test_render_budget():
     rig = {'sensors': [{'type': 'camera.pinhole', 'width': 1280, 'height': 720, 'labels': ['semantic']},
                        {'type': 'lidar'}]}
-    assert budget.rig_mpx(rig) == pytest.approx(1280 * 720 * 2 / 1e6)
-    # boxes2d and instance share CARLA's instance camera: rendered once
+    # any label layer: the instance and the depth camera beside the image (each rendered once)
+    assert budget.rig_mpx(rig) == pytest.approx(1280 * 720 * 3 / 1e6)
     s = {'type': 'camera.pinhole', 'width': 1000, 'height': 1000, 'labels': ['instance', 'boxes2d', 'depth']}
     assert budget.sensor_mpx(s) == pytest.approx(3.0)
+    assert budget.sensor_mpx(dict(s, labels=[])) == pytest.approx(1.0)
     # six full-size fisheyes with instance + depth, written as rigs write them (the lens block): refused
     fe = {'type': 'camera.fisheye', 'width': 1920, 'height': 1536, 'labels': ['instance', 'depth'],
           'lens': {'model': 'equidistant', 'fov': 190.0, 'f_px': 900.0}}
