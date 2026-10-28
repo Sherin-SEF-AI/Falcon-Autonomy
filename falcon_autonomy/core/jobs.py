@@ -62,6 +62,7 @@ class Job:
         self.finished = None
         self.handle = None
         self.cancel_requested = False
+        self.other: list = []           # protocol messages of other types (a worker's own: server, recording, …)
 
     @property
     def elapsed(self) -> float:
@@ -169,6 +170,15 @@ class _ProcHandle:
     def __init__(self, p):
         self.p = p
 
+    def send(self, cmd: dict) -> bool:
+        import json
+        try:
+            self.p.stdin.write(json.dumps(cmd) + '\n')
+            self.p.stdin.flush()
+            return True
+        except (OSError, ValueError):
+            return False
+
     def cancel(self):
         try:
             self.p.stdin.write('{"cmd": "cancel"}\n')
@@ -242,6 +252,12 @@ class JobQueue:
                 job.handle.cancel()
                 self._emit('changed', job)
 
+    def send(self, job: Job, cmd: dict) -> bool:
+        """A command to a running job's worker (its stdin). False when it is not running."""
+        if job.state != RUNNING or job.handle is None:
+            return False
+        return job.handle.send(cmd)
+
     def poll(self):
         """Start every queued job whose needs are free, in order (a CARLA job waits behind an earlier CARLA job)."""
         with self._lock:
@@ -307,6 +323,8 @@ class JobQueue:
                 job.result = msg
             elif t == 'hello':
                 job.log.append(('info', f'worker {msg.get("worker")} started (pid {msg.get("pid")})'))
+            else:
+                job.other.append(msg)
         if t == 'log':
             self._emit('message', job)
         self._emit('changed', job)

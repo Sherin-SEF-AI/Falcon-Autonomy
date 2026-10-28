@@ -149,6 +149,14 @@ class CarlaService:
                                 meta={'config': path})
         return self.queue.submit(spec)
 
+    def submit_live(self, cfg: dict, title: str = 'Live session'):
+        """Write a live config into its run folder (live.json) and queue the session (it runs until stopped)."""
+        run_dir = ensure_dir(cfg['out'])
+        path = os.path.join(run_dir, 'live.json')
+        write_json(path, cfg)
+        spec = self.worker_spec('live', [path], title, 'live', run_dir, meta={'config': path})
+        return self.queue.submit(spec)
+
     def submit_probe(self, wait_s: float = 10.0):
         spec = self.worker_spec('probe', ['--port', self.port, '--wait', wait_s], f'Probe port {self.port}', 'probe',
                                 memory_gb=0.3)
@@ -169,6 +177,11 @@ class CarlaService:
         s = job.spec
         if s.run_dir and self.catalog is not None:
             self.catalog.add_run(s.run_dir)
+            for m in job.other:                       # a live session's recordings are runs of their own
+                if m.get('t') == 'recording' and m.get('path'):
+                    self.catalog.add_run(m['path'])
+                    self.catalog.link('run:' + os.path.basename(s.run_dir), 'run:' + os.path.basename(m['path']),
+                                      'recorded')
         code = job.exit_code
         # a worker that died without tidying (killed, crashed) may leave the server synchronous with its actors
         if s.needs_carla and s.kind != 'tidy' and (code is None or code < 0 or code == P.CRASHED) and \

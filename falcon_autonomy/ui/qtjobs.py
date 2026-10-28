@@ -15,6 +15,12 @@ class _QHandle:
     def __init__(self, proc: QProcess):
         self.proc = proc
 
+    def send(self, cmd: dict) -> bool:
+        import json
+        if self.proc.state() != QProcess.ProcessState.Running:
+            return False
+        return self.proc.write((json.dumps(cmd) + '\n').encode()) > 0
+
     def cancel(self):
         if self.proc.state() == QProcess.ProcessState.NotRunning:
             return

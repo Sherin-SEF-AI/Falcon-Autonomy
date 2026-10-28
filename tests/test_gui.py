@@ -52,7 +52,7 @@ def window(qapp, tmp_path, project):
 
 def test_pages_and_navigation(window, qapp):
     keys = [p.key for p in window.pages]
-    assert keys == ['home', 'worlds', 'data', 'settings', 'help']
+    assert keys == ['home', 'worlds', 'live', 'data', 'settings', 'help']
     assert window.go('data') is window.stack.currentWidget()
     window.actions_['page_worlds'].trigger()
     assert window.stack.currentWidget().key == 'worlds'
@@ -175,3 +175,36 @@ def test_wizard_pages_load(window, qapp):
     mp.initializePage()
     assert pump(qapp, lambda: 'Memory' in mp.kv.vals, 15)
     wz.done(0)
+
+
+def test_live_session_in_the_gui(window, qapp):
+    page = window.go('live')
+    page.size.addItem('96 × 64')
+    from falcon_autonomy.ui.pages import live as L
+    L.VIEW_SIZES['96 × 64'] = (96, 64)
+    page.size.setCurrentText('96 × 64')
+    page.mode_btns['manual'].setChecked(True)
+    page.mode_btns['autopilot'].setChecked(False)
+    page.start()
+    assert pump(qapp, lambda: page.view.img is not None and page.shown > 5, 60), (page.job.state, page.job.log)
+    assert page.top.map is not None and page.top.actors
+    assert 'steps/s' in page.stats.vals['Simulation'].text()
+    from PyQt6.QtCore import Qt
+    page.view.keys.add(Qt.Key.Key_W)
+    assert pump(qapp, lambda: (page.view.hdr.get('control') or {}).get('throttle') == 0.7, 20)
+    page.view.keys.clear()
+    page.rec_btn.setChecked(True)
+    page.toggle_record()
+    page.fire_event('pedestrian', distance_m=20.0, side='right')
+    assert pump(qapp, lambda: page.view.hdr.get('recording'), 20)
+    pump(qapp, timeout=1.0)
+    page.rec_btn.setChecked(False)
+    page.toggle_record()
+    assert pump(qapp, lambda: page.recordings, 20)
+    page.stop()
+    assert pump(qapp, lambda: page.job.state == 'done', 60), page.job.log
+    rows = window.service.catalog.list('run')
+    assert any(r['path'] == page.recordings[0] for r in rows)
+    data = window.go('data')
+    data.show_run(page.recordings[0])
+    assert data.browse.sensor.currentText() == 'cam-front'

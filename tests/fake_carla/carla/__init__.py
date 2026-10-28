@@ -1098,8 +1098,7 @@ class World:
                 raise RuntimeError('a walker controller needs a walker')
             a = WalkerAIController(self, self._next, bp, transform, attach_to)
         elif bp.id.startswith('sensor.'):
-            if attach_to is None:
-                raise RuntimeError('a sensor needs a parent in this fake')
+            # attach_to None: a sensor standing in the world (as CARLA allows)
             a = ServerSideSensor(self, self._next, bp, transform, attach_to)
         else:
             raise RuntimeError(f'cannot spawn {bp.id}')

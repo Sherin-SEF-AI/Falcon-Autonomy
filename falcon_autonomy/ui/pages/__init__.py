@@ -3,7 +3,8 @@ later milestones are added as they are built (docs/roadmap.md)."""
 from .data import DataPage
 from .help import HelpPage
 from .home import HomePage
+from .live import LivePage
 from .settings import SettingsPage
 from .worlds import WorldsPage
 
-PAGES = [HomePage, WorldsPage, DataPage, SettingsPage, HelpPage]
+PAGES = [HomePage, WorldsPage, LivePage, DataPage, SettingsPage, HelpPage]

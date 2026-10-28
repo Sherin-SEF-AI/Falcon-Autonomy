@@ -26,22 +26,31 @@ def run_dir_name(label: str) -> str:
 def drive_config(project: Project, world_id: str, rig_id: str, out_dir: str, port: int, tm_port: int,
                  seconds: float = 10.0, fps: float = 20.0, seed: int = 0, traffic_id: str | None = None,
                  warmup_steps: int = 10, max_wall_s: float = 0.0, render_budget_mpx: float = 200.0,
-                 host: str = '127.0.0.1', name: str = '') -> dict:
+                 host: str = '127.0.0.1', name: str = '', workspace: str = '') -> dict:
+    """A drive config. A town world names its map; an imported world (kind osm or xodr) names its OpenDRIVE file,
+    kept in the workspace (world['xodr'], relative to it), which the worker loads with generate_opendrive_world."""
     world = project.item('worlds', world_id)
     rig = project.item('rigs', rig_id)
     if world is None:
         raise ProjectError(f'no world {world_id!r} in the project')
     if rig is None:
         raise ProjectError(f'no rig {rig_id!r} in the project')
+    xodr = ''
     if world['kind'] != 'town':
-        raise ProjectError(f'world {world["name"]!r} is an {world["kind"]} import: driving imported worlds comes with '
-                           'the Worlds page\'s import (load it there first)')
+        ws = workspace or project.workspace
+        xodr = os.path.join(ws, world['xodr']) if world.get('xodr') and ws else ''
+        if not xodr or not os.path.isfile(xodr):
+            raise ProjectError(f'world {world["name"]!r} has no converted OpenDRIVE file yet: import it on the Worlds '
+                               'page first')
     tp_id = traffic_id or world.get('traffic_profile') or 'tp-default'
     traffic = project.item('traffic_profiles', tp_id) or {}
     return {
         'schema': DRIVE_SCHEMA, 'name': name or f'{world["name"]} / {rig["name"]}',
         'host': host, 'port': int(port), 'tm_port': int(tm_port),
-        'town': world['town'], 'weather': W.resolve(world.get('weather')),
+        'town': world.get('town', '') if not xodr else '', 'xodr': xodr,
+        'opendrive': copy.deepcopy((world.get('osm') or {}).get('mesh') or {}),
+        'handedness': (world.get('osm') or {}).get('handedness', 'RHT') if xodr else 'RHT',
+        'weather': W.resolve(world.get('weather')),
         'weather_source': copy.deepcopy(world.get('weather') or {}),
         'rig': copy.deepcopy(rig), 'traffic': copy.deepcopy(traffic),
         'fps': float(fps), 'steps': max(int(round(seconds * fps)), 1), 'warmup_steps': int(warmup_steps),

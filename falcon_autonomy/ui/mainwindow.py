@@ -521,6 +521,9 @@ class MainWindow(QMainWindow):
         self._closing = True
         self.status.stop()
         self.bridge.timer.stop()
+        for p in self.pages:
+            if hasattr(p, 'shutdown'):
+                p.shutdown()
         for j in self.queue.active():
             self.queue.cancel(j)
         launcher = self.queue.launcher

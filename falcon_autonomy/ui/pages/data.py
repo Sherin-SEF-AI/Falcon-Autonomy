@@ -233,10 +233,13 @@ class BrowseTab(QWidget):
         prov = run.get('provenance') or {}
         self.info.set('Status', f'{run.get("status", "?")}' + (f' — {run["error"]}' if run.get('error') else ''))
         self.info.set('Folder', tilde(path))
-        if perf:
-            self.info.set('Measured', f'{perf["steps"]} steps in {perf["wall_s"]:.1f} s: {perf["steps_per_s"]:.1f} '
-                                      f'steps/s, {perf["realtime_factor"]:.2f}× real time, '
-                                      f'{perf["mpx_per_s"]:.0f} Mpx/s')
+        if perf.get('steps'):
+            parts = [f'{perf["steps"]} steps in {perf.get("wall_s", 0):.1f} s']
+            if 'realtime_factor' in perf:
+                parts.append(f'{perf["realtime_factor"]:.2f}× real time')
+            if 'mpx_per_s' in perf:
+                parts.append(f'{perf["mpx_per_s"]:.0f} Mpx/s')
+            self.info.set('Measured', ', '.join(parts))
         host = prov.get('host') or {}
         self.info.set('Ran with', f'seed {prov.get("seed")}, CARLA {host.get("carla_server", "?")}, Falcon '
                                   f'{prov.get("app_version", "?")}')

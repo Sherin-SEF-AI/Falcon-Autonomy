@@ -10,4 +10,5 @@ WORKERS = {
     'probe': 'falcon_autonomy.workers.probe',
     'tidy': 'falcon_autonomy.workers.tidy',
     'drive': 'falcon_autonomy.workers.drive',
+    'live': 'falcon_autonomy.workers.live',
 }
