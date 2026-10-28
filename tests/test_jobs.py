@@ -181,3 +181,25 @@ def test_cli_rejects_an_invalid_project(tmp_path):
     path.write_text(json.dumps({'format': 'falcon.project', 'version': 1, 'name': ''}))
     r = _cli('project', 'validate', str(path))
     assert r.returncode == P.FAILED and 'name' in r.stderr
+
+
+def test_a_registered_falcon_server_is_shared_not_restarted(settings, tmp_path):
+    """A study's own process uses the server the GUI started (recorded in the registry), never starts another."""
+    import socket
+    from falcon_autonomy.sim import server as S
+    from falcon_autonomy.sim.service import CarlaService
+    lst = socket.socket()
+    lst.bind(('127.0.0.1', 0))
+    lst.listen(1)
+    port = lst.getsockname()[1]
+    settings.set('rpc_port', port)
+    svc = CarlaService(settings, JobQueue(SubprocessLauncher(), str(tmp_path)), str(tmp_path / 'ws'))
+    assert svc.server_state() == 'stopped'
+    os.makedirs(os.path.dirname(S.registry_path(port)), exist_ok=True)
+    with open(S.registry_path(port), 'w') as fh:
+        json.dump({'pid': os.getpid(), 'owner_pid': os.getpid(), 'port': port}, fh)
+    assert svc.server_state() == 'shared'
+    job = type('J', (), {'spec': JobSpec('drive', 'd', ['x'], needs_carla=True)})()
+    assert svc._before_start(job) == ''
+    os.remove(S.registry_path(port))
+    lst.close()

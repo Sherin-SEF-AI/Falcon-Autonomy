@@ -142,6 +142,23 @@ def scoped(cmd: list, memory_gb: float, unit: str = '') -> list:
     return pre + list(cmd)
 
 
+def registry_path(port: int) -> str:
+    from ..core.paths import config_dir
+    return os.path.join(config_dir(), 'servers', f'{int(port)}.json')
+
+
+def registered(port: int) -> dict | None:
+    """The Falcon-started server on this port, when one is recorded and its process is alive (another Falcon process
+    — the GUI, a study, the CLI — may use it, never stop it)."""
+    try:
+        with open(registry_path(port), encoding='utf-8') as fh:
+            d = json.load(fh)
+        os.kill(int(d['pid']), 0)             # alive (the scope's process: systemd-run execs into the server)
+        return d
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 class Server:
     """A CARLA server this process started (its own scope, capped) — or, with external=True, a server the user
     started on a port they chose: then start() and stop() do nothing and only health is watched."""
@@ -204,6 +221,9 @@ class Server:
                                      start_new_session=True, cwd=self.root)
         self.started = time.time()
         self.exit_code = None
+        os.makedirs(os.path.dirname(registry_path(self.port)), exist_ok=True)
+        with open(registry_path(self.port), 'w', encoding='utf-8') as fh:
+            json.dump({'pid': self.proc.pid, 'owner_pid': os.getpid(), 'port': self.port, 'started': self.started}, fh)
 
     @property
     def running(self) -> bool:
@@ -267,6 +287,10 @@ class Server:
                     pass
         self.exit_code = p.returncode
         self.proc = None
+        try:
+            os.remove(registry_path(self.port))
+        except OSError:
+            pass
         if self._log:
             self._log.close()
             self._log = None

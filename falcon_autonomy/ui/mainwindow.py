@@ -157,13 +157,14 @@ class StatusBarWidgets:
         st = svc.server_state()
         text = {'ready': f'CARLA ready · port {svc.port}', 'starting': f'CARLA starting · port {svc.port}',
                 'stopped': f'CARLA stopped · port {svc.port}', 'crashed': f'CARLA crashed · port {svc.port}',
-                'external': f'CARLA (yours) · port {svc.port}', 'fake': 'fake CARLA (tests)'}.get(st, st)
+                'external': f'CARLA (yours) · port {svc.port}', 'fake': 'fake CARLA (tests)',
+                'shared': f'CARLA ready (another Falcon process\'s) · port {svc.port}'}.get(st, st)
         self.server.setText(text)
         self.server.setToolTip(svc.server_error or (svc.server.log_tail(6) if svc.server and st == 'crashed' else
                                                     'Falcon\'s own CARLA server (headless, memory-capped)'))
         own = st in ('ready', 'starting')
         self.server_btn.setText('Stop' if own else 'Start')
-        self.server_btn.setVisible(st not in ('external', 'fake'))
+        self.server_btn.setVisible(st not in ('external', 'fake', 'shared'))
         m = sysinfo.meminfo()
         self.mem.setText(f'RAM {m["available_gb"]:.1f} GB free of {m["total_gb"]:.0f}')
         self.mem.setToolTip(f'MemAvailable. Falcon keeps {MEMORY_RESERVE_GB:g} GB free and queues jobs rather than '

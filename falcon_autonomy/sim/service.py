@@ -88,8 +88,13 @@ class CarlaService:
     def server_state(self) -> str:
         if self.fake_carla:
             return 'fake'
-        if self.server is None:
-            return 'external' if self.external and S.port_open('127.0.0.1', self.port) else 'stopped'
+        if self.server is None or self.server.proc is None:
+            if self.external and S.port_open('127.0.0.1', self.port):
+                return 'external'
+            if S.registered(self.port) and S.port_open('127.0.0.1', self.port):
+                return 'shared'                   # Falcon's server, started by another Falcon process
+            if self.server is None:
+                return 'stopped'
         return self.server.state()
 
     def start_server(self):
@@ -106,6 +111,9 @@ class CarlaService:
     def _before_start(self, job) -> str:
         """Before a CARLA job starts: Falcon's server must be up (started here, its memory checked by the queue)."""
         if not job.spec.needs_carla or self.fake_carla or job.spec.meta.get('no_server'):
+            self.queue.extra_memory_gb = 0.0
+            return ''
+        if self.server_state() == 'shared':
             self.queue.extra_memory_gb = 0.0
             return ''
         srv = self.ensure_server_object()
