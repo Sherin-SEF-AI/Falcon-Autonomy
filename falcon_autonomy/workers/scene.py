@@ -543,3 +543,37 @@ class FaultState:
 
     def report(self) -> dict:
         return {sid: {'planned': self.f[sid], 'frames': self.applied[sid]} for sid in self.f}
+
+
+def write_lanes(w, cmap, out_dir, step: float = 2.0):
+    """lanes.json: the map's driving lanes for lane-line and lane-graph labels, in CARLA's world frame.
+
+    'points': one row per waypoint every `step` m of every driving lane — x, y, z, yaw (°), width, road id, section
+    id, lane id, s, and the left and right lane markings (CARLA's LaneMarkingType and LaneMarkingColor names); a lane
+    boundary is its centre ± width / 2 along the lane's right (x, y) = (−sin yaw, cos yaw). 'graph': the map's
+    topology — lane segments [road, section, lane, s] → [road, section, lane, s]."""
+    import json
+
+    def mk(m):
+        return [str(getattr(m.type, 'name', m.type)), str(getattr(m.color, 'name', m.color))] if m is not None \
+            else ['NONE', 'Standard']
+    rows = []
+    for wp in cmap.generate_waypoints(step):
+        if wp.lane_type != w.carla.LaneType.Driving:
+            continue
+        t = wp.transform
+        rows.append([round(t.location.x, 3), round(t.location.y, 3), round(t.location.z, 3),
+                     round(t.rotation.yaw, 3), round(wp.lane_width, 3), int(wp.road_id), int(wp.section_id),
+                     int(wp.lane_id), round(wp.s, 3)] + mk(getattr(wp, 'left_lane_marking', None)) +
+                    mk(getattr(wp, 'right_lane_marking', None)))
+    graph = []
+    for a, b in cmap.get_topology():
+        graph.append([[int(a.road_id), int(a.section_id), int(a.lane_id), round(a.s, 3)],
+                      [int(b.road_id), int(b.section_id), int(b.lane_id), round(b.s, 3)]])
+    doc = {'schema': 'falcon.lanes/1', 'frame': 'CARLA world (x, y, z metres; yaw degrees; left-handed)',
+           'step_m': step, 'columns': ['x', 'y', 'z', 'yaw', 'width', 'road', 'section', 'lane', 's',
+                                       'left_type', 'left_color', 'right_type', 'right_color'],
+           'points': rows, 'graph': graph}
+    with open(os.path.join(out_dir, 'lanes.json'), 'w', encoding='utf-8') as fh:
+        json.dump(doc, fh, separators=(',', ':'))
+    return len(rows)

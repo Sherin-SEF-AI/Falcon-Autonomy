@@ -106,6 +106,8 @@ class Drive(Worker):
             M_cam_from_lidar = np.linalg.inv(mount_matrix(depth_cam['pose'])) @ mount_matrix(self.lidars[0].s['pose'])
         self.check()
         os.makedirs(self.out_dir, exist_ok=True)
+        if need_gt:
+            scene.write_lanes(self, world.get_map(), self.out_dir)
 
         self.phase('run')
         warm = int(cfg.get('warmup_steps', 10))

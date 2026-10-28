@@ -168,6 +168,44 @@ class CityObjectLabel:
     Any = 255
 
 
+class _Enum(int):
+    """A Boost.Python-like enum value: an int with a name."""
+
+    def __new__(cls, value, name):
+        v = int.__new__(cls, value)
+        v.name = name
+        return v
+
+    def __str__(self):
+        return self.name
+
+
+def _enum(cls, names):
+    for i, n in enumerate(names):
+        setattr(cls, n, _Enum(i, n))
+    cls.names = {n: getattr(cls, n) for n in names}
+    return cls
+
+
+class LaneMarkingType:
+    pass
+
+
+class LaneMarkingColor:
+    pass
+
+
+_enum(LaneMarkingType, ('NONE', 'Other', 'Broken', 'Solid', 'SolidSolid', 'SolidBroken', 'BrokenSolid',
+                        'BrokenBroken', 'BottsDots', 'Grass', 'Curb'))
+_enum(LaneMarkingColor, ('Standard', 'Blue', 'Green', 'Red', 'White', 'Yellow', 'Other'))
+
+
+class LaneMarking:
+    def __init__(self, type_, color, width=0.15):
+        self.type, self.color, self.width = type_, color, width
+        self.lane_change = LaneChange.NONE if hasattr(LaneChange, 'NONE') else 0
+
+
 class LaneType:
     NONE, Driving, Stop, Shoulder, Biking, Sidewalk = 'NONE', 'Driving', 'Stop', 'Shoulder', 'Biking', 'Sidewalk'
 
@@ -883,6 +921,11 @@ class Waypoint:
         self.is_junction = False
         # the marking: broken between the two lanes of a direction, solid at the centre line and the kerb
         self.lane_change = LaneChange.Right if abs(self.lane_id) == 1 else LaneChange.Left
+        inner = LaneMarking(LaneMarkingType.SolidSolid, LaneMarkingColor.Yellow)
+        between = LaneMarking(LaneMarkingType.Broken, LaneMarkingColor.White)
+        outer = LaneMarking(LaneMarkingType.Solid, LaneMarkingColor.White)
+        self.left_lane_marking = inner if abs(self.lane_id) == 1 else between
+        self.right_lane_marking = between if abs(self.lane_id) == 1 else outer
         self.id = hash((self.lane_id, round(float(x), 3)))
 
     def _dir(self):
@@ -930,6 +973,14 @@ class Map:
     def get_waypoint(self, location, project_to_road=True, lane_type=None):
         lid = min(LANES, key=lambda l: abs(l[1] - location.y))[0]
         return Waypoint(lid, float(np.clip(location.x, *ROAD_X)))
+
+    def get_topology(self):
+        """(start, end) waypoint pairs of every lane segment: the fake's road is one segment per lane."""
+        out = []
+        for lid, _, yaw in LANES:
+            a, b = (ROAD_X[0], ROAD_X[1]) if abs(yaw) < 90 else (ROAD_X[1], ROAD_X[0])
+            out.append((Waypoint(lid, a), Waypoint(lid, b)))
+        return out
 
     def generate_waypoints(self, distance):
         """Every driving lane's waypoints, distance apart (as CARLA's: full Waypoint objects)."""

@@ -339,3 +339,24 @@ def test_faults_in_a_drive(project, tmp_path):
     assert all(f['stamps']['cam-front'] == pytest.approx(f['sim_t'] + 0.04) for f in frames)
     ds = json.loads((out / 'dataset.json').read_text())
     assert ds['sensors'][0]['pose']['yaw'] == 0.0                # the planned calibration, not the faulty mount
+
+
+def test_lanes_and_camera_ground_truth(project, tmp_path):
+    project.doc['rigs'][0]['sensors'][0]['labels'] = ['semantic', 'boxes2d', 'boxes3d']
+    project.doc['traffic_profiles'][0]['vehicles'] = 6
+    code, _, err = _run(_cfg(project, tmp_path / 'run', seconds=0.5, seed=4))
+    assert code == P.OK, err
+    out = tmp_path / 'run'
+    lanes = json.loads((out / 'lanes.json').read_text())
+    assert lanes['points'] and len(lanes['graph']) == 4
+    assert {r[9] for r in lanes['points']} == {'SolidSolid', 'Broken'}
+    f = json.loads((out / 'frames.jsonl').read_text().splitlines()[5])
+    objs = json.loads((out / f['files']['cam-front/objects']).read_text())['objects']
+    cars = [o for o in objs if o['class'] == 'car']
+    # actors keep their actor id as their track id; the map's parked cars (level geometry) are 'level:<k>'
+    assert cars and all(o['track_id'] == o['actor_id'] if o['actor_id'] is not None else
+                        str(o['track_id']).startswith('level:') for o in cars)
+    o = cars[0]
+    x0, y0, x1, y1 = o['bbox']
+    assert 0 <= x0 < x1 <= 160 and 0 <= y0 < y1 <= 90 and o['pixels'] > 0 and o['range_m'] > 0
+    assert set(o['box3d']) >= {'center', 'size', 'yaw_deg'} and 0 <= o['occluded'] <= 1
