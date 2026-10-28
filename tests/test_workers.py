@@ -287,3 +287,34 @@ def test_osm_import_clamps_converter_objects_in_the_loaded_file(tmp_path, monkey
     assert xodr.sanitize(world)[1] == [] and 'crosswalk' in world
     rep = json.loads((tmp_path / 'w' / 'import.json').read_text())
     assert any('moved from s' in n for n in rep['notes'])
+
+
+def test_lidar_labels_proven_and_checked(project, tmp_path):
+    from falcon_autonomy.core.rig import new_sensor
+    rig = project.doc['rigs'][0]
+    rig['sensors'][0].update(labels=['semantic', 'depth'], width=192, height=108)
+    rig['sensors'].append(new_sensor('lidar', 'lid', 'top', {'x': 0.0, 'z': 1.9}))
+    rig['sensors'][-1].update(channels=16, points_per_second=40000, range=60.0, rotation_frequency=10.0,
+                              upper_fov=5.0, lower_fov=-20.0)
+    rig['sensors'].append(new_sensor('imu', 'imu', 'imu'))
+    rig['sensors'].append(new_sensor('gnss', 'gnss', 'gnss'))
+    rig['sensors'].append(new_sensor('radar', 'rad', 'front_radar', {'x': 2.3, 'z': 0.6}))
+    project.doc['traffic_profiles'][0]['vehicles'] = 8
+    code, msgs, err = _run(_cfg(project, tmp_path / 'run', seconds=1.0, seed=3))
+    assert code == P.OK, err
+    out = tmp_path / 'run'
+    run = json.loads((out / 'run.json').read_text())
+    lc = run['lidar_checks'][0]
+    assert lc['sweeps'] == 10                                  # 20 steps at 20 Hz, 10 Hz rotation
+    m = lc['match']
+    assert m['exact_slices'] == m['slices'] == 20 and m['max_dir_err_deg'] <= 0.01
+    assert lc['box_points'] > 0 and lc['box_label_share'] >= 0.99
+    rv = lc['range_vs_camera']
+    assert rv['points'] > 50 and rv['median_abs_m'] <= 0.02
+    b = np.fromfile(out / 'lidar' / 'lid' / '000003.bin', np.float32).reshape(-1, 4)
+    lab = (out / 'lidar' / 'lid' / '000003.labels.bin').read_bytes()
+    assert len(lab) == 5 * len(b) and len(b) > 0
+    frames = [json.loads(x) for x in (out / 'frames.jsonl').read_text().splitlines()]
+    assert any('rad/radar' in f['files'] for f in frames)
+    assert len((out / 'imu' / 'imu.jsonl').read_text().splitlines()) >= 19
+    assert (out / 'gnss' / 'gnss.jsonl').read_text().count('lat') >= 9

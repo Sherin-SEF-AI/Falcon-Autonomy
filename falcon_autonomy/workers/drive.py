@@ -33,7 +33,8 @@ from ..core import protocol as P
 from ..core.budget import check_budget, rig_mpx
 from ..core.provenance import read_json, sha256_json, write_json
 from . import scene
-from .common import Failed, Worker
+from .common import ROLE_SENSOR, Failed, Worker
+from .lidar import LidarRecorder, mount_matrix
 
 DRIVE_SCHEMA = 'falcon.drive_config/1'
 MAX_IN_FLIGHT = 8                       # frames being encoded per camera; beyond, the drive waits for them
@@ -83,6 +84,17 @@ class Drive(Worker):
         scene.spawn_walkers(self, world, lib, rng, cfg.get('traffic') or {})
         cams = self.cameras
         cams.spawn_rig(world, lib, ego, cfg['rig']['sensors'])
+        fps0 = float(cfg.get('fps', 20.0))
+        self.lidars = [LidarRecorder(self, world, lib, ego, s, cams, ROLE_SENSOR)
+                       for s in cfg['rig']['sensors'] if s['type'] == 'lidar']
+        for L in self.lidars:
+            L.set_rate(fps0)
+        self.others = scene.Others(self, world, lib, ego, cfg['rig']['sensors'], cams)
+        # the range check: the first camera with a depth label camera, against the first lidar
+        depth_cam = next((s for s, k in cams.cams if 'depth' in k), None)
+        M_cam_from_lidar = None
+        if depth_cam is not None and self.lidars:
+            M_cam_from_lidar = np.linalg.inv(mount_matrix(depth_cam['pose'])) @ mount_matrix(self.lidars[0].s['pose'])
         self.check()
         os.makedirs(self.out_dir, exist_ok=True)
 
@@ -111,9 +123,12 @@ class Drive(Worker):
                 sim_t0 = snap_t if sim_t0 is None else sim_t0
                 rec = {'step': i, 'frame': int(frame), 'sim_t': round(snap_t - sim_t0, 6), 'files': {}}
                 rec.update(scene.ego_state(ego))
+                depth_now = None
                 for s, sensors in cams.cams:
                     for kind, sensor in sensors.items():
                         data = cams.get(sensor.id, frame)
+                        if kind == 'depth' and s is depth_cam:
+                            depth_now = data
                         if kind == 'semantic' and i == 0 and s['pose']['pitch'] <= 5.0:
                             warn = scene.ground_label_check(data)
                             if warn:
@@ -122,6 +137,12 @@ class Drive(Worker):
                         rel = os.path.join(kind, s['id'], f'{i:06d}.{"jpg" if kind == "rgb" else "png"}')
                         rec['files'][f'{s["id"]}/{kind}'] = rel
                         cams.submit_write(kind, data, os.path.join(self.out_dir, rel))
+                for k, L in enumerate(self.lidars):
+                    m_raw = L.step(frame, rec['sim_t'], self.out_dir, rec)
+                    if k == 0 and depth_now is not None and i % 5 == 0:
+                        L.range_check(np.frombuffer(m_raw.raw_data, np.float32).reshape(-1, 4)[:, :3]
+                                      .astype(np.float64), depth_cam, depth_now, M_cam_from_lidar)
+                self.others.step(frame, rec['sim_t'], self.out_dir, rec)
                 index.write(json.dumps(rec, separators=(',', ':')) + '\n')
                 n += 1
                 wall = time.monotonic() - t_rec
@@ -136,6 +157,7 @@ class Drive(Worker):
             cams.flush(0)
         finally:
             index.close()
+            self.others.close()
         wall = time.monotonic() - t_rec
         sim_s = n / fps
         perf = {'steps': n, 'wall_s': round(wall, 3), 'steps_per_s': round(n / max(wall, 1e-6), 3),
@@ -149,7 +171,13 @@ class Drive(Worker):
             {'town': cfg.get('town'), 'xodr': cfg.get('xodr'), 'weather': cfg.get('weather'),
              'label_warnings': label_warnings}))
         self.emit.progress(1.0, f'recorded {n} steps in {wall:.1f} s', force=True)
-        return {'performance': perf, 'summary': {'steps': n, 'cameras': len(cams.cams), 'town': cfg.get('town'),
+        lidar_checks = [L.report() for L in self.lidars]
+        for c in lidar_checks:
+            m = c['match']
+            self.emit.log(f'lidar {c["sensor"]}: {m["exact_slices"]} of {m["slices"]} slices matched by order '
+                          f'(worst direction {m["max_dir_err_deg"]:.2g}°), points in vehicle boxes labelled vehicle: '
+                          f'{c["box_label_share"]}')
+        return {'performance': perf, 'lidar_checks': lidar_checks, 'summary': {'steps': n, 'cameras': len(cams.cams), 'town': cfg.get('town'),
                                                   'steps_per_s': perf['steps_per_s'],
                                                   'realtime_factor': perf['realtime_factor']},
                 'name': cfg.get('name', 'drive'), 'config_sha256': sha256_json(cfg)}

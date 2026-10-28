@@ -385,3 +385,78 @@ def ground_label_check(data) -> str | None:
             'labels the road and sidewalk meshes of a generated OpenDRIVE world as sky (11). Road, sidewalk and '
             'ground pixels of this run are mislabelled; other classes (vehicles, walkers, poles, lights) are not '
             'affected. Map-based ground relabelling comes with the data engine (milestone 3).')
+
+
+class Others:
+    """Radar, GNSS and IMU of the rig at their rates (sensor_tick = 1 / rate): radar detections per step as .npy
+    (float32 velocity, azimuth, altitude, depth — CARLA's order), GNSS and IMU readings as lines of jsonl."""
+
+    def __init__(self, w, world, lib, ego, sensors, cameras):
+        self.w, self.cams, self.items = w, cameras, []
+        for s in sensors:
+            t = s['type']
+            bp_id = {'radar': 'sensor.other.radar', 'gnss': 'sensor.other.gnss', 'imu': 'sensor.other.imu'}.get(t)
+            if bp_id is None:
+                continue
+            bp = lib.find(bp_id)
+            for k, v in s.items():
+                if k in ('horizontal_fov', 'vertical_fov', 'range', 'points_per_second') and bp.has_attribute(k):
+                    bp.set_attribute(k, str(v))
+            if t == 'gnss':
+                for k in ('noise_lat_stddev', 'noise_lon_stddev', 'noise_alt_stddev'):
+                    if bp.has_attribute(k):
+                        bp.set_attribute(k, str(s.get(k, 0.0)))
+            if t == 'imu':
+                for ax in 'xyz':
+                    for kind, key in (('accel', 'noise_accel_stddev'), ('gyro', 'noise_gyro_stddev')):
+                        a = f'noise_{kind}_stddev_{ax}'
+                        if bp.has_attribute(a):
+                            bp.set_attribute(a, str(s.get(key, 0.0)))
+            bp.set_attribute('sensor_tick', str(1.0 / float(s.get('rate_hz', 20.0))))
+            bp.set_attribute('role_name', ROLE_SENSOR)
+            a = w.own(world.spawn_actor(bp, camera_transform(w.carla, s['pose']), attach_to=ego))
+            q = queue.Queue()
+            cameras.queues[a.id] = q
+            a.listen(q.put)
+            self.items.append((s, a, q))
+        self.files = {}
+
+    def step(self, frame, sim_t, out_dir, rec):
+        import json
+        import numpy as np
+        for s, a, q in self.items:
+            got = []
+            while True:
+                try:
+                    d = q.get_nowait()
+                except queue.Empty:
+                    break
+                if d.frame == frame:
+                    got.append(d)
+            for d in got:
+                t = s['type']
+                if t == 'radar':
+                    rel = os.path.join('radar', s['id'], f'{rec["step"]:06d}.npy')
+                    path = os.path.join(out_dir, rel)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    np.save(path, np.frombuffer(d.raw_data, np.float32).reshape(-1, 4))
+                    rec['files'][f'{s["id"]}/radar'] = rel
+                    continue
+                if t == 'gnss':
+                    row = {'frame': int(frame), 'sim_t': sim_t, 'lat': d.latitude, 'lon': d.longitude,
+                           'alt': d.altitude}
+                else:
+                    row = {'frame': int(frame), 'sim_t': sim_t,
+                           'accel': [d.accelerometer.x, d.accelerometer.y, d.accelerometer.z],
+                           'gyro': [d.gyroscope.x, d.gyroscope.y, d.gyroscope.z], 'compass': d.compass}
+                fh = self.files.get(s['id'])
+                if fh is None:
+                    os.makedirs(os.path.join(out_dir, t), exist_ok=True)
+                    fh = self.files[s['id']] = open(os.path.join(out_dir, t, f'{s["id"]}.jsonl'), 'w',
+                                                    encoding='utf-8')
+                fh.write(json.dumps(row) + '\n')
+
+    def close(self):
+        for fh in self.files.values():
+            fh.close()
+        self.files.clear()
