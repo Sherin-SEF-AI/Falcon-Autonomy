@@ -36,6 +36,11 @@ def test_lead_brake_runs_fires_and_measures(project, tmp_path):
     assert len(traj['actors']['ego']) == len(traj['actors']['lead']) == 240
     lead = traj['actors']['lead']
     assert lead[30][4] ** 2 + lead[30][5] ** 2 > 50 and lead[-1][4] ** 2 + lead[-1][5] ** 2 < 1   # moving, stopped
+    # actors.jsonl: kinematic actors (physics off, so CARLA reports them still) carry the director's velocity
+    rows = [json.loads(x) for x in (tmp_path / 'run' / 'actors.jsonl').read_text().splitlines()]
+    ego = next(a for a in rows[30]['actors'] if a['role'] == 'hero')
+    v_traj = (traj['actors']['ego'][30][4] ** 2 + traj['actors']['ego'][30][5] ** 2) ** 0.5
+    assert v_traj > 5 and (ego['vx'] ** 2 + ego['vy'] ** 2) ** 0.5 == pytest.approx(v_traj, abs=0.5)
 
 
 def test_same_seed_same_scenario_bit_for_bit(project, tmp_path):

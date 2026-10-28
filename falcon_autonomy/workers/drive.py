@@ -207,7 +207,7 @@ class Drive(Worker):
                         L.range_check(np.frombuffer(m_raw.raw_data, np.float32).reshape(-1, 4)[:, :3]
                                       .astype(np.float64), depth_cam, depth_now, M_cam_from_lidar)
                 self.others.step(frame, rec['sim_t'], self.out_dir, rec)
-                actor_log.step(world, i, frame, rec['sim_t'])
+                actor_log.step(world, i, frame, rec['sim_t'], director)
                 index.write(json.dumps(rec, separators=(',', ':')) + '\n')
                 n += 1
                 wall = time.monotonic() - t_rec

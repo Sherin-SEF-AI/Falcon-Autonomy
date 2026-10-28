@@ -594,14 +594,15 @@ class ActorLog:
     """actors.jsonl: every vehicle and walker at every recorded step, in CARLA's world frame, from the world snapshot
     of that frame — {step, frame, sim_t, actors: [{id, type_id, category, role, x, y, z, roll, pitch, yaw, vx, vy, vz,
     extent [ex, ey, ez], bbox_center [cx, cy, cz] (in the actor's frame)}]}. Boxes and categories are read once per
-    actor (they do not change)."""
+    actor (they do not change). Actors a kinematic director moves (physics off: CARLA reports them still) take the
+    director's own velocity."""
 
     def __init__(self, w, path):
         self.w = w
         self.fh = open(path, 'w', encoding='utf-8')
         self.static = {}
 
-    def step(self, world, i, frame, sim_t):
+    def step(self, world, i, frame, sim_t, director=None):
         import json
         from ..core.groundtruth import category_of
         snap = world.get_snapshot()
@@ -625,7 +626,10 @@ class ActorLog:
             sa = snap.find(a.id)
             if sa is None:
                 continue
-            t, v = sa.get_transform(), sa.get_velocity()
+            t, v = sa.get_transform(), None
+            if director is not None and director.kinematic:
+                v = director.k_vel(a)
+            v = v if v is not None else sa.get_velocity()
             rows.append(dict({'id': a.id, 'x': round(t.location.x, 4), 'y': round(t.location.y, 4),
                               'z': round(t.location.z, 4), 'roll': round(t.rotation.roll, 4),
                               'pitch': round(t.rotation.pitch, 4), 'yaw': round(t.rotation.yaw, 4),
