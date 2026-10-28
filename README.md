@@ -5,10 +5,10 @@ One desktop application for the whole loop of building a self-driving AI on the
 generate perfectly labelled data where models are weak, train and evaluate, and test a full AV stack — with every
 number traceable to the run that produced it.
 
-**Status: milestones 1–6 of 8 (foundation; worlds and live; rigs and data engine; scenarios and rare cases; models and the sim-to-real gap; the training lab).** What works today is listed under *What works*; everything else in the
-[roadmap](docs/roadmap.md) is planned, not present. The app shows only pages that do what they say.
+**Status: 1.0 — all eight milestones of the plan.** What works is listed under *What works*; what comes next is in
+the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
 
-## What works (0.6.0)
+## What works (1.0.0)
 
 - **The app shell** (PyQt6): a page navigator, Jobs and Log docks, undo and redo for every project edit, a command
   palette (Ctrl+K), dark and light themes, a status bar with the CARLA server, the GPU and memory.
@@ -48,6 +48,18 @@ number traceable to the run that produced it.
   an MLflow export ([training](docs/training.md)); a CARLA environment with the Gymnasium API, behaviour cloning, PPO
   with a scenario curriculum, Leaderboard-style driving scores and one-click replay of any infraction
   ([policies](docs/policies.md)).
+- **The Loop** (the home page): pick a model and an operational design domain, evaluate, find the weak cells, search
+  for rare cases there, generate targeted data, retrain, evaluate again on the same held-out set and show before and
+  after with intervals — each iteration a versioned, resumable record with its costs ([loop](docs/loop.md)); HTML
+  reports with provenance ([reports](docs/reports.md)).
+- **Stack testing**: a closed-loop ROS 2 bridge (Autoware, Ackermann or CARLA control), scenario suites with pass/fail
+  and intervals, a SOTIF-style safety-case report; CARLA 0.9.16's native ROS 2 measured and documented
+  ([stack testing](docs/stack-testing.md)).
+- **Log replay**: nuScenes, Waymo v2, ROS 2 bags, KITTI raw and Falcon runs rebuilt in CARLA, changed (timing, speeds,
+  an added pedestrian, weather) and compared ([log replay](docs/log-replay.md)).
+- **Hardware in the loop**: camera (H.264/RTP) and lidar streamed to a Jetson (or a simulated device), control back,
+  latency per stage with a waterfall ([hardware](docs/hardware.md)).
+- **A Linux bundle** (PyInstaller, torch and CUDA included) ([packaging](docs/packaging.md)).
 - **Worlds**: CARLA's towns with weather presets and sliders (sun, cloud, rain, wetness, puddles, fog, wind), and
   **real places imported from OpenStreetMap** (.osm or .osm.pbf, offline) with a road-graph preview, a lane check
   against OSM, **left-hand traffic** (verified on the server) and the **Indian mixed-traffic profile**
@@ -93,7 +105,9 @@ FALCON_REAL_CARLA=1 python3 -m pytest -m real_server     # also against a real C
 [The manual](docs/index.md) · [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
 [project format](docs/project-format.md) · [CLI and exit codes](docs/cli.md) · [methods](docs/methods.md) ·
 [CARLA lessons](docs/carla-lessons.md) · [models](docs/models.md) · [sim-to-real](docs/sim-to-real.md) ·
-[world model](docs/world-model.md) · [training](docs/training.md) · [policies](docs/policies.md) · [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
+[world model](docs/world-model.md) · [training](docs/training.md) · [policies](docs/policies.md) · [loop](docs/loop.md) · [reports](docs/reports.md) ·
+[stack testing](docs/stack-testing.md) · [log replay](docs/log-replay.md) · [hardware](docs/hardware.md) ·
+[packaging](docs/packaging.md) · [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
 
 ## Licence
 

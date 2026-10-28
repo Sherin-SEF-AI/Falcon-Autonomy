@@ -33,6 +33,10 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon policy leaderboard PROJECT --policy DIR --out DIR [--scenario K]... [--seeds-per N] [--free N]` | Leaderboard-style driving score with intervals |
 | `falcon policy replay PROJECT --episodes FILE --episode N [--infraction K] --out DIR` | replays an episode's infraction with a chase camera |
 | `falcon export RUN... --format F --out DIR [--split-json FILE] [--option K=V]... [--overwrite]` | exports runs as `coco`, `yolo`, `kitti`, `nuscenes` (with lidarseg and panoptic), `waymo` (a documented Waymo-style JSON layout, not TFRecords), `bdd_lanes` or `mcap` (ROS 2); `falcon_export.json` in DIR says what was filled, left out and why |
+| `falcon loop PROJECT [status\|next\|run --until N\|show N\|new\|set --model ID --odd FILE]` | the closed loop: the next step's cost, run to a step, an iteration's record ([loop](loop.md)) |
+| `falcon report iteration\|evaluation\|dataset\|study\|leaderboard SRC --out FILE` | a self-contained HTML report with provenance ([reports](reports.md)) |
+| `falcon replay import\|match\|run\|compare …` | import a nuScenes, Waymo v2, ROS 2 bag, KITTI raw or Falcon log, check where it fits a world, replay it with changes, compare ([log replay](log-replay.md)) |
+| `falcon hil device\|deploy\|session\|report\|acceptance …` | hardware in the loop: the device (address in your settings only), deploying the agent, a streaming session with latency per stage, the Jetson acceptance run ([hardware](hardware.md)) |
 | `falcon stack topics PROJECT [--rig R] [--control autoware\|ackermann\|carla]` | the topics Falcon's ROS 2 bridge publishes for a rig, the control topic it takes, and the Autoware names ([stack testing](stack-testing.md)) |
 | `falcon stack image` | builds the bridge image `falcon-ros2-bridge:humble` (from the official `ros:humble-ros-base`) with Docker |
 | `falcon stack bridge --port P [--native] [--domain D]` | prints the bridge node's command (in the image, or `--native` on a ROS 2 machine) |

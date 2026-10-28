@@ -157,6 +157,23 @@ and distance bin. A **version** freezes the finished drives with a train/validat
 that never puts one drive (or world) in two splits. **Browse** shows any label layer (semantic, instance, range,
 boxes) and the frame's objects. The format is in [dataset format](dataset-format.md).
 
+### Stack testing
+Connect an external driving stack through ROS 2: Falcon's bridge publishes the rig's sensors and waits each step for
+the stack's control (Autoware Control, Ackermann or CARLA's own message), recording missed deadlines. Run scenario
+suites with pass/fail criteria and intervals, and write a safety-case report against an operational design domain —
+in the spirit of ISO 21448, not a certification claim. What CARLA 0.9.16's native ROS 2 does and does not do, as
+measured, is in [stack testing](stack-testing.md).
+
+### Replay
+Import a real or recorded log (nuScenes, Waymo v2, ROS 2 bags, KITTI raw, Falcon runs), see where it fits a world and
+how well its path matches the lanes, replay it in CARLA, change it (timing, speeds, remove an actor, add a pedestrian,
+weather) and compare the original with the changed run ([log replay](log-replay.md)).
+
+### Hardware
+Stream a camera (H.264 over RTP, or raw) and a lidar to a device — the Jetson AGX Orin, or a simulated device on this
+machine — take its control back, and measure latency stage by stage with a waterfall; the device's address and key
+live only in your settings ([hardware](hardware.md)).
+
 ### Reports
 Self-contained HTML reports ([reports](reports.md)) of a loop iteration, a model evaluation, a dataset's coverage, a
 rare-case study or a Leaderboard result: inline CSS and SVG (nothing fetched from the network), light and dark, every

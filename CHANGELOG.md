@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.0.0 — milestones 7 and 8: stack, replay, hardware, the Loop
+
+- **The Loop** becomes the home page: model + ODD → evaluate → weak cells (class × range × condition, a heuristic
+  rule) → rare-case search there (scenario criticality as the objective, stated) → targeted data → retrain → evaluate
+  again on the same held-out set (never trained on: enforced) → before and after with paired intervals. Costs are
+  estimated before each step from measured throughput and measured after; iterations are versioned and resumable.
+  The former Home is the Loop page's Status tab.
+- **Reports**: self-contained HTML (inline CSS/SVG, light and dark) with provenance for loop iterations, evaluations,
+  datasets, rare-case studies and Leaderboard results; `falcon report`.
+- **Stack testing** (`falcon stack`): measured on Falcon's own server — CARLA 0.9.16's native ROS 2 publishes only
+  sensors enabled for ROS (no odometry or vehicle status, a wrong camera_info focal length, control accepted, no
+  waiting for a stack), and the official carla-ros-bridge refuses 0.9.16. Falcon's bridge waits each step for the
+  stack's control (Autoware Control, Ackermann, CARLA's message) or records a missed deadline: 31–45 steps/s with a
+  1280 × 720 camera and a 32-channel lidar. Suites with pass/fail and Wilson intervals; a SOTIF-style safety-case
+  report (not a certification claim). Autoware: topic mapping and a compose example, not run here.
+- **Log replay** (`falcon replay`): nuScenes, Waymo v2 Parquet, ROS 2 bags (MCAP, .db3), KITTI raw and Falcon runs,
+  converted to CARLA's frame, map-matched with numbers (a mismatch is refused), replayed kinematically, changed and
+  compared. Measured: a drive's MCAP round trip rebuilt within 0.2 mm on a real server; repeat replays identical.
+- **Hardware in the loop** (`falcon hil`): H.264/RTP (NVENC or x264) or raw camera and TCP/UDP or ROS 2 lidar to a
+  device, control back, emulated sensor clocks, an NTP-style offset estimate with a bound, 12 latency stages and a
+  waterfall. Measured with a local simulated device on a real server: step start to control at the simulation
+  22–28 ms median, no frames lost. The Jetson AGX Orin acceptance is one command, pending the device's address.
+- **Packaging**: a Linux x86_64 PyInstaller bundle (4.3 GB compressed, torch and CUDA included), an app icon and a
+  desktop entry; Ctrl+C in the terminal quits the app cleanly. Windows is not supported (documented).
+- Fixed: a crashed CARLA server could not be restarted in the same process (a reused systemd unit name).
+
 ## 0.6.0 — milestone 6: the training lab
 
 - Detector fine-tuning (`falcon train`, Training ▸ Detectors): Faster R-CNN MobileNetV3, FCOS and RetinaNet v2 from
