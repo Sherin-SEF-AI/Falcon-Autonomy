@@ -555,7 +555,7 @@ class Live(Worker):
             if failed is not None:
                 rec.setdefault('faults', {})[s['id']] = failed[0]
             for kind in c.kinds():
-                ext = {'rgb': 'jpg', 'objects': 'json'}.get(kind, 'png')
+                ext = {'rgb': 'jpg', 'objects': 'json', 'flow': 'npy'}.get(kind, 'png')
                 rec['files'][f'{s["id"]}/{kind}'] = os.path.join(kind, s['id'], f'{i:06d}.{ext}')
             cams.pending.append(cams.pool.submit(c.write, imgs, i, r['dir'], boxes, self.raster))
         r['index'].write(json.dumps(rec, separators=(',', ':')) + '\n')

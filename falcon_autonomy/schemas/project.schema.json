@@ -112,7 +112,7 @@
         "height": {"type": "integer", "minimum": 16, "maximum": 8192},
         "fov": {"type": "number", "exclusiveMinimum": 0, "maximum": 360},
         "rate_hz": {"type": "number", "exclusiveMinimum": 0},
-        "labels": {"type": "array", "items": {"enum": ["semantic", "instance", "depth", "boxes2d", "boxes3d"]}, "uniqueItems": true}
+        "labels": {"type": "array", "items": {"enum": ["semantic", "instance", "depth", "boxes2d", "boxes3d", "flow"]}, "uniqueItems": true}
       }
     },
     "rig": {

@@ -19,7 +19,7 @@ from .. import icons
 from ..view3d import make_view
 from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
 
-LABELS = ('semantic', 'instance', 'depth', 'boxes2d', 'boxes3d')
+LABELS = ('semantic', 'instance', 'depth', 'boxes2d', 'boxes3d', 'flow')
 TYPE_NAMES = {'camera.pinhole': 'Pinhole camera', 'camera.fisheye': 'Fisheye camera', 'lidar': 'Lidar',
               'radar': 'Radar', 'gnss': 'GNSS', 'imu': 'IMU'}
 FIELDS = {     # type: [(key, label, kind, lo, hi, decimals/None, unit)]

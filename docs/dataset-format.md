@@ -16,6 +16,7 @@ run/
   instance/<camera>/<n>.png      uint16: 0 none, else an object's id in objects/
   range/<camera>/<n>.png         uint16 = round(range_m × 256) along the pixel's ray; 0: nothing within 256 m
   objects/<camera>/<n>.json      the objects seen (below)
+  flow/<camera>/<n>.npy          optical flow (below)
   lidar/<lidar>/<sweep>.bin      float32 x y z intensity, the lidar's frame at the sweep's end
   lidar/<lidar>/<sweep>.labels.bin   uint8 tag per point, then uint32 actor id per point
   radar/<radar>/<n>.npy          float32 velocity, azimuth, altitude, depth (CARLA's order)
@@ -51,4 +52,7 @@ sensor CARLA spawns, not the calibration (as on a real faulty rig).
   ([methods](methods.md#lidar-labels-and-their-proof)).
 - **Lanes** (`lanes.json`): driving-lane waypoints every 2 m with width and left/right lane markings (CARLA's
   LaneMarkingType and colour), and the lane graph (CARLA's topology).
-- **Optical flow** is not recorded in this version.
+- **Optical flow** (pinhole cameras with the `flow` label): `flow/<camera>/<n>.npy`, float16 H × W × 2, each
+  pixel's motion in pixels from the previous frame, u right and v down — CARLA's optical-flow camera decoded as
+  measured on 0.9.16 (pixels = x × W/2, −y × H/2; median error 0.4 px against the flow predicted from depth and the
+  camera's motion). Fisheye flow is not recorded.

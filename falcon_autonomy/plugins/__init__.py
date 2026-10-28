@@ -1,8 +1,8 @@
 """Plug-ins: small, documented interfaces for models and AV stacks (docs/plugins.md).
 
 A plug-in is a Python class named by "module:Class" (importable from the worker's Python). This build defines the
-driving-policy interface; detectors, segmenters, BEV models, trackers and AV-stack connections follow with their
-milestones.
+driving-policy interface and the model interface (core.models: detectors and segmenters as ONNX, TorchScript or
+Python plug-ins with predict(rgb, meta)); BEV models, trackers and AV-stack connections follow with their milestones.
 
 Policy (runs inside a live or drive worker, in CARLA's Python — no Qt, no carla needed by the policy itself):
 
@@ -35,3 +35,5 @@ def load(spec: str, **params):
 
 
 BUILTIN_POLICIES = {'lane_follower': 'falcon_autonomy.plugins.lane_follower:LaneFollower'}
+# a SYNTHETIC detector built from the ground truth with planted weaknesses (testing the harness, not a model)
+BUILTIN_DETECTORS = {'synthetic': 'falcon_autonomy.plugins.synthetic_detector:SyntheticDetector'}

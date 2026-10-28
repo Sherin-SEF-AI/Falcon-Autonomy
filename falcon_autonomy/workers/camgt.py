@@ -13,6 +13,12 @@ Per recorded frame and camera (falcon-raw):
   'level:<k>'), class, category (nuScenes), bbox (tight, from its pixels), bbox_full (its 3D box through the lens),
   truncated, occluded, range_m, pixels, box3d (vehicle frame: center, size [l w h], yaw), and its mask as COCO RLE.
 
+* flow/<cam>/<n>.npy — (pinhole cameras with the 'flow' label) float16 H × W × 2: each pixel's motion in pixels from
+  the previous frame to this one, u right and v down, from CARLA's optical-flow camera. Measured on CARLA 0.9.16: it
+  writes two float32 per pixel in normalised units; pixels = (x × W / 2, −y × H / 2) — against the flow predicted from
+  the depth image and the camera's own motion (median 4.3 px) the median error was 0.43 px in u and 0.23 px in v. A
+  fisheye's flow is not recorded (remapping flow vectors through the lens is not implemented).
+
 Imported (OpenDRIVE) worlds. Measured on CARLA 0.9.16 (central Bengaluru, a car 10 m ahead): the road and sidewalk
 mesh generate_opendrive_world builds is drawn by the RGB camera but NOT by the label cameras — the depth camera sees
 nothing there (99.998 % of the lower third at its 1000 m far limit) and the instance and semantic cameras tag it sky
@@ -107,13 +113,22 @@ class CameraRecorder:
                     d[kind] = cameras.spawn(world, lib, bp, v['width'], v['height'], v['fov'], tf, ego,
                                             attrs=LENS.LABEL_VIEW_ATTRIBUTES if fisheye else None)
             self.views.append(d)
+        self.flow = 'flow' in (s.get('labels') or []) and not fisheye
+        if self.flow:
+            v = self.plan['views'][0]
+            vp = v['pose']
+            tf = w.carla.Transform(w.carla.Location(x=vp['x'], y=vp['y'], z=vp['z']),
+                                   w.carla.Rotation(pitch=vp['pitch'], yaw=vp['yaw'], roll=vp['roll']))
+            self.views[0]['flow'] = cameras.spawn(world, lib, 'sensor.camera.optical_flow', v['width'], v['height'],
+                                                  v['fov'], tf, ego)
         self.devig = LENS.devignette_layers(self.plan) if fisheye else None
         self.o2v = LENS.optical_to_vehicle(pose_actual)
         self.assoc = {}
         self.relabelled = 0
 
     def kinds(self):
-        return ['rgb'] + (['semantic', 'instance', 'range', 'objects'] if self.gt else [])
+        return ['rgb'] + (['semantic', 'instance', 'range', 'objects'] if self.gt else []) + \
+            (['flow'] if self.flow else [])
 
     def collect(self, frame):
         """Every view's images of this frame (by frame number)."""
@@ -134,6 +149,14 @@ class CameraRecorder:
             fl, rng, K, omega = image_faults
             img, _ = F.apply_image(img, fl, rng, K, omega)
         files['rgb'] = _write(out_dir, 'rgb', sid, n, 'jpg', img)
+        if self.flow and 'flow' in imgs[0]:
+            fl = imgs[0]['flow']
+            F = np.frombuffer(fl.raw_data, np.float32).reshape(fl.height, fl.width, 2)
+            px = np.stack([F[..., 0] * (fl.width / 2.0), -F[..., 1] * (fl.height / 2.0)], -1).astype(np.float16)
+            rel = os.path.join('flow', sid, f'{n:06d}.npy')
+            os.makedirs(os.path.join(out_dir, 'flow', sid), exist_ok=True)
+            np.save(os.path.join(out_dir, rel), px)
+            files['flow'] = rel
         if not self.gt:
             return files
         cg = self.cg

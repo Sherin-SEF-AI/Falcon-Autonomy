@@ -360,3 +360,43 @@ def test_lanes_and_camera_ground_truth(project, tmp_path):
     x0, y0, x1, y1 = o['bbox']
     assert 0 <= x0 < x1 <= 160 and 0 <= y0 < y1 <= 90 and o['pixels'] > 0 and o['range_m'] > 0
     assert set(o['box3d']) >= {'center', 'size', 'yaw_deg'} and 0 <= o['occluded'] <= 1
+
+
+def test_optical_flow_matches_the_cameras_own_motion(project, tmp_path):
+    """The flow layer (decoded as measured on CARLA 0.9.16) against the flow predicted from the range image and the
+    ego's motion between two frames, on the fake's static ground: each pixel of frame 1 came from where its 3D point
+    projects in frame 0's camera."""
+    cam = project.doc['rigs'][0]['sensors'][0]
+    cam.update(labels=['semantic', 'depth', 'flow'], width=96, height=64, pose=dict(cam['pose'], pitch=-15.0))
+    project.doc['traffic_profiles'][0]['vehicles'] = 0
+    code, _, err = _run(_cfg(project, tmp_path / 'run', seconds=0.5, seed=1))
+    assert code == P.OK, err
+    out = tmp_path / 'run'
+    frames = [json.loads(x) for x in (out / 'frames.jsonl').read_text().splitlines()]
+    f0, f1 = frames[4], frames[5]
+    flow = np.load(out / f1['files']['cam-front/flow']).astype(np.float32)
+    assert flow.shape == (64, 96, 2)
+    import cv2
+    from falcon_autonomy.core import lens as L
+    from falcon_autonomy.core.rig import carla_rotation
+    rng = cv2.imread(str(out / f1['files']['cam-front/range']), cv2.IMREAD_UNCHANGED).astype(np.float64) / 256.0
+    plan = L.plan_camera(cam, tables=False)
+    rays, _ = L.output_rays(L.intrinsics(cam))
+    o2v = L.optical_to_vehicle(cam['pose'])
+    mount = np.array([cam['pose'][k] for k in 'xyz'])
+    Pv = (rays * rng[..., None]) @ o2v.T + mount                  # vehicle frame at f1
+
+    def T(e):
+        return carla_rotation(e['roll'], e['pitch'], e['yaw']), np.array([e['x'], e['y'], e['z']])
+    R0, p0 = T(f0['ego'])
+    R1, p1 = T(f1['ego'])
+    Pw = Pv @ R1.T + p1
+    Pc = ((Pw - p0) @ R0 - mount) @ o2v                          # optical axes of the camera at f0
+    K = np.asarray(plan['K'])
+    u0 = K[0, 0] * Pc[..., 0] / Pc[..., 2] + K[0, 2]
+    v0 = K[1, 1] * Pc[..., 1] / Pc[..., 2] + K[1, 2]
+    vv, uu = np.mgrid[0:64, 0:96] + 0.5
+    m = (rng > 0) & (rng < 200)
+    assert m.sum() > 1000
+    assert np.median(np.abs(flow[..., 0][m] - (uu - u0)[m])) < 0.1
+    assert np.median(np.abs(flow[..., 1][m] - (vv - v0)[m])) < 0.1

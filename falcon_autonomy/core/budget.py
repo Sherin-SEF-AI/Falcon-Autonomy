@@ -34,8 +34,11 @@ TYPICAL = {
 
 def label_cameras(labels) -> list:
     """The CARLA label cameras a set of label kinds needs (each rendered once per view): the instance and the depth
-    camera for any of them."""
-    return list(GT_CAMERAS) if any(k in GT_LABELS for k in labels or ()) else []
+    camera for any of them, and the optical-flow camera for 'flow'."""
+    out = list(GT_CAMERAS) if any(k in GT_LABELS for k in labels or ()) else []
+    if 'flow' in (labels or ()):
+        out.append('optical_flow')
+    return out
 
 
 def fisheye_focal_px(s: dict) -> float:

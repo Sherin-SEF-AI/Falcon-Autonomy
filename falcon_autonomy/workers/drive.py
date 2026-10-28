@@ -196,7 +196,7 @@ class Drive(Worker):
                         continue
                     img_faults = faults.image(s['id'], r.plan['K'], scene.yaw_rate_optical(s, yaw_rate))
                     for kind in r.kinds():
-                        ext = {'rgb': 'jpg', 'objects': 'json'}.get(kind, 'png')
+                        ext = {'rgb': 'jpg', 'objects': 'json', 'flow': 'npy'}.get(kind, 'png')
                         rel = os.path.join(kind, s['id'], f'{i:06d}.{ext}')
                         rec['files'][f'{s["id"]}/{kind}'] = rel
                         faults.last[f'{s["id"]}/{kind}'] = rel

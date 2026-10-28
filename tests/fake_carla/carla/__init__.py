@@ -415,7 +415,7 @@ SENSOR_DEFAULTS = {
                                        'horizontal_fov': 360.0, 'sensor_tick': 0.0, 'role_name': 'front'},
 }
 SENSOR_DEFAULTS['sensor.other.collision'] = {'role_name': 'collision'}
-for _k in ('semantic_segmentation', 'instance_segmentation', 'depth'):
+for _k in ('semantic_segmentation', 'instance_segmentation', 'depth', 'optical_flow'):
     SENSOR_DEFAULTS['sensor.camera.' + _k] = {'image_size_x': 800, 'image_size_y': 600, 'fov': 90.0, 'sensor_tick': 0.0,
                                              'lens_k': -1.0, 'lens_kcube': 0.0, 'lens_circle_multiplier': 0.0,
                                              'lens_circle_falloff': 5.0, 'role_name': 'front'}
@@ -1334,6 +1334,8 @@ class World:
         kind = s.type_id
         if kind == 'sensor.other.collision':
             return self._collision(s, f, t, tr)
+        if kind == 'sensor.camera.optical_flow':
+            return self._flow_camera(s, M, boxes, f, t, tr)
         if kind == 'sensor.lidar.ray_cast':
             return self._lidar(s, M, dt, boxes, f, t, tr)
         if kind == 'sensor.lidar.ray_cast_semantic':
@@ -1453,6 +1455,36 @@ class World:
         img = render(M[:3, 3], d_loc @ M[:3, :3].T, boxes).reshape(H, W, 3)
         bgra = np.concatenate([img[..., ::-1], np.full((H, W, 1), 255, np.uint8)], -1)
         return Image(f, t, tr, W, H, fov, bgra.tobytes())
+
+    def _flow_camera(self, s, M, boxes, f, t, tr):
+        """sensor.camera.optical_flow: each pixel's motion from the previous frame, as CARLA 0.9.16 encodes it (two
+        float32 per pixel, normalised: x = du / (W / 2), y = −dv / (H / 2); measured). The fake moves the world points
+        a pixel sees now into the camera's previous pose — static-world flow: a moving actor's own motion is left out.
+        Zero on the camera's first frame."""
+        bp = s._bp
+        W, H = int(bp._f('image_size_x', 800)), int(bp._f('image_size_y', 600))
+        fov = bp._f('fov', 90.0)
+        fp = W / (2.0 * math.tan(math.radians(fov) / 2))
+        u, v = np.meshgrid(np.arange(W, dtype=float), np.arange(H, dtype=float))
+        d_loc = np.stack([np.full_like(u, fp), u - (W / 2 - 0.5), -(v - (H / 2 - 0.5))], -1).reshape(-1, 3)
+        d_loc /= np.linalg.norm(d_loc, axis=1, keepdims=True)
+        D = d_loc @ M[:3, :3].T
+        o = M[:3, 3]
+        out = np.zeros((H, W, 2), np.float32)
+        prev = getattr(s, '_prev_M', None)
+        s._prev_M = M.copy()
+        if prev is not None:
+            tt, _ = _cast(np.repeat(o[None], len(D), 0), D, boxes, 1000.0)
+            ok = np.isfinite(tt)
+            P = o + D * np.where(ok, tt, 0.0)[:, None]
+            q = (P - prev[:3, 3]) @ prev[:3, :3]                 # in the previous camera's axes
+            front = ok & (q[:, 0] > 1e-3)
+            up = np.where(front, fp * q[:, 1] / np.where(front, q[:, 0], 1.0) + (W / 2 - 0.5), u.ravel())
+            vp = np.where(front, -fp * q[:, 2] / np.where(front, q[:, 0], 1.0) + (H / 2 - 0.5), v.ravel())
+            du, dv = u.ravel() - up, v.ravel() - vp
+            out[..., 0] = (du / (W / 2.0)).reshape(H, W)
+            out[..., 1] = (-dv / (H / 2.0)).reshape(H, W)
+        return Image(f, t, tr, W, H, fov, out.tobytes())
 
     def _gt_camera(self, s, M, boxes, f, t, tr):
         """A semantic, instance or depth image: one ray cast per view and step, shared by the views' cameras at the
