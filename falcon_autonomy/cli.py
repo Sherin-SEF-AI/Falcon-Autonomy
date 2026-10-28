@@ -12,6 +12,8 @@
     falcon reproduce RUN [--into DIR]          re-run a run from its own config and compare within a tolerance
     falcon runs PROJECT [--rebuild]            the runs in a project's catalogue
     falcon export RUN... --format F --out DIR  COCO, YOLO, KITTI, nuScenes, waymo, bdd_lanes or mcap
+    falcon sweep PROJECT --scenario S --name N [--grid K | --samples K]   a parameter sweep (resumable)
+    falcon search PROJECT --scenario S --name N [--method bayes|cmaes|adaptive|random] [--budget B]   rare cases
     falcon schema                              print the project schema's path
 
 Exit codes: 0 ok; otherwise the worker's code (falcon_autonomy.core.protocol: 2 failed, 3 cancelled, 4 server lost,
@@ -287,6 +289,8 @@ def parser() -> argparse.ArgumentParser:
     ru.add_argument('--rebuild', action='store_true')
     sub.add_parser('schema', help='print the project schema\'s path')
     sub.add_parser('export', help='export runs: falcon export RUN... --format F --out DIR (see docs/cli.md)')
+    sub.add_parser('sweep', help='a scenario parameter sweep (see docs/cli.md)')
+    sub.add_parser('search', help='a rare-case search over a scenario\'s parameters (see docs/cli.md)')
     return ap
 
 
@@ -295,6 +299,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['export']:                    # its own parser (core.exporters.main_export)
         from .core.exporters import main_export
         return main_export(argv[1:])
+    if argv[:1] in (['sweep'], ['search']):       # scenario studies (sim.studio)
+        from .sim.studio import main_study
+        return main_study(argv)
     ap = parser()
     a = ap.parse_args(argv)
     if a.cmd is None or a.cmd == 'gui':

@@ -89,3 +89,21 @@ def worker_env(extra=None):
     env['PYTHONUNBUFFERED'] = '1'
     env.update(extra or {})
     return env
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Before the interpreter exits: no background Qt task left running, no top-level window left alive, the event
+    queue drained — Qt objects torn down while Python finalises its modules can crash the process at exit."""
+    if 'PyQt6.QtWidgets' not in sys.modules:
+        return
+    from PyQt6.QtCore import QThreadPool
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is None:
+        return
+    QThreadPool.globalInstance().waitForDone(15000)
+    for w in app.topLevelWidgets():
+        w.close()
+        w.deleteLater()
+    for _ in range(5):
+        app.processEvents()

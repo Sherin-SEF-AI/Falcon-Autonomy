@@ -85,7 +85,23 @@ class Drive(Worker):
         level = camgt.level_boxes(self, world) if need_gt else []      # before any vehicle is spawned
         raster = camgt.LaneRaster(carla, world.get_map()) if cfg.get('xodr') and (
             need_gt or any(x['type'] == 'lidar' for x in cfg['rig']['sensors'])) else None
-        ego = scene.spawn_ego(self, world, lib, spawns, order, cfg['rig']['vehicle'])
+        director = None
+        if cfg.get('scenario'):
+            from .director import Director
+            director = Director(self, world, cfg, lib, rng)
+            start, ego_wp = director.place_ego(spawns, order)
+            ego_bp = lib.find(cfg['rig']['vehicle'])
+            ego_bp.set_attribute('role_name', 'hero')
+            st0 = ego_wp.transform
+            st0.location.z += 0.3
+            ego = world.try_spawn_actor(ego_bp, st0)
+            if ego is None:
+                raise Failed('the ego could not be placed at the scenario\'s start')
+            self.own(ego)
+            world.tick()
+            director.setup(ego, ego_wp)
+        else:
+            ego = scene.spawn_ego(self, world, lib, spawns, order, cfg['rig']['vehicle'])
         scene.spawn_traffic(self, world, lib, spawns, order, rng, cfg.get('traffic') or {})
         scene.spawn_walkers(self, world, lib, rng, cfg.get('traffic') or {})
         cams = self.cameras
@@ -118,6 +134,8 @@ class Drive(Worker):
             cams.drain(frame)
             self.emit.progress(0.02 + 0.03 * (k + 1) / max(warm, 1), 'warming up')
         steps = int(cfg.get('steps', 200))
+        if director is not None:
+            steps = int(round(float(director.scn.get('duration_s', 12.0)) * fps))
         max_wall = float(cfg.get('max_wall_s', 0) or 0)
         mpx = rig_mpx(cfg['rig'])
         index = open(os.path.join(self.out_dir, 'frames.jsonl'), 'w', encoding='utf-8')
@@ -137,7 +155,11 @@ class Drive(Worker):
         try:
             for i in range(steps):
                 self.check()
+                if director is not None:
+                    director.step(i / fps)
                 frame = world.tick()
+                if director is not None:
+                    director.record((i + 1) / fps)
                 self.alive()
                 snap_t = world.get_snapshot().timestamp.elapsed_seconds
                 sim_t0 = snap_t if sim_t0 is None else sim_t0
@@ -209,13 +231,20 @@ class Drive(Worker):
             {'town': cfg.get('town'), 'xodr': cfg.get('xodr'), 'weather': cfg.get('weather'),
              'label_warnings': label_warnings}))
         self.emit.progress(1.0, f'recorded {n} steps in {wall:.1f} s', force=True)
+        scenario = None
+        if director is not None:
+            scenario = director.report()
+            scenario.update(scenario_result(director, fps))
+            with open(os.path.join(self.out_dir, 'trajectories.json'), 'w', encoding='utf-8') as fh:
+                json.dump({'dt': 1.0 / fps, 'columns': ['t', 'x', 'y', 'yaw', 'vx', 'vy', 'length', 'width'],
+                           'frame': 'CARLA world', 'actors': director.traj}, fh, separators=(',', ':'))
         lidar_checks = [L.report() for L in self.lidars]
         for c in lidar_checks:
             m = c['match']
             self.emit.log(f'lidar {c["sensor"]}: {m["exact_slices"]} of {m["slices"]} slices matched by order '
                           f'(worst direction {m["max_dir_err_deg"]:.2g}°), points in vehicle boxes labelled vehicle: '
                           f'{c["box_label_share"]}')
-        return {'performance': perf, 'lidar_checks': lidar_checks, 'faults_applied': faults.report(), 'summary': {'steps': n, 'cameras': len(cams.cams), 'town': cfg.get('town'),
+        return {'performance': perf, 'lidar_checks': lidar_checks, 'scenario': scenario, 'faults_applied': faults.report(), 'summary': {'steps': n, 'cameras': len(cams.cams), 'town': cfg.get('town'),
                                                   'steps_per_s': perf['steps_per_s'],
                                                   'realtime_factor': perf['realtime_factor']},
                 'name': cfg.get('name', 'drive'), 'config_sha256': sha256_json(cfg)}
@@ -231,3 +260,23 @@ def main(argv) -> int:
         print(f'failed: cannot read {a.config}: {e}', flush=True)
         return P.FAILED
     return Drive(cfg, argv, a.config).execute()
+
+
+def scenario_result(director, fps) -> dict:
+    """Criticality measures of the run (core.criticality) and the scenario's pass criteria against them."""
+    import numpy as np
+    from ..core import criticality as C
+    ego = np.asarray(director.traj['ego'], float)
+    actors = {k: np.asarray(v, float) for k, v in director.traj.items() if k != 'ego' and v}
+    summ = C.summarise(ego, actors, 1.0 / fps, director.events)
+    crit = director.scn.get('pass') or {}
+    checks = []
+    if crit.get('no_collision'):
+        n = len(summ.get('collisions') or [])
+        checks.append({'name': 'no collision', 'ok': n == 0, 'detail': f'{n} collision steps or events'})
+    if crit.get('min_ttc_s') is not None:
+        ttc = summ.get('min_ttc_s')
+        checks.append({'name': f'time to collision ≥ {crit["min_ttc_s"]:g} s',
+                       'ok': ttc is None or ttc >= float(crit['min_ttc_s']),
+                       'detail': f'minimum {ttc:.2f} s' if ttc is not None else 'never on a collision course'})
+    return {'criticality': summ, 'checks': checks, 'passed': all(c['ok'] for c in checks)}

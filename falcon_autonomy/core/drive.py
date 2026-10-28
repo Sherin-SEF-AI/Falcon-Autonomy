@@ -74,3 +74,20 @@ def smoke_config(project: Project, out_dir: str, port: int, tm_port: int, seed: 
                        seconds=600.0, fps=20.0, seed=seed, max_wall_s=SMOKE_WALL_S, name='smoke drive')
     cfg['traffic'] = dict(cfg['traffic'], vehicles=min(int(cfg['traffic'].get('vehicles', 0)), 10))
     return cfg
+
+
+def scenario_config(project: Project, scenario: dict, world_id: str, rig_id: str, out_dir: str, port: int,
+                    tm_port: int, seed: int = 0, values: dict | None = None, fps: float = 20.0,
+                    traffic_vehicles: int = 0, render_budget_mpx: float = 200.0, workspace: str = '') -> dict:
+    """A drive running a scenario: sampled with the seed (or the given parameter values), the background traffic
+    off unless asked, its length the scenario's."""
+    from . import scenarios as SC
+    conc = SC.sample(scenario, seed, values) if values is None or set(values) != set(scenario.get('params') or {}) \
+        else dict(SC.concrete(scenario, values), seed=seed)
+    cfg = drive_config(project, world_id, rig_id, out_dir, port, tm_port, seconds=float(conc.get('duration_s', 12)),
+                       fps=fps, seed=seed, render_budget_mpx=render_budget_mpx, name=f'{scenario["name"]} (seed {seed})',
+                       workspace=workspace)
+    cfg['traffic'] = dict(cfg['traffic'], vehicles=int(traffic_vehicles), walkers=0)
+    cfg['scenario'] = conc
+    cfg['warmup_steps'] = 5
+    return cfg

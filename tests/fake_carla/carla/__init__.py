@@ -187,6 +187,10 @@ def _enum(cls, names):
     return cls
 
 
+class VehicleDoor:
+    pass
+
+
 class LaneMarkingType:
     pass
 
@@ -195,6 +199,7 @@ class LaneMarkingColor:
     pass
 
 
+_enum(VehicleDoor, ('FL', 'FR', 'RL', 'RR', 'All'))
 _enum(LaneMarkingType, ('NONE', 'Other', 'Broken', 'Solid', 'SolidSolid', 'SolidBroken', 'BrokenSolid',
                         'BrokenBroken', 'BottsDots', 'Grass', 'Curb'))
 _enum(LaneMarkingColor, ('Standard', 'Blue', 'Green', 'Red', 'White', 'Yellow', 'Other'))
@@ -409,6 +414,7 @@ SENSOR_DEFAULTS = {
                                        'rotation_frequency': 10.0, 'upper_fov': 10.0, 'lower_fov': -30.0,
                                        'horizontal_fov': 360.0, 'sensor_tick': 0.0, 'role_name': 'front'},
 }
+SENSOR_DEFAULTS['sensor.other.collision'] = {'role_name': 'collision'}
 for _k in ('semantic_segmentation', 'instance_segmentation', 'depth'):
     SENSOR_DEFAULTS['sensor.camera.' + _k] = {'image_size_x': 800, 'image_size_y': 600, 'fov': 90.0, 'sensor_tick': 0.0,
                                              'lens_k': -1.0, 'lens_kcube': 0.0, 'lens_circle_multiplier': 0.0,
@@ -553,6 +559,12 @@ class Vehicle(Actor):
         self.physics = True
         self.desired = None                 # the traffic manager's desired speed (m/s), when set
         self.lat_target = None              # a forced lane change: the target offset along the vehicle's right (m)
+
+    def open_door(self, door):
+        LOG.append(('open_door', self.id, str(door)))
+
+    def close_door(self, door):
+        LOG.append(('close_door', self.id, str(door)))
 
     def set_autopilot(self, on=True, port=8000):
         self.autopilot = bool(on)
@@ -791,6 +803,12 @@ class ServerSideSensor(Sensor):
 class SensorData:
     def __init__(self, frame, t, transform):
         self.frame, self.frame_number, self.timestamp, self.transform = frame, frame, t, transform
+
+
+class CollisionEvent(SensorData):
+    def __init__(self, frame, timestamp, transform, actor, other_actor, normal_impulse):
+        super().__init__(frame, timestamp, transform)
+        self.actor, self.other_actor, self.normal_impulse = actor, other_actor, normal_impulse
 
 
 class Image(SensorData):
@@ -1272,11 +1290,50 @@ class World:
         return [LabelledPoint(Location(*p), 14)]
 
     # ---- sensors
+    def _footprint(self, a):
+        """The actor's box footprint corners (4, 2) in the world."""
+        M = a.world_matrix()
+        e, c = a.bounding_box.extent, a.bounding_box.location
+        pts = np.array([[c.x + sx * e.x, c.y + sy * e.y, 0.0, 1.0] for sx, sy in ((1, 1), (1, -1), (-1, -1), (-1, 1))])
+        return (M @ pts.T).T[:, :2]
+
+    def _overlap(self, A, B):
+        for P in (A, B):
+            for k in range(4):
+                edge = P[(k + 1) % 4] - P[k]
+                n = np.array([-edge[1], edge[0]])
+                pa, pb = A @ n, B @ n
+                if pa.max() < pb.min() or pb.max() < pa.min():
+                    return False
+        return True
+
+    def _collision(self, s, f, t, tr):
+        """sensor.other.collision: an event when its parent's box starts to overlap another vehicle's or walker's
+        (one per step, as CARLA sends one per contact)."""
+        par = s.parent
+        if par is None:
+            return None
+        A = self._footprint(par)
+        touching = set()
+        for a in self._actors.values():
+            if a is par or not isinstance(a, (Vehicle, Walker)):
+                continue
+            if self._overlap(A, self._footprint(a)):
+                touching.add(a.id)
+        new = sorted(touching - getattr(s, '_touching', set()))
+        s._touching = touching
+        if not new:
+            return None
+        other = self._actors[new[0]]
+        return CollisionEvent(f, t, tr, par, other, Vector3D(1000.0, 0.0, 0.0))
+
     def _measure(self, s, dt, boxes):
         M = s.world_matrix()
         tr = _T(M)
         f, t = self._frame, self._t
         kind = s.type_id
+        if kind == 'sensor.other.collision':
+            return self._collision(s, f, t, tr)
         if kind == 'sensor.lidar.ray_cast':
             return self._lidar(s, M, dt, boxes, f, t, tr)
         if kind == 'sensor.lidar.ray_cast_semantic':

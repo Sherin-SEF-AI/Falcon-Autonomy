@@ -16,6 +16,10 @@ from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal
 _lock = threading.Lock()
 _running: set = set()
 _idle = threading.Condition(_lock)
+# carriers stay referenced here, on the GUI thread, until their result is delivered: otherwise the last reference can
+# go with the worker thread (or a garbage-collection pass there) and the C++ object be deleted from the wrong thread
+# while its queued signal is still pending — a crash when Qt delivers it
+_carriers: set = set()
 
 
 class _Carrier(QObject):
@@ -34,9 +38,11 @@ class _Task(QRunnable):
             res = self.fn()
         except Exception as e:                  # noqa: BLE001 (delivered to on_error)
             err = (e, traceback.format_exc())
+        carrier, self.carrier, self.fn = self.carrier, None, None   # the worker keeps no reference past the emit
         try:
-            self.carrier.done.emit(res, err)
+            carrier.done.emit(res, err)
         finally:
+            del carrier
             with _lock:
                 _running.discard(self)
                 _idle.notify_all()
@@ -52,8 +58,10 @@ def _alive(obj) -> bool:
 
 def run(owner: QObject, fn, on_done=None, on_error=None):
     carrier = _Carrier()                       # created here, on the GUI thread: its slots run there
+    _carriers.add(carrier)
 
     def deliver(res, err):
+        _carriers.discard(carrier)             # (the GUI thread drops it; deleteLater frees it after this slot)
         carrier.deleteLater()
         if not _alive(owner):
             return

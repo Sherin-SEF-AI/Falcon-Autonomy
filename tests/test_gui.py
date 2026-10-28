@@ -16,10 +16,13 @@ from conftest import FAKE  # noqa: E402
 def qapp():
     from falcon_autonomy.ui.app import make_app
     from falcon_autonomy.ui.theme import THEME, load_fonts
+    from PyQt6.QtCore import QThreadPool
     app = make_app()
     load_fonts()
     THEME.apply(app, 'dark')
-    return app
+    yield app
+    QThreadPool.globalInstance().waitForDone(10000)
+    app.processEvents()
 
 
 def pump(app, cond=lambda: False, timeout=5.0):
