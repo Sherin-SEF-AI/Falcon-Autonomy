@@ -1,0 +1,41 @@
+# Autoware against Falcon's bridge — an EXAMPLE, NOT RUN on the reference machine (Autoware is not installed there;
+# it needs far more memory and GPU than the machine had free). Check every name against your Autoware release before
+# use; docs/stack-testing.md ("Autoware") explains each part.
+#
+# 1. Falcon side: a suite (or `falcon stack run --driver ros2 --port 2335 --control autoware`) whose bridge section
+#    renames the sensor topics to Autoware's (falcon stack topics PROJECT prints the remaps for your rig):
+#      "bridge": {"control": "autoware", "port": 2335, "deadline_s": 0.5, "ego_tf": false,
+#                 "topics": {"/falcon/ego/top/points": "/sensing/lidar/top/pointcloud_raw",
+#                            "/falcon/ego/imu/imu": "/sensing/imu/tamagawa/imu_raw",
+#                            "/falcon/ego/gnss/fix": "/sensing/gnss/ublox/nav_sat_fix",
+#                            "/falcon/ego/front/image": "/sensing/camera/camera0/image_rect_color",
+#                            "/falcon/ego/front/camera_info": "/sensing/camera/camera0/camera_info"}}
+# 2. Autoware needs a Lanelet2 + point-cloud map of the CARLA town you drive (not part of CARLA or Falcon), a vehicle
+#    description matching the ego's dimensions, and a sensor kit whose /tf matches the rig (Falcon publishes the rig's
+#    mounts on /tf_static as base_link -> <sensor>_link; "ego_tf": false leaves map -> base_link to Autoware's
+#    localisation, while /falcon/ego/odometry stays as ground truth). Falcon publishes /vehicle/status/* and takes
+#    /control/command/control_cmd, as Autoware's vehicle interface would.
+# 3. Engage Autoware (an initial pose, a route) once Falcon's first step has been published: the first step waits
+#    start_wait_s (60 s by default) for the first control.
+services:
+  falcon-bridge:
+    image: falcon-ros2-bridge:humble                 # falcon stack image
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=0
+    volumes:
+      - ../ros2:/falcon/ros2:ro                       # this folder (falcon_autonomy/ros2), read-only
+    command: python3 /falcon/ros2/falcon_bridge_node.py --connect 127.0.0.1:2335 --serve
+  autoware:
+    image: ghcr.io/autowarefoundation/autoware:REPLACE-WITH-YOUR-TAG   # a Humble-based Autoware image
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=0
+    volumes:
+      - ./autoware_map:/autoware_map:ro               # your Lanelet2 and point-cloud map of the town
+    command: >
+      ros2 launch autoware_launch autoware.launch.xml
+      map_path:=/autoware_map vehicle_model:=sample_vehicle sensor_model:=sample_sensor_kit
+      use_sim_time:=true
