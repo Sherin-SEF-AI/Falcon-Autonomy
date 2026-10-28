@@ -86,8 +86,11 @@ class Drive(Worker):
         raster = camgt.LaneRaster(carla, world.get_map()) if cfg.get('xodr') and (
             need_gt or any(x['type'] == 'lidar' for x in cfg['rig']['sensors'])) else None
         director = None
-        if cfg.get('scenario'):
-            from .director import Director
+        if cfg.get('scenario') or cfg.get('replay'):
+            if cfg.get('replay'):                       # a log replay (workers.replay): the same interface
+                from .replay import LogDirector as Director
+            else:
+                from .director import Director
             director = Director(self, world, cfg, lib, rng)
             start, ego_wp = director.place_ego(spawns, order)
             ego_bp = lib.find(cfg['rig']['vehicle'])
@@ -272,10 +275,12 @@ def main(argv) -> int:
     return Drive(cfg, argv, a.config).execute()
 
 
-def ego_control(ego, director=None) -> dict:
+def ego_control(ego, director=None) -> dict | None:
     """The ego's control in effect during the tick that produced this step (docs/dataset-format.md, "Frames"): the
     director's when it drives the ego (in kinematic motion no VehicleControl reaches CARLA), else the vehicle's
     get_control() — what the traffic manager (or the physics-driven director) applied for that tick."""
+    if director is not None and getattr(director, 'control_unknown', False):
+        return None                                     # a log replay's ego: placed at its logged poses, no control
     u = director.ego_control if director is not None and director.ego_control is not None else None
     if u is None:
         c = ego.get_control()

@@ -56,7 +56,9 @@ def window(qapp, tmp_path, project):
 
 def test_pages_and_navigation(window, qapp):
     keys = [p.key for p in window.pages]
-    assert keys == ['home', 'worlds', 'live', 'rigs', 'scenarios', 'data', 'rarecases', 'models', 'training', 'settings', 'help']
+    assert keys == ['loop', 'worlds', 'live', 'rigs', 'scenarios', 'data', 'rarecases', 'models', 'training',
+                    'stack', 'replay', 'hardware', 'reports', 'settings', 'help']
+    assert window.stack.currentWidget().key == 'loop'           # the home page
     assert window.go('data') is window.stack.currentWidget()
     window.actions_['page_worlds'].trigger()
     assert window.stack.currentWidget().key == 'worlds'
@@ -116,9 +118,9 @@ def test_record_and_browse_a_drive(window, qapp):
     b.opacity.setValue(0)
     b.slider.setValue(10)
     assert pump(qapp, lambda: b.cache is not None and b.view.pixmap() is not None, 10)
-    home = window.page('home')
-    home.refresh()
-    assert home.runs.topLevelItemCount() == 1
+    status = window.page('loop').status                 # the Loop page's Status tab (what Home showed)
+    status.refresh()
+    assert status.runs.topLevelItemCount() == 1
 
 
 def test_cancel_from_the_jobs_dock(window, qapp, project):
@@ -455,3 +457,68 @@ def test_training_page_clones_scores_and_replays(window, qapp, tmp_path):
         run_job(page.replay)
         page.flip.resize(400, 260)
         assert page.flip.frames and not page.flip.grab().isNull()
+
+
+def test_loop_page_runs_steps_and_shows_them(window, qapp, tmp_path):
+    from falcon_autonomy.core import loop as L
+    window.project.path = str(tmp_path / 'proj.falcon.json')
+    window.project.doc['rigs'][0]['sensors'][0].update(width=160, height=96,
+                                                       labels=['semantic', 'instance', 'depth', 'boxes2d'])
+    window.project.doc['traffic_profiles'][0].update(vehicles=10, walkers=10)
+    window.save()
+    window.service.set_workspace(window.workspace())
+    page = window.go('loop')
+    assert page.tabs.tabText(1) == 'Status' and page.status.runs is not None
+    assert 'pending' in page.steps.topLevelItem(0).text(2) and page.chart.rows == []
+    page.use_example()                              # the default project lacks what the example needs: said so
+    assert 'Bengaluru' in page.odd_kv.vals['Problems'].text()
+    window.undo.undo()
+    window.go('models').add_synthetic()
+    page = window.go('loop')
+    assert page.model.count() == 1
+    page.model.setCurrentIndex(0)
+    page.set_model()
+    odd = {'id': 'gui', 'name': 'GUI test', 'rig': 'rig-default', 'worlds': ['world-town10'],
+           'traffic_profile': 'tp-default', 'weathers': [{'name': 'clear', 'preset': 'ClearNoon'}],
+           'classes': ['car', 'pedestrian'], 'range_bins': [0, 20, 40],
+           'evaluation': {'drives_per_cell': 2, 'drive_s': 1.0, 'record_every': 2, 'n_boot': 50},
+           'weak_cells': {'min_objects': 3, 'max_cells': 1, 'fallback': 'lowest'}}
+    page.set_odd(odd)
+    assert window.project.doc['loop']['model'] == window.project.doc['models'][0]['id']
+    assert page.odd_kv.vals['Problems'].text() == 'none'
+    assert pump(qapp, lambda: page.next_cost.text().startswith('Next:'), 10)
+    assert 'step 1' in page.next_cost.text()
+    page.until.setValue(3)
+    job = page.run_until()
+    assert job is not None and job.spec.argv[3:7] == ['loop', window.project.path, 'run', '--until']
+    assert not page.run_next.isEnabled() and page.run_until() is None          # one loop job at a time
+    assert pump(qapp, lambda: job.state in ('done', 'failed', 'cancelled'), 240), job.log
+    assert job.state == 'done', job.log
+    assert pump(qapp, lambda: page.it is not None and page.it['n'] == 1, 5)
+    assert [page.steps.topLevelItem(i).text(2) for i in range(8)] == ['done'] * 3 + ['pending'] * 5
+    assert 'measured' in page.steps.topLevelItem(1).toolTip(3) or 'typical' in page.steps.topLevelItem(1).toolTip(3)
+    assert page.cells.topLevelItemCount() > 0 and page.hist.topLevelItemCount() == 1
+    ents = window.project.doc['loop']['iterations']                 # recorded in the project as undoable edits
+    assert len(ents) == 1 and ents[0]['n'] == 1 and window.project.dirty
+    assert pump(qapp, lambda: 'step 4' in page.next_cost.text(), 10), page.next_cost.text()
+    # the chart, from a before and after with intervals
+    rows = [{'label': 'AP, all', 'before': {'value': 0.4, 'ci_low': 0.3, 'ci_high': 0.5},
+             'after': {'value': 0.6, 'ci_low': 0.5, 'ci_high': 0.7}, 'diff': {}, 'verdict': 'improvement'}]
+    page.chart.set_rows(rows)
+    page.chart.resize(600, 200)
+    assert not page.chart.grab().isNull()
+    reports = window.page('reports')
+    page.it = L.load_iteration(window.workspace(), 1)
+    page.report()
+    assert window.stack.currentWidget() is reports
+    rj = window.queue.jobs[-1]
+    assert pump(qapp, lambda: rj.state in ('done', 'failed'), 60), rj.log
+    assert rj.state == 'done', rj.log
+    assert pump(qapp, lambda: reports.list.topLevelItemCount() == 1, 5)
+    out = reports.export_to(str(tmp_path / 'exported'), [reports.list.topLevelItem(0).data(0, 256)])
+    assert len(out) == 1 and open(out[0], encoding='utf-8').read().startswith('<!doctype html>')
+    reports.kind.setCurrentIndex(reports.kind.findData('evaluation'))
+    assert reports.src.count() == 1 and reports.src.itemText(0) == 'loop 001 before'
+    window.set_theme('light')
+    assert not page.chart.grab().isNull()
+    window.set_theme('dark')

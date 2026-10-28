@@ -34,9 +34,25 @@ does; the [roadmap](roadmap.md) lists what is planned.
 
 ## Pages
 
-### Home
-The server (state, port, folder, client Python, the last probe), the machine's checks, the throughput Falcon uses
-for estimates and where it came from, and the latest runs (double-click one to browse it).
+### Loop
+The home page: the closed loop ([loop](loop.md)). Choose a **model** and a target **operational design domain** — the
+worlds, weathers (with ranges, such as dusk's sun altitude), traffic profile, classes of interest and range bins; *Use
+the Bengaluru monsoon-dusk example* writes one and says what the project still needs — then run the eight steps one at
+a time or up to a step, each a job with progress, ETA and cancel: **pick** (the model and ODD are frozen and hashed),
+**evaluate** (on a held-out evaluation set recorded once per ODD at fixed seeds and never trained on), **weak cells**
+(AP per class × range bin × condition with intervals; a cell is weak when its whole interval lies below the overall AP
+— a heuristic), **search** (a rare-case search on a scenario matched to the cell's class, in its weather; the objective
+is the scenario's criticality, not the model's misses), **generate** (a dataset spec targeting the weak cells, planned
+from the yield measured on the evaluation set, and the failing cases re-run with labels), **retrain** (`falcon train`
+from the model's own settings on its data plus the new drives; a model Falcon did not train cannot be, and the step
+says so), **evaluate again** and **before and after** (the same evaluation set; paired intervals over drives). The
+cost of the next step is shown before it runs — from this machine's measured throughput and trainings, or labelled
+typical, or *not estimated* with the reason — and recorded beside the measured time. The weak cells, the before-and-
+after chart with intervals and the history of iterations are below; each iteration is a record in
+`workspace/loop/NNN/iteration.json`, and a finished step is never run again unless what it was made from changed.
+
+The **Status** tab: the server (state, port, folder, client Python, the last probe), the machine's checks, the
+throughput Falcon uses for estimates and where it came from, and the latest runs (double-click one to browse it).
 
 ### Worlds
 A world is a CARLA town with its weather and time of day, and the traffic profile it drives with. Presets set all
@@ -140,6 +156,13 @@ never repeats a finished drive. The **coverage** dashboard shows what the datase
 and distance bin. A **version** freezes the finished drives with a train/validation/test split by drive or by place
 that never puts one drive (or world) in two splits. **Browse** shows any label layer (semantic, instance, range,
 boxes) and the frame's objects. The format is in [dataset format](dataset-format.md).
+
+### Reports
+Self-contained HTML reports ([reports](reports.md)) of a loop iteration, a model evaluation, a dataset's coverage, a
+rare-case study or a Leaderboard result: inline CSS and SVG (nothing fetched from the network), light and dark, every
+number with its interval where it has one, and the provenance — the source's own and the SHA-256 of every file the
+report read. Choose the kind and the source, *Make the report* (a job), then open it in the browser or export a
+selection to a folder.
 
 ### Settings
 Where CARLA and its Python are; Falcon's ports, the server's memory cap and quality; the render budget; the theme;

@@ -31,6 +31,7 @@ DEFAULTS = {
     'allowed_ports': [],                 # reserved ports the user explicitly chose in the app
     'server_memory_gb': SERVER_MEMORY_GB,
     'server_quality': 'Epic',
+    'server_ros2': False,                # start Falcon's server with --ros2 (CARLA's native ROS 2; docs/stack-testing.md)
     'render_budget_mpx': 200.0,
     'theme': 'dark',
     'recent_projects': [],
@@ -38,6 +39,7 @@ DEFAULTS = {
     'measured': {},                      # throughput measured on this machine (budget.Throughput.to_dict())
     'geocoding_allowed': False,          # network place-name search only when the user turns it on
     'cloud_llm': None,                   # never set unless the user configures and approves one
+    'hil_device': {},                    # the HIL device: address, ports, SSH user and key path (core.hil); no password
 }
 
 

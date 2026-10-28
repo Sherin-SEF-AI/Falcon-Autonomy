@@ -27,6 +27,20 @@ def pytest_configure(config):
     config.addinivalue_line('markers', 'real_server: needs a real CARLA 0.9.16 server (FALCON_REAL_CARLA=1)')
     config.addinivalue_line('markers', 'carla_python: needs CARLA\'s own Python with the carla wheel')
     config.addinivalue_line('markers', 'gui: a Qt test (offscreen)')
+    config.addinivalue_line('markers', 'ros2: needs Docker and the falcon-ros2-bridge:humble image (FALCON_ROS2=1)')
+
+
+def _ros2_image() -> bool:
+    """Whether Docker answers and the bridge image is built (asked only when FALCON_ROS2=1)."""
+    import shutil
+    import subprocess
+    if not shutil.which('docker'):
+        return False
+    try:
+        return subprocess.run(['docker', 'image', 'inspect', 'falcon-ros2-bridge:humble'], capture_output=True,
+                              timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def _carla_python():
@@ -37,12 +51,16 @@ def _carla_python():
 
 def pytest_collection_modifyitems(config, items):
     real = os.environ.get('FALCON_REAL_CARLA') == '1'
+    ros2 = os.environ.get('FALCON_ROS2') == '1' and _ros2_image()
     py = _carla_python()
     for it in items:
         if 'real_server' in it.keywords and not real:
             it.add_marker(pytest.mark.skip(reason='real CARLA server tests need FALCON_REAL_CARLA=1'))
         if 'carla_python' in it.keywords and not py:
             it.add_marker(pytest.mark.skip(reason='CARLA\'s Python (a venv beside the CARLA folder) not found'))
+        if 'ros2' in it.keywords and not ros2:
+            it.add_marker(pytest.mark.skip(reason='ROS 2 tests need FALCON_ROS2=1, Docker and the '
+                                                  'falcon-ros2-bridge:humble image (falcon stack image)'))
 
 
 @pytest.fixture

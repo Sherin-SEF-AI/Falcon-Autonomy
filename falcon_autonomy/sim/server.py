@@ -3,12 +3,16 @@
 The server runs headless in its own systemd user scope with a memory cap and no swap:
 
     systemd-run --user --scope -p MemoryMax=<cap> -p MemorySwapMax=0 --unit falcon-carla-<port>-<pid> \\
-        CarlaUE4-Linux-Shipping CarlaUE4 -RenderOffScreen -carla-rpc-port=<port> -nosound [-quality-level=Low]
+        CarlaUE4-Linux-Shipping CarlaUE4 -RenderOffScreen -carla-rpc-port=<port> -nosound [-quality-level=Low] [--ros2]
 
 with VK_ICD_FILENAMES (and VK_DRIVER_FILES) pinned to NVIDIA's Vulkan driver, else Unreal can pick the integrated
 GPU that drives the desktop. Without systemd-run it is not started at all. Falcon starts servers only on its own
 ports (settings.port_allowed) and never stops a server it did not start; a server the user started is "external":
 Falcon connects to it only on a port the user chose in the app, and never stops it.
+
+--ros2 (the setting server_ros2, off by default) turns on CARLA 0.9.16's native ROS 2 interface: its embedded Fast DDS
+then publishes the sensors a client enabled with Sensor.enable_for_ros() and takes the vehicles' control topics
+(docs/carla-lessons.md, "Native ROS 2", says what was measured).
 
 Workers (falcon_autonomy.workers) run in CARLA's own Python with Falcon's source folder on PYTHONPATH, each in a
 capped scope of its own.
@@ -166,8 +170,9 @@ class Server:
     STOPPED, STARTING, READY, CRASHED, EXTERNAL = 'stopped', 'starting', 'ready', 'crashed', 'external'
 
     def __init__(self, root='', port=2310, memory_gb=12.0, quality='Epic', no_render=False, log_path='',
-                 external=False, settings=None, host='127.0.0.1'):
+                 external=False, settings=None, host='127.0.0.1', ros2=False):
         self.root, self.port, self.memory_gb = root, int(port), float(memory_gb)
+        self.ros2 = bool(ros2)
         self.quality, self.no_render, self.log_path = quality, bool(no_render), log_path
         self.external, self.settings, self.host = bool(external), settings, host
         self.proc = None
@@ -175,6 +180,7 @@ class Server:
         self.started = 0.0
         self.exit_code = None
         self.unit = f'falcon-carla-{self.port}-{os.getpid()}'
+        self.starts = 0
         self._log = None
 
     def command(self) -> list:
@@ -185,6 +191,8 @@ class Server:
             args.append('-RenderOffScreen')
             if self.quality == 'Low':
                 args.append('-quality-level=Low')
+        if self.ros2:
+            args.append('--ros2')                         # CARLA 0.9.16's native ROS 2 (its own Fast DDS)
         return scoped(args, self.memory_gb, self.unit)
 
     def environment(self) -> dict:
@@ -213,6 +221,11 @@ class Server:
                 raise RuntimeError(f'Port {p} is already in use (another server?). Falcon does not touch a server it '
                                    'did not start: choose another port in Settings.')
         self.env = self.environment()
+        self.starts += 1
+        if self.starts > 1:
+            # a crashed (e.g. OOM-killed) scope stays loaded as failed under its name: systemd-run refuses the same
+            # unit name again ("was already loaded"), so a restart in this process takes a new one (measured)
+            self.unit = f'falcon-carla-{self.port}-{os.getpid()}-{self.starts}'
         if self.log_path:
             os.makedirs(os.path.dirname(os.path.abspath(self.log_path)), exist_ok=True)
             self._log = open(self.log_path, 'w', encoding='utf-8', errors='replace')

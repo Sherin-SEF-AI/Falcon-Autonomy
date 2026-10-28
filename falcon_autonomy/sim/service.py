@@ -78,11 +78,13 @@ class CarlaService:
 
     # ---------------------------------------------------------------- the server
     def ensure_server_object(self) -> S.Server:
-        if self.server is None or self.server.port != self.port:
+        ros2 = bool(self.settings.get('server_ros2'))
+        if self.server is None or self.server.port != self.port or (self.server.ros2 != ros2 and
+                                                                     not self.server.running):
             log = os.path.join(self.workspace, 'logs', f'carla-{self.port}.log') if self.workspace else ''
             self.server = S.Server(self.carla_root, self.port, float(self.settings.get('server_memory_gb')),
                                    self.settings.get('server_quality'), log_path=log, external=self.external,
-                                   settings=self.settings)
+                                   settings=self.settings, ros2=ros2)
         return self.server
 
     def server_state(self) -> str:

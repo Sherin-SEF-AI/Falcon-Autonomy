@@ -33,6 +33,14 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon policy leaderboard PROJECT --policy DIR --out DIR [--scenario K]... [--seeds-per N] [--free N]` | Leaderboard-style driving score with intervals |
 | `falcon policy replay PROJECT --episodes FILE --episode N [--infraction K] --out DIR` | replays an episode's infraction with a chase camera |
 | `falcon export RUN... --format F --out DIR [--split-json FILE] [--option K=V]... [--overwrite]` | exports runs as `coco`, `yolo`, `kitti`, `nuscenes` (with lidarseg and panoptic), `waymo` (a documented Waymo-style JSON layout, not TFRecords), `bdd_lanes` or `mcap` (ROS 2); `falcon_export.json` in DIR says what was filled, left out and why |
+| `falcon stack topics PROJECT [--rig R] [--control autoware\|ackermann\|carla]` | the topics Falcon's ROS 2 bridge publishes for a rig, the control topic it takes, and the Autoware names ([stack testing](stack-testing.md)) |
+| `falcon stack image` | builds the bridge image `falcon-ros2-bridge:humble` (from the official `ros:humble-ros-base`) with Docker |
+| `falcon stack bridge --port P [--native] [--domain D]` | prints the bridge node's command (in the image, or `--native` on a ROS 2 machine) |
+| `falcon stack run PROJECT [--scenario S --seed N] [--driver ros2\|follower\|autopilot] [--control C] [--test-stack] [--port P] [--deadline S] [--motion M] [--out DIR]` | one stack run: the ego driven through the bridge (or a baseline), closed loop, deadlines recorded |
+| `falcon stack suite new NAME --out FILE [--driver D] [--scenarios a,b] [--seeds 0,1,2] [--test-stack]` | writes a suite (scenarios × seeds, pass/fail criteria) to edit |
+| `falcon stack suite run PROJECT SUITE.json [--dir DIR]` | runs a suite (resumable): results.jsonl, results.json with Wilson intervals, results.csv, run.json |
+| `falcon stack replay RUN [--into DIR]` | re-runs a stack run with the controls it recorded and compares the trajectories |
+| `falcon stack odd new --out FILE` · `falcon stack report SUITE_DIR --odd ODD.json --out DIR [--study DIR]...` | an example ODD; the safety-case report (HTML + JSON) of a suite against it |
 
 Commands that need CARLA start Falcon's own server when none is running and stop it at the end (`--keep-server`
 leaves it running). Ctrl+C cancels the job politely — the worker tidies the server — and a second Ctrl+C kills it.
@@ -49,4 +57,5 @@ not validate. `falcon reproduce` exits `2` when the re-run does not agree within
 python3 -m falcon_autonomy project validate my.falcon.json
 python3 -m pytest                                   # no GPU or server needed (fake carla)
 FALCON_REAL_CARLA=1 python3 -m pytest -m real_server   # on a machine with CARLA
+FALCON_ROS2=1 python3 -m pytest -m ros2                 # with Docker and the falcon-ros2-bridge:humble image
 ```

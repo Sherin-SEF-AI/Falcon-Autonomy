@@ -613,9 +613,12 @@ class ActorLog:
         from ..core.groundtruth import category_of
         snap = world.get_snapshot()
         rows = []
+        # a log replay (workers.replay) parks the actors it is not showing: left out; and knows its exact poses
+        hidden = director.hidden_ids() if director is not None and hasattr(director, 'hidden_ids') else ()
+        exact = getattr(director, 'exact_tf', None) if director is not None else None
         for a in world.get_actors():
             tid = a.type_id
-            if not tid.startswith(('vehicle.', 'walker.')):
+            if not tid.startswith(('vehicle.', 'walker.')) or a.id in hidden:
                 continue
             st = self.static.get(a.id)
             if st is None:
@@ -632,7 +635,7 @@ class ActorLog:
             sa = snap.find(a.id)
             if sa is None:
                 continue
-            t, v = sa.get_transform(), None
+            t, v = (exact(a) if exact is not None else None) or sa.get_transform(), None
             if director is not None and director.kinematic:
                 v = director.k_vel(a)
             v = v if v is not None else sa.get_velocity()

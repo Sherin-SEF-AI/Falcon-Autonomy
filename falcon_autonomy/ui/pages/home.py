@@ -1,4 +1,5 @@
-"""Home: the server, the machine, the measured throughput and the latest runs at a glance."""
+"""Status: the server, the machine, the measured throughput and the latest runs at a glance — the Status tab of the
+Loop page (the home page), where the first page used to show them."""
 from __future__ import annotations
 
 import os
@@ -13,10 +14,10 @@ from .. import icons, tasks
 from ..widgets import KeyValues, Page, Section, button
 
 
-class HomePage(Page):
-    key, title, icon = 'home', 'Home', 'app'
-    about = ('The state of the server and the machine, what this machine measured, and the latest runs. The Loop '
-             'orchestrator becomes the home page when it is built (milestone 8).')
+class StatusPanel(Page):
+    """Not a page of its own: the Loop page shows it as its Status tab."""
+    key, title, icon = 'status', 'Status', 'app'
+    about = 'The state of the server and the machine, what this machine measured, and the latest runs.'
 
     def __init__(self, win):
         super().__init__(win)

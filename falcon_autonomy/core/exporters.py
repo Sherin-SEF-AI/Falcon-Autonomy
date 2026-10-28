@@ -1303,6 +1303,12 @@ def _mcap(ctx: Ctx):
             ns = lambda rec, sid=None: run.us(rec, sid) * 1000                       # noqa: E731
             bag.add_topic('/tf_static', 'tf2_msgs/msg/TFMessage')
             bag.add_topic('/tf', 'tf2_msgs/msg/TFMessage')
+            objects = str(ctx.opt.get('objects', 'none')).lower() in ('1', 'true', 'yes', 'ground_truth')
+            if objects:                                  # the actors' boxes (core.logreplay reads them back)
+                from .logreplay import ros2 as LR
+                LR.register_vision_msgs()
+                bag.add_topic(LR.OBJECTS_TOPIC, 'vision_msgs/msg/Detection3DArray')
+                actor_rows = LR.actor_rows_by_step(run.dir)
             tfs = []
             for t in tf_list(run.rig):
                 Tm = np.eye(4)
@@ -1338,6 +1344,9 @@ def _mcap(ctx: Ctx):
             for rec in run.frames:
                 t = ns(rec)
                 bag.write('/tf', t, {'transforms': [B.transform_stamped(rh(run.ego(rec)), t, 'map', 'base_link')]})
+                if objects and rec['step'] in actor_rows:
+                    bag.write(LR.OBJECTS_TOPIC, t, {'header': B.header(t, 'map'), 'detections': [
+                        dict(LR.detection3d(a), header=B.header(t, 'map')) for a in actor_rows[rec['step']]]})
                 for sid, tp in topics.items():
                     s = run.sensors[sid]
                     fid = f'{_link(s)}_optical' if s['type'].startswith('camera.') else f'{_link(s)}_link'
@@ -1406,8 +1415,13 @@ def _mcap(ctx: Ctx):
             ctx.frames[rel] = len(run.frames)
             ctx.count('messages', res['messages'])
             ctx.tick(f'MCAP: {run.key}')
-    ctx.leave('ground truth (labels, boxes)', 'the bag carries the sensors and transforms; the lidar clouds carry '
-                                              'CARLA\'s tag and actor id per point')
+    if str(ctx.opt.get('objects', 'none')).lower() in ('1', 'true', 'yes', 'ground_truth'):
+        ctx.leave('ground truth labels', 'the bag carries the sensors, the transforms and the actors\' boxes '
+                                         '(/falcon/objects); the lidar clouds carry CARLA\'s tag and actor id per point')
+    else:
+        ctx.leave('ground truth (labels, boxes)', 'the bag carries the sensors and transforms; the lidar clouds carry '
+                                                  'CARLA\'s tag and actor id per point (option objects=true adds the '
+                                                  'actors\' boxes)')
     ctx.leave('IMU orientation', 'CARLA\'s IMU gives none (covariance[0] = −1, REP 145); its compass is not converted')
     ctx.heur('NavSatFix covariance', 'CARLA\'s noise in degrees taken to metres at 111 320 m per degree')
     ctx.load = '`ros2 bag info <bag>`, `ros2 bag play <bag>`, Foxglove, or the mcap / mcap-ros2-support packages'
@@ -1481,7 +1495,8 @@ def export(run_dirs: list, fmt: str, out_dir: str, options: dict | None = None, 
     options: 'splits' {train|val|test: [run dirs]}; 'cameras' [ids]; 'every' n (camera formats: every n-th step);
     'link' copy | hardlink | symlink (images); 'overwrite' (replace an earlier export in out_dir); nuscenes:
     'version' (default v1.0-falcon), 'keyframe_hz'; kitti: 'camera'; bdd_lanes: 'lane_max_m'; mcap: 'image'
-    compressed | raw, 'compression' none | zstd. Raises ExportError."""
+    compressed | raw, 'compression' none | zstd, 'objects' true (every actor's box per step as a
+    vision_msgs/Detection3DArray on /falcon/objects, frame 'map'). Raises ExportError."""
     options = dict(options or {})
     if fmt not in _EXPORTERS:
         raise ExportError(f'unknown format {fmt!r}: one of {", ".join(FORMATS)}')

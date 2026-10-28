@@ -21,6 +21,11 @@
     falcon policy bc|offline|ppo|rollout ...   driving policies: behaviour cloning, PPO, evaluation in the environment
     falcon sweep PROJECT --scenario S --name N [--grid K | --samples K]   a parameter sweep (resumable)
     falcon search PROJECT --scenario S --name N [--method bayes|cmaes|adaptive|random] [--budget B]   rare cases
+    falcon stack topics|image|bridge|run|suite|replay|odd|report ...   stack testing: ROS 2 bridge, suites, safety case
+    falcon hil device|deploy|session|report|acceptance ...   hardware in the loop: a Jetson (or a simulated device)
+    falcon loop PROJECT [status|next|run --until STEP|show N|new|set]   the closed loop (docs/loop.md)
+    falcon report KIND SRC --out FILE          a self-contained HTML report (docs/reports.md)
+    falcon replay import|match|run|compare ...   real logs (nuScenes, Waymo v2, ROS 2 bags) replayed with changes
     falcon schema                              print the project schema's path
 
 Exit codes: 0 ok; otherwise the worker's code (falcon_autonomy.core.protocol: 2 failed, 3 cancelled, 4 server lost,
@@ -309,6 +314,14 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser('policy', help='driving policies: falcon policy bc|offline|ppo|rollout (see docs/policies.md)')
     sub.add_parser('sweep', help='a scenario parameter sweep (see docs/cli.md)')
     sub.add_parser('search', help='a rare-case search over a scenario\'s parameters (see docs/cli.md)')
+    sub.add_parser('stack', help='stack testing: the ROS 2 bridge, scenario suites, the safety-case report (see '
+                                 'docs/stack-testing.md)')
+    sub.add_parser('hil', help='hardware in the loop: falcon hil device|deploy|session|report|acceptance (see '
+                               'docs/hardware.md)')
+    sub.add_parser('loop', help='the closed loop: falcon loop PROJECT [status|next|run|show N|new|set] (see '
+                                'docs/loop.md)')
+    sub.add_parser('report', help='an HTML report: falcon report KIND SRC --out FILE (see docs/reports.md)')
+    sub.add_parser('replay', help='log replay: falcon replay import|match|run|compare (see docs/log-replay.md)')
     return ap
 
 
@@ -376,6 +389,21 @@ def main(argv=None) -> int:
     if argv[:1] == ['policy']:                    # driving policies: BC, PPO, rollouts (core.policy)
         from .core.policy import main_policy
         return main_policy(argv[1:])
+    if argv[:1] == ['loop']:                      # the closed loop (core.loop)
+        from .core.loop import main_loop
+        return main_loop(argv[1:])
+    if argv[:1] == ['report']:                    # HTML reports (core.reports)
+        from .core.reports import main_report
+        return main_report(argv[1:])
+    if argv[:1] == ['stack']:                     # stack testing: ROS 2 bridge, suites, safety case (sim.stacksuite)
+        from .sim.stacksuite import main_stack
+        return main_stack(argv[1:])
+    if argv[:1] == ['hil']:                       # hardware in the loop (falcon_autonomy.hil)
+        from .hil.cli import main_hil
+        return main_hil(argv[1:])
+    if argv[:1] == ['replay']:                    # log replay: import, re-simulate with changes, compare
+        from .core.logreplay.commands import main_replay
+        return main_replay(argv[1:])
     if argv[:1] in (['sweep'], ['search']):       # scenario studies (sim.studio)
         from .sim.studio import main_study
         return main_study(argv)
