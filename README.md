@@ -5,10 +5,10 @@ One desktop application for the whole loop of building a self-driving AI on the
 generate perfectly labelled data where models are weak, train and evaluate, and test a full AV stack — with every
 number traceable to the run that produced it.
 
-**Status: milestones 1–5 of 8 (foundation; worlds and live; rigs and data engine; scenarios and rare cases; models and the sim-to-real gap).** What works today is listed under *What works*; everything else in the
+**Status: milestones 1–6 of 8 (foundation; worlds and live; rigs and data engine; scenarios and rare cases; models and the sim-to-real gap; the training lab).** What works today is listed under *What works*; everything else in the
 [roadmap](docs/roadmap.md) is planned, not present. The app shows only pages that do what they say.
 
-## What works (0.5.0)
+## What works (0.6.0)
 
 - **The app shell** (PyQt6): a page navigator, Jobs and Log docks, undo and redo for every project edit, a command
   palette (Ctrl+K), dark and light themes, a status bar with the CARLA server, the GPU and memory.
@@ -43,6 +43,11 @@ number traceable to the run that produced it.
   distances next to their real-vs-real floor, and measured appearance matching ([sim-to-real](docs/sim-to-real.md));
   optical flow, scene flow, occupancy with visibility, BEV maps, future trajectories, clips and grounded captions and
   QA derived from drives ([world model](docs/world-model.md)).
+- **The training lab**: fine-tune torchvision detectors on drives and real data (pinned weights on request, seeded,
+  resumable, exported to ONNX and checked), the mixed sim/real experiment with paired intervals, local tracking with
+  an MLflow export ([training](docs/training.md)); a CARLA environment with the Gymnasium API, behaviour cloning, PPO
+  with a scenario curriculum, Leaderboard-style driving scores and one-click replay of any infraction
+  ([policies](docs/policies.md)).
 - **Worlds**: CARLA's towns with weather presets and sliders (sun, cloud, rain, wetness, puddles, fog, wind), and
   **real places imported from OpenStreetMap** (.osm or .osm.pbf, offline) with a road-graph preview, a lane check
   against OSM, **left-hand traffic** (verified on the server) and the **Indian mixed-traffic profile**
@@ -88,7 +93,7 @@ FALCON_REAL_CARLA=1 python3 -m pytest -m real_server     # also against a real C
 [The manual](docs/index.md) · [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
 [project format](docs/project-format.md) · [CLI and exit codes](docs/cli.md) · [methods](docs/methods.md) ·
 [CARLA lessons](docs/carla-lessons.md) · [models](docs/models.md) · [sim-to-real](docs/sim-to-real.md) ·
-[world model](docs/world-model.md) · [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
+[world model](docs/world-model.md) · [training](docs/training.md) · [policies](docs/policies.md) · [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
 
 ## Licence
 

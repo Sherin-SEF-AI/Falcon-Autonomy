@@ -116,6 +116,18 @@ distance next to its real-vs-real floor; optional appearance matching with its e
 [models](models.md) and [sim-to-real](sim-to-real.md). World-model and language data are derived from drives by
 `falcon derive` ([world model](world-model.md)).
 
+### Training
+- **Detectors** fine-tunes a torchvision detector (BSD-3-Clause) on checked drives and optional real data. A held-out
+  drive picks the best epoch, the model is exported to ONNX with a check against torch, and *Register as a model*
+  puts it on the Models page. Pretrained weights download only when asked, with their terms shown.
+- **Sim + real experiment** trains real only against real + X % synthetic at the same budget. Each arm is scored on the
+  same real test set, with paired intervals against real only and the spread over seeds; the experiment exports for
+  MLflow ([training](training.md)).
+- **Driving policies** clones the recorded control of drives, or learns by PPO in CARLA along a scenario curriculum.
+- **Leaderboard** scores a policy as the CARLA Leaderboard scores routes (driving score, route completion, infraction
+  penalty, with intervals). Select any infraction and *Replay* it: the episode is re-run exactly with a chase camera
+  ([policies](policies.md)).
+
 ### Data
 **Record** a drive (see *Getting started*). **Browse** recorded runs: choose the camera and the layer, scrub the
 frames, set the overlay's opacity. A cancelled or failed run keeps only `run.json` (why it ended) and its input,

@@ -56,7 +56,7 @@ def window(qapp, tmp_path, project):
 
 def test_pages_and_navigation(window, qapp):
     keys = [p.key for p in window.pages]
-    assert keys == ['home', 'worlds', 'live', 'rigs', 'scenarios', 'data', 'rarecases', 'models', 'settings', 'help']
+    assert keys == ['home', 'worlds', 'live', 'rigs', 'scenarios', 'data', 'rarecases', 'models', 'training', 'settings', 'help']
     assert window.go('data') is window.stack.currentWidget()
     window.actions_['page_worlds'].trigger()
     assert window.stack.currentWidget().key == 'worlds'
@@ -397,3 +397,61 @@ def test_models_page_evaluates_compares_and_measures_the_gap(window, qapp, tmp_p
     if page.gal.topLevelItemCount():
         page.gal.setCurrentItem(page.gal.topLevelItem(0))
         assert page.frame.pixmap() is not None and not page.frame.pixmap().isNull()
+
+
+def test_training_page_clones_scores_and_replays(window, qapp, tmp_path):
+    window.project.path = str(tmp_path / 'proj.falcon.json')
+    window.project.doc['rigs'][0]['sensors'][0].update(width=64, height=36, labels=['semantic'])
+    window.save()
+    window.service.set_workspace(window.workspace())
+    data = window.go('data')
+    data.record.seconds.setValue(2.0)
+    for _ in range(2):                    # behaviour cloning splits by drive: two at least
+        data.record.record()
+        job = window.queue.jobs[-1]
+        assert pump(qapp, lambda: job.state in ('done', 'failed', 'cancelled'), 120), job.log
+        assert job.state == 'done', job.log
+        time.sleep(1.1)                   # run folders are named by the second
+    page = window.go('training')
+    assert page.det_runs.count() == page.bc_runs.count() == 2
+
+    def run_job(fn, timeout=300):
+        n = len(window.queue.jobs)
+        fn()
+        assert len(window.queue.jobs) == n + 1
+        j = window.queue.jobs[-1]
+        assert pump(qapp, lambda: j.state in ('done', 'failed', 'cancelled'), timeout), j.log
+        assert j.state == 'done', j.log
+        assert pump(qapp, lambda: j.id not in page.jobs, 5)
+        return j
+    # detectors: the job it would submit (not run here: it would use the GPU)
+    captured = []
+    page._submit = lambda spec: captured.append(spec)
+    page.det_runs.item(0).setCheckState(Qt.CheckState.Checked)
+    page.train()
+    spec = captured[0]
+    assert spec.needs_gpu and spec.env['FALCON_GPU_LOCK_HELD'] == '1'
+    assert spec.argv[3:5] == ['train', '--workspace'] and f'falcon:{page.det_runs.item(0).data(256)}' in spec.argv
+    del page._submit
+    assert page.weights.topLevelItemCount() == len(__import__('falcon_autonomy.core.training',
+                                                              fromlist=['WEIGHTS']).WEIGHTS)
+    # a policy from the drive, scored on one scenario route, and an infraction replayed if it made one
+    for i in range(2):
+        page.bc_runs.item(i).setCheckState(Qt.CheckState.Checked)
+    page.bc_epochs.setValue(3)
+    run_job(page.bc)
+    assert page.policies.topLevelItemCount() == 1 and page.lb_policy.count() == 1
+    page.lb_seeds.setValue(1)
+    page.lb_free.setValue(1)
+    k = next(i for i in range(page.lb_scn.count()) if page.lb_scn.item(i).data(256) == 'lead_brake')
+    page.lb_scn.item(k).setCheckState(Qt.CheckState.Checked)
+    run_job(page.score_policy)
+    assert page.lbs.count() == 1 and page.infr.topLevelItemCount() >= 2
+    assert page.lb_info.vals['Driving score'].text()[0].isdigit()
+    rows = [page.infr.topLevelItem(i) for i in range(page.infr.topLevelItemCount())]
+    with_inf = [r for r in rows if r.data(0, 256) is not None]
+    if with_inf:
+        page.infr.setCurrentItem(with_inf[0])
+        run_job(page.replay)
+        page.flip.resize(400, 260)
+        assert page.flip.frames and not page.flip.grab().isNull()

@@ -33,7 +33,9 @@ One JSON object per line with a command `cmd`:
 |---|---|
 | `cancel` | tidy up and exit with `CANCELLED` (the same as SIGTERM or SIGINT) |
 
-Live sessions (milestone 2) add `control` and `event`. End of input is not a cancel.
+Live sessions (milestone 2) add `control` and `event`. The environment worker (`gym`, milestone 6) adds `reset`
+(seed, options), `step` (action) and `close`; it replies on a Unix socket in the live link's framing (a JSON header
+and a binary payload) — see [policies](policies.md#how-it-runs). End of input is not a cancel.
 
 ## Signals
 

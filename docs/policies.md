@@ -317,6 +317,39 @@ argmax for discrete PPO.
 episode summary (each replayable) and the aggregate — mean return, route completion, success rate, collisions per
 episode, infractions per km and terminations — with provenance.
 
+## Leaderboard-style evaluation
+
+`falcon policy leaderboard PROJECT --policy DIR --out DIR` (Training ▸ Leaderboard) drives a policy over a route set:
+each chosen scenario (default: every built-in) with `--seeds-per` seeds, plus `--free` free-driving routes. Each
+route is scored as the CARLA Leaderboard scores one (`core/leaderboard.py`):
+
+- **Route completion** is the share of the route driven, less the distance driven off the road, the wrong way or
+  outside the route's lanes. The Leaderboard does not count those towards completion either.
+- **Infraction penalty** is the product of the coefficients of the infractions, as the Leaderboard 1.0 and 2.0
+  documents state them: a pedestrian collision 0.50, a vehicle 0.60, a static object 0.65, a red light 0.70, a stop
+  sign 0.80.
+- **Driving score** is completion × penalty, and the set's score is the mean over routes. Each of the three gets a
+  95 % bootstrap interval over routes; infractions per km are given by kind.
+- **Shutdowns:** route deviation and an agent blocked end a route, as the Leaderboard's shutdowns do. They add no
+  penalty; completion is what was driven until then.
+
+**Not scored**, and said in every result: Leaderboard 2.0's minimum-speed failures, scenario time-outs and failure to
+yield to an emergency vehicle, because Falcon has no such events. **Falcon's routes are not the Leaderboard's**, so
+these numbers compare policies with each other, not with its public results.
+
+`leaderboard.json` holds the scores, per route and in aggregate, with provenance. `episodes.jsonl` holds every episode
+with its actions and the environment settings it ran under.
+
+### Replaying an infraction
+
+`falcon policy replay PROJECT --episodes EPISODES.jsonl --episode N --infraction K --out DIR` (Training ▸ Leaderboard ▸
+*Replay the selected infraction*) rebuilds the episode's environment from the episode's own settings and adds a
+640 × 360 chase camera, which does not change the motion. It then resets with the episode's seed and options, applies
+its logged actions, and keeps the frames from 3 s before the infraction to 1 s after it.
+
+The replay checks that it meets the same infraction at the same step (`match` in `replay.json`). An episode with
+physics motion or background traffic is refused, with the reason: neither repeats in CARLA 0.9.16.
+
 ## Measured
 
 All on the reference machine, 2026-10-28, often loaded by other jobs; wall times vary with that load.

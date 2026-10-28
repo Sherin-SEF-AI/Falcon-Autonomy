@@ -9,6 +9,7 @@ from .rarecases import RareCasesPage
 from .rigs import RigsPage
 from .scenarios import ScenariosPage
 from .settings import SettingsPage
+from .training import TrainingPage
 from .worlds import WorldsPage
 
-PAGES = [HomePage, WorldsPage, LivePage, RigsPage, ScenariosPage, DataPage, RareCasesPage, ModelsPage, SettingsPage, HelpPage]
+PAGES = [HomePage, WorldsPage, LivePage, RigsPage, ScenariosPage, DataPage, RareCasesPage, ModelsPage, TrainingPage, SettingsPage, HelpPage]

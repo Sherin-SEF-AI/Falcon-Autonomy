@@ -18,7 +18,7 @@ with provenance over the run's run.json, frames.jsonl, lanes.json and actors.jso
 | BEV maps | `bev/<step>.npz` | ego-centred, heading up, +y to the image's right. Bit channels: drivable, centerline, lane boundary, vehicle, pedestrian, cyclist, other, ego; and per pixel the id of the actor drawn there |
 | Scene flow | `flow/<lidar>/<sweep>.npy` | per lidar point, in the `.bin`'s order: its motion to the next sweep, in this sweep's sensor frame. A point moves rigidly with its actor; the map is static |
 | Future trajectories | `trajectories.npz` | every agent's next 3 s at 10 Hz in the ego frame at each step, with validity masks; and the ego's own future |
-| Ego actions | `ego_actions.jsonl` | the recorded control when there is one (live recordings), and always speed, acceleration, yaw rate, curvature and lateral acceleration, derived from the poses by finite differences, and labelled so |
+| Ego actions | `ego_actions.jsonl` | the recorded control (live recordings, and drives since 0.6: the traffic manager's or the director's), and always speed, acceleration, yaw rate, curvature and lateral acceleration, derived from the poses by finite differences, and labelled so |
 | Clips | `clips.json` | fixed-rate multi-camera clips (default 10 Hz, 1 s, every 0.5 s). A rate that does not divide the drive's frame rate is refused; images are never interpolated |
 
 Camera optical flow is a label layer of its own (`flow/<camera>/<n>.npy`, see [dataset format](dataset-format.md)).

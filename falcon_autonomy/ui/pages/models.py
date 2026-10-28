@@ -336,6 +336,10 @@ class ModelsPage(Page):
         win.bridge.finished.connect(self.finished)
         self.refresh()
 
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self.refresh()                    # drives, trainings and results made elsewhere since it was last shown
+
     # ------------------------------------------------------------------ result tabs
     def _scores_tab(self):
         w = QWidget()

@@ -24,6 +24,14 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon evaluate --compare EVAL_A EVAL_B --out DIR [--boot N]` | a paired bootstrap of every number's change B − A; regressions and improvements |
 | `falcon gap --sim RUN... --real KIND:PATH --out DIR [--labels FILE] [--images N] [--features --workspace W] [--match]` | the sim-to-real gap; `falcon gap --fetch --workspace W` downloads the feature extractor ([sim-to-real](sim-to-real.md)) |
 | `falcon derive worldmodel\|language RUN --out DIR [--option K=V]...` | world-model data (occupancy, BEV, scene flow, futures, actions, clips) or grounded language data ([world model](world-model.md)) |
+| `falcon train --train SRC... [--val SRC] [--test SRC] [--arch A] [--init coco\|imagenet\|scratch] [--epochs N] [--batch B] [--size WxH] --workspace W` | fine-tunes a detector (a GPU job), exports ONNX and a model registration; `--weights` lists the pinned weights, `--fetch NAME` downloads one ([training](training.md)) |
+| `falcon experiment mixed --id ID --synthetic SRC... --real-train SRC --real-test SRC [--shares 0,25,50,100] [--seeds K] --workspace W` | real only against real + X % synthetic at a fixed budget, paired intervals against real only (resumable) |
+| `falcon experiment list\|best\|results\|export EXP [--mlflow DIR]` | runs and their metrics; the best run; a mixed experiment's table; MLflow file-store export |
+| `falcon policy bc --run RUN... --out DIR` | behaviour cloning from recorded drives ([policies](policies.md)) |
+| `falcon policy ppo PROJECT --out DIR [--curriculum default\|FILE \| --scenario K] [--updates N] [--steps S]` | PPO through the environment, with a scenario curriculum |
+| `falcon policy rollout PROJECT --policy DIR --out DIR [--episodes N] [--scenario K]` | runs a policy for N episodes |
+| `falcon policy leaderboard PROJECT --policy DIR --out DIR [--scenario K]... [--seeds-per N] [--free N]` | Leaderboard-style driving score with intervals |
+| `falcon policy replay PROJECT --episodes FILE --episode N [--infraction K] --out DIR` | replays an episode's infraction with a chase camera |
 | `falcon export RUN... --format F --out DIR [--split-json FILE] [--option K=V]... [--overwrite]` | exports runs as `coco`, `yolo`, `kitti`, `nuscenes` (with lidarseg and panoptic), `waymo` (a documented Waymo-style JSON layout, not TFRecords), `bdd_lanes` or `mcap` (ROS 2); `falcon_export.json` in DIR says what was filled, left out and why |
 
 Commands that need CARLA start Falcon's own server when none is running and stop it at the end (`--keep-server`

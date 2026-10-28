@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.6.0 — milestone 6: the training lab
+
+- Detector fine-tuning (`falcon train`, Training ▸ Detectors): Faster R-CNN MobileNetV3, FCOS and RetinaNet v2 from
+  torchvision (BSD-3-Clause), on Falcon drives, dataset versions and real sets (KITTI, COCO, BDD100K, nuScenes).
+  Seven pinned weight files, each SHA-256 verified, download only on request. Seeded per iteration: a resumed run
+  ends bit for bit like an uninterrupted one on the CPU; on CUDA, FCOS and RetinaNet repeated bit for bit and Faster
+  R-CNN does not (RoIAlign), as run.json says. Every ONNX export is checked against torch through core.models.
+  Measured on an RTX 5080 at 640 × 384: 97–139 images/s, 1.1–2.8 GB peak.
+- The mixed sim/real experiment (`falcon experiment mixed`): real only against real + X % synthetic at a fixed
+  budget, K seeds, the same real test set, paired bootstrap against real only plus the seed-to-seed spread.
+  Local experiment tracking with an MLflow 2.x file-store export (MLflow itself is not needed).
+- A CARLA environment with the Gymnasium API (gymnasium's classes when installed): 27 documented features, an
+  optional BEV and camera, continuous or discrete actions, 14 reward terms that sum to the reward, and infractions
+  with step, actors and pose. Measured on a real server: 57–101 steps/s with the BEV, about 200 without, and
+  identical repeats of kinematic episodes.
+- Behaviour cloning from recorded drives (drives now record the ego's control), and PPO with a scenario curriculum,
+  sharing one policy format; `falcon policy`.
+- Leaderboard-style evaluation (`falcon policy leaderboard`, Training ▸ Leaderboard): route completion × infraction
+  penalty with the Leaderboard's coefficients and intervals over routes. One-click replay of any infraction re-runs
+  the episode exactly with a chase camera and checks that it meets the same infraction.
+- The Training page; the Models page refreshes when shown.
+- Fixed: ONNX/TorchScript segmenters could not be evaluated (class maps by name, decoded twice); a kinematic ego's
+  recorded speed was 0.
+- Honest results: PPO trained for minutes does not drive well (measured and documented), and behaviour cloning on a
+  few drives beats a constant baseline only modestly.
+
 ## 0.5.0 — milestone 5: models and the sim-to-real gap
 
 - Optical flow as a camera label (CARLA's optical-flow camera decoded as measured on 0.9.16: median error 0.43 / 0.23
