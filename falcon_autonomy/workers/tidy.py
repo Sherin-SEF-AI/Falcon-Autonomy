@@ -53,6 +53,8 @@ def tidy_server(client, world) -> dict:
     st = world.get_settings()
     st.synchronous_mode = False
     st.fixed_delta_seconds = None
+    if getattr(st, 'no_rendering_mode', False):
+        st.no_rendering_mode = False                   # only the gym worker's no_rendering option switches it on
     world.apply_settings(st)
     return {'destroyed': gone, 'sensors': len(sensors), 'controllers': len(ctrls),
             'vehicles': sum(1 for a in mine if a.type_id.startswith('vehicle.')), 'walkers': len(walkers),

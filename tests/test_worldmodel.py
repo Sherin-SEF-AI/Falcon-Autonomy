@@ -389,9 +389,9 @@ def test_derive_end_to_end(run_dir, derived):
     assert tr['valid'][k, 4] and np.allclose(tr['future'][k, 4, :3], want, atol=1e-3)
     assert not tr['valid'][tr['agent_step'] == 29].any()                # the run ends
 
-    # actions: autopilot drive, no control; the fake's hero turns at 3°/s at 8 m/s
+    # actions: an autopilot drive records the traffic manager's control; the fake's hero turns at 3°/s at 8 m/s
     acts = [json.loads(x) for x in open(os.path.join(out, 'ego_actions.jsonl'))]
-    assert len(acts) == 30 and all(a['control'] is None for a in acts)
+    assert len(acts) == 30 and all(a['control_source'] == 'recorded' and a['control']['steer'] > 0 for a in acts)
     assert acts[15]['yaw_rate_dps'] == pytest.approx(3.0, abs=0.05)
     assert acts[15]['curvature_1pm'] == pytest.approx(math.radians(3.0) / 8.0, rel=0.02)
 

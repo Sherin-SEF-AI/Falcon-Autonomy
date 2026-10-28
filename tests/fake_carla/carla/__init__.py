@@ -34,6 +34,10 @@ CARLA's documented and measured behaviour:
   random one; the hero turns gently unless given one), brakes for any actor ahead in its lane, and changes lanes when
   forced (force_lane_change: True to the right). Walkers move by WalkerControl; a vehicle off the autopilot brakes by
   its control (VehicleControl.brake, hand_brake) or keeps a constant velocity (enable_constant_velocity, its own axes).
+  An autopilot vehicle's get_control() is the control that produces its motion under the fake's vehicle model.
+* The traffic light (actor 50) controls the +x lanes with a stop line at x = STOP_LINE_X (get_stop_waypoints); its
+  state is Green unless FAKE_CARLA_LIGHT_STATE names another (tests) or set_state() changed it. Map.get_waypoint with
+  project_to_road=False returns None off the carriageway.
 """
 from __future__ import annotations
 
@@ -383,6 +387,7 @@ PROPS = {'static.prop.trafficcone01': (21, (0.22, 0.22, 0.36), 0.36),
 # TrafficLight box) and a sign (a level mesh: its own instance id; the plate is the level's TrafficSigns box):
 # (cast id, instance id, tag, centre, half extents)
 LIGHT_ID = 50
+STOP_LINE_X = 8.0                    # the light's stop line across the +x lanes
 FIXED = ((60001, LIGHT_ID, 7, (10.0, 6.0, 4.4), (0.2, 0.25, 0.6)),            # the head
          (60002, LIGHT_ID, 6, (10.0, 6.6, 2.5), (0.08, 0.08, 2.5)),            # its pole
          (60003, 41000, 8, (-10.0, 6.6, 2.3), (0.04, 0.4, 0.4)),               # the sign's plate
@@ -646,11 +651,19 @@ class Vehicle(Actor):
             M2[:3, 3] = M[:3, 3] + np.array([math.cos(mid), math.sin(mid), 0.0]) * sp * dt
             self._m_world = M2
             return
+        sp0 = self._speed
         if self.desired is not None:                       # a scenario's vehicle: its lane, its speed, braking
             gap = self._lead_gap()
             target = self.desired if gap is None else min(self.desired, max(0.0, gap - 4.0))   # 1 s headway, 4 m
             self._speed += float(np.clip(target - self._speed, -8.0 * dt, 3.0 * dt))
             self._yaw_rate = 0.0
+        # the control the traffic manager "applied": what produces this motion under the fake's own vehicle model
+        # (throttle 3 m/s², brake 8 m/s², the bicycle model's steer), so get_control() is consistent with the motion
+        rear, front, _ = self._axles
+        dv = self._speed - sp0
+        steer = math.atan(self._yaw_rate * max(front - rear, 0.5) / max(self._speed, 0.1)) / math.radians(70.0)
+        self.control = VehicleControl(throttle=min(max(dv / dt / 3.0, 0.0), 1.0), steer=max(min(steer, 1.0), -1.0),
+                                      brake=min(max(-dv / dt / 8.0, 0.0), 1.0))
         yaw2 = yaw + self._yaw_rate * dt
         mid = (yaw + yaw2) / 2
         d = np.array([math.cos(mid), math.sin(mid), 0.0]) * self._speed * dt
@@ -748,16 +761,39 @@ class Prop(Actor):
         pass
 
 
+class TrafficLightState:
+    pass
+
+
+_enum(TrafficLightState, ['Red', 'Yellow', 'Green', 'Off', 'Unknown'])
+
+
 class TrafficLight(Actor):
-    """The map's traffic light: an actor of the world (not spawned, never destroyed by a client)."""
+    """The map's traffic light: an actor of the world (not spawned, never destroyed by a client). It controls the two
+    +x lanes (ids −1, −2), whose stop line is at x = STOP_LINE_X. Its state is constant: Green, or the environment's
+    FAKE_CARLA_LIGHT_STATE (tests), or what set_state() set."""
 
     def __init__(self, world):
         bp = ActorBlueprint('traffic.traffic_light', {'role_name': ''}, ['traffic'])
         super().__init__(world, LIGHT_ID, bp, Transform(Location(10.0, 6.6, 0.0)))
+        self.state = getattr(TrafficLightState, os.environ.get('FAKE_CARLA_LIGHT_STATE', 'Green'))
 
     def get_light_boxes(self):
         _, _, _, c, e = FIXED[0]
         return [BoundingBox(Location(*c), Vector3D(*e))]
+
+    def get_state(self):
+        return self.state
+
+    def set_state(self, state):
+        self.state = state
+        LOG.append(('light_state', str(state)))
+
+    def freeze(self, on):
+        pass
+
+    def get_stop_waypoints(self):
+        return [Waypoint(-1, STOP_LINE_X), Waypoint(-2, STOP_LINE_X)]
 
 
 class Sensor(Actor):
@@ -989,6 +1025,11 @@ class Map:
         return out
 
     def get_waypoint(self, location, project_to_road=True, lane_type=None):
+        """The nearest lane's waypoint; with project_to_road False, None off the carriageway (as CARLA: no driving lane
+        there)."""
+        if not project_to_road and not (ROAD_Y[0] <= location.y <= ROAD_Y[1] and
+                                        ROAD_X[0] <= location.x <= ROAD_X[1]):
+            return None
         lid = min(LANES, key=lambda l: abs(l[1] - location.y))[0]
         return Waypoint(lid, float(np.clip(location.x, *ROAD_X)))
 
@@ -1132,6 +1173,9 @@ class World:
             b.rotation = Rotation(0.0, yaw, 0.0)
             out.append(b)
         return out
+
+    def reset_all_traffic_lights(self):
+        LOG.append(('reset_traffic_lights',))
 
     def set_pedestrians_seed(self, s):
         self._nav = np.random.default_rng([int(s), 77])

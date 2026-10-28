@@ -122,6 +122,7 @@ class Director:
         self.snap = None
         self.kinematic = str(cfg.get('scenario', {}).get('motion', cfg.get('motion', 'kinematic'))) == 'kinematic'
         self.kin = {}                     # actor id -> [x, y, z, yaw_deg, v] when kinematic
+        self.ego_control = None           # the control drive_ego applied for the coming tick (None: not driving it)
 
     # ------------------------------------------------------------------ lanes relative to the handedness
     def overtaking(self, wp):
@@ -524,6 +525,7 @@ class Director:
                'ego': {'x': tr.location.x, 'y': tr.location.y, 'yaw': tr.rotation.yaw,
                        'speed_mps': math.hypot(v.x, v.y)}, 'route': route, 'lead': lead}
         u = self.policy.act(obs)
+        self.ego_control = dict(u)
         if self.kinematic:
             self.kin_step(self.ego, u)
             return

@@ -595,15 +595,21 @@ class ActorLog:
     of that frame — {step, frame, sim_t, actors: [{id, type_id, category, role, x, y, z, roll, pitch, yaw, vx, vy, vz,
     extent [ex, ey, ez], bbox_center [cx, cy, cz] (in the actor's frame)}]}. Boxes and categories are read once per
     actor (they do not change). Actors a kinematic director moves (physics off: CARLA reports them still) take the
-    director's own velocity."""
+    director's own velocity. path None: no file (rows() only; the gym worker's observations use the same rows)."""
 
     def __init__(self, w, path):
         self.w = w
-        self.fh = open(path, 'w', encoding='utf-8')
+        self.fh = open(path, 'w', encoding='utf-8') if path else None
         self.static = {}
 
     def step(self, world, i, frame, sim_t, director=None):
         import json
+        rows = self.rows(world, director)
+        self.fh.write(json.dumps({'step': i, 'frame': int(frame), 'sim_t': sim_t, 'actors': rows},
+                                 separators=(',', ':')) + '\n')
+
+    def rows(self, world, director=None) -> list:
+        """Every vehicle and walker now (the snapshot of the frame just ticked), as actors.jsonl rows."""
         from ..core.groundtruth import category_of
         snap = world.get_snapshot()
         rows = []
@@ -634,8 +640,8 @@ class ActorLog:
                               'z': round(t.location.z, 4), 'roll': round(t.rotation.roll, 4),
                               'pitch': round(t.rotation.pitch, 4), 'yaw': round(t.rotation.yaw, 4),
                               'vx': round(v.x, 4), 'vy': round(v.y, 4), 'vz': round(v.z, 4)}, **st))
-        self.fh.write(json.dumps({'step': i, 'frame': int(frame), 'sim_t': sim_t, 'actors': rows},
-                                 separators=(',', ':')) + '\n')
+        return rows
 
     def close(self):
-        self.fh.close()
+        if self.fh is not None:
+            self.fh.close()

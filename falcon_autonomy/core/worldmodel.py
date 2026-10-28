@@ -66,8 +66,8 @@ Products (files under OUT; each in the manifest with its parameters):
   agent_step (M,), agent_id (M,), present (M, 4) its pose now, future (M, N, 4), valid (M, N); and the ego's own
   ego_step (S,), ego_future (S, N, 4), ego_valid (S, N) in the ego frame at each step.
 * Ego actions — ego_actions.jsonl, one line per step: `control` (throttle, steer, brake, hand_brake, reverse) when the
-  run recorded it (live recordings: frames.jsonl `control`; null on a step without control), else null and
-  control_source 'not recorded' (drives on the autopilot). Always, DERIVED from the pose sequence by finite
+  run recorded it (drives and live recordings: frames.jsonl `control`; null on a step without control), else null
+  and control_source 'not recorded' (drives recorded before 0.6). Always, DERIVED from the pose sequence by finite
   differences (np.gradient: central inside, one-sided at the ends): speed_mps (frames.jsonl's, recorded),
   accel_mps2 (d speed / dt), yaw_rate_dps (d yaw / dt, yaw unwrapped; positive turns right, CARLA's sign),
   curvature_1pm (yaw rate in rad/s ÷ speed; positive to the right; null below CURVATURE_MIN_SPEED), lat_accel_mps2

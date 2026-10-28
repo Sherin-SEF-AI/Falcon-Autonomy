@@ -15,7 +15,7 @@ the map (a town, or an OpenDRIVE file), the weather, the rig, the traffic, the s
 3. warms up warmup_steps steps unrecorded (the first frames after a spawn are not settled), then records `steps`
    steps (or until max_wall_s of wall clock, for the smoke drive): per step every camera's frame of exactly that
    tick (by frame number) — RGB as JPEG, semantic tags as a single-channel PNG — and a line in frames.jsonl with the
-   step, frame, simulation time and the ego's pose and speed;
+   step, frame, simulation time, the ego's pose and speed, and the ego's control in effect during that tick;
 4. writes dataset.json (the sensors' intrinsics and extrinsics, the label kinds, the palette) and run.json (what
    ran, the measured throughput), and tidies up in all cases (common.Worker.tidy).
 
@@ -169,6 +169,10 @@ class Drive(Worker):
                 sim_t0 = snap_t if sim_t0 is None else sim_t0
                 rec = {'step': i, 'frame': int(frame), 'sim_t': round(snap_t - sim_t0, 6), 'files': {}}
                 rec.update(scene.ego_state(ego))
+                if director is not None and director.kinematic and director.k_vel(ego) is not None:
+                    v = director.k_vel(ego)              # physics off: CARLA reports the ego still; the director knows
+                    rec['speed_mps'] = round(math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z), 4)
+                rec['control'] = ego_control(ego, director)
                 depth_now = None
                 yaw = rec['ego']['yaw']
                 yaw_rate = 0.0 if prev_yaw is None else ((yaw - prev_yaw + 180.0) % 360.0 - 180.0) * fps0 * \
@@ -266,6 +270,20 @@ def main(argv) -> int:
         print(f'failed: cannot read {a.config}: {e}', flush=True)
         return P.FAILED
     return Drive(cfg, argv, a.config).execute()
+
+
+def ego_control(ego, director=None) -> dict:
+    """The ego's control in effect during the tick that produced this step (docs/dataset-format.md, "Frames"): the
+    director's when it drives the ego (in kinematic motion no VehicleControl reaches CARLA), else the vehicle's
+    get_control() — what the traffic manager (or the physics-driven director) applied for that tick."""
+    u = director.ego_control if director is not None and director.ego_control is not None else None
+    if u is None:
+        c = ego.get_control()
+        u = {'throttle': c.throttle, 'steer': c.steer, 'brake': c.brake, 'hand_brake': c.hand_brake,
+             'reverse': c.reverse}
+    return {'throttle': round(float(u.get('throttle', 0.0)), 4), 'steer': round(float(u.get('steer', 0.0)), 4),
+            'brake': round(float(u.get('brake', 0.0)), 4), 'hand_brake': bool(u.get('hand_brake', False)),
+            'reverse': bool(u.get('reverse', False))}
 
 
 def scenario_result(director, fps) -> dict:

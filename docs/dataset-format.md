@@ -26,9 +26,17 @@ run/
 
 ## Frames
 `frames.jsonl`: `step`, `frame` (CARLA's), `sim_t` (s from the first recorded step), `ego` (pose in CARLA's world),
-`speed_mps`, `recorded` (false on steps `record_every` skips), `files` (`"<sensor>/<kind>": path`), and when used
-`stamps` (per sensor, with its clock-offset fault), `faults` (per sensor: `drop` or `freeze`), `lidar_pose` (per
-lidar: the 3 × 4 world matrix of the sweep's end, row-major).
+`speed_mps`, `control`, `recorded` (false on steps `record_every` skips), `files` (`"<sensor>/<kind>": path`), and
+when used `stamps` (per sensor, with its clock-offset fault), `faults` (per sensor: `drop` or `freeze`), `lidar_pose`
+(per lidar: the 3 × 4 world matrix of the sweep's end, row-major).
+
+`control` is the ego's control **in effect during the tick that produced this step** — `throttle` 0–1, `steer` −1…1
+(positive right), `brake` 0–1, `hand_brake`, `reverse` — so the action taken from step *i*'s state is step *i + 1*'s
+`control`. On the autopilot it is CARLA's `Vehicle.get_control()` after the tick (what the traffic manager applied);
+when the scenario director drives the ego it is the director's own command (in kinematic motion no `VehicleControl`
+reaches CARLA). Live recordings keep their own `control` (the manual, policy or `null` for autopilot steps). Drives
+recorded before 0.6 have no `control`. In kinematic scenario drives `speed_mps` is the director's speed (CARLA reports
+a physics-off actor as still; drives before 0.6 recorded 0 there — `actors.jsonl` had the right velocity).
 
 ## Coordinates
 CARLA's frames throughout: x forward, y right, z up — left-handed — metres and degrees. Sensor poses are in the
