@@ -644,3 +644,38 @@ def lane_check(od: OpenDrive, osm_data, proj, sample: int = 50, seed: int = 0, t
                   f'comparable = a same-named road within {tol:g} m along the way; per-direction driving-lane '
                   f'counts compared with OSM expected_lanes',
     }
+
+
+SANITIZE_TOL_M = 0.05
+
+
+def sanitize(text: str | bytes) -> tuple[str, list]:
+    """Positions a road's objects and signals must keep for CARLA: s within [0, the road's length].
+
+    CARLA 0.9.16's generate_opendrive_world ends the server (signal 11, "Exception thrown: s <= road->GetLength()")
+    when an object lies past its road's end. carla.Osm2Odr (SUMO) writes some crosswalks a few millimetres past it
+    (measured: a crosswalk at s = 29.933 m on a road 29.930 m long, central Bengaluru). Positions out by at most
+    SANITIZE_TOL_M are clamped onto the road and each is reported; anything further out is refused (ValueError), since
+    moving it would misplace it."""
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(text if isinstance(text, (bytes, bytearray)) else text.encode('utf-8'))
+    notes, clamped = [], 0
+    for road in root.findall('road'):
+        length = float(road.get('length', '0'))
+        for el in list(road.findall('objects/object')) + list(road.findall('signals/signal')) + \
+                list(road.findall('signals/signalReference')):
+            s = float(el.get('s', '0'))
+            if 0.0 <= s <= length:
+                continue
+            new = min(max(s, 0.0), length)
+            if abs(new - s) > SANITIZE_TOL_M:
+                raise ValueError(f'road {road.get("id")}: {el.tag} {el.get("id")} at s = {s} lies {abs(new - s):.3f} m '
+                                 f'outside the road (length {length}); refusing to move it')
+            el.set('s', f'{new:.8f}')
+            clamped += 1
+            notes.append(f'road {road.get("id")} ({road.get("name") or "unnamed"}): {el.tag} {el.get("id") or ""} '
+                         f'moved from s = {s} to the road\'s end {new:.4f} ({1000 * abs(new - s):.1f} mm; CARLA crashes '
+                         'on positions past a road\'s end)')
+    if not clamped:
+        return (text.decode('utf-8') if isinstance(text, (bytes, bytearray)) else text), []
+    return ET.tostring(root, encoding='unicode', xml_declaration=True), notes

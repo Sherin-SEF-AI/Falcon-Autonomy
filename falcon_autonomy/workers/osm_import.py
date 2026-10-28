@@ -10,7 +10,8 @@ The import:
 2. converts it with carla.Osm2Odr (SUMO's netconvert inside) projected with a transverse Mercator centred on the area
    (core.osm.proj_string, center_map off), so OpenDRIVE x, y are metres east and north of the centre and the
    geoReference is the area's — CARLA's default projection, centred on 0°E, stretches a place far from it (central
-   Bengaluru by about 3× east-west and 4× north-south);
+   Bengaluru by about 3× east-west and 4× north-south); objects and signals a few millimetres past their road's end
+   (SUMO writes some) are clamped onto it, since CARLA's world generation crashes on them (core.xodr.sanitize);
 3. with lht, converts the right-hand output to left-hand traffic (core.xodr.to_lht; see docs/worlds.md);
 4. writes world.xodr, the road graph for the preview (graph.json), and import.json: what was read, converted and
    dropped, the lane check against OSM on a seeded sample (core.xodr.lane_check), the handedness, what an OpenDRIVE
@@ -85,7 +86,8 @@ class OsmImport(Worker):
             fh.write(raw)
         self.check()
         notes = list(data.notes)
-        text = raw
+        text, fixes = X.sanitize(raw)
+        notes += fixes
         if cfg.get('lht'):
             self.emit.progress(0.6, 'converting to left-hand traffic', force=True)
             text, lht_notes = X.to_lht(raw)

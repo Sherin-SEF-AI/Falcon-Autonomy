@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 — milestone 2: worlds and live (in progress)
+
+- Live sessions: chase, free and sensor views streamed over a local socket (latest frame only, drops counted), ground-
+  truth boxes, a top-down map; manual driving by keyboard or Linux joystick/wheel (input loss brakes), CARLA's
+  autopilot, or a policy plug-in (built-in pure-pursuit lane follower); live events (pedestrian, cut-in, weather,
+  sensor failure); recording as labelled runs. Measured: 1280 × 720 at 20.0 frames/s, real-time factor 1.0.
+- OpenStreetMap import from .osm and .osm.pbf with an area picker, a centred projection, the road-graph preview, a lane
+  check against OSM, left-hand conversion (CARLA 0.9.16 verified to honour rule="LHT"), and a fix for converter
+  crosswalks lying past their road's end (which crash CARLA's world generation).
+- Traffic profiles, the Indian mixed-traffic profile (autorickshaw substitute labelled), a handedness guard and a
+  measured handedness verification; pedestrians on the navigation mesh.
+
 ## 0.1.0 — milestone 1: foundation (unreleased)
 
 - App shell: navigator, Jobs and Log docks, undo/redo through project edits, command palette (Ctrl+K), dark and light

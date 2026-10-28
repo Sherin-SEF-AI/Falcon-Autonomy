@@ -656,3 +656,16 @@ def test_full_sumo_output_smoke():
     assert all(ln.id > 0 for r in after.roads for s in r.sections for ln in s.left) and \
         not any(s.right for r in after.roads for s in r.sections)
     assert sum(len(r.lane_offsets) for r in after.roads) == 277
+
+
+def test_sanitize_clamps_objects_past_the_road_end():
+    from falcon_autonomy.core import xodr
+    text = ('<OpenDRIVE><header/><road name="r" length="29.92954051" id="1428" junction="-1"><objects>'
+            '<object id="7" type="crosswalk" s="29.93300628" t="0"/></objects><signals>'
+            '<signal id="2" s="0" t="0"/></signals></road></OpenDRIVE>')
+    out, notes = xodr.sanitize(text)
+    assert len(notes) == 1 and 'mm' in notes[0] and 's="29.92954051"' in out
+    same, none = xodr.sanitize(out)
+    assert none == []
+    with pytest.raises(ValueError):
+        xodr.sanitize(text.replace('29.93300628', '31.0'))

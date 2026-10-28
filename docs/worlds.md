@@ -4,6 +4,37 @@
 A town world names a CARLA map (Town01–05, Town10HD and their `_Opt` variants in the base package; Tools ▸ Probe lists
 the server's own) with its weather and time of day. Every one of CARLA's towns is **right-hand traffic**.
 
+## Importing a real place
+Worlds ▸ **Import a place…**:
+
+1. **The source** — an `.osm` or `.osm.pbf` file (offline first; Falcon reads both itself, with no extra library).
+   A place-name search (OpenStreetMap Nominatim) only finds the area, and only when *Settings ▸ Geocoding* allows the
+   network; the roads always come from a file.
+2. **The area** — drag a rectangle over the file's roads, or give a centre and a side (1000 m: 1 km²). Ways crossing
+   the box are kept whole. Files over 200 MB are not previewed whole: give the centre and side.
+3. **The converter's settings** — default lane width, traffic lights where OSM has them or at every junction, which
+   road types are converted, and *Left-hand traffic*.
+4. **Convert** (a background job in CARLA's Python; no server needed). The preview shows the converted road graph,
+   coloured by driving lanes per direction; the report gives the road length, junctions, signals, the lanes histogram,
+   the handedness, the **lane check against OSM** and what an OpenDRIVE world does not contain.
+5. **Add as a world.** The world's files stay in the workspace (`worlds/<id>/`: `area.osm`, the converter's
+   `raw.xodr`, the loaded `world.xodr`, `graph.json`, `import.json`). Its mesh settings (vertex distance, wall
+   height, extra width, smoothing) are used when a drive or live session generates it on the server.
+
+**The projection.** Falcon converts with a transverse Mercator centred on the area (`+proj=tmerc +lat_0 +lon_0 …`,
+`center_map` off), so the OpenDRIVE's x and y are metres east and north of the centre and its geoReference is the
+area's. CARLA's default (`+proj=tmerc`, centred on 0°E) stretched central Bengaluru about 3× east-west and 4×
+north-south.
+
+**A crash fixed before loading.** CARLA 0.9.16's world generation ends the server (signal 11, *s <= road->GetLength()*)
+when an object lies past its road's end, and the converter writes some crosswalks a few millimetres past it (measured:
+one of 19 crosswalks, 3.5 mm out, in 1 km² of central Bengaluru). Falcon moves such positions onto the road when they
+are within 5 cm and lists each in the report; anything further out is refused rather than moved.
+
+**The lane check.** A seeded sample of the area's named, lane-tagged OSM ways is matched to same-named converted roads
+running within 8 m of them; each direction's driving-lane count is compared with what the OSM tags say. The report
+gives the agreement over the comparable ways and lists the others.
+
 ## Left-hand traffic: what was verified
 Measured on CARLA 0.9.16 (the reference machine, 2026-10-28), with a straight two-lane OpenDRIVE road loaded by
 `generate_opendrive_world`:
