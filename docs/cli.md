@@ -17,6 +17,7 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon reproduce RUN [--into DIR] [--pose-tol M] [--rgb-tol L]` | re-runs a run from its input and compares |
 | `falcon runs PROJECT [--rebuild]` | lists a project's runs (re-indexing the workspace) |
 | `falcon schema` | prints the project schema's path |
+| `falcon export RUN... --format F --out DIR [--split-json FILE] [--option K=V]... [--overwrite]` | exports runs as `coco`, `yolo`, `kitti`, `nuscenes` (with lidarseg and panoptic), `waymo` (a documented Waymo-style JSON layout, not TFRecords), `bdd_lanes` or `mcap` (ROS 2); `falcon_export.json` in DIR says what was filled, left out and why |
 
 Commands that need CARLA start Falcon's own server when none is running and stop it at the end (`--keep-server`
 leaves it running). Ctrl+C cancels the job politely — the worker tidies the server — and a second Ctrl+C kills it.

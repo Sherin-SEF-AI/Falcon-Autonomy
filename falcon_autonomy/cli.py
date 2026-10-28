@@ -11,6 +11,7 @@
     falcon tidy                                tidy Falcon's server after a killed worker
     falcon reproduce RUN [--into DIR]          re-run a run from its own config and compare within a tolerance
     falcon runs PROJECT [--rebuild]            the runs in a project's catalogue
+    falcon export RUN... --format F --out DIR  COCO, YOLO, KITTI, nuScenes, waymo, bdd_lanes or mcap
     falcon schema                              print the project schema's path
 
 Exit codes: 0 ok; otherwise the worker's code (falcon_autonomy.core.protocol: 2 failed, 3 cancelled, 4 server lost,
@@ -285,11 +286,15 @@ def parser() -> argparse.ArgumentParser:
     ru.add_argument('project')
     ru.add_argument('--rebuild', action='store_true')
     sub.add_parser('schema', help='print the project schema\'s path')
+    sub.add_parser('export', help='export runs: falcon export RUN... --format F --out DIR (see docs/cli.md)')
     return ap
 
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ['export']:                    # its own parser (core.exporters.main_export)
+        from .core.exporters import main_export
+        return main_export(argv[1:])
     ap = parser()
     a = ap.parse_args(argv)
     if a.cmd is None or a.cmd == 'gui':

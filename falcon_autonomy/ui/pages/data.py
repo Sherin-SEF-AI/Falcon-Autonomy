@@ -170,6 +170,11 @@ class BrowseTab(QWidget):
         top.addStretch(1)
         self.open_btn = button('Open folder', self.open_folder)
         top.addWidget(self.open_btn)
+        self.export_fmt = QComboBox()
+        self.export_fmt.addItems(['coco', 'yolo', 'kitti', 'nuscenes', 'waymo', 'bdd_lanes', 'mcap'])
+        self.export_fmt.setToolTip('waymo: a documented Waymo-style JSON layout, not TFRecords')
+        top.addWidget(self.export_fmt)
+        top.addWidget(button('Export…', self.export))
         rv.addLayout(top)
         self.view = ImageView()
         rv.addWidget(self.view, 1)
@@ -369,6 +374,22 @@ class BrowseTab(QWidget):
             self.legend_grid.addWidget(label(labels.name(t)), r // 2, (r % 2) * 3 + 1)
             self.legend_grid.addWidget(label(f'{100 * counts[k] / total:.1f} %', muted=True, mono=True), r // 2,
                                        (r % 2) * 3 + 2)
+
+    def export(self):
+        """Export the run in the chosen format: a background job running `falcon export` (the CLI's code)."""
+        import sys
+        from PyQt6.QtWidgets import QFileDialog
+        from ...core.jobs import JobSpec
+        if not self.run_dir:
+            return
+        fmt = self.export_fmt.currentText()
+        out = QFileDialog.getExistingDirectory(self, f'Folder for the {fmt} export')
+        if not out:
+            return
+        argv = [sys.executable, '-m', 'falcon_autonomy', 'export', self.run_dir, '--format', fmt, '--out', out]
+        self.win.queue.submit(JobSpec('export', f'Export {os.path.basename(self.run_dir)} as {fmt}', argv,
+                                      memory_gb=1.0))
+        self.win.jobs_dock.raise_()
 
     def open_folder(self):
         if self.run_dir:
