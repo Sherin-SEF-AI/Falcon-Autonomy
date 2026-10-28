@@ -62,3 +62,31 @@ compares:
 On the fake simulator the comparison is exact (bit for bit). On a real server, exact reproduction needs the same
 server build, the same map loaded fresh and synchronous mode throughout; the report states which checks agreed
 rather than a single yes or no.
+
+## Lidar labels and their proof
+
+Each rig lidar is spawned twice on the same step with the same attributes: CARLA's ray-cast lidar (the recorded
+points, with its range noise) and its semantic lidar (no noise; the CARLA actor id and semantic tag of every point).
+A recorded point takes the semantic point at its index **only when** both slices have the same points per channel
+and every direction agrees within 0.01°; otherwise the slice is matched per channel by azimuth and counted as a
+fallback. Every run reports the number of slices matched each way, the worst direction difference and the RMS range
+difference (which should equal the noise set on the lidar).
+
+**Points in vehicle boxes.** Of the points inside a vehicle's 3D box (the ego excluded), the share labelled a vehicle
+class (car, truck, bus, train, motorcycle, bicycle, rider). A return lies on the surface it hit, so the box is grown
+5 cm outward on its sides and top, and its bottom is raised 10 cm so ground returns under the vehicle are not counted.
+
+**Range against a camera.** For the first camera with a depth label camera and the first lidar, every fifth step:
+each lidar point is moved into the camera's frame (through the two mounts), projected, and its range compared with
+the camera's range along the same ray (planar depth × |ray|; inverse depth interpolated bilinearly only when the four
+pixels around are one surface, within 2 %). The two sensors stand apart: a point the camera sees a surface more than
+0.5 m nearer in front of is hidden from it (parallax), counted apart and not compared.
+
+Measured on the reference machine (CARLA 0.9.16, Town10HD_Opt, 40 vehicles, 20 s at 20 Hz; a 32-channel lidar at
+600 000 points/s, 1.5 cm noise; a 1280 × 720 camera with depth):
+
+| check | result | acceptance |
+|---|---|---|
+| slices matched by order | 400 of 400 (11.2 M points), worst direction 3.5·10⁻⁶°, range RMS 1.500 cm (noise set 1.5 cm) | — |
+| points in vehicle boxes labelled vehicle | 100 % of 262 282 | ≥ 99 % |
+| lidar range − camera range | median 0.9 mm, median absolute 1.15 cm, 90th percentile 3.2 cm (338 311 points; 24 608 hidden from the camera) | median ≤ 2 cm |
