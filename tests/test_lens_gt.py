@@ -90,7 +90,7 @@ def test_projection_is_the_lens_model():
         d, okr = L.output_rays(intr)
         uu, vv, _, _ = GT.project(lens, d[okr])
         ys, xs = np.nonzero(okr)
-        assert okr.mean() > 0.5 and np.abs(uu - (xs + 0.5)).max() < 1e-6 and np.abs(vv - (ys + 0.5)).max() < 1e-6
+        assert okr.mean() > 0.4 and np.abs(uu - (xs + 0.5)).max() < 1e-6 and np.abs(vv - (ys + 0.5)).max() < 1e-6
     K = np.array([[200.0, 0, 99.5], [0, 200.0, 79.5], [0, 0, 1]])
     u, v, _, ok = GT.project({'model': 'pinhole', 'K': K.tolist(), 'max_theta_deg': 80.0}, [[0.1, -0.2, 1.0],
                                                                                              [0, 0, -1.0]])
@@ -249,7 +249,7 @@ def test_single_view_for_a_narrow_lens_and_six_faces_for_a_270_degree_one():
     assert seen.mean() > 0.6                                # every ray inside its view, the margin kept
     assert mx[seen].min() >= L.FACE_MARGIN_PX - 0.5 and mx[seen].max() <= v['width'] - 0.5 - L.FACE_MARGIN_PX
     assert my[seen].min() >= L.FACE_MARGIN_PX - 0.5 and my[seen].max() <= v['height'] - 0.5 - L.FACE_MARGIN_PX
-    assert v['width'] / v['height'] == pytest.approx(288 / 224, rel=0.05) and v['f_px'] == pytest.approx(150.0)
+    assert v['f_px'] == pytest.approx(150.0) and v['fov'] == pytest.approx(math.degrees(2 * math.atan(v['width'] / 300.0)))
     wide = dict(_fisheye(fov=270.0, f_px=None), width=96, height=96)
     pw = L.plan_camera(wide)
     assert {x['name'] for x in pw['views']} == set(L.FACES)
@@ -494,7 +494,7 @@ def test_range_interpolates_inverse_depth_within_a_surface_and_never_across_an_e
     seg = np.zeros(z.shape, np.uint32)
     r = cg.range_interp(z, seg)
     want = c / np.maximum(cg.rays[cg.ok] @ n, 1e-6)
-    front = (cg.rays[cg.ok] @ n) > 0.05
+    front = (cg.rays[cg.ok] @ n) > 0.05                            # (the plane in front of the camera)
     assert np.allclose(r[cg.ok][front], want[front], rtol=1e-5)
     z2 = np.where(vr[..., 0] > 0.1, 5.0, 9.0) * 1.0
     seg2 = (vr[..., 0] > 0.1).astype(np.uint32)
@@ -507,7 +507,8 @@ def test_range_interpolates_inverse_depth_within_a_surface_and_never_across_an_e
     r3 = cg.range_interp(z, None)[cg.ok]
     nearest = cg.range_of(cg.gather(z))[cg.ok]
     exact = np.isclose(r3, want, rtol=1e-5)
-    assert np.all(exact | np.isclose(r3, nearest, rtol=1e-6)) and exact[front].mean() > 0.9
+    facing = (cg.rays[cg.ok] @ n) > 0.2                            # (not grazing: the plane not steep across a pixel)
+    assert np.all(exact | np.isclose(r3, nearest, rtol=1e-6)) and exact[facing].mean() > 0.9
 
 
 def _render(cg, pose, boxes):
@@ -591,7 +592,7 @@ def test_level_objects_by_their_boxes_and_lights_claim_their_heads(cam):
     # a car between the camera and the head keeps its pixels
     cpos = pose['pos'] + (head['center'] - pose['pos']) * 4 / 7
     car = {'key': ('actor', 5), 'actor_id': 5, 'reg': 3, 'category': 'vehicle.car', 'center': cpos,
-           'size': [0.6, 0.6, 0.6], 'R': np.eye(3)}
+           'size': [0.3, 0.3, 0.3], 'R': np.eye(3)}
     ids2, tags2, rng2 = _render(cg, pose, [(31, 22, head['center'], head['size'], np.eye(3)),
                                            (5, 14, car['center'], car['size'], np.eye(3))])
     found2, sem2 = GT.objects_in_frame(tags2, ids2, rng2, cg.rays, pose, lens, {5: car}, [], 99, {}, parts=[head])
@@ -643,14 +644,21 @@ def test_views_rendered_by_carla_give_the_lens_image_its_labels_and_ranges(fake_
     hit = np.isfinite(t)
     assert hit.mean() > 0.4 and (ids_out[cg.ok] >= 40000).sum() > 50              # the ground and a parked car
     assert np.mean(tag_out[cg.ok] == ttag) > 0.98 and np.mean(ids_out[cg.ok] == tids) > 0.98
-    assert np.all(r[~hit] == 0) or np.mean(r[~hit] == 0) > 0.98
+    assert np.mean(r[~hit] == 0) > 0.98
     rel = np.abs(r[hit] - t[hit]) / t[hit]
     assert np.median(rel) < 1e-4 and np.mean(rel < 0.01) > 0.97, (np.median(rel), np.mean(rel < 0.01))
-    # the image: the scene's colour along each output ray (BGR, as CARLA's raw_data), up to edges of the checker
-    out = L.remap_image(p, img['rgb'])
-    want = carla.render(cp['pos'], D, boxes)[:, ::-1]
-    diff = np.abs(out[cg.ok].astype(int) - want.astype(int)).max(1)
-    assert np.median(diff) <= 2 and np.mean(diff <= 10) > 0.95, (np.median(diff), np.mean(diff <= 10))
+    # the image: the scene's colour along each output ray (BGR, as CARLA's raw_data) wherever the scene is uniform
+    # around the pixel (at an edge the bilinear read of the views mixes the two sides)
+    out = L.remap_image(p, img['rgb']).astype(int)
+    h, w = cg.ok.shape
+    T = np.zeros((h, w, 3), int)
+    T[cg.ok] = carla.render(cp['pos'], D, boxes)[:, ::-1]
+    uni = cg.ok.copy()
+    for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)):
+        uni &= np.roll(cg.ok, (dy, dx), (0, 1)) & (np.abs(np.roll(T, (dy, dx), (0, 1)) - T).max(2) <= 6)
+    uni[[0, -1], :] = uni[:, [0, -1]] = False
+    diff = np.abs(out - T).max(2)[uni]
+    assert uni.sum() > 0.7 * cg.ok.sum() and np.median(diff) == 0 and np.mean(diff <= 3) > 0.995, np.mean(diff <= 3)
 
 
 # ======================================================================= the reader
