@@ -16,6 +16,9 @@
     falcon model fetch PROJECT ID   download a registered model's pinned weights (SHA-256 checked)
     falcon evaluate PROJECT --model M --run RUN... --out DIR   score a model (or --compare A B)
     falcon gap --sim RUN... --real KIND:PATH --out DIR   the sim-to-real gap of camera images
+    falcon train --out DIR --train KIND:PATH... [--val ...] [--arch A --init I]   fine-tune a detector (resumable)
+    falcon experiment mixed|list|best|results|export ...   the mixed sim/real experiment, run tracking, MLflow
+    falcon policy bc|offline|ppo|rollout ...   driving policies: behaviour cloning, PPO, evaluation in the environment
     falcon sweep PROJECT --scenario S --name N [--grid K | --samples K]   a parameter sweep (resumable)
     falcon search PROJECT --scenario S --name N [--method bayes|cmaes|adaptive|random] [--budget B]   rare cases
     falcon schema                              print the project schema's path
@@ -299,6 +302,11 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser('evaluate', help='score a registered model on recorded drives, or compare two evaluations '
                                     '(see docs/cli.md)')
     sub.add_parser('gap', help='the sim-to-real gap: falcon gap --sim RUN --real KIND:PATH --out DIR (see docs/cli.md)')
+    sub.add_parser('train', help='fine-tune a detector: falcon train --out DIR --train KIND:PATH (see '
+                                 'docs/training.md)')
+    sub.add_parser('experiment', help='the mixed sim/real training experiment, run tracking and MLflow export (see '
+                                      'docs/training.md)')
+    sub.add_parser('policy', help='driving policies: falcon policy bc|offline|ppo|rollout (see docs/policies.md)')
     sub.add_parser('sweep', help='a scenario parameter sweep (see docs/cli.md)')
     sub.add_parser('search', help='a rare-case search over a scenario\'s parameters (see docs/cli.md)')
     return ap
@@ -359,6 +367,15 @@ def main(argv=None) -> int:
     if argv[:1] == ['gap']:                       # the sim-to-real gap (core.realgap)
         from .core.realgap import main_gap
         return main_gap(argv[1:])
+    if argv[:1] == ['train']:                     # the training lab (core.training)
+        from .core.training import main_train
+        return main_train(argv[1:])
+    if argv[:1] == ['experiment']:                # experiments: mixed sim/real, tracking, MLflow (core.experiments)
+        from .core.experiments import main_experiment
+        return main_experiment(argv[1:])
+    if argv[:1] == ['policy']:                    # driving policies: BC, PPO, rollouts (core.policy)
+        from .core.policy import main_policy
+        return main_policy(argv[1:])
     if argv[:1] in (['sweep'], ['search']):       # scenario studies (sim.studio)
         from .sim.studio import main_study
         return main_study(argv)
