@@ -302,14 +302,17 @@ def _kv(items) -> dict:
 
 
 def main_policy(argv) -> int:
-    """`falcon policy bc|ppo|rollout|offline …` (docs/policies.md). Exit codes as the CLI's: 0 ok, 2 failed or a usage
+    """`falcon policy bc|ppo|rollout|offline|leaderboard|replay …` (docs/policies.md). Exit codes as the CLI's: 0 ok, 2 failed or a usage
     error, a worker's code otherwise."""
     from . import protocol as P
     usage = ('usage: falcon policy bc --run RUN... --out DIR [options]\n'
              '       falcon policy offline --policy DIR --run RUN... [--out DIR]\n'
              '       falcon policy ppo PROJECT --out DIR [--scenario KEY | --curriculum default|FILE] [options]\n'
-             '       falcon policy rollout PROJECT --policy DIR --out DIR [--episodes N] [options]')
-    if not argv or argv[0] not in ('bc', 'ppo', 'rollout', 'offline'):
+             '       falcon policy rollout PROJECT --policy DIR --out DIR [--episodes N] [options]\n'
+             '       falcon policy leaderboard PROJECT --policy DIR --out DIR [--scenario K]... [--seeds-per N] '
+             '[--free N]\n'
+             '       falcon policy replay PROJECT --episodes EPISODES.jsonl --episode N [--infraction K] --out DIR')
+    if not argv or argv[0] not in ('bc', 'ppo', 'rollout', 'offline', 'leaderboard', 'replay'):
         print(usage, flush=True)
         return P.FAILED if argv and argv[0] not in ('-h', '--help') else 0
     if argv[0] == 'bc':
@@ -318,6 +321,9 @@ def main_policy(argv) -> int:
     if argv[0] == 'offline':
         from .imitation import main_offline
         return main_offline(argv[1:])
+    if argv[0] in ('leaderboard', 'replay'):
+        from .leaderboard import main_leaderboard
+        return main_leaderboard(argv)
     if argv[0] == 'ppo':
         from .rl import main_ppo
         return main_ppo(argv[1:])
