@@ -8,7 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.gui
 
-from test_gui import pump, qapp, window  # noqa: E402,F401
+from test_gui import pump, qapp, slot_exceptions, window  # noqa: E402,F401
 
 
 def _straight_log(path):

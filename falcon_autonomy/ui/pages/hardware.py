@@ -504,6 +504,8 @@ class HardwarePage(Page):
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.report))
 
     def update_buttons(self):
+        if not hasattr(self, 'accept_btn'):       # a radio button toggles while the page is still being built
+            return
         r = self.running
         remote = self.remote_rb.isChecked()
         self.start_btn.setEnabled(not r)

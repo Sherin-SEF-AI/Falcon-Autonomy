@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from test_gui import pump, qapp, window  # noqa: F401  (fixtures)
+from test_gui import pump, qapp, slot_exceptions, window  # noqa: F401  (fixtures)
 
 pytestmark = pytest.mark.gui
 

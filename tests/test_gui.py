@@ -36,6 +36,16 @@ def pump(app, cond=lambda: False, timeout=5.0):
     return cond()
 
 
+@pytest.fixture(autouse=True)
+def slot_exceptions(monkeypatch):
+    """An exception raised in a Qt slot (printed, or fatal in a frozen bundle) fails the test."""
+    import sys
+    seen = []
+    monkeypatch.setattr(sys, 'excepthook', lambda t, v, tb: seen.append((t, v)))
+    yield seen
+    assert not seen, f'exceptions in Qt slots: {seen}'
+
+
 @pytest.fixture
 def window(qapp, tmp_path, project):
     from falcon_autonomy.core.settings import Settings

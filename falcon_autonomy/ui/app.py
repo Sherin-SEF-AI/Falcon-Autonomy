@@ -22,6 +22,10 @@ def main(project_path: str | None = None, fake_carla: str = '') -> int:
     from .mainwindow import MainWindow
     from .theme import THEME, load_fonts
     app = make_app()
+    # PyQt ends the process on an exception raised in a slot when no hook is set (as in the bundle): print it to the
+    # terminal and keep the session — one failing button must not take the user's unsaved work with it
+    import traceback
+    sys.excepthook = lambda t, v, tb: traceback.print_exception(t, v, tb)
     load_fonts()
     st = Settings()
     THEME.apply(app, st.get('theme') or 'dark')

@@ -8,7 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.gui
 
-from test_gui import pump, qapp, window  # noqa: E402,F401  (fixtures)
+from test_gui import pump, qapp, slot_exceptions, window  # noqa: E402,F401  (fixtures)
 from test_hil import fake_ssh  # noqa: E402,F401  (fixture)
 
 
