@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0 — milestone 3: rigs and data engine
+
+- Rig editor: pinhole and fisheye cameras, lidar, radar, GNSS, IMU; poses by numbers or by dragging in a 3D view
+  (OpenGL, software fallback); cost per sensor against the render budget; import/export as Falcon JSON, ROS URDF/TF
+  and nuScenes calibration.
+- Fisheyes rendered as the cube faces their lens needs and remapped (Vantage's lens model and seam feathering); the
+  budget costs them from the same plan (it used to ignore a fisheye's lens block).
+- Camera ground truth from CARLA's instance and depth cameras: semantic, instance and range images; objects with track
+  ids, tight and full boxes, truncation, occlusion, range, 3D boxes and masks. Lane lines and the lane graph.
+- Lidar labels proven point for point every step; radar, GNSS and IMU. Measured: 100 % of 262 282 points in vehicle
+  boxes labelled vehicle; lidar against camera range 1.15 cm median absolute difference.
+- Imported worlds: CARLA's label cameras do not draw a generated world's road mesh (measured); its ground is labelled
+  from the map (camera pixels with range, lidar points).
+- Sensor faults of known size, measured back by their tests; outputs keep the planned calibration.
+- The data engine: dataset specs as targets, plans with cost, cache-keyed resumable drives, coverage, versions with
+  leak-free splits; the Datasets tab; browser layers and objects.
+- Exporters (COCO, YOLO, KITTI, nuScenes with lidarseg and panoptic, Waymo-style JSON, BDD lanes, ROS 2 MCAP) checked
+  with pycocotools, nuscenes-devkit and the MCAP ROS 2 decoder.
+- Not yet: optical flow (milestone 5).
+
 ## 0.2.0 — milestone 2: worlds and live
 
 - Live sessions: chase, free and sensor views streamed over a local socket (latest frame only, drops counted), ground-

@@ -5,10 +5,10 @@ One desktop application for the whole loop of building a self-driving AI on the
 generate perfectly labelled data where models are weak, train and evaluate, and test a full AV stack — with every
 number traceable to the run that produced it.
 
-**Status: milestones 1–2 of 8 (foundation; worlds and live).** What works today is listed under *What works*; everything else in the
+**Status: milestones 1–3 of 8 (foundation; worlds and live; rigs and data engine).** What works today is listed under *What works*; everything else in the
 [roadmap](docs/roadmap.md) is planned, not present. The app shows only pages that do what they say.
 
-## What works (0.2.0)
+## What works (0.3.0)
 
 - **The app shell** (PyQt6): a page navigator, Jobs and Log docks, undo and redo for every project edit, a command
   palette (Ctrl+K), dark and light themes, a status bar with the CARLA server, the GPU and memory.
@@ -25,6 +25,11 @@ number traceable to the run that produced it.
   stopped answering; cancels always tidy the server.
 - **Recorded drives**: synchronous mode at a fixed step, the ego and traffic on the traffic manager, the rig's
   cameras with semantic labels rendered at the same pose and tick; browse them frame by frame with the label overlay.
+- **Rigs and data**: a rig editor with a 3D view; pinhole and fisheye cameras, lidar, radar, GNSS, IMU; sensor faults
+  of known size; perfectly labelled frames (semantic, instance, range, 2D and 3D boxes, occlusion, track ids, lane
+  lines, lidar point labels proven point for point); a data engine that plans, costs and fills coverage targets;
+  exports to COCO, YOLO, KITTI, nuScenes, Waymo-style, BDD lanes and ROS 2 MCAP, checked with the official devkits
+  ([dataset format](docs/dataset-format.md)).
 - **Worlds**: CARLA's towns with weather presets and sliders (sun, cloud, rain, wetness, puddles, fog, wind), and
   **real places imported from OpenStreetMap** (.osm or .osm.pbf, offline) with a road-graph preview, a lane check
   against OSM, **left-hand traffic** (verified on the server) and the **Indian mixed-traffic profile**

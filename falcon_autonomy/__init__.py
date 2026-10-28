@@ -8,6 +8,6 @@ The package is split by process (docs/architecture.md):
 * falcon_autonomy.workers  run in CARLA's own Python (the venv with the carla wheel); never import Qt.
 * falcon_autonomy.ui       the PyQt6 application; never imports carla.
 """
-__version__ = '0.2.0'
+__version__ = '0.3.0'
 APP_NAME = 'Falcon Autonomy'
 APP_ID = 'FalconAutonomy'
