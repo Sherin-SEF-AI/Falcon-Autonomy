@@ -142,7 +142,7 @@ def hil_config(project, world_id: str, rig_id: str, out_dir: str, port: int, tm_
         traffic['vehicles'] = int(traffic_vehicles)
     traffic['walkers'] = 0
     clk = lambda c: {'offset_ms': 0.0, 'drift_ppm': 0.0, 'jitter_us': 0.0, **(c or {})}   # noqa: E731
-    return {
+    cfg = {
         'schema': HIL_SCHEMA, 'name': d['name'], 'host': host, 'port': int(port), 'tm_port': int(tm_port),
         'town': d['town'], 'xodr': d['xodr'], 'opendrive': d['opendrive'], 'handedness': d['handedness'],
         'weather': d['weather'], 'vehicle': rig['vehicle'], 'traffic': traffic,
@@ -162,6 +162,9 @@ def hil_config(project, world_id: str, rig_id: str, out_dir: str, port: int, tm_
         'notes': notes,
         'project': dict(d['project']),
     }
+    from .oddmonitor import CFG_KEYS
+    cfg.update({k: d[k] for k in CFG_KEYS if k in d})     # the workspace's ODD, monitored in the session
+    return cfg
 
 
 def submit_session(svc, cfg: dict, address: str = '', title: str = ''):

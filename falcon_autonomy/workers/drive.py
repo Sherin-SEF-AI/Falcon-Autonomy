@@ -64,6 +64,8 @@ class Drive(Worker):
             raise Failed(why, P.REFUSED)
         carla = self.import_carla()
         import numpy as np
+        for n in cfg.get('notes') or []:               # what the config already knows is not represented
+            self.note(n)
         self.emit.progress(0.0, 'connecting', force=True)
         self.connect(cfg.get('host', '127.0.0.1'), cfg['port'], cfg.get('connect_wait_s', 60.0))
         world = scene.load_map(self, cfg)
@@ -157,6 +159,7 @@ class Drive(Worker):
                                   'a 0.25 m raster of its lanes; lidar points of the mesh (tag 0) likewise '
                                   '(objects.json "ground_relabelled", run.json lidar_checks)')
         faults = scene.FaultState(cfg['rig']['sensors'], int(cfg.get('seed', 0)))
+        physics, watch = physics_and_watch(self, world, cfg, self.lidars, self.others)     # sensor physics, ODD
         prev_yaw = None
         try:
             for i in range(steps):
@@ -171,6 +174,8 @@ class Drive(Worker):
                 snap_t = world.get_snapshot().timestamp.elapsed_seconds
                 sim_t0 = snap_t if sim_t0 is None else sim_t0
                 rec = {'step': i, 'frame': int(frame), 'sim_t': round(snap_t - sim_t0, 6), 'files': {}}
+                if getattr(self, 'class_limits', None) is not None:     # stand-ins' speeds (core.assets)
+                    self.class_limits.step(rec['sim_t'])
                 rec.update(scene.ego_state(ego))
                 if director is not None and director.kinematic and director.k_vel(ego) is not None:
                     v = director.k_vel(ego)              # physics off: CARLA reports the ego still; the director knows
@@ -184,6 +189,9 @@ class Drive(Worker):
                 record = i % every == 0                  # record_every: simulate every step, write every n-th
                 rec['recorded'] = record
                 boxes = camgt.scene_boxes(self, world, ego, level) if need_gt and record else None
+                pboxes = boxes if boxes is not None or physics is None or not record or not physics.needs_actors() \
+                    else camgt.scene_boxes(self, world, ego, [])          # night headlights: the actors' boxes
+                watch_rgb = None
                 for r in self.recorders:
                     s = r.s
                     deliver = faults.delivery(s['id'], i, rec['sim_t'])
@@ -192,6 +200,8 @@ class Drive(Worker):
                         if deliver != 'ok':
                             rec.setdefault('faults', {})[s['id']] = deliver
                     imgs = r.collect(frame)
+                    if watch is not None and watch_rgb is None and watch.wants_frame():
+                        watch_rgb = scene.rgb_of(imgs[0]['rgb'])
                     if r is depth_rec:
                         depth_now = imgs[0]['depth']
                     if deliver == 'drop' or not record:
@@ -207,13 +217,19 @@ class Drive(Worker):
                         rel = os.path.join(kind, s['id'], f'{i:06d}.{ext}')
                         rec['files'][f'{s["id"]}/{kind}'] = rel
                         faults.last[f'{s["id"]}/{kind}'] = rel
-                    cams.pending.append(cams.pool.submit(r.write, imgs, i, self.out_dir, boxes, raster, img_faults))
+                    phys = None if physics is None else physics.camera_frame(s['id'], every / fps, pboxes)
+                    if phys is not None and phys[1]['effects']:
+                        rec.setdefault('physics', {})[s['id']] = phys[1]['effects']
+                    cams.pending.append(cams.pool.submit(r.write, imgs, i, self.out_dir, boxes, raster, img_faults,
+                                                         phys))
                 for k, L in enumerate(self.lidars):
                     m_raw = L.step(frame, rec['sim_t'], self.out_dir, rec)
                     if k == 0 and depth_now is not None and i % 5 == 0:
                         L.range_check(np.frombuffer(m_raw.raw_data, np.float32).reshape(-1, 4)[:, :3]
                                       .astype(np.float64), depth_cam, depth_now, M_cam_from_lidar)
                 self.others.step(frame, rec['sim_t'], self.out_dir, rec)
+                if watch is not None:
+                    rec['odd'] = watch.step(rec['sim_t'], ego, rec['speed_mps'], watch_rgb)
                 actor_log.step(world, i, frame, rec['sim_t'], director)
                 index.write(json.dumps(rec, separators=(',', ':')) + '\n')
                 n += 1
@@ -257,7 +273,16 @@ class Drive(Worker):
             self.emit.log(f'lidar {c["sensor"]}: {m["exact_slices"]} of {m["slices"]} slices matched by order '
                           f'(worst direction {m["max_dir_err_deg"]:.2g}°), points in vehicle boxes labelled vehicle: '
                           f'{c["box_label_share"]}')
-        return {'performance': perf, 'lidar_checks': lidar_checks, 'scenario': scenario, 'faults_applied': faults.report(), 'summary': {'steps': n, 'cameras': len(cams.cams), 'town': cfg.get('town'),
+        from .oddwatch import write as write_watch
+        write_watch(self, self.out_dir, watch)
+        if getattr(self, 'class_limits', None) is not None:
+            self.run.setdefault('traffic', {}).update(self.class_limits.report())
+        if getattr(self, 'subclass', None):
+            self.run['subclasses'] = {str(k): v for k, v in sorted(self.subclass.items())}
+        return {'performance': perf, 'lidar_checks': lidar_checks, 'scenario': scenario, 'faults_applied': faults.report(),
+                'sensor_physics': physics.report() if physics is not None else {'enabled': False},
+                'odd_monitor': watch.report() if watch is not None else None,
+                'summary': {'steps': n, 'cameras': len(cams.cams), 'town': cfg.get('town'),
                                                   'steps_per_s': perf['steps_per_s'],
                                                   'realtime_factor': perf['realtime_factor']},
                 'name': cfg.get('name', 'drive'), 'config_sha256': sha256_json(cfg)}
@@ -273,6 +298,31 @@ def main(argv) -> int:
         print(f'failed: cannot read {a.config}: {e}', flush=True)
         return P.FAILED
     return Drive(cfg, argv, a.config).execute()
+
+
+def physics_and_watch(w, world, cfg, lidars=(), others=None, with_physics=True):
+    """(core.sensorphysics.Session or None, oddwatch.OddWatch or None) for a run's config; the lidars and the radars
+    (scene.Others) get the session. Neither exists unless the config asks (sensor_physics.enabled, odd). A worker that
+    does not apply the physics (with_physics False) says so when the config asks for it."""
+    from ..core import sensorphysics as SPH
+    from .oddwatch import OddWatch
+    if not with_physics and (cfg.get(SPH.KEY) or {}).get('enabled'):
+        w.note(f'sensor physics is not applied by the {w.name} worker: its sensors give CARLA\'s data as it is '
+               '(docs/sensor-physics.md)')
+    try:
+        physics = SPH.Session.from_config(cfg) if with_physics else None
+        watch = OddWatch.from_config(w, world, cfg)
+    except (ValueError, KeyError) as e:
+        raise Failed(f'sensor physics or ODD: {e}') from None
+    for L in lidars:
+        L.physics = physics
+    if others is not None:
+        others.physics = physics
+    if physics is not None:
+        w.emit.log(f'sensor physics on for {", ".join(sorted(physics.sensors)) or "no sensor"}: '
+                   f'visibility {physics.cond["visibility_m"] or "∞"} m, rain {physics.cond["rain_mm_h"]} mm/h '
+                   f'({physics.cond["rain_source"]})')
+    return physics, watch
 
 
 def ego_control(ego, director=None) -> dict | None:

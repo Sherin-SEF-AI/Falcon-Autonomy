@@ -244,6 +244,8 @@ def gym_config(project, world_id: str, out_dir: str, port: int, tm_port: int, *,
         'log_actions': bool(log_actions), 'no_rendering': bool(no_rendering) and not camera,
         'idle_timeout_s': float(idle_timeout_s), 'timeout': float(timeout), 'project': dict(d['project'], rig=rig_id),
     }
+    from .oddmonitor import CFG_KEYS
+    cfg.update({k: d[k] for k in CFG_KEYS if k in d})     # the workspace's ODD, monitored per step (info['odd'])
     return cfg
 
 

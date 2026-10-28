@@ -29,6 +29,8 @@
     falcon replay import|match|run|compare ...   real logs (nuScenes, Waymo v2, ROS 2 bags) replayed with changes
     falcon rules check RUN... [--set india|generic|FILE] | list | show SET   traffic rules as temporal logic
     falcon why case|evaluation|episode ...   root-cause attribution of a failure (docs/root-cause.md)
+    falcon odd monitor RUN... --odd FILE [--reference REF] | calibrate --in RUN... --out FILE   runtime ODD monitoring
+    falcon assets inventory|list|show ID|verify   Indian road assets within the packaged CARLA (docs/indian-assets.md)
     falcon schema                              print the project schema's path
 
 Exit codes: 0 ok; otherwise the worker's code (falcon_autonomy.core.protocol: 2 failed, 3 cancelled, 4 server lost,
@@ -310,6 +312,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser('evaluate', help='score a registered model on recorded drives, or compare two evaluations '
                                     '(see docs/cli.md)')
     sub.add_parser('gap', help='the sim-to-real gap: falcon gap --sim RUN --real KIND:PATH --out DIR (see docs/cli.md)')
+    sub.add_parser('odd', help='runtime ODD monitoring: falcon odd monitor|calibrate (see docs/odd-monitoring.md)')
     sub.add_parser('train', help='fine-tune a detector: falcon train --out DIR --train KIND:PATH (see '
                                  'docs/training.md)')
     sub.add_parser('experiment', help='the mixed sim/real training experiment, run tracking and MLflow export (see '
@@ -328,6 +331,8 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser('rules', help='traffic rules as temporal logic: falcon rules check RUN... | list | show SET (see '
                                  'docs/traffic-rules.md)')
     sub.add_parser('why', help='why did it fail: falcon why case|evaluation|episode (see docs/root-cause.md)')
+    sub.add_parser('assets', help='Indian road assets: falcon assets inventory|list|show ID|verify (see '
+                                  'docs/indian-assets.md)')
     return ap
 
 
@@ -386,6 +391,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['gap']:                       # the sim-to-real gap (core.realgap)
         from .core.realgap import main_gap
         return main_gap(argv[1:])
+    if argv[:1] == ['odd']:                       # runtime ODD monitoring (core.oddmonitor)
+        from .core.oddmonitor import main_odd
+        return main_odd(argv[1:])
     if argv[:1] == ['train']:                     # the training lab (core.training)
         from .core.training import main_train
         return main_train(argv[1:])
@@ -410,6 +418,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['rules']:                     # traffic rules as temporal logic (core.rules)
         from .core.rules import main_rules
         return main_rules(argv[1:])
+    if argv[:1] == ['assets']:                    # Indian road assets within the packaged CARLA (core.assets)
+        from .core.assets import main_assets
+        return main_assets(argv[1:])
     if argv[:1] == ['why']:                       # root-cause attribution (core.rootcause)
         from .core.rootcause import main_why
         return main_why(argv[1:])

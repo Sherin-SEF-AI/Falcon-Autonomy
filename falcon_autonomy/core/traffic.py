@@ -10,9 +10,12 @@ Handedness: a profile may assert 'left' or 'right' traffic; a run is refused whe
 (check_handedness) — Falcon never silently simulates right-hand traffic for a left-hand place.
 
 Limits, stated wherever the Indian profile is chosen:
-* CARLA 0.9.16 has no autorickshaw. The profile substitutes vehicle.micro.microlino (a small three-door bubble car,
-  the nearest size) and labels it "autorickshaw (substitute: Microlino)"; docs/worlds.md says how to add a real
-  autorickshaw blueprint (an Unreal asset cooked into the CARLA build).
+* CARLA 0.9.16 has no autorickshaw. The profile's stand-in is vehicle.micro.microlino, the vehicle nearest in measured
+  size to a Bajaj RE (core.assets: 2.21 × 1.48 × 1.38 m against 2.64 × 1.30 × 1.70 m), labelled "autorickshaw
+  (stand-in)" and given the class's limits ('fleet_classes'): the traffic manager's desired speed capped at the
+  three-wheeler's top speed, re-read against each road's limit (workers.scene.ClassLimits), and its engine torque
+  scaled to a three-wheeler's acceleration. docs/indian-assets.md says what was measured and how to add a real
+  autorickshaw (a source build of CARLA).
 * The fleet shares are a heuristic from registration statistics (two-wheelers are about two thirds of vehicles
   registered in Bengaluru), not a measured on-road count.
 * CARLA's traffic manager keeps vehicles in lanes: lane-splitting by two-wheelers is not reproduced by the profile
@@ -29,7 +32,8 @@ INDIA_MIXED = {
     'vehicles': 60, 'walkers': 40,
     'fleet': {'motorcycle': 0.45, 'bicycle': 0.04, 'car': 0.26, 'van': 0.03, 'bus': 0.06, 'truck': 0.04,
               f'blueprint:{AUTORICKSHAW_SUBSTITUTE}': 0.12},
-    'fleet_labels': {f'blueprint:{AUTORICKSHAW_SUBSTITUTE}': 'autorickshaw (substitute: Microlino)'},
+    'fleet_labels': {f'blueprint:{AUTORICKSHAW_SUBSTITUTE}': 'autorickshaw (stand-in)'},
+    'fleet_classes': {f'blueprint:{AUTORICKSHAW_SUBSTITUTE}': 'autorickshaw'},
     'fleet_source': 'heuristic: two-wheelers ≈ two thirds of vehicles registered in Bengaluru; not an on-road count',
     'behaviour': {'distance_to_leading_m': 1.0, 'speed_spread_pct': 25.0, 'speed_difference_pct': -10.0,
                   'ignore_lights_pct': 15.0, 'ignore_signs_pct': 25.0, 'ignore_walkers_pct': 0.0,

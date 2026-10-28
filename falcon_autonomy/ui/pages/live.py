@@ -77,11 +77,16 @@ class LiveView(QWidget):
             lines.append('sensor failure: ' + ', '.join(f'{k} {v}' for k, v in h['failures'].items()))
         if h.get('recording'):
             lines.append('● recording')
+        odd = h.get('odd')
+        if odd and not odd.get('in', True):                    # the runtime ODD monitor (workers.oddwatch)
+            lines.append('▲ outside the ODD: ' + '; '.join(odd.get('why') or [])[:44])
         p.fillRect(QRectF(r.x() + 8, r.y() + 8, 330, 18 * len(lines) + 8), QColor(0, 0, 0, 140))
         p.setPen(QColor('#ffffff'))
         for i, t in enumerate(lines):
             if t.startswith('●'):
                 p.setPen(QColor(STATUS['critical']))
+            elif t.startswith('▲'):
+                p.setPen(QColor(STATUS['warning']))
             p.drawText(QPointF(r.x() + 14, r.y() + 24 + 18 * i), t)
 
     def keyPressEvent(self, ev):
@@ -462,6 +467,12 @@ class LivePage(Page):
         self.stats.set('Dropped', f'{hdr.get("dropped", 0)} by the worker (not yet taken), {self.display_drops} '
                                   'here (newer frame arrived first); no simulation step is ever skipped')
         self.stats.set('Session', f'step frame {hdr.get("frame")}, {hdr.get("sim_t", 0):.1f} s simulated')
+        odd = hdr.get('odd')
+        if odd is not None:
+            self.stats.set('ODD', 'inside' if odd.get('in') else 'OUTSIDE: ' + '; '.join(odd.get('why') or []),
+                           'the runtime ODD monitor (docs/odd-monitoring.md)')
+        if hdr.get('physics'):
+            self.stats.set('Sensor physics', ', '.join(hdr['physics']), 'docs/sensor-physics.md')
 
     def close_link(self):
         if self.conn is not None:

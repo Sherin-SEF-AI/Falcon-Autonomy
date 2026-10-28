@@ -140,7 +140,8 @@ class StackPage(Page):
         self.topics.setColumnWidth(2, 260)
         rv.addWidget(self.topics)
         rv.addWidget(label('Results', h=True))
-        self.summary = KeyValues(('Runs', 'Pass rate (Wilson 95 %)', 'Collisions', 'Missed deadlines'))
+        self.summary = KeyValues(('Runs', 'Pass rate (Wilson 95 %)', 'Collisions', 'Missed deadlines',
+                                  'Outside the ODD'))
         rv.addWidget(self.summary)
         self.results = QTreeWidget()
         self.results.setHeaderLabels(['Scenario', 'Seed', 'Result', 'Criticality', 'Min TTC s', 'Missed', 'Run'])
@@ -356,6 +357,34 @@ class StackPage(Page):
                          f'{o["pass_rate"]:.0%} ({ci[0]:.0%}–{ci[1]:.0%})')
         self.summary.set('Collisions', str(o['collisions']))
         self.summary.set('Missed deadlines', str(o['missed_deadlines']))
+        self.odd_summary(rows)
+
+    def odd_summary(self, rows):
+        """Time the suite's runs spent outside the chosen ODD (core.oddmonitor.suite_outside; cached per run)."""
+        path = self.odd.text().strip()
+        if not path or not os.path.isfile(path):
+            self.summary.set('Outside the ODD', '— (choose an ODD)')
+            return
+        from ...core import oddmonitor as OM
+        try:
+            odd = OM.load_odd(path)
+        except (OSError, ValueError, OM.OddError) as e:
+            self.summary.set('Outside the ODD', f'— ({e})')
+            return
+        cache = self.__dict__.setdefault('_odd_cache', {})
+        done = [r for r in rows if r.get('status') == 'ok' and r.get('run')]
+        key = (path, os.path.getmtime(path), tuple(sorted(r['run'] for r in done)))
+        if cache.get('key') != key:
+            cache.update(key=key, res=OM.suite_outside(done, odd))
+        res = cache['res']
+        if not res['runs']:
+            self.summary.set('Outside the ODD', '—')
+            return
+        worst = sorted(res['scenarios'].values(), key=lambda g: -g['time_outside_s'])[:2]
+        self.summary.set('Outside the ODD', f'{res["time_outside_s"]:.1f} s of {res["time_s"]:.1f} s '
+                         f'({res["share"]:.0%})' + ''.join(f'; {g["name"]} {g["time_outside_s"]:.1f} s'
+                                                           for g in worst if g['time_outside_s']),
+                         'condition monitors over each run\'s recorded frames (docs/odd-monitoring.md)')
 
     def selected_run(self):
         it = self.results.currentItem()

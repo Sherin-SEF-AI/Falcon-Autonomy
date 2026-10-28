@@ -82,6 +82,9 @@ class Live(Worker):
         self.recordings: list = []
         self.policy = None
         self.link = None
+        self.physics = None               # core.sensorphysics.Session (the config's sensor_physics)
+        self.watch = None                 # oddwatch.OddWatch (the config's odd)
+        self.odd_state = None
 
     # ------------------------------------------------------------------ commands (stdin thread)
     def on_command(self, cmd: dict):
@@ -134,6 +137,8 @@ class Live(Worker):
             self.policy.reset(seed)
         self.send_map()
         self.set_view(world, self.view)
+        from .drive import physics_and_watch
+        self.physics, self.watch = physics_and_watch(self, world, cfg)
         self.phase('run')
         for _ in range(int(cfg.get('warmup_steps', 5))):
             self.check()
@@ -162,6 +167,9 @@ class Live(Worker):
             rtf = (hist[-1][1] - hist[0][1]) / max(hist[-1][0] - hist[0][0], 1e-6) if len(hist) > 1 else 1.0
             tps = (len(hist) - 1) / max(hist[-1][0] - hist[0][0], 1e-6) if len(hist) > 1 else 0.0
             img = self.cameras.get(self.view_cam.id, frame)
+            if self.watch is not None:
+                self.odd_state = self.watch.step(st, self.ego, None, scene.rgb_of(img) if self.watch.wants_frame()
+                                                 else None)
             if self.rec is not None:
                 self.record_step(frame, st)
             self.send_frame(img, frame, st, now - t_start, tps, rtf)
@@ -182,6 +190,8 @@ class Live(Worker):
         return {'performance': perf, 'events': [{'sim_t': round(t, 3), 'kind': k, 'detail': d}
                                                 for t, k, d in self.events],
                 'recordings': self.recordings,
+                'sensor_physics': self.physics.report() if self.physics is not None else {'enabled': False},
+                'odd_monitor': self.watch.report() if self.watch is not None else None,
                 'summary': {'steps': steps, 'realtime_factor': perf['realtime_factor'],
                             'recordings': len(self.recordings)}, 'name': cfg.get('name', 'live session')}
 
@@ -364,6 +374,9 @@ class Live(Worker):
             elif kind == 'weather':
                 fields = c.get('fields') or {}
                 world.set_weather(scene.weather_params(self.carla, fields))
+                if self.physics is not None:
+                    from ..core.weather import resolve
+                    self.physics.set_weather(resolve(fields))
                 self.log_event('weather', {k: fields[k] for k in sorted(fields)[:6]})
             elif kind == 'sensor_fail':
                 sid = c.get('sensor', 'view')
@@ -455,6 +468,11 @@ class Live(Worker):
         np = self.np
         bgr = np.frombuffer(img.raw_data, np.uint8).reshape(img.height, img.width, 4)[:, :, :3]
         bgr = self.degrade('view', bgr)
+        effects = None
+        if bgr is not None and self.physics is not None and self.view.get('kind') == 'sensor':
+            fr = self.physics.camera_frame(self.view.get('sensor'), self.dt, None)
+            if fr is not None:                           # a rig camera's view: its weather physics (no headlights)
+                bgr, effects = fr[0].apply(np.ascontiguousarray(bgr), fr[1])
         actors, boxes = self.actors_and_boxes(img)
         hdr = {'t': 'frame', 'frame': int(frame), 'sim_t': round(st, 3), 'wall_t': round(wall, 3),
                'view': self.view.get('kind'), 'w': img.width, 'h': img.height,
@@ -463,7 +481,8 @@ class Live(Worker):
                'speed_kmh': round(3.6 * scene.ego_state(self.ego)['speed_mps'], 1),
                'control': self.control_applied, 'actors': actors, 'boxes': boxes,
                'recording': self.rec['dir'] if self.rec else None,
-               'failures': {k: v[0] for k, v in self.failures.items()}}
+               'failures': {k: v[0] for k, v in self.failures.items()}, 'odd': self.odd_state,
+               'physics': effects}
         if bgr is None:
             self.link.put(dict(hdr, failed=True), b'')
             return
@@ -557,7 +576,10 @@ class Live(Worker):
             for kind in c.kinds():
                 ext = {'rgb': 'jpg', 'objects': 'json', 'flow': 'npy'}.get(kind, 'png')
                 rec['files'][f'{s["id"]}/{kind}'] = os.path.join(kind, s['id'], f'{i:06d}.{ext}')
-            cams.pending.append(cams.pool.submit(c.write, imgs, i, r['dir'], boxes, self.raster))
+            phys = None if self.physics is None else self.physics.camera_frame(s['id'], self.dt, boxes)
+            if phys is not None and phys[1]['effects']:
+                rec.setdefault('physics', {})[s['id']] = phys[1]['effects']
+            cams.pending.append(cams.pool.submit(c.write, imgs, i, r['dir'], boxes, self.raster, None, phys))
         r['index'].write(json.dumps(rec, separators=(',', ':')) + '\n')
         r['n'] += 1
         if len(cams.pending) > 8 * max(len(r['recs']), 1):

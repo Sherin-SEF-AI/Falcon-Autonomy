@@ -11,7 +11,14 @@ side, *opposite* the nearest lane of the other direction, *kerb* the near edge o
 
 **Built-ins**: lead vehicle brakes, cut-in, pedestrian crossing, cyclist crossing, a parked car opens its door, stalled
 vehicle, unprotected turn across traffic — and for Indian roads: two-wheeler filtering between lanes, a jaywalker from
-behind a bus, a wrong-way scooter, a bus pulling out. Copy one into the project to edit it.
+behind a bus, a wrong-way scooter, a bus pulling out, stray cattle in the lane, a handcart in the kerb lane, an
+autorickshaw cutting in, and the monsoon variant (a lead vehicle braking on a waterlogged road, with the scenario's own
+weather). Copy one into the project to edit it.
+
+**Indian kinds** of actor: `autorickshaw` and `cycle_rickshaw` are stand-in vehicles held to their class's top speed
+and acceleration; `cattle`, `handcart` and `vendor` are proxy props of the real object's size, a moving one moved
+kinematically. They keep CARLA's labels and carry Falcon's `subclass` ([Indian road assets](indian-assets.md)). A
+scenario's optional `weather` replaces the world's for its runs.
 
 ## Running one
 A scenario runs inside a drive (so a scenario run records the rig's data with all its labels): the director picks a

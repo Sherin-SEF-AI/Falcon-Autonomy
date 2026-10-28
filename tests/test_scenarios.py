@@ -18,7 +18,7 @@ def test_every_builtin_is_valid_and_samples_deterministically(key):
 
 
 def test_the_indian_scenarios_are_in_the_library():
-    assert set(SC.INDIAN) <= set(SC.LIBRARY) and len(SC.LIBRARY) == 11
+    assert set(SC.INDIAN) <= set(SC.LIBRARY) and len(SC.LIBRARY) == 15
 
 
 def test_expressions():

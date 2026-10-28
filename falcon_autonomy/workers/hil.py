@@ -72,6 +72,7 @@ class Hil(Worker):
         self.counts = {'control_timeouts': 0, 'steps_late': 0, 'held_before_first_control': 0}
         self.saved = False
         self.load0 = None
+        self.watch = None                  # oddwatch.OddWatch when the config has an ODD
 
     def on_command(self, cmd: dict):
         if cmd.get('cmd') == 'stop':
@@ -213,6 +214,8 @@ class Hil(Worker):
         cam = self.cameras.spawn(world, lib, 'sensor.camera.rgb', cam_s['width'], cam_s['height'], cam_s['fov'],
                                  scene.camera_transform(carla, cam_s['pose']), ego)
         lidar = self.spawn_lidar(world, lib, lid_s, ego)
+        from .drive import physics_and_watch
+        _, self.watch = physics_and_watch(self, world, cfg, with_physics=False)       # the ODD monitor, when asked
         clocks = cfg.get('clocks') or {}
         cclk = EmulatedClock(**(clocks.get('camera') or {}), seed=seed * 2 + 1)
         lclk = EmulatedClock(**(clocks.get('lidar') or {}), seed=seed * 2 + 2)
@@ -286,6 +289,8 @@ class Hil(Worker):
             rec = {'frame': int(frame), 'sim_t': round(sim_t, 6), 'speed_mps': round(speed, 4), 'cam_hw_t': cam_hw,
                    'lidar_hw_t': lid_hw, 'tick_start': t0, 'tick_end': t1, 'ready': t_ready, 'lidar_points': npts,
                    'status': 'missing'}
+            if self.watch is not None:
+                rec['odd'] = self.watch.step(sim_t, ego, speed)
             with self.rlock:
                 self.records[int(frame)] = rec
             cb, lb = img.raw_data, lm.raw_data
@@ -432,6 +437,7 @@ class Hil(Worker):
                             'e2e_p95_ms': e2e.get('p95'), 'on_time': summary['deadline']['on_time'],
                             'deadline_misses': summary['deadline']['deadline_misses'],
                             'report': files.get('html')},
+                'odd_monitor': self.watch.report() if self.watch is not None else None,
                 'name': self.cfg.get('name', 'HIL session')}
 
     def tidy(self):

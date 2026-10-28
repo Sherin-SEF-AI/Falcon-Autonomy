@@ -669,3 +669,52 @@ def test_sanitize_clamps_objects_past_the_road_end():
     assert none == []
     with pytest.raises(ValueError):
         xodr.sanitize(text.replace('29.93300628', '31.0'))
+
+
+# ------------------------------------------------------------------------------------------------ road features
+def test_import_places_traffic_calming_as_elevation(tmp_path):
+    """The import worker (fake converter) turns a traffic_calming=hump node into an IRC hump on both travel directions'
+    roads, keeps it through the left-hand conversion, and reports a rumble strip as not represented."""
+    import json
+    import subprocess
+    import sys
+    from conftest import worker_env
+    from falcon_autonomy.core import protocol as P
+    from falcon_autonomy.core import roadfeatures as RF
+    from falcon_autonomy.core.worlds import import_config, world_entry
+    lat0, lon0 = 12.9716, 77.5946
+    dlon = 1.0 / (111319.49 * np.cos(np.radians(lat0)))
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<osm version="0.6">']
+    for k in range(9):                               # 0 … 400 m east, a node every 50 m
+        lines.append(f'<node id="{k + 1}" lat="{lat0:.7f}" lon="{lon0 + 50.0 * k * dlon:.9f}"/>')
+    lines.append(f'<node id="100" lat="{lat0:.7f}" lon="{lon0 + 200.0 * dlon:.9f}">'
+                 '<tag k="traffic_calming" v="hump"/></node>')
+    lines.append(f'<node id="101" lat="{lat0:.7f}" lon="{lon0 + 320.0 * dlon:.9f}">'
+                 '<tag k="traffic_calming" v="rumble_strip"/></node>')
+    refs = [1, 2, 3, 4, 5, 100, 6, 7, 101, 8, 9]
+    lines.append('<way id="1">' + ''.join(f'<nd ref="{r}"/>' for r in refs) +
+                 '<tag k="highway" v="residential"/><tag k="name" v="Breaker Road"/></way></osm>')
+    src = tmp_path / 'area.osm'
+    src.write_text('\n'.join(lines))
+    out = tmp_path / 'w'
+    cfg = import_config(str(src), str(out), None, True, centre=(lat0, lon0 + 200.0 * dlon))
+    (tmp_path / 'c.json').write_text(json.dumps(cfg))
+    r = subprocess.run([sys.executable, '-m', 'falcon_autonomy.workers', 'osm_import', str(tmp_path / 'c.json')],
+                       capture_output=True, text=True, env=worker_env(), timeout=120)
+    assert r.returncode == P.OK, r.stderr
+    rep = json.loads((out / 'import.json').read_text())
+    assert rep['handedness'] == 'LHT'
+    assert rep['road_features']['counts'] == {'irc_hump': 2} and rep['road_features']['not_represented'] == \
+        {'rumble_strip': 1}
+    text = (out / 'world.xodr').read_text()
+    feats = RF.read(text)
+    assert len(feats) == 2 and {f['kind'] for f in feats} == {'irc_hump'}
+    assert all(abs(f['x']) < 1.0 and abs(f['y']) < 1.0 for f in feats)          # at the node: the area's centre
+    assert xodr.handedness(xodr.parse(text)) == 'LHT' and RF.read((out / 'world.base.xodr').read_text()) == []
+    e = world_entry('w', 'W', cfg, rep)
+    assert e['osm']['mesh']['vertex_distance'] == RF.FEATURE_VERTEX_DISTANCE_M
+    cfg['settings']['speed_breakers'] = 'off'
+    (tmp_path / 'c.json').write_text(json.dumps(cfg))
+    r = subprocess.run([sys.executable, '-m', 'falcon_autonomy.workers', 'osm_import', str(tmp_path / 'c.json')],
+                       capture_output=True, text=True, env=worker_env(), timeout=120)
+    assert r.returncode == P.OK and RF.read((out / 'world.xodr').read_text()) == []

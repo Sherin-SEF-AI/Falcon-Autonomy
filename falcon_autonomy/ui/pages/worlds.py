@@ -15,9 +15,16 @@ from ..widgets import Form, KeyValues, Page, Section, SliderField, button, label
 # maps, those are offered instead.
 TOWNS = ('Town01', 'Town01_Opt', 'Town02', 'Town02_Opt', 'Town03', 'Town03_Opt', 'Town04', 'Town04_Opt', 'Town05',
          'Town05_Opt', 'Town10HD', 'Town10HD_Opt')
-LIMITS = ('Limits of CARLA\'s weather: lidar and radar ignore it (no loss of range in rain or fog); rain on a camera '
+LIMITS = ('Limits of CARLA\'s weather: its lidar and radar ignore it (no loss of range in rain or fog) — switch on '
+          'Falcon\'s sensor weather physics below for modelled losses and clutter; rain on a camera '
           'is water on the lens and wet surfaces; fog visibility ≈ 7000 m / fog density (measured on 0.9.16, a 5 % '
-          'contrast threshold — a human observer\'s; for a detector it is an upper bound).')
+          'contrast threshold — a human observer\'s; for a detector it is an upper bound). Puddles (waterlogging) '
+          'cover the whole world, not chosen places, and are drawn on CARLA\'s towns but not on an imported '
+          '(OpenDRIVE) world (measured: docs/indian-assets.md).')
+FEATURES_ABOUT = ('Speed breakers written into the road\'s elevation, so the vehicle physics drives over them: from '
+                  'OpenStreetMap\'s traffic_calming tags, and optionally every N metres (IRC:99-1988 spaces repeated '
+                  'humps 100–120 m apart). They span the full road width (an elevation profile). Potholes are not '
+                  'expressible as such (a full-width dip is the nearest). docs/indian-assets.md.')
 
 
 class WorldsPage(Page):
@@ -81,6 +88,8 @@ class WorldsPage(Page):
         self.verify_kv = KeyValues()
         self.place.add(self.verify_kv)
         ev.addWidget(self.place)
+        self.features = RoadFeatures(self)
+        ev.addWidget(self.features)
         self.verify_job = None
         win.bridge.finished.connect(self.on_verify)
 
@@ -99,6 +108,19 @@ class WorldsPage(Page):
             wf.row(text, s)
         self.summary = label('', muted=True, wrap=True)
         wf.row('Reads as', self.summary)
+        from PyQt6.QtWidgets import QCheckBox
+        self.physics = {k: QCheckBox(t) for k, t in (('enabled', 'On'), ('lidar', 'Lidar'), ('radar', 'Radar'),
+                                                     ('camera', 'Camera'))}
+        pw = QWidget()
+        pl = QHBoxLayout(pw)
+        pl.setContentsMargins(0, 0, 0, 0)
+        for k, cb in self.physics.items():
+            cb.toggled.connect(lambda on, key=k: self.set_physics(key, on))
+            pl.addWidget(cb)
+        pl.addStretch(1)
+        wf.row('Sensor weather physics', pw, 'Modelled losses and clutter CARLA leaves out: lidar and radar in rain '
+                                             'and fog, droplets, glare (docs/sensor-physics.md). Recorded in every '
+                                             'run; never applied unless on.')
         ws.add(wf)
         ev.addWidget(ws)
         self.traffic_editor = TrafficEditor(self)
@@ -157,6 +179,13 @@ class WorldsPage(Page):
         for field, s in self.sliders.items():
             s.setValue(vals[field])
         self.summary.setText(W.describe(wt))
+        from ...core.sensorphysics import DEFAULTS as PHYS
+        ph = dict(PHYS, **(w.get('sensor_physics') or {}))
+        for k, cb in self.physics.items():
+            cb.blockSignals(True)
+            cb.setChecked(bool(ph.get(k)))
+            cb.setEnabled(k == 'enabled' or bool(ph.get('enabled')))
+            cb.blockSignals(False)
         self.traffic_editor.show_profile(w.get('traffic_profile'))
         for wd in (self.name, self.town, self.preset, self.traffic):
             wd.blockSignals(False)
@@ -165,8 +194,10 @@ class WorldsPage(Page):
         import json
         import os
         self.place.setVisible(w['kind'] != 'town')
+        self.features.setVisible(w['kind'] != 'town')
         if w['kind'] == 'town':
             return
+        self.features.show_world(w)
         d = os.path.join(self.win.workspace(), os.path.dirname(w.get('xodr', '')))
         self.place_kv.clear()
         self.verify_kv.clear()
@@ -245,6 +276,18 @@ class WorldsPage(Page):
         self.win.edit(Edit('set', ['worlds', i, 'weather'], {'preset': name},
                            text=f'Weather of {w["name"]}: {name}'))
 
+    def set_physics(self, key, on):
+        i, w = self.current()
+        if w is None:
+            return
+        from ...core.sensorphysics import DEFAULTS as PHYS
+        block = {k: PHYS[k] for k in ('enabled', 'lidar', 'radar', 'camera')}
+        block.update(w.get('sensor_physics') or {})
+        block[key] = bool(on)
+        self.win.edit(Edit('set', ['worlds', i, 'sensor_physics'], block,
+                           text=f'Sensor weather physics of {w["name"]}: {key} {"on" if on else "off"}'))
+        self.show_world()
+
     def set_weather(self, field, value, merge):
         i, w = self.current()
         if w is None:
@@ -270,6 +313,108 @@ class WorldsPage(Page):
         if w is None or len(self.worlds()) <= 1:
             return
         self.win.edit(Edit('remove', ['worlds'], index=i, text=f'Remove {w["name"]}'))
+
+
+class RoadFeatures(Section):
+    """An imported world's speed breakers (core.roadfeatures): what is placed, and the choices to place them again.
+    Applying rewrites the world's OpenDRIVE file (world.base.xodr keeps it without features) and sets its mesh's vertex
+    distance (a project edit); undo restores the settings, not the file — apply again to change it."""
+
+    def __init__(self, page):
+        super().__init__('Road features', FEATURES_ABOUT)
+        self.page = page
+        from PyQt6.QtWidgets import QCheckBox, QDoubleSpinBox
+        f = Form()
+        self.use_osm = QCheckBox('From OpenStreetMap (traffic_calming = bump, hump, table)')
+        self.use_osm.setChecked(True)
+        f.row('Tags', self.use_osm)
+        self.bump = QComboBox()
+        self.bump.addItem('a short bump (0.30 m long, 0.075 m high)', 'osm_bump')
+        self.bump.addItem('an IRC speed breaker (3.7 m, 0.10 m)', 'irc_hump')
+        f.row('"bump" becomes', self.bump, 'OSM\'s bump is ≤ 30 cm long; many Indian breakers tagged so are humps')
+        self.spacing = QDoubleSpinBox()
+        self.spacing.setRange(0.0, 1000.0)
+        self.spacing.setDecimals(0)
+        self.spacing.setSuffix(' m')
+        self.spacing.setSpecialValueText('none')
+        f.row('Also every', self.spacing, 'an IRC hump along every road longer than 60 m (0: none; IRC: 100–120 m)')
+        self.add(f)
+        row = QHBoxLayout()
+        self.apply_btn = button('Apply road features', self.apply, tip='Rewrite the world\'s OpenDRIVE file')
+        self.remove_btn = button('Remove', self.remove)
+        row.addWidget(self.apply_btn)
+        row.addWidget(self.remove_btn)
+        row.addStretch(1)
+        self.add(row)
+        self.kv = KeyValues()
+        self.add(self.kv)
+
+    def world_dir(self, w):
+        import os
+        return os.path.join(self.page.win.workspace(), os.path.dirname(w.get('xodr', '')))
+
+    def show_world(self, w):
+        import json
+        import os
+        self.kv.clear()
+        opts = (w.get('osm') or {}).get('road_features') or {}
+        self.use_osm.setChecked(bool(opts.get('osm', True)))
+        k = self.bump.findData(opts.get('osm_bump', 'osm_bump'))
+        self.bump.setCurrentIndex(max(k, 0))
+        self.spacing.setValue(float(opts.get('spacing_m', 0.0) or 0.0))
+        p = os.path.join(self.world_dir(w), 'features.json')
+        try:
+            with open(p, encoding='utf-8') as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            self.kv.set('Placed', 'none (no features.json)')
+            return
+        counts = ', '.join(f'{v} {k.replace("_", " ")}' for k, v in sorted(doc.get('counts', {}).items())) or 'none'
+        self.kv.set('Placed', counts)
+        if doc.get('skipped'):
+            self.kv.set('Skipped', f'{len(doc["skipped"])} (in junctions, near road ends or overlapping: '
+                                   'features.json says which)')
+        if doc.get('not_represented'):
+            self.kv.set('Not represented', ', '.join(f'{v} {k}' for k, v in sorted(doc['not_represented'].items())))
+        mesh = (w.get('osm') or {}).get('mesh') or {}
+        self.kv.set('Mesh', f'vertex distance {mesh.get("vertex_distance", 2.0)} m '
+                            f'({doc.get("mesh_note", "")})')
+
+    def apply(self):
+        from PyQt6.QtWidgets import QMessageBox
+        from ...core import roadfeatures as RF
+        i, w = self.page.current()
+        if w is None or w['kind'] == 'town':
+            return
+        opts = {'osm': self.use_osm.isChecked(), 'osm_bump': self.bump.currentData(),
+                'spacing_m': float(self.spacing.value()), 'spaced_kind': 'irc_hump'}
+        try:
+            doc = RF.apply_to_world(self.world_dir(w), opts)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, 'Road features', str(e))
+            return
+        self.set_world(i, w, opts, bool(doc['placed']))
+
+    def remove(self):
+        from ...core import roadfeatures as RF
+        i, w = self.page.current()
+        if w is None or w['kind'] == 'town':
+            return
+        RF.remove_from_world(self.world_dir(w))
+        self.set_world(i, w, {'osm': False, 'spacing_m': 0.0}, False)
+
+    def set_world(self, i, w, opts, has):
+        import copy
+        from ...core import roadfeatures as RF
+        from ...core.worlds import MESH_DEFAULTS
+        osm = copy.deepcopy(w.get('osm') or {})
+        mesh = dict(osm.get('mesh') or MESH_DEFAULTS)
+        if not has:
+            mesh['vertex_distance'] = MESH_DEFAULTS['vertex_distance']
+        osm['mesh'] = RF.mesh_for(mesh, has)
+        osm['road_features'] = opts
+        self.page.win.edit(Edit('set', ['worlds', i, 'osm'], osm, text=f'Road features of {w["name"]}'))
+        self.show_world(self.page.worlds()[i])
 
 
 class TrafficEditor(Section):
@@ -354,9 +499,10 @@ class TrafficEditor(Section):
         if tp.get('fleet_source'):
             notes.append(f'Fleet shares: {tp["fleet_source"]}.')
         if tp.get('fleet_labels'):
-            notes.append('CARLA 0.9.16 has no autorickshaw: the Microlino (a small three-door car) stands in and is '
-                         'labelled as a substitute. Lane-splitting by two-wheelers is not reproduced by the traffic '
-                         'manager.')
+            notes.append('CARLA 0.9.16 has no autorickshaw: the Microlino, the nearest vehicle in measured size, '
+                         'stands in with a three-wheeler\'s top speed and acceleration, labelled "autorickshaw '
+                         '(stand-in)" (docs/indian-assets.md). Lane-splitting by two-wheelers is not reproduced by the '
+                         'traffic manager.')
         self.notes.setText(' '.join(notes))
 
     def set(self, path, value):

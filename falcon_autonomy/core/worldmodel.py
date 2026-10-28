@@ -374,6 +374,8 @@ def sweep_occupancy(data: dict, lid: str, sweep, grid: Grid, include_ego=False) 
     T_we = pose_matrix(frame['ego'])
     T_es = np.linalg.inv(T_we) @ M_ws
     xyz, tag, ids = read_sweep(data['dir'], rel)
+    real = tag != GT.WEATHER_NOISE_CLASS                 # weather returns (docs/sensor-physics.md) are not objects
+    xyz, tag, ids = xyz[real], tag[real], ids[real]
     P = xyz @ T_es[:3, :3].T + T_es[:3, 3]
     cls = GT.CLASS_OF_TAG[tag].astype(np.int64)
     ego = data.get('ego_id')

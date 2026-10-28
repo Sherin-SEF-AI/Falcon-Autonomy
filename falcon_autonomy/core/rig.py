@@ -55,7 +55,7 @@ VEHICLES = {
     'vehicle.toyota.prius': (4.513, 2.006, 1.522),
     'vehicle.nissan.patrol_2021': (5.565, 2.146, 2.045),
     'vehicle.mercedes.sprinter': (5.917, 1.991, 2.560),
-    'vehicle.micro.microlino': (2.540, 1.480, 1.460),
+    'vehicle.micro.microlino': (2.207, 1.481, 1.376),      # measured on the server (resources/carla inventory)
 }
 
 

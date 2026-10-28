@@ -19,8 +19,10 @@ run/
   objects/<camera>/<n>.json      the objects seen (below)
   flow/<camera>/<n>.npy          optical flow (below)
   lidar/<lidar>/<sweep>.bin      float32 x y z intensity, the lidar's frame at the sweep's end
-  lidar/<lidar>/<sweep>.labels.bin   uint8 tag per point, then uint32 actor id per point
+  lidar/<lidar>/<sweep>.labels.bin   uint8 tag per point, then uint32 actor id per point (tag 30: weather_noise)
   radar/<radar>/<n>.npy          float32 velocity, azimuth, altitude, depth (CARLA's order)
+  radar/<radar>/<n>.flags.npy    uint8 per row: 1 = weather clutter (only frames the sensor physics touched)
+  odd-monitor.json               the ODD monitor's timeline (runs with an ODD, or `falcon odd monitor`)
   gnss/<gnss>.jsonl  imu/<imu>.jsonl
 ```
 
@@ -28,7 +30,13 @@ run/
 `frames.jsonl`: `step`, `frame` (CARLA's), `sim_t` (s from the first recorded step), `ego` (pose in CARLA's world),
 `speed_mps`, `control`, `recorded` (false on steps `record_every` skips), `files` (`"<sensor>/<kind>": path`), and
 when used `stamps` (per sensor, with its clock-offset fault), `faults` (per sensor: `drop` or `freeze`), `lidar_pose`
-(per lidar: the 3 × 4 world matrix of the sweep's end, row-major).
+(per lidar: the 3 × 4 world matrix of the sweep's end, row-major), `physics` (per sensor: the weather effects that
+touched the frame — [sensor physics](sensor-physics.md)) and `odd` (`in`, `why`, `road`, … — [ODD
+monitoring](odd-monitoring.md)).
+
+Lidar labels: the tag is CARLA's semantic tag of the surface hit, except **30 `weather_noise`**: a spurious return of
+fog or rain added by Falcon's sensor physics (actor id 0; nuScenes-lidarseg `noise`). Real returns always keep CARLA's
+tag and actor id.
 
 `control` is the ego's control **in effect during the tick that produced this step** — `throttle` 0–1, `steer` −1…1
 (positive right), `brake` 0–1, `hand_brake`, `reverse` — so the action taken from step *i*'s state is step *i + 1*'s
@@ -55,6 +63,7 @@ sensor CARLA spawns, not the calibration (as on a real faulty rig).
   edges), `bbox_full` (its 3D box through the lens, unclipped), `truncated` (share of the box outside the image),
   `occluded` (share of the box's pixels hidden by something nearer), `range_m`, `pixels`, `box3d` (vehicle frame:
   centre, size l w h, yaw), `rle` (COCO run-length mask).
+- **Stand-ins and proxies**: an object row (and an `actors.jsonl` row) may carry `subclass` — see below.
 - **Imported worlds**: the ground's labels and range come from the map ([worlds](worlds.md#labels-in-an-imported-world-a-carla-limit-worked-around));
   `objects.json` → `ground_relabelled` counts the pixels.
 - **Lidar**: per point the semantic lidar's tag and actor id, matched point for point and proven every step
@@ -65,3 +74,21 @@ sensor CARLA spawns, not the calibration (as on a real faulty rig).
   pixel's motion in pixels from the previous frame, u right and v down — CARLA's optical-flow camera decoded as
   measured on 0.9.16 (pixels = x × W/2, −y × H/2; median error 0.4 px against the flow predicted from depth and the
   camera's motion). Fisheye flow is not recorded.
+
+## Indian stand-ins and proxies
+CARLA 0.9.16 has no autorickshaw, cycle-rickshaw, cattle or handcart; Falcon drives a CARLA vehicle of the nearest
+measured size as a **stand-in** and places a prop of the real object's size as a **proxy**
+([Indian road assets](indian-assets.md)). Their pixels and points keep **CARLA's class** — the mesh they are: an
+autorickshaw stand-in is `class` car, `category` vehicle.car; the cattle proxy `static`, the handcart proxy `dynamic`
+(both `movable_object.pushable_pullable`) — and their rows add **`subclass`**: `autorickshaw (stand-in)`,
+`cycle-rickshaw (stand-in)`, `cattle (proxy obstacle)`, `handcart (proxy)`, `street vendor (proxy)`. run.json's
+`subclasses` maps actor ids to them; a proxy's `box3d` and `actors.jsonl` box are its true size (CARLA reports a scaled
+mesh's box centre unscaled; Falcon writes the real one).
+
+For training: the **appearance is CARLA's mesh**, not the Indian object's. Training a detector on `subclass` would teach
+it what a Microlino or a map table looks like, not an autorickshaw or a cow — use the subclass to **filter or weight**
+(e.g. leave stand-ins out of an appearance-based class, or count them as their CARLA class), and use stand-ins and
+proxies for what their size, place and motion are real for: tracking and prediction of a three-wheeler's speeds,
+occupancy and free space, planning around an obstacle of a cow's footprint, lidar returns of an object that size.
+Real imagery (or real meshes, the source-build path) is needed to learn their look.
+

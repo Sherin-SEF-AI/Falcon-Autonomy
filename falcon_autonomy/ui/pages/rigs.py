@@ -288,6 +288,13 @@ class RigsPage(Page):
                 cb.toggled.connect(lambda on, lb=lb: self.toggle_label(j, lb, on))
                 row.addWidget(cb)
             f.row('Labels', row)
+        if s['type'].startswith('camera.') or s['type'] in ('lidar', 'radar'):
+            wp = QCheckBox('when the world enables it (docs/sensor-physics.md)')
+            wp.setChecked(s.get('weather_physics', True) is not False)
+            wp.setToolTip('Falcon\'s weather models for this sensor (lidar and radar in rain and fog, lens droplets, '
+                          'glare); off: this sensor records CARLA\'s data as it is')
+            wp.toggled.connect(lambda on: self.set_field(j, 'weather_physics', bool(on)))
+            f.row('Weather physics', wp)
         self.fault_editor(f, j, s)
         c = R.sensor_cost(s)
         self.cost.set('Cost', f'{c["mpx"]:.2f} Mpx per step — {c["note"]}' if c['mpx'] else c['note'])

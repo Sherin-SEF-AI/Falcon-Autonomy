@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.0 — milestone 10: realism
+
+- **Sensor weather physics** (per world, off by default, recorded per run and frame): lidar extinction in fog (Kim et
+  al. 2001 at 905 nm) and rain (Carbonneau), speckle-based dropout, fog backscatter and rain-drop returns labelled with
+  a new class 30 `weather_noise` (real returns keep their labels); radar rain attenuation (ITU-R P.838-3 at 77 GHz),
+  Swerling I detection and rain clutter (an upper bound); camera lens droplets, a wet-lens veil, glare and bloom (CIE
+  146), night headlights (heuristic). On 20 real Town10 sweeps the kept share per range bin matches the model at fog
+  10–100 and rain 25–50 mm/h. Not calibrated against a real sensor in real weather (stated).
+- **Runtime ODD monitoring**: exact condition monitors from the simulator state and an image-statistics monitor
+  (Mahalanobis, Ledoit–Wolf), calibrated by leave-one-drive-out cross-fitting to a target false-alarm rate. Measured on
+  real Town10 frames: 0/260 false alarms; 78 % of frames flagged at 350 m visibility, 100 % at 140 m and 100 % of
+  Bengaluru frames (the fog synthesised from range labels). Live, gym, stack, HIL, the Loop and the safety case show
+  it; a workspace's `odd.json` is monitored on every run (outside the drive cache key); `falcon odd`.
+- **Indian road assets** within the packaged CARLA 0.9.16 (measured: 214 blueprints, no animal, three-wheeler or
+  handcart; `static.prop.mesh` spawns any cooked mesh): autorickshaw (Microlino, by measured size against a Bajaj RE;
+  65 km/h and 2.0 m/s² applied through the traffic manager and torque) and cycle-rickshaw stand-ins with a Falcon
+  `subclass` label; speed breakers as OpenDRIVE elevation profiles (IRC:99-1988 hump within 1.1 mm RMS at 0.25 m mesh
+  spacing; the vehicle rises 9 cm at 15 km/h), placed from OSM tags; potholes refused (CARLA ignores lateral shape);
+  waterlogging global only and not drawn on imported worlds (measured); cattle and handcart proxies; four new Indian
+  scenarios; the source-build path for real meshes documented, not done. `falcon assets`.
+- The Worlds page switches sensor weather physics per world.
+
 ## 1.1.0 — milestone 9: a sharper loop
 
 - **Model-in-the-loop rare-case search** (`falcon search --objective perception|both --model M`): each evaluation runs

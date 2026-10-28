@@ -17,4 +17,5 @@ WORKERS = {
     'replay': 'falcon_autonomy.workers.replay',
     'stack': 'falcon_autonomy.workers.stack',
     'hil': 'falcon_autonomy.workers.hil',
+    'assets': 'falcon_autonomy.workers.assets',
 }

@@ -111,6 +111,7 @@ every result.
 | `pass_on_left`, `pass_on_right`, `passing` | 0/1 | at the sample where the ego passes a same-direction vehicle (its centre goes from ahead to behind the ego's while 1.4–8 m beside it, the ego faster) — with the ego on that vehicle's left or right |
 | `tl_red`, `tl_distance_m` | 0/1, m | the light on the route ahead is red; front to its stop line (gym traces; drives do not record light states) |
 | `speed_limit_kmh` | km/h | CARLA's `Vehicle.get_speed_limit()` where a trace records it; else the map's OpenDRIVE record for the ego's road (a lane `<speed>`, else the road type's); in a junction road the last limit before it |
+| `on_breaker`, `breaker_kmh` | 0/1, km/h | the ego's body is over a speed breaker or table the world's OpenDRIVE file carries (Falcon's road features: its length along the road ± half the ego's length, across the carriageway), and that breaker's advisory crossing speed; unknown without the OpenDRIVE file ([Indian road assets](indian-assets.md#road-features-in-opendrive-real-geometry)) |
 
 The corridors are straight lines in the ego's frame: on a curve they are a heuristic.
 
@@ -147,6 +148,7 @@ The corridors are straight lines in the ego's frame: on a curve they are a heuri
 | `yield_crossing` | `not ped_on_crossing or speed_mps <= 0.5 or ped_path_gap_m - speed_mps * speed_mps / (2 * comfort_decel_mps2) >= stop_margin_m` | law |
 | `pedestrian_clearance` | the same without `not ped_on_crossing`: anywhere (on Indian roads pedestrians cross away from crossings) | heuristic |
 | `junction_clear` | `not in_junction or t < junction_stand_s or once[0,junction_stand_s] (speed_mps >= 0.5) or lead_gap_m <= queue_gap_m` | law, heuristic |
+| `speed_breaker` | `not on_breaker or speed_kmh <= breaker_kmh + speed_tolerance_kmh` — over a breaker, at most its advisory speed (IRC:99-1988: 25 km/h; a design speed, not a legal limit) | heuristic |
 
 `generic` — **Generic (right-hand traffic)**, not any one country's law: the same rules with `keep_right`
 (`lanes_right`) and `overtake_left` (`not pass_on_right`), without `pedestrian_clearance`.

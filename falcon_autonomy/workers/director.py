@@ -33,6 +33,15 @@ id and blueprint (report(): 'actor_ids', 'blueprints'), which the labels' track 
 
 Appearance. An actor's optional "variant": k (core.rootcause's appearance swap) spawns the k-th next blueprint of its
 kind's pool (adults among adults, children among children) with the generator drawn from exactly as without it.
+
+Indian classes (core.assets). "autorickshaw" and "cycle_rickshaw" are stand-in vehicles (the inventory's nearest in
+measured size) driven with their class's limits: the set speed never above its top speed and ramping up no faster
+than its acceleration. "cattle", "handcart" and "vendor" are proxy props (a static prop, or a cooked mesh through
+static.prop.mesh at a uniform scale) placed on the ground at their true size; a moving proxy is moved with
+set_transform (props have no physics) along its path — measured on 0.9.16: a static.prop.* moves so, while a scaled
+static.prop.mesh does not move and loses its scale, so moving proxies are unscaled props. Each gets its Falcon
+subclass (w.subclass) and its true box (w.proxies: CARLA reports a scaled mesh's box centre unscaled), which the labels
+and actors.jsonl use.
 """
 from __future__ import annotations
 
@@ -52,6 +61,15 @@ KIND_BLUEPRINTS = {
     'motorcycle': ('vehicle.vespa.zx125', 'vehicle.yamaha.yzf', 'vehicle.kawasaki.ninja'),
     'bicycle': ('vehicle.diamondback.century', 'vehicle.bh.crossbike', 'vehicle.gazelle.omafiets'),
 }
+
+
+STAND_INS = ('autorickshaw', 'cycle_rickshaw')
+PROXIES = {'cattle': 'cattle', 'handcart': 'handcart', 'vendor': 'street_vendor'}
+
+
+def _class_of(kind):
+    """The core.assets class of a scenario kind, or None for CARLA's own kinds."""
+    return kind if kind in STAND_INS else PROXIES.get(kind)
 
 
 def _wrap(a):
@@ -254,8 +272,46 @@ class Director:
         return lane_path(at, 300.0), off
 
     def size_of(self, kind):
+        cls = _class_of(kind)
+        if cls is not None:
+            c = self.asset(kind)
+            if c.get('size_m'):
+                return (float(c['size_m'][0]), float(c['size_m'][1]))
         return {'bus': (10.3, 3.9), 'truck': (6.0, 2.6), 'van': (5.5, 2.0), 'motorcycle': (2.2, 0.9),
                 'bicycle': (1.7, 0.6), 'pedestrian': (0.5, 0.5), 'child': (0.4, 0.4)}.get(kind, (4.6, 2.0))
+
+    def asset(self, kind):
+        """The stand-in or proxy of an Indian kind (core.assets.choose on the repo's measured inventory), cached."""
+        cache = self.__dict__.setdefault('_assets', {})
+        if kind not in cache:
+            from ..core import assets as AS
+            cache[kind] = AS.choose(_class_of(kind))
+        return cache[kind]
+
+    def spawn_proxy(self, a, path, lateral):
+        """A proxy prop on the ground at the path's start: (actor, its true box {'center', 'extent'} in its frame)."""
+        carla = self.carla
+        from ..core import assets as AS
+        c = self.asset(a['kind'])
+        bp = self.lib.find(c['blueprint'])
+        scale = float(c.get('scale') or 1.0)
+        if c.get('mesh_path'):
+            bp.set_attribute('mesh_path', c['mesh_path'])
+            bp.set_attribute('scale', str(scale))
+        if bp.has_attribute('role_name'):
+            bp.set_attribute('role_name', ROLE_PREFIX + 'prop')
+        inv = AS.load_inventory()
+        row = next((r for r in inv['props'] if r['id'] == c['id']), None)
+        x, y, yaw = path.at(0.0, lateral)
+        z = path.z + AS.placement_z(inv, c['id'], scale) + 0.02
+        actor = self.world.try_spawn_actor(bp, carla.Transform(carla.Location(x=x, y=y, z=z),
+                                                               carla.Rotation(yaw=yaw + float(c.get('yaw') or 0.0))))
+        if actor is None:
+            raise Failed(f'actor {a["id"]} ({a["kind"]}) could not be placed: something is in the way')
+        box = row['box'] if row else {'center': [0.0, 0.0, 0.5], 'extent': [0.5, 0.5, 0.5]}
+        true = {'center': [v * scale for v in box['center']], 'extent': [v * scale for v in box['extent']],
+                'z': z, 'yaw_offset': float(c.get('yaw') or 0.0)}
+        return actor, true
 
     def blueprint(self, kind, variant: int = 0):
         """The blueprint of an actor of this kind. variant k > 0 takes the k-th next blueprint of the same pool (the
@@ -277,6 +333,12 @@ class Director:
                 bp.set_attribute('is_invincible', 'false')
             return bp
         ids = {b.id for b in self.lib.filter('vehicle.*')}
+        if kind in STAND_INS:
+            bid = self.asset(kind)['blueprint']
+            try:
+                return self.lib.find(bid)
+            except (IndexError, RuntimeError):
+                raise Failed(f'the server has no {bid} (the {kind} stand-in)') from None
         avail = [c for c in KIND_BLUEPRINTS.get(kind, KIND_BLUEPRINTS['car']) if c in ids]
         if avail and (not variant or len(avail) > 1):
             return self.lib.find(avail[variant % len(avail)])
@@ -296,24 +358,43 @@ class Director:
         self.driver = self.scn.get('ego', {}).get('driver', 'follower')
         from ..plugins.lane_follower import LaneFollower
         self.policy = LaneFollower(cruise_kmh=self.ego_speed * 3.6 + 1e-6)
+        from ..core import assets as AS
+        if not hasattr(self.w, 'subclass'):
+            self.w.subclass = {}
+        if not hasattr(self.w, 'proxies'):
+            self.w.proxies = {}
         for a in self.scn.get('actors', []):
             path, lateral = self.actor_path(a, ego_wp)
             x, y, yaw = path.at(0.0, lateral)
-            bp = self.blueprint(a['kind'], a.get('variant', 0))
-            bp.set_attribute('role_name', ROLE_PREFIX + 'scenario')
-            tf = carla.Transform(carla.Location(x=x, y=y, z=path.z + (1.0 if a['kind'] in ('pedestrian', 'child')
-                                                                       else 0.5)), carla.Rotation(yaw=yaw))
-            actor = self.world.try_spawn_actor(bp, tf)
-            if actor is None:
-                raise Failed(f'actor {a["id"]} ({a["kind"]}) could not be placed: something is in the way')
+            cls = _class_of(a['kind'])
+            prop = a['kind'] in PROXIES
+            if prop:
+                actor, true = self.spawn_proxy(a, path, lateral)
+                self.w.proxies[actor.id] = true
+            else:
+                bp = self.blueprint(a['kind'], a.get('variant', 0))
+                bp.set_attribute('role_name', ROLE_PREFIX + 'scenario')
+                tf = carla.Transform(carla.Location(x=x, y=y, z=path.z + (1.0 if a['kind'] in ('pedestrian', 'child')
+                                                                           else 0.5)), carla.Rotation(yaw=yaw))
+                actor = self.world.try_spawn_actor(bp, tf)
+                if actor is None:
+                    raise Failed(f'actor {a["id"]} ({a["kind"]}) could not be placed: something is in the way')
             self.w.own(actor)
+            spec = AS.CLASSES.get(cls) or {}
+            if cls is not None:
+                self.w.subclass[actor.id] = spec.get('label', cls)
+            top = spec.get('top_kmh')
             moving = a.get('start', 'moving') == 'moving'
             sp = float(a.get('speed_kmh', 0.0)) / 3.6 if moving else 0.0
+            if top is not None:
+                sp = min(sp, float(top) / 3.6)
             self.actors[a['id']] = {'actor': actor, 'kind': a['kind'], 'path': path, 'lateral': lateral,
                                     'lat_from': lateral, 'lat_to': lateral, 'lat_t0': 0.0, 'lat_dur': 0.0,
                                     'speed': sp, 'target': sp, 'accel': 3.0, 'walking': False,
                                     'walk_speed': 0.0, 'walker': a['kind'] in ('pedestrian', 'child'),
-                                    'heading': a.get('heading', 'lane')}
+                                    'heading': a.get('heading', 'lane'), 'prop': prop, 's': 0.0,
+                                    'top': (float(top) / 3.6) if top is not None else None,
+                                    'max_accel': spec.get('accel_mps2'), 'class': cls}
             self.traj[a['id']] = []
         bp = self.lib.find('sensor.other.collision')
         bp.set_attribute('role_name', ROLE_PREFIX + 'sensor')
@@ -388,6 +469,29 @@ class Director:
         self.kin[actor.id] = [x, y, z, yaw, v]
         actor.set_transform(carla.Transform(carla.Location(x=x, y=y, z=z), carla.Rotation(yaw=yaw)))
 
+    def prop_init(self):
+        """Proxies (props: no physics) are always moved here, along their path, in either motion."""
+        for st in self.actors.values():
+            if st['prop']:
+                tr = st['actor'].get_transform()
+                self.kin[st['actor'].id] = [tr.location.x, tr.location.y, self.w.proxies[st['actor'].id]['z'],
+                                            tr.rotation.yaw - self.w.proxies[st['actor'].id]['yaw_offset'], st['speed']]
+
+    def prop_step(self, st):
+        """Advance a proxy along its path at its set speed (shifted by its lateral offset); placed only when it
+        moves (a scaled static.prop.mesh cannot be moved: measured)."""
+        carla = self.carla
+        a = st['actor']
+        k = self.kin[a.id]
+        k[4] = st['speed']
+        if st['speed'] <= 0.0 and st['lat_dur'] <= 0.0:
+            return
+        st['s'] += st['speed'] * self.dt
+        x, y, yaw = st['path'].at(st['s'], st['lateral'])
+        k[0], k[1], k[3] = x, y, yaw
+        a.set_transform(carla.Transform(carla.Location(x=x, y=y, z=k[2]),
+                                        carla.Rotation(yaw=yaw + self.w.proxies[a.id]['yaw_offset'])))
+
     def k_tf(self, actor):
         k = self.kin.get(actor.id)
         if k is None:
@@ -410,17 +514,19 @@ class Director:
         if self.kinematic:
             # an ego on the traffic manager's autopilot keeps CARLA's physics (the traffic manager drives through it)
             ego_kin = self.driver != 'autopilot'
-            for a in ([self.ego] if ego_kin else []) + [st['actor'] for st in self.actors.values()]:
+            for a in ([self.ego] if ego_kin else []) + [st['actor'] for st in self.actors.values() if not st['prop']]:
                 self.kin_init(a)
+            self.prop_init()
             if ego_kin:
                 self.kin[self.ego.id][4] = self.ego_speed
             for st in self.actors.values():
                 self.kin[st['actor'].id][4] = st['speed']
             return
+        self.prop_init()
         a = math.radians(self.tf(self.ego).rotation.yaw)
         self.ego.set_target_velocity(carla.Vector3D(self.ego_speed * math.cos(a), self.ego_speed * math.sin(a), 0))
         for st in self.actors.values():
-            if st['speed'] > 0 and not st['walker']:
+            if st['speed'] > 0 and not st['walker'] and not st['prop']:
                 y = math.radians(self.tf(st['actor']).rotation.yaw)
                 st['actor'].set_target_velocity(carla.Vector3D(st['speed'] * math.cos(y), st['speed'] * math.sin(y),
                                                                0))
@@ -442,8 +548,14 @@ class Director:
                 tr, v, bb = self.tf(a), self.vel(a), a.bounding_box
             except RuntimeError:
                 continue
+            ex, ey = bb.extent.x, bb.extent.y
+            px = (getattr(self.w, 'proxies', None) or {}).get(a.id)
+            if px is not None:                           # its true box, along the path when it stands turned
+                ex, ey = px['extent'][0], px['extent'][1]
+                if round(abs(px['yaw_offset'])) % 180 == 90:
+                    ex, ey = ey, ex
             self.traj[aid].append((round(t, 4), tr.location.x, tr.location.y, tr.rotation.yaw, v.x, v.y,
-                                   2 * bb.extent.x, 2 * bb.extent.y))
+                                   2 * ex, 2 * ey))
 
     def timeline(self, t):
         for k, ev in enumerate(self.scn.get('timeline', [])):
@@ -516,14 +628,21 @@ class Director:
                 actor.apply_control(carla.WalkerControl(direction=carla.Vector3D(math.cos(yaw), math.sin(yaw), 0.0),
                                                         speed=st['walk_speed']))
             return
-        # the set speed ramps towards the target at the action's rate
+        # the set speed ramps towards the target at the action's rate (a stand-in or proxy: within its class's
+        # top speed and acceleration)
+        if st.get('top') is not None:
+            st['target'] = min(st['target'], st['top'])
         if st['speed'] < st['target']:
-            st['speed'] = min(st['target'], st['speed'] + st['accel'] * self.dt)
+            up = st['accel'] if not st.get('max_accel') else min(st['accel'], float(st['max_accel']))
+            st['speed'] = min(st['target'], st['speed'] + up * self.dt)
         elif st['speed'] > st['target']:
             st['speed'] = max(st['target'], st['speed'] - st['accel'] * self.dt)
         if st['lat_dur'] > 0:
             f = min(max((t - st['lat_t0']) / st['lat_dur'], 0.0), 1.0)
             st['lateral'] = st['lat_from'] + (st['lat_to'] - st['lat_from']) * f
+        if st['prop']:
+            self.prop_step(st)
+            return
         u = follow(actor, st['path'], st['lateral'], st['speed'], self.dt, st, self.tf(actor), self.vel(actor))
         if self.kinematic:
             self.kin_step(actor, u)
@@ -586,7 +705,9 @@ class Director:
                 'seed': self.scn.get('seed'), 'fired': self.fired, 'collisions': self.events,
                 'handedness': 'LHT' if self.lht else 'RHT',
                 'actor_ids': {k: int(v['actor'].id) for k, v in self.actors.items()},
-                'blueprints': {k: v['actor'].type_id for k, v in self.actors.items()}}
+                'blueprints': {k: v['actor'].type_id for k, v in self.actors.items()},
+                'subclasses': {k: self.w.subclass[v['actor'].id] for k, v in self.actors.items()
+                               if v['actor'].id in (getattr(self.w, 'subclass', None) or {})}}
 
 
 def follow(actor, path, lateral, speed, dt, st, tr, v):

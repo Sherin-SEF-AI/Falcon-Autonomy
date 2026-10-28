@@ -5,10 +5,10 @@ One desktop application for the whole loop of building a self-driving AI on the
 generate perfectly labelled data where models are weak, train and evaluate, and test a full AV stack — with every
 number traceable to the run that produced it.
 
-**Status: 1.1 — the eight milestones of the plan, and milestone 9 of what follows.** What works is listed under *What works*; what comes next is in
+**Status: 1.2 — the eight milestones of the plan, and milestones 9–10 of what follows.** What works is listed under *What works*; what comes next is in
 the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
 
-## What works (1.1.0)
+## What works (1.2.0)
 
 - **The app shell** (PyQt6): a page navigator, Jobs and Log docks, undo and redo for every project edit, a command
   palette (Ctrl+K), dark and light themes, a status bar with the CARLA server, the GPU and memory.
@@ -56,6 +56,11 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
   re-runs; active learning against random selection; traffic rules in temporal logic (an Indian set) checked on every
   drive, episode and stack run ([model-in-the-loop search](docs/rare-cases-mil.md), [root cause](docs/root-cause.md),
   [active learning](docs/active-learning.md), [traffic rules](docs/traffic-rules.md)).
+- **Realism** (1.2): sensor weather physics CARLA lacks (lidar and radar in rain and fog, droplets, glare), runtime
+  ODD monitoring with a calibrated false-alarm rate, and Indian road assets within the packaged CARLA — autorickshaw
+  and cycle-rickshaw stand-ins by measured size with cited kinematics, speed breakers in the road surface, cattle and
+  handcart proxies, waterlogging ([sensor physics](docs/sensor-physics.md), [ODD monitoring](docs/odd-monitoring.md),
+  [Indian road assets](docs/indian-assets.md)).
 - **Stack testing**: a closed-loop ROS 2 bridge (Autoware, Ackermann or CARLA control), scenario suites with pass/fail
   and intervals, a SOTIF-style safety-case report; CARLA 0.9.16's native ROS 2 measured and documented
   ([stack testing](docs/stack-testing.md)).

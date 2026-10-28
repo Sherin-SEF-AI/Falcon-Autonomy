@@ -211,7 +211,7 @@ class LoopPage(Page):
         row.addWidget(button('Use the Bengaluru monsoon-dusk example', self.use_example))
         row.addStretch(1)
         sec.add(row)
-        self.odd_kv = KeyValues(('ODD', 'Cells', 'Classes', 'Evaluation set', 'Problems'))
+        self.odd_kv = KeyValues(('ODD', 'Cells', 'Classes', 'Evaluation set', 'Safety-case ODD', 'Problems'))
         sec.add(self.odd_kv)
         v.addWidget(sec)
 
@@ -396,8 +396,10 @@ class LoopPage(Page):
             self.odd_kv.set('Evaluation set', f'{len(cells) * int(ev["drives_per_cell"])} drives of '
                                               f'{ev["drive_s"]:g} s ({ev["drives_per_cell"]} per cell), fixed seeds; '
                                               'never trained on')
+            self.odd_kv.set('Safety-case ODD', self._odd_flags(odd, proj))
         else:
-            for k in ('ODD', 'Cells', 'Classes', 'Evaluation set'):
+            self.outside_cells = {}
+            for k in ('ODD', 'Cells', 'Classes', 'Evaluation set', 'Safety-case ODD'):
                 self.odd_kv.set(k, '—')
         self.odd_kv.set('Problems', '; '.join(errs) if errs else 'none')
         its = L.iterations(self.ws()) if proj.path or os.path.isdir(self.ws()) else []
@@ -417,6 +419,26 @@ class LoopPage(Page):
             self.hist.addTopLevelItem(t)
         self._buttons()
         self._estimate()
+
+    def _odd_flags(self, odd, proj) -> str:
+        """The evaluation cells against the workspace's safety-case ODD (odd.json, the Stack testing page's):
+        core.oddmonitor.loop_cells. Fills self.outside_cells {cell label: why} for the weak-cell table."""
+        self.outside_cells = {}
+        p = os.path.join(self.ws(), 'odd.json')
+        if not os.path.isfile(p):
+            return 'not checked: no odd.json in the workspace (Stack testing ▸ New from the example)'
+        from ...core import oddmonitor as OM
+        try:
+            rows = OM.loop_cells(odd, json.load(open(p, encoding='utf-8')), proj)
+        except (OSError, ValueError, OM.OddError) as e:
+            return f'not checked: {e}'
+        for r in rows:
+            if not r['inside']:
+                self.outside_cells[r['label']] = ('partly outside: ' if r['partly'] else 'outside: ') + \
+                    '; '.join(r['reasons'])
+        if not self.outside_cells:
+            return f'all {len(rows)} cells inside {os.path.basename(p)}'
+        return '; '.join(f'{k} — {v}' for k, v in self.outside_cells.items())
 
     def show_iteration(self, n):
         try:
@@ -468,6 +490,10 @@ class LoopPage(Page):
                                          str(r['n_objects']), 'yes' if r.get('weak') else '',
                                          (f'#{r["rank"]}' + (' (fallback)' if r.get('fallback') else ''))
                                          if r.get('rank') else ''])
+                    why = (getattr(self, 'outside_cells', None) or {}).get(r.get('condition'))
+                    if why:                               # the cell lies (partly) outside the safety-case ODD
+                        t.setText(0, f'{t.text(0)}  ⚠ outside the ODD')
+                        t.setToolTip(0, why)
                     self.cells.addTopLevelItem(t)
         rows = (it.get('summary') or {}).get('rows') or []
         self.chart.set_rows(rows)

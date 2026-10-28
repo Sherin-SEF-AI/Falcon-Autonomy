@@ -107,7 +107,9 @@ class SceneSketch(QWidget):
                 p.fillRect(QRectF(x0 + lo * k, y - rh * 0.35, (hi - lo) * k, rh * 0.7), c)
             x = x0 + float(ca['place'].get('ahead_m', 0.0)) * k
             L, W = {'bus': (10.3, 3.9), 'truck': (6, 2.6), 'van': (5.5, 2), 'motorcycle': (2.2, 0.9),
-                    'bicycle': (1.7, 0.6), 'pedestrian': (0.6, 0.6), 'child': (0.5, 0.5)}.get(ca['kind'], (4.6, 2.0))
+                    'bicycle': (1.7, 0.6), 'pedestrian': (0.6, 0.6), 'child': (0.5, 0.5),
+                    'autorickshaw': (2.6, 1.3), 'cycle_rickshaw': (2.2, 1.0), 'cattle': (1.6, 0.5),
+                    'handcart': (2.4, 1.2), 'vendor': (2.3, 1.5)}.get(ca['kind'], (4.6, 2.0))
             p.setBrush(QColor(KIND_COL.get(ca['kind'], '#3987e5')))
             p.drawRect(QRectF(x - L * k / 2, y - W * k / 2, L * k, W * k))
             arrow = {'lane': 1, 'against': -1}.get(ca.get('heading'), 0)

@@ -134,8 +134,9 @@ class CameraRecorder:
         """Every view's images of this frame (by frame number)."""
         return [{k: self.cameras.get(sen.id, frame) for k, sen in d.items()} for d in self.views]
 
-    def write(self, imgs, n: int, out_dir: str, boxes: dict, raster=None, image_faults=None) -> dict:
-        """(a worker thread) The frame's files: {kind: relative path}."""
+    def write(self, imgs, n: int, out_dir: str, boxes: dict, raster=None, image_faults=None, physics=None) -> dict:
+        """(a worker thread) The frame's files: {kind: relative path}. physics: (core.sensorphysics.CameraPhysics,
+        its plan for this frame) — the weather physics, applied before the faults."""
         files = {}
         sid = self.s['id']
         rgb_views = [np.frombuffer(v['rgb'].raw_data, np.uint8).reshape(v['rgb'].height, v['rgb'].width, 4)[:, :, :3]
@@ -144,6 +145,13 @@ class CameraRecorder:
             img = LENS.remap_image(self.plan, rgb_views, self.devig)
         else:
             img = np.ascontiguousarray(rgb_views[0])
+        if physics is not None:
+            depth = None
+            if self.gt and self.s['type'] == 'camera.pinhole' and 'depth' in imgs[0]:
+                d = imgs[0]['depth']
+                a = np.frombuffer(d.raw_data, np.uint8).reshape(d.height, d.width, 4).astype(np.float64)
+                depth = 1000.0 * (a[:, :, 2] + 256.0 * a[:, :, 1] + 65536.0 * a[:, :, 0]) / (2 ** 24 - 1)
+            img, _ = physics[0].apply(np.ascontiguousarray(img), physics[1], depth)
         if image_faults is not None:
             from ..core import faults as F
             fl, rng, K, omega = image_faults
@@ -193,6 +201,8 @@ class CameraRecorder:
                                    'yaw_deg': round(math.degrees(math.atan2(Rb[1, 0], Rb[0, 0])), 4),
                                    'frame': 'vehicle'},
                          'rle': GT.rle_of_pixels(f['pix'], h, w)})
+            if o.get('subclass'):
+                objs[-1]['subclass'] = o['subclass']
         files['semantic'] = _write(out_dir, 'semantic', sid, n, 'png', sem.astype(np.uint8))
         files['instance'] = _write(out_dir, 'instance', sid, n, 'png', inst)
         files['range'] = _write(out_dir, 'range', sid, n, 'png', GT.range_png(rng))
@@ -253,8 +263,10 @@ def scene_boxes(w, world, ego, level: list) -> dict:
     T_ego = transform_matrix(et.location, et.rotation)
     Ti = np.linalg.inv(T_ego)
     known = {}
+    subclass = getattr(w, 'subclass', None) or {}       # stand-ins and proxies (core.assets)
+    proxies = getattr(w, 'proxies', None) or {}
     for a in world.get_actors():
-        if not a.type_id.startswith(('vehicle.', 'walker.')):
+        if not a.type_id.startswith(('vehicle.', 'walker.')) and a.id not in proxies:
             continue
         try:
             t = a.get_transform()
@@ -262,11 +274,16 @@ def scene_boxes(w, world, ego, level: list) -> dict:
         except RuntimeError:
             continue
         M = transform_matrix(t.location, t.rotation)
-        c_w = M[:3, :3] @ np.array([bb.location.x, bb.location.y, bb.location.z]) + M[:3, 3]
+        c_a, e_a = [bb.location.x, bb.location.y, bb.location.z], [bb.extent.x, bb.extent.y, bb.extent.z]
+        if a.id in proxies:          # a proxy's true box (CARLA reports a scaled mesh's centre unscaled: measured)
+            c_a, e_a = proxies[a.id]['center'], proxies[a.id]['extent']
+        c_w = M[:3, :3] @ np.array(c_a, float) + M[:3, 3]
         known[a.id] = {'key': ('actor', a.id), 'actor_id': a.id, 'track_id': a.id, 'reg': int(a.id) % 60000 or 1,
                        'category': GT.category_of(a.type_id, dict(getattr(a, 'attributes', {}) or {})),
                        'center': Ti[:3, :3] @ c_w + Ti[:3, 3], 'R': Ti[:3, :3] @ M[:3, :3],
-                       'size': [2 * bb.extent.x, 2 * bb.extent.y, 2 * bb.extent.z], 'instance_token': None}
+                       'size': [2 * float(e_a[0]), 2 * float(e_a[1]), 2 * float(e_a[2])], 'instance_token': None}
+        if subclass.get(a.id):
+            known[a.id]['subclass'] = subclass[a.id]
     lv, parts = [], []
     ex = T_ego[:3, 3]
     for k, e in enumerate(level):

@@ -79,6 +79,7 @@ PANOPTIC_DIR = 'panoptic'
 RANGE_SCALE = 256.0                    # range PNG: uint16 = round(range_m · 256)
 RANGE_MAX_M = 65535 / RANGE_SCALE      # 255.996 m; farther (or nothing) is 0
 EGO_CLASS = 29
+WEATHER_NOISE_CLASS = 30               # lidar points of weather (core.sensorphysics.WEATHER_NOISE_TAG)
 PANOPTIC_DIV = 1000                    # nuScenes-panoptic: category index · 1000 + instance id
 FRAME_KEYS = ('sample_data_token', 'timestamp', 'image', 'semantic', 'instance', 'range', 'objects')
 OBJECT_KEYS = ('id', 'actor_id', 'instance_token', 'category', 'class', 'bbox', 'pixels', 'bbox_full', 'truncated',
@@ -169,6 +170,7 @@ CLASSES = (
     (27, 'rail_track', 'RailTrack', 'flat.other', (230, 150, 140), False),
     (28, 'guard_rail', 'GuardRail', 'static.manmade', (180, 165, 180), False),
     (EGO_CLASS, 'ego', '', 'vehicle.ego', (0, 255, 255), False),
+    (WEATHER_NOISE_CLASS, 'weather_noise', '', 'noise', (255, 255, 255), False),
 )
 CLASS_NAMES = {c[0]: c[1] for c in CLASSES}
 CLASS_ID = {c[1]: c[0] for c in CLASSES}
@@ -177,6 +179,8 @@ CLASS_NOTES = {
              'category when the worker knows the actor, else vehicle.bicycle.',
     'train': 'nuScenes has no rail vehicle: static.other.',
     'sky': 'Never hit by a lidar; noise in nuScenes terms.',
+    'weather_noise': 'Not a CARLA tag: a spurious lidar return of fog or rain added by Falcon\'s sensor physics '
+                     '(docs/sensor-physics.md); actor id 0; nuScenes-lidarseg noise. Never in camera labels.',
     'ego': 'Not a CARLA tag: the pixels and points of the vehicle carrying the rig (told apart by its actor id; '
            'semantic images without the instance camera show it as car).',
 }
@@ -187,6 +191,7 @@ for _c in CLASSES:
     if _c[2]:
         CLASS_OF_TAG[_c[0]] = _c[0]
         NUSC_OF_TAG[_c[0]] = NUSC_INDEX[_c[3]]
+CLASS_OF_TAG[WEATHER_NOISE_CLASS] = WEATHER_NOISE_CLASS     # written as the lidar tag itself; nuScenes noise (0)
 THING_TAGS = frozenset(c[0] for c in CLASSES if c[5])
 VEHICLE_TAGS = frozenset((13, 14, 15, 16, 17, 18, 19))
 # what kind of level boxes (World.get_level_bbs) an unknown instance of a tag is looked for in (parked vehicles; the

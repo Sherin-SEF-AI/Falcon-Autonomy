@@ -91,3 +91,30 @@ UDP only, ROS domain 0. The ego (`vehicle.lincoln.mkz_2017`, `ros_name` "hero") 
   killer while another process's 6.4 GB CARLA server ran on the machine. The memory guard checks free memory when a
   server starts, not later. A crashed scope stays loaded as failed under its unit name, so a restart in the same
   process needs a new unit name (sim/server.py now numbers its restarts).
+
+## Assets, road geometry and weather (measured, milestone 10)
+
+Measured on 2026-10-29 on Falcon's own server (8 GB cap); the numbers are in [Indian road assets](indian-assets.md).
+
+- **The packaged build spawns only its library** (214 blueprints: 41 vehicles, 52 walkers, 98 props, no animal or
+  three-wheeler), but **`static.prop.mesh` spawns any cooked mesh by its Unreal path** (`mesh_path`), including meshes
+  the package does not list as props, with a uniform `scale`. A path that does not exist spawns an **empty actor
+  without an error** (its box ±inf): check the box.
+- **A scaled mesh's bounding box keeps the unscaled centre** (extents scaled; the mesh scales about its origin).
+- **A `static.prop.mesh` cannot be moved**: `set_transform` leaves it in place and resets its scale to 1;
+  `set_location` leaves it in place; attached to a `util.actor.empty` it is not drawn. A `static.prop.*` moves with
+  `set_transform` (physics off). `util.actor.empty` refuses `set_simulate_physics`.
+- **`Actor.semantic_tags` is empty for props**; the cameras tag a prop by its mesh's folder (`Static/Static` 20,
+  `Static/Dynamic` 21). Two-wheelers report `[4, 18]` / `[4, 19]`.
+- **`ActorAttribute.as_str()` raises on Bool attributes** (`ros_publish_tf`: "bad attribute cast: cannot convert to
+  String") and RGBColor ones: try `as_bool`, `as_int`, `as_float`.
+- **`set_desired_speed` overrides the traffic manager's speed limit** for that vehicle (a fixed target, whatever the
+  road's limit): apply the limit yourself to cap a vehicle class (a 20 km/h cap held at p95 19.3 km/h).
+- **The OpenDRIVE generator renders `<elevationProfile>`** in the road mesh and its collision, at the vertex distance's
+  resolution (a 0.30 m bump needs ≤ 0.25 m; at 2.0 m it is smeared over 4 m), the waypoints carry it, and the vehicle
+  physics feels it. It **ignores `lateralProfile <shape>`**. Sidewalks (`level="false"`) stand 0.152 m above the road.
+- **Puddles (`precipitation_deposits`) are global and not drawn on a generated OpenDRIVE world** (Town10HD: a large
+  change; a generated road: none).
+- **Engine torque scaling** (`VehiclePhysicsControl.torque_curve`) changes the time to 30 km/h smoothly (Microlino:
+  2.90 s at × 1, 4.22 s at × 0.7, 8.32 s at × 0.4) but the first-gear launch peak much less (5.4 → 4.5 → 3.6 m/s²).
+

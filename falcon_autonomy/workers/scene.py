@@ -145,6 +145,9 @@ def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
     p = p / p.sum()
     beh = prof.get('behaviour') or {}
     placed = []
+    from ..core import assets as AS
+    classes = AS.fleet_classes(prof)
+    labels = prof.get('fleet_labels') or {}
     for k in list(order):
         if len(placed) >= n:
             break
@@ -159,10 +162,13 @@ def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
         w.own(a)
         a.set_autopilot(True, w.tm.get_port())
         apply_behaviour(w.tm, a, beh)
+        diff = float(beh.get('speed_difference_pct', 0.0))
         if beh.get('speed_spread_pct') and hasattr(w.tm, 'vehicle_percentage_speed_difference'):
             spread = float(beh['speed_spread_pct'])
-            w.tm.vehicle_percentage_speed_difference(
-                a, float(beh.get('speed_difference_pct', 0.0)) + float(rng.uniform(-spread, spread)))
+            diff += float(rng.uniform(-spread, spread))
+            w.tm.vehicle_percentage_speed_difference(a, diff)
+        if kind in classes:                               # a stand-in: its class's label and limits
+            class_limits(w).add(a, classes[kind], diff, labels.get(kind))
         placed.append((a, kind))
     w.alive()
     if len(placed) < n:
@@ -236,6 +242,78 @@ def apply_behaviour(tm, a, beh: dict):
         tm.random_left_lanechange_percentage(a, float(beh['random_left_lanechange_pct']))
     if 'random_right_lanechange_pct' in beh and hasattr(tm, 'random_right_lanechange_percentage'):
         tm.random_right_lanechange_percentage(a, float(beh['random_right_lanechange_pct']))
+
+
+class ClassLimits:
+    """The stand-ins of a run (core.assets): each vehicle's Falcon subclass (w.subclass: actor id → label, read by the
+    labels and actors.jsonl) and its class's kinematic limits on the traffic manager's autopilot — the engine torque
+    scaled once (VehiclePhysicsControl; measured on 0.9.16 to give the class's acceleration) and, every step(), the
+    desired speed: the road's limit (Vehicle.get_speed_limit) less the vehicle's percentage difference, capped at the
+    class's top speed (set_desired_speed replaces the traffic manager's limit-relative target, so the limit is applied
+    here; measured: a cap of 20 km/h held a Microlino at p95 19.3 km/h on Town10HD's 30 km/h roads)."""
+
+    EVERY_S = 1.0
+
+    def __init__(self, w):
+        self.w = w
+        self.rows = {}                    # actor id → (actor, class id, diff %, top km/h)
+        self.last = -1e9
+        self.applied = {}
+
+    def add(self, a, cls, diff_pct=0.0, label=None):
+        from ..core import assets as AS
+        spec = AS.CLASSES.get(cls) or {}
+        self.w.subclass[a.id] = label or spec.get('label') or cls
+        self.rows[a.id] = (a, cls, float(diff_pct), spec.get('top_kmh'))
+        ts = spec.get('torque_scale')
+        if ts and hasattr(a, 'get_physics_control'):
+            try:
+                pc = a.get_physics_control()
+                tc = list(getattr(pc, 'torque_curve', None) or [])
+                if tc:
+                    pc.torque_curve = [self.w.carla.Vector2D(p.x, p.y * float(ts)) for p in tc]
+                    a.apply_physics_control(pc)
+                    self.applied.setdefault(cls, {})['torque_scale'] = float(ts)
+            except RuntimeError as e:
+                self.w.note(f'{cls}: the torque scale could not be applied ({e})')
+        self.update(a.id, force=True)
+
+    def update(self, aid, force=False):
+        from ..core import assets as AS
+        a, cls, diff, top = self.rows[aid]
+        tm = self.w.tm
+        if tm is None or not hasattr(tm, 'set_desired_speed') or not top:
+            return
+        try:
+            lim = float(a.get_speed_limit()) if hasattr(a, 'get_speed_limit') else 0.0
+        except RuntimeError:
+            return                        # removed by the server (a dead end)
+        if lim <= 0:
+            lim = top
+        tm.set_desired_speed(a, AS.desired_speed_kmh(lim, diff, top))
+        self.applied.setdefault(cls, {})['top_kmh'] = top
+
+    def step(self, sim_t: float):
+        if not self.rows or sim_t - self.last < self.EVERY_S:
+            return
+        self.last = sim_t
+        for aid in list(self.rows):
+            self.update(aid)
+
+    def report(self) -> dict:
+        counts = {}
+        for _, cls, _, _ in self.rows.values():
+            counts[cls] = counts.get(cls, 0) + 1
+        return {'stand_ins': counts, 'limits': self.applied}
+
+
+def class_limits(w) -> ClassLimits:
+    """The worker's ClassLimits (made on first use), with w.subclass."""
+    if not hasattr(w, 'subclass'):
+        w.subclass = {}
+    if getattr(w, 'class_limits', None) is None:
+        w.class_limits = ClassLimits(w)
+    return w.class_limits
 
 
 def label_kinds(s) -> list:
@@ -377,6 +455,13 @@ def yaw_rate_optical(s: dict, yaw_rate: float):
     return [yaw_rate * down[1], yaw_rate * -down[2], yaw_rate * down[0]]
 
 
+def rgb_of(image):
+    """A CARLA camera image (BGRA raw data) as an RGB uint8 array."""
+    import numpy as np
+    a = np.frombuffer(image.raw_data, np.uint8).reshape(image.height, image.width, 4)
+    return np.ascontiguousarray(a[:, :, 2::-1])
+
+
 def ego_state(ego) -> dict:
     t = ego.get_transform()
     v = ego.get_velocity()
@@ -409,9 +494,12 @@ def dataset_doc(name, cams, n, fps, run, extra=None) -> dict:
                       'range': {'encoding': 'uint16 PNG, round(range_m × 256) along each pixel\'s ray, 0 = nothing '
                                             'within 256 m'},
                       'objects': {'encoding': 'JSON per frame: id, track_id, class, category, bbox, bbox_full, '
-                                              'truncated, occluded, range_m, pixels, box3d (vehicle frame), rle'},
+                                              'truncated, occluded, range_m, pixels, box3d (vehicle frame), rle; '
+                                              'subclass for a stand-in or proxy (docs/indian-assets.md): its class '
+                                              'and category stay those of the CARLA mesh it is'},
                       'lidar': {'encoding': 'float32 x y z intensity (sensor frame); .labels.bin: uint8 tag then '
-                                            'uint32 actor id per point'}},
+                                            'uint32 actor id per point; tag 30 = weather_noise (a spurious return '
+                                            'of Falcon\'s sensor physics, actor id 0)'}},
            'frames_index': 'frames.jsonl',
            'coordinates': 'CARLA frames (x forward, y right, z up; left-handed), metres and degrees',
            'provenance': run['provenance']}
@@ -471,6 +559,8 @@ class Others:
             a.listen(q.put)
             self.items.append((s, a, q))
         self.files = {}
+        self.ego = ego
+        self.physics = None                 # core.sensorphysics.Session: rain on the radars
 
     def step(self, frame, sim_t, out_dir, rec):
         import json
@@ -490,7 +580,16 @@ class Others:
                     rel = os.path.join('radar', s['id'], f'{rec["step"]:06d}.npy')
                     path = os.path.join(out_dir, rel)
                     os.makedirs(os.path.dirname(path), exist_ok=True)
-                    np.save(path, np.frombuffer(d.raw_data, np.float32).reshape(-1, 4))
+                    dets = np.frombuffer(d.raw_data, np.float32).reshape(-1, 4)
+                    if self.physics is not None:
+                        v = self.ego.get_velocity()
+                        dets, flags, st = self.physics.radar(s, dets, math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z))
+                        if st is not None and (st['dropped'] or st['clutter']):
+                            np.save(path[:-4] + '.flags.npy', flags)
+                            rec['files'][f'{s["id"]}/radar_flags'] = rel[:-4] + '.flags.npy'
+                            rec.setdefault('physics', {})[s['id']] = [k for k, n in (
+                                ('radar_dropout', st['dropped']), ('radar_clutter', st['clutter'])) if n]
+                    np.save(path, dets)
                     rec['files'][f'{s["id"]}/radar'] = rel
                     continue
                 if t == 'gnss':
@@ -591,11 +690,12 @@ def write_lanes(w, cmap, out_dir, step: float = 2.0):
 
 
 class ActorLog:
-    """actors.jsonl: every vehicle and walker at every recorded step, in CARLA's world frame, from the world snapshot
-    of that frame — {step, frame, sim_t, actors: [{id, type_id, category, role, x, y, z, roll, pitch, yaw, vx, vy, vz,
-    extent [ex, ey, ez], bbox_center [cx, cy, cz] (in the actor's frame)}]}. Boxes and categories are read once per
-    actor (they do not change). Actors a kinematic director moves (physics off: CARLA reports them still) take the
-    director's own velocity. path None: no file (rows() only; the gym worker's observations use the same rows)."""
+    """actors.jsonl: every vehicle and walker (and every proxy prop a scenario placed, core.assets) at every recorded
+    step, in CARLA's world frame, from the world snapshot of that frame — {step, frame, sim_t, actors: [{id, type_id,
+    category, role, x, y, z, roll, pitch, yaw, vx, vy, vz, extent [ex, ey, ez], bbox_center [cx, cy, cz] (in the
+    actor's frame), subclass (a stand-in's or proxy's Falcon subclass, when it has one)}]}. Boxes and categories are
+    read once per actor (they do not change). Actors a kinematic director moves (physics off: CARLA reports them still)
+    take the director's own velocity. path None: no file (rows() only; the gym worker's observations use the same rows)."""
 
     def __init__(self, w, path):
         self.w = w
@@ -616,9 +716,11 @@ class ActorLog:
         # a log replay (workers.replay) parks the actors it is not showing: left out; and knows its exact poses
         hidden = director.hidden_ids() if director is not None and hasattr(director, 'hidden_ids') else ()
         exact = getattr(director, 'exact_tf', None) if director is not None else None
+        subclass = getattr(self.w, 'subclass', None) or {}
+        proxies = getattr(self.w, 'proxies', None) or {}
         for a in world.get_actors():
             tid = a.type_id
-            if not tid.startswith(('vehicle.', 'walker.')) or a.id in hidden:
+            if (not tid.startswith(('vehicle.', 'walker.')) and a.id not in proxies) or a.id in hidden:
                 continue
             st = self.static.get(a.id)
             if st is None:
@@ -627,11 +729,16 @@ class ActorLog:
                     attrs = dict(getattr(a, 'attributes', {}) or {})
                 except RuntimeError:
                     continue
+                ext = [bb.extent.x, bb.extent.y, bb.extent.z]
+                ctr = [bb.location.x, bb.location.y, bb.location.z]
+                if a.id in proxies:              # a proxy's true box (a scaled mesh's reported centre is unscaled)
+                    ctr, ext = proxies[a.id]['center'], proxies[a.id]['extent']
                 st = self.static[a.id] = {'type_id': tid, 'category': category_of(tid, attrs),
                                           'role': attrs.get('role_name', ''),
-                                          'extent': [round(bb.extent.x, 4), round(bb.extent.y, 4), round(bb.extent.z, 4)],
-                                          'bbox_center': [round(bb.location.x, 4), round(bb.location.y, 4),
-                                                          round(bb.location.z, 4)]}
+                                          'extent': [round(float(x), 4) for x in ext],
+                                          'bbox_center': [round(float(x), 4) for x in ctr]}
+                if subclass.get(a.id):
+                    st['subclass'] = subclass[a.id]
             sa = snap.find(a.id)
             if sa is None:
                 continue

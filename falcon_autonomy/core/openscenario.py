@@ -31,6 +31,11 @@ CATEGORY = {'car': 'car', 'truck': 'truck', 'bus': 'bus', 'van': 'van', 'motorcy
             'bicycle': 'bicycle'}
 SIZES = {'bus': (10.3, 3.9, 3.8), 'truck': (6.0, 2.6, 3.0), 'van': (5.5, 2.0, 2.3), 'motorcycle': (2.2, 0.9, 1.5),
          'bicycle': (1.7, 0.6, 1.6), 'pedestrian': (0.5, 0.5, 1.8), 'child': (0.4, 0.4, 1.2)}
+# the Indian kinds (core.assets): the real class's size; exported as a Vehicle (OpenSCENARIO has no rickshaw; a proxy
+# obstacle is a Vehicle of category car here, its falcon:kind property says what it is — a known limit of the subset)
+EXPORT_CATEGORY = {'autorickshaw': 'car', 'cycle_rickshaw': 'bicycle'}      # export only (import reads falcon:kind)
+SIZES.update({'autorickshaw': (2.635, 1.3, 1.7), 'cycle_rickshaw': (2.2, 1.0, 1.2), 'cattle': (1.61, 0.44, 0.85),
+              'handcart': (2.4, 1.22, 1.2), 'vendor': (2.3, 1.5, 3.0)})
 DLANE = {'ego': 0, 'line': 0, 'kerb': 0, 'sidewalk': 0, 'adjacent': 1, 'opposite': -1, 'far_sidewalk': -1}
 
 
@@ -67,7 +72,7 @@ def export_xosc(scn: dict) -> str:
             e = _sub(so, 'Pedestrian', name=name, mass=60 if kind == 'pedestrian' else 30,
                      pedestrianCategory='pedestrian', model=kind)
         else:
-            e = _sub(so, 'Vehicle', name=name, vehicleCategory=CATEGORY.get(kind, 'car'))
+            e = _sub(so, 'Vehicle', name=name, vehicleCategory=CATEGORY.get(kind) or EXPORT_CATEGORY.get(kind, 'car'))
             _sub(e, 'Performance', maxSpeed=70, maxAcceleration=10, maxDeceleration=10)
         _sub(e, 'ParameterDeclarations')
         bb = _sub(e, 'BoundingBox')

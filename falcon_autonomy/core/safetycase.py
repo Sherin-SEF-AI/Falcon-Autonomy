@@ -37,6 +37,11 @@ handedness): per rule the runs evaluated, the violations, per km with a bootstra
 violating with Wilson's interval and the lowest robustness — beside the pass/fail results, not part of them; each
 run's check is written to its folder (rules.json). Outputs: safety-case.json ("traffic_rules") and safety-case.html
 (inline CSS and SVG, no network).
+
+Time outside the ODD (core.oddmonitor.suite_outside, "odd_monitor"): the runtime ODD monitor's condition monitors over
+each run's recorded frames — the weather, the ego's actual speed, place, road type and the rest — summed per scenario:
+the time spent outside the ODD and why. Evidence gathered outside the ODD is not evidence about the ODD; any such time
+is also listed among the residual risks.
 """
 from __future__ import annotations
 
@@ -336,6 +341,15 @@ def build_report(suite_dir: str, odd: dict, out_dir: str, studies=(), odd_path: 
     cov = coverage(odd, coords)
     trig = triggering_conditions(results, list(studies))
     risks = residual_risks(results, cov, trig, max_failure_rate)
+    from .oddmonitor import suite_outside
+    outside = suite_outside(rows, odd)
+    for scn, g in sorted(outside['scenarios'].items()):
+        if g['time_outside_s'] > 0:
+            risks.insert(0, {'kind': 'outside_odd', 'scenario': scn, 'severity': 'medium',
+                             'text': f'{g["name"]}: {g["time_outside_s"]:.1f} s of {g["time_s"]:.1f} s '
+                                     f'({g["share"]:.0%}) in {g["runs_outside"]} of {g["runs"]} runs were outside the '
+                                     f'ODD ({", ".join(sorted(g["by_dimension_s"]))}): that evidence is not about '
+                                     'the ODD.', 'evidence': []})
     from .stack import rule_summary
     rules = rule_summary(rows, suite.get('rules') or None)
     for rr in (rules or {}).get('rules') or ():
@@ -355,7 +369,7 @@ def build_report(suite_dir: str, odd: dict, out_dir: str, studies=(), odd_path: 
                                                  'driver': (suite.get('stack') or {}).get('driver'),
                                                  'criteria': suite.get('criteria')},
            'odd': odd, 'coverage': cov, 'results': results, 'triggering_conditions': trig, 'residual_risks': risks,
-           'traffic_rules': rules,
+           'traffic_rules': rules, 'odd_monitor': outside,
            'limits': {'sotif_not_covered': SOTIF_NOT_COVERED, 'simulation': [{'title': t, 'text': x}
                                                                             for t, x in SIM_LIMITS],
                       'road_type': 'heuristic: the road features the scenario director required at the start, not a '
@@ -473,6 +487,26 @@ def _rules_html(rules: dict | None) -> str:
     return ''.join(out)
 
 
+def _odd_monitor_html(om: dict | None) -> str:
+    """The time each scenario's runs spent outside the ODD (core.oddmonitor.suite_outside)."""
+    if not om:
+        return ''
+    out = [f'<h2>Time outside the ODD</h2><p class="muted">The runtime ODD monitor\'s condition monitors over each '
+           f'run\'s recorded frames ({om["runs"]} runs, {om["time_s"]:.1f} s simulated): weather and light from the '
+           f'run, the ego\'s actual speed, place, road type, actors. Outside the ODD in total: '
+           f'{om["time_outside_s"]:.1f} s ({_pct(om["share"])}).'
+           + (f' {om["unread"]} runs could not be read.' if om.get('unread') else '') + '</p>',
+           '<table><tr><th>scenario</th><th class="num">runs outside</th><th class="num">time outside</th>'
+           '<th class="num">share</th><th>why (seconds)</th></tr>']
+    for k, g in sorted(om['scenarios'].items()):
+        why = ', '.join(f'{d} {s:.1f}' for d, s in sorted(g['by_dimension_s'].items())) or '—'
+        out.append(f'<tr><td>{_e(g.get("name") or k)}</td><td class="num">{g["runs_outside"]} of {g["runs"]}</td>'
+                   f'<td class="num{" fail" if g["time_outside_s"] else ""}">{g["time_outside_s"]:.1f} s</td>'
+                   f'<td class="num">{_pct(g["share"])}</td><td>{_e(why)}</td></tr>')
+    out.append('</table>')
+    return ''.join(out)
+
+
 def render_html(rep: dict) -> str:
     res, cov = rep['results'], rep['coverage']
     o = res['overall']
@@ -518,6 +552,7 @@ def render_html(rep: dict) -> str:
                      f'</td><td><code>{_e(f.get("run"))}</code></td></tr>')
         p.append('</table>')
     p.append(_rules_html(rep.get('traffic_rules')))
+    p.append(_odd_monitor_html(rep.get('odd_monitor')))
     p.append('<h2>ODD coverage</h2><p class="muted">Runs per value or bin of each dimension of the ODD; an empty cell '
              'is a gap. Runs outside a dimension\'s values are counted apart.</p>')
     for name, d in cov['dimensions'].items():

@@ -43,4 +43,5 @@ include = ["falcon_autonomy", "falcon_autonomy.*"]
 
 [tool.setuptools.package-data]
 falcon_autonomy = ["schemas/*.json", "resources/fonts/*.ttf", "resources/fonts/OFL.txt", "resources/icons/*.png",
+                   "resources/carla/*.json",
                    "ros2/*.py", "ros2/Dockerfile", "ros2/*.xml", "ros2/*.yaml"]

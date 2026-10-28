@@ -60,8 +60,10 @@ def cells(spec: dict) -> list:
 
 
 def drive_key(cfg: dict) -> str:
-    """The cache key of a drive: its config without where it is written (and without the server's ports)."""
-    c = {k: v for k, v in cfg.items() if k not in ('out', 'port', 'tm_port', 'host', 'name')}
+    """The cache key of a drive: its config without where it is written, the server's ports, and the ODD monitor
+    (it only observes)."""
+    c = {k: v for k, v in cfg.items() if k not in ('out', 'port', 'tm_port', 'host', 'name', 'odd', 'odd_reference',
+                                                    'odd_every', 'odd_workspace')}
     return sha256_json(c)
 
 

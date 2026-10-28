@@ -329,7 +329,8 @@ def test_scenario_studio_and_rare_cases(window, qapp, tmp_path):
     window.save()
     window.service.set_workspace(window.workspace())
     page = window.go('scenarios')
-    assert page.list.count() == 11 and not page.editable()
+    assert page.list.count() == len(__import__('falcon_autonomy.core.scenarios', fromlist=['x']).LIBRARY) and \
+        not page.editable()
     page.list.setCurrentRow(0)
     page.copy_builtin()
     assert page.editable() and window.project.doc['scenarios'][0]['name'].endswith('(copy)')

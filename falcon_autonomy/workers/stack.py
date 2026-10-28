@@ -237,6 +237,9 @@ class Stack(Worker):
                           f'from {control["topic"]} ({control["type"]})')
             self.phase('setup')
         os.makedirs(self.out_dir, exist_ok=True)
+        from .drive import physics_and_watch
+        _, watch = physics_and_watch(self, world, cfg, with_physics=False)       # the ODD monitor, when asked
+        watch_cam = next((x['id'] for x in sensors if x['kind'] == 'camera'), None)
 
         # ------------------------------------------------------------------ the run
         self.phase('run')
@@ -320,6 +323,10 @@ class Stack(Worker):
                     else:
                         u = mapper(cmd, speed)
                     rec['bridge'] = {'wait_ms': round(wait, 3), 'missed': cmd is None}
+                if watch is not None:
+                    rgb = scene.rgb_of(data[watch_cam]) if driver == 'ros2' and watch_cam and watch.wants_frame() \
+                        else None
+                    rec['odd'] = watch.step(rec['sim_t'], ego, speed, rgb)
                 index.write(json.dumps(rec, separators=(',', ':')) + '\n')
                 n += 1
                 costs['step_ms'].append((time.monotonic() - t_step) * 1e3)
@@ -359,6 +366,10 @@ class Stack(Worker):
                 json.dump({'dt': 1.0 / fps, 'columns': ['t', 'x', 'y', 'yaw', 'vx', 'vy', 'length', 'width'],
                            'frame': 'CARLA world', 'actors': director.traj}, fh, separators=(',', ':'))
         out['scenario'] = scenario
+        if watch is not None:
+            from .oddwatch import write as write_watch
+            write_watch(self, self.out_dir, watch)
+            out['odd_monitor'] = watch.report()
         out['summary'] = {'steps': n, 'driver': driver, 'steps_per_s': perf['steps_per_s'],
                           'passed': None if scenario is None else scenario['passed'],
                           'missed_deadlines': dl.missed if driver == 'ros2' else None}

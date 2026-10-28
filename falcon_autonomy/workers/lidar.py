@@ -138,6 +138,7 @@ class LidarRecorder:
         self.cameras = cameras
         self.raster = raster                # an imported world's lanes: its mesh's points come tagged 0
         self.ground_relabelled = 0
+        self.physics = None                 # core.sensorphysics.Session when the run asks for weather physics
         self.nch = int(s['channels'])
         self.steps_per_sweep = 1
         self.mount = mount_matrix(s['pose'])
@@ -186,7 +187,16 @@ class LidarRecorder:
                 tag[g] = self.raster.lookup(Pw[g, :2])
                 self.ground_relabelled += int(g.sum())
         self.box_check(raw[:, :3].astype(np.float64), tag, idx, M_ws)
-        self.slices.append((raw[:, :3].astype(np.float64), raw[:, 3].copy(), tag, idx, M_ws))
+        xyz, inten = raw[:, :3].astype(np.float64), raw[:, 3].copy()
+        if self.physics is not None:                     # core.sensorphysics, on the slice in the sensor's frame
+            xyz, inten, tag, idx, st = self.physics.lidar(self.s, xyz, inten, tag, idx)
+            if st is not None:
+                eff = [k for k, n in (('lidar_dropout', st['dropped']), ('lidar_clutter', st['clutter'])) if n]
+                if self.physics.cond['alpha_lidar_per_m'] > 0:
+                    eff.insert(0, 'lidar_attenuation')
+                if eff:
+                    rec.setdefault('physics', {})[self.s['id']] = eff
+        self.slices.append((xyz, inten, tag, idx, M_ws))
         if len(self.slices) >= self.steps_per_sweep:
             self.write_sweep(out_dir, rec)
         return m_raw

@@ -204,6 +204,8 @@ class Gym(Worker):
             raise Failed(f'action must be continuous or discrete, not {self.action_kind!r}')
         os.makedirs(self.out_dir, exist_ok=True)
         self.ep_log = open(os.path.join(self.out_dir, 'episodes.jsonl'), 'a', encoding='utf-8')
+        from .drive import physics_and_watch
+        _, self.watch = physics_and_watch(self, world, cfg, with_physics=False)       # the ODD monitor, when asked
         self.send(self.ready_doc())
         t_start = time.monotonic()
         try:
@@ -244,6 +246,7 @@ class Gym(Worker):
             raise Failed(f'the environment ended: {self.ended_by}')
         return {'performance': perf, 'summary': {'episodes': self.n_episodes, 'steps': self.n_steps,
                                                  'steps_per_s': perf['steps_per_s']},
+                'odd_monitor': self.watch.report() if self.watch is not None else None,
                 'name': cfg.get('name', 'gym environment')}
 
     def ready_doc(self) -> dict:
@@ -746,6 +749,8 @@ class Gym(Worker):
                 'ego': {kk: round(float(v), 4) for kk, v in pose.items()}, 'action_applied': applied,
                 'off_road': lf['off_road'], 'wrong_way': lf['wrong_way'], 'outside_route_lanes': lf['outside_lanes'],
                 'termination': reason if terminated else ('time_limit' if truncated else None)}
+        if getattr(self, 'watch', None) is not None:
+            info['odd'] = self.watch.step(sim_t, ego, facts['speed'])
         self.n_steps += 1
         self.step_wall += time.monotonic() - t0
         if terminated or truncated:
@@ -774,6 +779,8 @@ class Gym(Worker):
                 'infraction_counts': ep['monitor'].counts(), 'wall_s': round(time.monotonic() - ep['wall0'], 3),
                 'stale_actors': ep['stale_actors']}
         summ['success'] = DF.episode_success(summ)
+        if getattr(self, 'watch', None) is not None:
+            summ['odd_monitor'] = self.watch.end_episode()
         if self.cfg.get('log_actions', True):
             summ['actions'] = ep['actions']
         if self.cfg.get('log_trace', True):

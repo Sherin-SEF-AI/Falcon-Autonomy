@@ -29,7 +29,7 @@ Ids match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` and are unique within their list.
 | `id`, `name` | |
 | `kind` | `town` (a CARLA map), `osm` (an OpenStreetMap import), `xodr` (an OpenDRIVE file) |
 | `town` | the CARLA map name (`kind: town`), e.g. `Town10HD_Opt` |
-| `osm` | the import's source and converter settings (`kind: osm`) |
+| `osm` | the import's source and converter settings (`kind: osm`); `mesh` (the generation parameters: a world with road features at a 0.25 m vertex distance), `road_features` (the Worlds page's choices: OSM tags, what `bump` becomes, a spacing) |
 | `weather` | `{"preset": "ClearNoon", …overrides}`: any of CARLA's `WeatherParameters` fields override the preset |
 | `traffic_profile` | the id of a traffic profile |
 

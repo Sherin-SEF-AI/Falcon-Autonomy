@@ -68,11 +68,15 @@ of vehicles registered in Bengaluru; not an on-road count); a 1 m gap to the veh
 spread, 15 % ignoring lights, 25 % ignoring signs, 10 % random lane changes each way, 35 % of walkers crossing
 anywhere. Every value is editable on the Worlds page.
 
-**Autorickshaws** are not in CARLA 0.9.16. The profile substitutes `vehicle.micro.microlino` (a small three-door car,
-the nearest size) and labels it *autorickshaw (substitute: Microlino)* everywhere it appears. To add a real one:
-model it (or buy a model), import it into the CARLA Unreal editor build as a vehicle blueprint following CARLA's
-"Add a new vehicle" guide (skeleton, wheels, physics), cook it into a package, and name its blueprint in the profile's
-fleet (`blueprint:vehicle.<make>.<model>`). The traffic manager keeps vehicles in lanes, so lane-splitting by
+**Autorickshaws** are not in CARLA 0.9.16. The profile's stand-in is `vehicle.micro.microlino`, the vehicle nearest in
+measured size, driven with a three-wheeler's top speed and acceleration and labelled *autorickshaw (stand-in)*
+(`subclass` in the labels). [Indian road assets](indian-assets.md) gives the measurements and the source-build path
+to a real one (then name its blueprint in the profile's fleet: `blueprint:vehicle.<make>.<model>`).
+
+**Road features**: an imported world can carry speed breakers as real geometry (elevation profiles the vehicle physics
+drives over), placed from OpenStreetMap's `traffic_calming` tags at import and from the Worlds page (*Road
+features*); such a world's mesh is generated at a 0.25 m vertex distance. Puddles (`precipitation_deposits`) are not
+drawn on an imported world ([Indian road assets](indian-assets.md)). The traffic manager keeps vehicles in lanes, so lane-splitting by
 two-wheelers is not reproduced by the profile.
 
 ## A standalone OpenDRIVE world: what it is

@@ -7,7 +7,9 @@ A scenario document (the project's scenarios, and the built-in LIBRARY):
      "params": {name: {"dist": "fixed" | "uniform" | "normal" | "choice", "value" | "lo","hi" | "mean","sd" |
                        "choices", "unit", "about"}},
      "ego": {"speed_kmh": expr, "driver": "follower" | "none" | "autopilot", "route": "straight" | "turn_across"},
-     "actors": [{"id", "kind": car | truck | bus | van | motorcycle | bicycle | pedestrian | child,
+     "weather": {CARLA weather: a preset and fields} (optional: replaces the world's for this scenario),
+     "actors": [{"id", "kind": car | truck | bus | van | motorcycle | bicycle | pedestrian | child
+                         | autorickshaw | cycle_rickshaw (stand-ins) | cattle | handcart | vendor (proxies),
                  "place": {"lane": "ego" | "adjacent" | "line" | "opposite" | "kerb" | "sidewalk" | "far_sidewalk",
                            "ahead_m": expr, "lateral_m": expr},
                  "heading": "lane" | "against" | "across",
@@ -22,6 +24,10 @@ A scenario document (the project's scenarios, and the built-in LIBRARY):
                                | {"actor": id, "do": "open_door", "door": "FL" | "FR" | "RL" | "RR"}
                                | {"actor": id, "do": "go"} | {"actor": id, "do": "stop"}]}],
      "pass": {"no_collision": true, "min_ttc_s": expr}}
+
+The Indian kinds (core.assets, docs/indian-assets.md): autorickshaw and cycle_rickshaw are stand-in vehicles driven
+within their class's top speed and acceleration; cattle, handcart and vendor are proxy props of the real object's
+size (a moving one is moved kinematically). Their labels keep CARLA's class and carry Falcon's subclass.
 
 An expression is a number or "$name" (a parameter). sample(scenario, seed) draws every parameter from its
 distribution with a seeded generator and substitutes it: the same seed gives the same concrete scenario. Sweeps and
@@ -184,8 +190,71 @@ LIBRARY = {
                       'actions': [{'actor': 'bus', 'do': 'speed', 'kmh': '$bus_speed', 'accel': 1.0},
                                   {'actor': 'bus', 'do': 'lane_change', 'to': 'ego', 'duration_s': '$pull_time'}]}],
         'pass': {'no_collision': True, 'min_ttc_s': 1.0}},
+    'stray_cattle': {
+        'name': 'Stray cattle in the lane', 'about': 'A cow stands in the ego\'s lane ahead (a proxy obstacle of a '
+                                                     'non-descript cow\'s size: docs/indian-assets.md).',
+        'needs': [], 'duration_s': 14.0,
+        'params': {'speed': U(20, 45, 'km/h'), 'distance': U(30, 90, 'm'),
+                   'lateral': U(-0.8, 0.8, 'm', 'off the lane centre (positive: towards the kerb)')},
+        'ego': {'speed_kmh': '$speed', 'driver': 'follower', 'route': 'straight'},
+        'actors': [{'id': 'cow', 'kind': 'cattle', 'place': {'lane': 'ego', 'ahead_m': '$distance',
+                                                              'lateral_m': '$lateral'},
+                    'heading': 'lane', 'speed_kmh': 0, 'start': 'stopped'}],
+        'timeline': [],
+        'pass': {'no_collision': True, 'min_ttc_s': 1.5}},
+    'handcart_kerb_lane': {
+        'name': 'Handcart in the kerb lane', 'about': 'A handcart pushed at walking pace near the kerb in the ego\'s '
+                                                      'lane (the left lane in left-hand traffic), its pusher walking '
+                                                      'behind it (a proxy: docs/indian-assets.md).',
+        'needs': [], 'duration_s': 16.0,
+        'params': {'speed': U(20, 40, 'km/h'), 'distance': U(30, 80, 'm'),
+                   'cart_speed': U(3, 6, 'km/h', 'walking pace (heuristic)'),
+                   'lateral': U(0.3, 0.9, 'm', 'from the lane centre towards the kerb')},
+        'ego': {'speed_kmh': '$speed', 'driver': 'follower', 'route': 'straight'},
+        'actors': [{'id': 'cart', 'kind': 'handcart', 'place': {'lane': 'ego', 'ahead_m': '$distance',
+                                                                 'lateral_m': '$lateral'},
+                    'heading': 'lane', 'speed_kmh': '$cart_speed', 'start': 'moving'},
+                   {'id': 'pusher', 'kind': 'pedestrian', 'place': {'lane': 'ego', 'ahead_m': '$distance - 1.3',
+                                                                     'lateral_m': '$lateral'},
+                    'heading': 'lane', 'speed_kmh': 0, 'start': 'stopped'}],
+        'timeline': [{'trigger': {'type': 'time', 't_s': 0.0},
+                      'actions': [{'actor': 'pusher', 'do': 'walk', 'speed_mps': '$cart_speed / 3.6'}]}],
+        'pass': {'no_collision': True, 'min_ttc_s': 1.0}},
+    'autorickshaw_cut_in': {
+        'name': 'Autorickshaw cuts in', 'about': 'An autorickshaw (a stand-in with a three-wheeler\'s top speed and '
+                                                 'acceleration) in the next lane cuts in just ahead of the ego.',
+        'needs': ['adjacent_same'], 'duration_s': 12.0,
+        'params': {'speed': U(20, 40, 'km/h'), 'faster': U(5, 20, 'km/h', 'the autorickshaw\'s speed over the '
+                                                                            'ego\'s (capped at its top speed)'),
+                   'start_offset': U(0, 8, 'm', 'its start along the road ahead of the ego'),
+                   'cut_gap': U(1, 8, 'm'), 'cut_time': U(0.8, 2.5, 's', 'lane-change duration')},
+        'ego': {'speed_kmh': '$speed', 'driver': 'follower', 'route': 'straight'},
+        'actors': [{'id': 'auto', 'kind': 'autorickshaw', 'place': {'lane': 'adjacent', 'ahead_m': '$start_offset'},
+                    'heading': 'lane', 'speed_kmh': '$speed + $faster', 'start': 'moving'}],
+        'timeline': [{'trigger': {'type': 'ahead', 'actor': 'auto', 'gt_m': '$cut_gap'},
+                      'actions': [{'actor': 'auto', 'do': 'lane_change', 'to': 'ego', 'duration_s': '$cut_time'}]}],
+        'pass': {'no_collision': True, 'min_ttc_s': 1.0}},
+    'monsoon_waterlogged': {
+        'name': 'Monsoon: waterlogged road', 'about': 'The lead vehicle brakes on a waterlogged road in heavy rain: '
+                                                      'CARLA\'s puddles (precipitation_deposits 100) and wetness. '
+                                                      'Measured: puddles are drawn on CARLA\'s towns, not on an '
+                                                      'imported (OpenDRIVE) world; they are global, not placed; '
+                                                      'they do not change tyre grip (not modelled by CARLA here).',
+        'needs': [], 'duration_s': 12.0,
+        'weather': {'preset': 'HardRainNoon', 'precipitation_deposits': 100.0, 'wetness': 100.0},
+        'params': {'speed': U(20, 45, 'km/h'), 'gap': U(10, 35, 'm'), 'decel': U(3, 7, 'm/s²'),
+                   'brake_at': U(2, 5, 's')},
+        'ego': {'speed_kmh': '$speed', 'driver': 'follower', 'route': 'straight'},
+        'actors': [{'id': 'lead', 'kind': 'car', 'place': {'lane': 'ego', 'ahead_m': '$gap'}, 'heading': 'lane',
+                    'speed_kmh': '$speed', 'start': 'moving'}],
+        'timeline': [{'trigger': {'type': 'time', 't_s': '$brake_at'},
+                      'actions': [{'actor': 'lead', 'do': 'brake', 'decel': '$decel'}]}],
+        'pass': {'no_collision': True, 'min_ttc_s': 1.0}},
 }
-INDIAN = ('two_wheeler_filtering', 'jaywalker_behind_bus', 'wrong_way_scooter', 'bus_pulling_out')
+INDIAN = ('two_wheeler_filtering', 'jaywalker_behind_bus', 'wrong_way_scooter', 'bus_pulling_out', 'stray_cattle',
+          'handcart_kerb_lane', 'autorickshaw_cut_in', 'monsoon_waterlogged')
+KINDS = ('car', 'truck', 'bus', 'van', 'motorcycle', 'bicycle', 'pedestrian', 'child', 'autorickshaw',
+         'cycle_rickshaw', 'cattle', 'handcart', 'vendor')
 
 
 def builtin(key: str) -> dict:

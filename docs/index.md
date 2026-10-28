@@ -72,6 +72,12 @@ density** (measured on 0.9.16, a 5 % contrast threshold — a human observer's; 
 The town list is the base package's (Town01–05, Town10HD and their `_Opt` variants) until Tools ▸ Probe the CARLA
 server lists the server's own maps.
 
+Each world can switch on **sensor weather physics** — what CARLA's sensors leave out: lidar and radar losses and
+clutter in rain and fog, lens droplets, glare and bloom — modelled from cited sources, labelled, recorded in every run
+([sensor physics](sensor-physics.md)). **Road features** write speed breakers into an imported world's road surface
+(from OpenStreetMap or every N metres), and Indian traffic gets measured stand-ins and proxies within what the packaged
+CARLA can spawn ([Indian road assets](indian-assets.md)).
+
 ### Live
 Drive a world in real time. **Start** opens a session (a job like any other: the Jobs dock shows it and Stop ends it).
 
@@ -168,6 +174,10 @@ overtake on the right, stop at red, yield at crossings, a two-second gap, juncti
 own): a timeline of violations with how close each rule came to breaking ([traffic rules](traffic-rules.md)). The
 Training page's **Active learning** tab measures which frames help a detector most, against random selection
 ([active learning](active-learning.md)).
+
+**Runtime ODD monitoring**: put the operational design domain in the workspace (`odd.json`, calibrated with
+`falcon odd calibrate`) and every drive, live session, episode, stack run and HIL session flags when its conditions
+or its images leave it ([ODD monitoring](odd-monitoring.md)).
 
 ### Stack testing
 Connect an external driving stack through ROS 2: Falcon's bridge publishes the rig's sensors and waits each step for

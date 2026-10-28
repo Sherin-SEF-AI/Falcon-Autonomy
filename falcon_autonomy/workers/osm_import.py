@@ -13,7 +13,10 @@ The import:
    Bengaluru by about 3× east-west and 4× north-south); objects and signals a few millimetres past their road's end
    (SUMO writes some) are clamped onto it, since CARLA's world generation crashes on them (core.xodr.sanitize);
 3. with lht, converts the right-hand output to left-hand traffic (core.xodr.to_lht; see docs/worlds.md);
-4. writes world.xodr, the road graph for the preview (graph.json), and import.json: what was read, converted and
+4. places speed breakers where OSM tags traffic_calming (bump, hump, table) as elevation profiles that CARLA's road
+   mesh renders (core.roadfeatures; world.base.xodr keeps the file without them, features.json says what was placed
+   and skipped) unless settings speed_breakers is "off";
+5. writes world.xodr, the road graph for the preview (graph.json), and import.json: what was read, converted and
    dropped, the lane check against OSM on a seeded sample (core.xodr.lane_check), the handedness, what an OpenDRIVE
    world does not contain (buildings, vegetation, textures), timings.
 """
@@ -96,6 +99,21 @@ class OsmImport(Worker):
             raise Failed('positions past a road\'s end remain after the conversion (a bug): world.xodr not written')
         with open(os.path.join(self.out_dir, 'world.xodr'), 'w', encoding='utf-8') as fh:
             fh.write(text)
+        features = None
+        if s.get('speed_breakers', 'osm') != 'off':     # traffic_calming as elevation profiles (core.roadfeatures)
+            from ..core import roadfeatures as RF
+            base = os.path.join(self.out_dir, 'world.base.xodr')
+            if os.path.isfile(base):
+                os.remove(base)                         # a re-import: the new conversion is the base
+            doc = RF.apply_to_world(self.out_dir, {'osm': True, 'osm_bump': s.get('osm_bump', 'osm_bump')})
+            features = {'placed': len(doc['placed']), 'counts': doc['counts'], 'skipped': len(doc['skipped']),
+                        'not_represented': doc['not_represented'], 'notes': doc['notes'] + [doc['mesh_note']]}
+            if doc['placed']:
+                with open(os.path.join(self.out_dir, 'world.xodr'), encoding='utf-8') as fh:
+                    text = fh.read()
+                notes.append(f'{len(doc["placed"])} speed breakers placed from OpenStreetMap\'s traffic_calming '
+                             f'tags as elevation profiles ({", ".join(f"{v} {k}" for k, v in doc["counts"].items())}; '
+                             'features.json)')
         self.emit.progress(0.7, 'road graph and lane check', force=True)
         od = X.parse(text)
         graph = X.road_graph(od)
@@ -115,7 +133,7 @@ class OsmImport(Worker):
                    'text': 'an OpenDRIVE world is roads, lanes, sidewalks and junctions only: no buildings, '
                            'vegetation, textures or props (CARLA cannot spawn arbitrary meshes at runtime); '
                            'docs/worlds.md describes the full-fidelity path'},
-               'timings': t}
+               'timings': t, 'road_features': features}
         write_json(os.path.join(self.out_dir, 'import.json'), rep)
         self.emit.progress(1.0, f'{graph["totals"].get("roads", len(graph.get("roads", [])))} roads, lane check '
                                 f'{check.get("matched")}/{check.get("comparable")}', force=True)

@@ -53,6 +53,10 @@ Signals (SIGNALS; all per sample, NaN where unknown):
                            vehicle's left / right; passing = either
     tl_red, tl_distance_m  the light on the ego's route ahead is red; the distance from the ego's front to its stop
                            line — recorded by gym traces; drives do not record light states (unknown)
+    on_breaker             1 while the ego's body is over a speed breaker or speed table the map's OpenDRIVE file
+                           carries (core.roadfeatures: falcon:road_feature userData; its length along the road plus
+                           the ego's length, across the carriageway), else 0; unknown without the OpenDRIVE file
+    breaker_kmh            that breaker's advisory crossing speed (IRC:99-1988: 25 km/h), NaN off a breaker
     speed_limit_kmh        CARLA's Vehicle.get_speed_limit() when the trace records it; else the map's OpenDRIVE record
                            for the ego's road (a lane <speed> or the road type's <speed>); in a junction road the last
                            limit before it (a limit holds until the next); unknown where neither exists
@@ -103,6 +107,8 @@ SIGNALS = {
     'passing': ('0/1', 'either'),
     'tl_red': ('0/1', 'the light ahead is red'), 'tl_distance_m': ('m', 'front to the stop line ahead'),
     'speed_limit_kmh': ('km/h', 'the speed limit'),
+    'on_breaker': ('0/1', 'the ego is over a speed breaker of the map'),
+    'breaker_kmh': ('km/h', 'that breaker\'s advisory crossing speed'),
 }
 EGO_DEFAULT = (4.9, 1.84)                         # length, width: CARLA's mkz_2020 (actors.jsonl extents × 2)
 LEAD_RANGE_M, PED_RANGE_M = 80.0, 50.0
@@ -165,6 +171,11 @@ rule pedestrian_clearance "Be able to stop for a pedestrian in the path" heurist
 about pedestrian_clearance "Anywhere: on Indian roads pedestrians cross away from crossings."
 rule junction_clear "Do not stand in a junction" law heuristic:
     not in_junction or t < junction_stand_s or once[0,junction_stand_s] (speed_mps >= 0.5) or lead_gap_m <= queue_gap_m
+rule speed_breaker "Cross speed breakers slowly" heuristic:
+    not on_breaker or speed_kmh <= breaker_kmh + speed_tolerance_kmh
+about speed_breaker "IRC:99-1988 designs a speed breaker (a 3.7 m, 0.10 m hump) for an advisory crossing speed of"
+about speed_breaker "25 km/h: over a breaker the map carries (core.roadfeatures), at most that speed. An advisory"
+about speed_breaker "design speed, not a legal limit (heuristic)."
 '''
 
 GENERIC = '''# Falcon's generic traffic rules (falcon.rules/1). Right-hand traffic.
@@ -380,6 +391,7 @@ class RoadMap:
         self.road_speed = {}                       # road id → [(s, km/h)] (OpenDRIVE road type)
         self.lane_speed = {}                       # (road, section, lane) → [(sOffset, km/h)]
         self.road_rule = {}
+        self.breakers = None                       # None: unknown (no OpenDRIVE file); [] none in the map
 
     @property
     def has_lanes(self) -> bool:
@@ -458,6 +470,16 @@ class RoadMap:
                 if len(poly) >= 3:
                     cws.append(np.array(poly, float))
         self.crosswalks = cws
+        from . import roadfeatures as RF
+        self.breakers = []
+        for f in RF.read(text):
+            if f.get('crossing_kmh') is None or float(f.get('height_m', 0.0)) <= 0:
+                continue                           # dips have no crossing speed
+            self.breakers.append({'x': float(f['x']), 'y': -float(f['y']), 'hdg': -float(f['hdg']),
+                                  'length': float(f['length_m']), 'kmh': float(f['crossing_kmh']),
+                                  'left': float(f.get('half_width_left_m', 3.5)),
+                                  'right': float(f.get('half_width_right_m', 3.5)), 'kind': f.get('kind')})
+        self.sources['breakers'] = f'{name} ({len(self.breakers)} speed breakers, core.roadfeatures)'
         self.sources['junction'] = f'{name} (junction roads)'
         self.sources['speed'] = f'{name} (lane and road-type <speed> records)'
         self.sources['crosswalks'] = f'{name} ({len(cws)} crosswalk objects)'
@@ -1058,6 +1080,20 @@ def signals(tr: Trace) -> dict:
     for k in ('lead_gap_m', 'ped_path_gap_m'):
         if k in tr.given:
             sig[k] = np.asarray(tr.given[k], float)
+    sig['on_breaker'], sig['breaker_kmh'] = nan(), nan()
+    if m.breakers is not None:
+        on, kmh = np.zeros(n), np.full(n, np.nan)
+        for b in m.breakers:                       # CARLA's frame: along the road and across it (y right)
+            c, s_ = math.cos(b['hdg']), math.sin(b['hdg'])
+            dx, dy = tr.x - b['x'], tr.y - b['y']
+            along, across = dx * c + dy * s_, -dx * s_ + dy * c
+            # OpenDRIVE's left of the reference line is CARLA's −across
+            inside = (np.abs(along) <= b['length'] / 2.0 + hl) & (across >= -b['left'] - hw) & \
+                (across <= b['right'] + hw)
+            on = np.where(inside, 1.0, on)
+            kmh = np.where(inside, np.fmin(kmh, b['kmh']), kmh)
+        sig['on_breaker'], sig['breaker_kmh'] = on, kmh
+        tr.sources['breakers'] = m.sources.get('breakers', 'the map')
     sig['passing'] = np.where(np.isnan(sig['pass_on_left']) | np.isnan(sig['pass_on_right']), np.nan,
                               np.maximum(sig['pass_on_left'], sig['pass_on_right']))
     return sig

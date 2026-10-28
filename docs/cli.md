@@ -23,11 +23,14 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon why case PROJECT --run RUN --out DIR [--failure F] [--model ID] [--actor A \| --track N] [--step S]` | why a scenario run failed: counterfactual re-runs, one factor at a time ([root cause](root-cause.md)) |
 | `falcon why evaluation EVAL --out DIR` | the correlates of an evaluation's misses, with intervals |
 | `falcon why episode PROJECT --episodes FILE --episode N --policy P --out DIR` | a Leaderboard infraction by the policy's inputs |
+| `falcon assets list` · `show CLASS` · `inventory [--out FILE]` · `verify --out DIR [--stages S,…]` | Indian road assets: the stand-ins and proxies with their sources; measure what Falcon's own server can spawn; the road-feature and asset checks ([Indian road assets](indian-assets.md)) |
 | `falcon schema` | prints the project schema's path |
 | `falcon model fetch PROJECT ID` | downloads a registered model's pinned weights (URL, licence and SHA-256 printed first; refused on a hash mismatch) |
 | `falcon evaluate PROJECT --model ID --run RUN... --out DIR [--camera C] [--every N] [--boot N] [--seed S] [--grid X,Y]` | scores a model on drives: COCO AP/AR (or mIoU) with drive-level bootstrap CIs, breakdowns, a condition heat map, the worst frames ([models](models.md)) |
 | `falcon evaluate --compare EVAL_A EVAL_B --out DIR [--boot N]` | a paired bootstrap of every number's change B − A; regressions and improvements |
 | `falcon gap --sim RUN... --real KIND:PATH --out DIR [--labels FILE] [--images N] [--features --workspace W] [--match]` | the sim-to-real gap; `falcon gap --fetch --workspace W` downloads the feature extractor ([sim-to-real](sim-to-real.md)) |
+| `falcon odd calibrate --in RUN... [--out-of NAME=RUN[,RUN]...] [--far A] [--every N] [--features WS] --out FILE` | an ODD data-monitor reference from in-ODD drives, its threshold for the false-alarm rate A, and the measured false-alarm and detection rates ([ODD monitoring](odd-monitoring.md)) |
+| `falcon odd monitor RUN... --odd FILE [--reference REF] [--every N] [--camera ID] [--no-write]` | the ODD monitor over recorded runs: `odd-monitor.json` in each, the time outside and why |
 | `falcon derive worldmodel\|language RUN --out DIR [--option K=V]...` | world-model data (occupancy, BEV, scene flow, futures, actions, clips) or grounded language data ([world model](world-model.md)) |
 | `falcon train --train SRC... [--val SRC] [--test SRC] [--arch A] [--init coco\|imagenet\|scratch] [--epochs N] [--batch B] [--size WxH] --workspace W` | fine-tunes a detector (a GPU job), exports ONNX and a model registration; `--weights` lists the pinned weights, `--fetch NAME` downloads one ([training](training.md)) |
 | `falcon experiment mixed --id ID --synthetic SRC... --real-train SRC --real-test SRC [--shares 0,25,50,100] [--seeds K] --workspace W` | real only against real + X % synthetic at a fixed budget, paired intervals against real only (resumable) |

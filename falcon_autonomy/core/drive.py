@@ -49,7 +49,7 @@ def drive_config(project: Project, world_id: str, rig_id: str, out_dir: str, por
     ok, why = check_handedness(traffic, rule)
     if not ok:
         raise ProjectError(why)
-    return {
+    cfg = {
         'schema': DRIVE_SCHEMA, 'name': name or f'{world["name"]} / {rig["name"]}',
         'host': host, 'port': int(port), 'tm_port': int(tm_port),
         'town': world.get('town', '') if not xodr else '', 'xodr': xodr,
@@ -63,6 +63,11 @@ def drive_config(project: Project, world_id: str, rig_id: str, out_dir: str, por
         'out': os.path.abspath(out_dir), 'project': {'name': project.doc['name'], 'world': world_id, 'rig': rig_id,
                                                      'traffic_profile': tp_id},
     }
+    if (world.get('sensor_physics') or {}).get('enabled'):      # the world's weather physics (docs/sensor-physics.md);
+        cfg['sensor_physics'] = copy.deepcopy(world['sensor_physics'])      # absent otherwise: cache keys unchanged
+    from .oddmonitor import attach                              # the workspace's ODD, monitored by the worker
+    attach(cfg, workspace or getattr(project, 'workspace', '') or '', project)
+    return cfg
 
 
 def smoke_config(project: Project, out_dir: str, port: int, tm_port: int, seed: int = 0) -> dict:
@@ -89,6 +94,13 @@ def scenario_config(project: Project, scenario: dict, world_id: str, rig_id: str
                        workspace=workspace)
     cfg['traffic'] = dict(cfg['traffic'], vehicles=int(traffic_vehicles), walkers=0)
     cfg['scenario'] = conc
+    if conc.get('weather'):                   # a scenario's own weather (e.g. the monsoon variant) replaces the world's
+        cfg['weather'] = W.resolve(conc['weather'])
+        cfg['weather_source'] = {'scenario': conc.get('id'), **copy.deepcopy(conc['weather'])}
+        if cfg.get('xodr') and float(cfg['weather'].get('precipitation_deposits', 0.0)) > 0:
+            cfg.setdefault('notes', []).append(
+                'puddles (precipitation_deposits) are not drawn on an imported OpenDRIVE world (measured on CARLA '
+                '0.9.16: no visible change on a generated road, a large one on Town10HD); rain and wetness are')
     cfg['warmup_steps'] = 5
     cfg['reload_world'] = True            # bit-for-bit repetition needs the same initial world state
     return cfg
