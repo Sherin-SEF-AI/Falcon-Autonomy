@@ -100,7 +100,11 @@ def sensor_cost(s: dict) -> dict:
     t = s.get('type', '')
     if t.startswith('camera.'):
         n = len(budget.label_cameras(s.get('labels')))
-        views = budget.FISHEYE_VIEWS if t == 'camera.fisheye' else 1
+        if t == 'camera.fisheye':
+            from . import lens
+            views = len(lens.plan_camera(s, tables=False)['views'])
+        else:
+            views = 1
         return {'mpx': mpx, 'note': f'{views} view{"s" if views > 1 else ""} × (image + {n} label camera'
                                     f'{"s" if n != 1 else ""})'}
     if t == 'lidar':

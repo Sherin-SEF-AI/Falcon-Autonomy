@@ -508,8 +508,19 @@ def plan_camera(sensor: dict, oversample: float = 1.0, tables: bool = True) -> d
 def camera_mpx(sensor: dict, plan: dict | None = None) -> float:
     """Megapixels the camera renders per step: its views' pixels once for the image and once per label camera
     (core.budget.label_cameras)."""
-    p = plan or plan_camera(sensor, tables=False)
-    return p['render_mpx'] * (1 + len(budget.label_cameras(sensor.get('labels'))))
+    if plan is not None:
+        base = plan['render_mpx']
+    else:
+        # planning a full-size fisheye takes about a second: cached by what decides the views
+        import json
+        key = json.dumps({k: sensor.get(k) for k in ('type', 'width', 'height', 'fov', 'lens')}, sort_keys=True)
+        base = _MPX_CACHE.get(key)
+        if base is None:
+            base = _MPX_CACHE[key] = plan_camera(sensor, tables=False)['render_mpx']
+    return base * (1 + len(budget.label_cameras(sensor.get('labels'))))
+
+
+_MPX_CACHE: dict = {}
 
 
 # ---------------------------------------------------------------- making the image (Vantage's CARLA bridge)

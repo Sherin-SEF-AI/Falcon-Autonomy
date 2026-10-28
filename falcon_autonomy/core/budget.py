@@ -2,8 +2,9 @@
 
 Render budget. What a CARLA camera costs is the pixels it renders. A pinhole camera renders its image once, plus
 once per label camera beside it (semantic, instance, depth: CARLA renders each as its own camera at the same pose and
-tick). A fisheye renders FISHEYE_VIEWS pinhole views (a cube's faces; their size from fisheye_face_px) and remaps
-them, so it costs about five pinholes. On the reference machine a 0.9.16 server capped at 12 GB crashed at 306 Mpx
+tick). A fisheye renders the pinhole views core.lens plans for it — the cube faces its rays need (five for a 190°
+lens, one when every ray is within 60° of its axis), each N = 2·⌈f·tan(45° + 1.5°) + 1.5⌉ pixels on a side for a
+centre focal length f — and remaps them. On the reference machine a 0.9.16 server capped at 12 GB crashed at 306 Mpx
 rendered per step and ran at 77: runs over RENDER_BUDGET_MPX are refused before they start.
 
 Cost. Seconds per simulation step = overhead + rendered Mpx / throughput. The throughput is measured on this
@@ -15,7 +16,6 @@ from __future__ import annotations
 import math
 
 RENDER_BUDGET_MPX = 200.0
-FISHEYE_VIEWS = 5
 LABEL_CAMERAS = {'semantic': 'semantic_segmentation', 'instance': 'instance_segmentation', 'depth': 'depth',
                  'boxes2d': 'instance_segmentation'}      # 2D tight boxes come from the instance image
 
@@ -35,10 +35,6 @@ def label_cameras(labels) -> list:
     return sorted({LABEL_CAMERAS[k] for k in labels or () if k in LABEL_CAMERAS})
 
 
-SEAM_BLEND_DEG = 1.5            # cube faces overlap this far past their seams (feathered there)
-FACE_MARGIN_PX = 1.5
-
-
 def fisheye_focal_px(s: dict) -> float:
     """A fisheye's focal length at its centre, px/rad: the lens model's (f_px) when the sensor has one, else
     (heuristic) an equidistant lens whose image circle fits the shorter image side."""
@@ -46,14 +42,6 @@ def fisheye_focal_px(s: dict) -> float:
         return float(s['f_px'])
     w, h = int(s.get('width', 0)), int(s.get('height', 0))
     return (min(w, h) / 2.0) / math.radians(max(float(s.get('fov', 190.0)), 1.0) / 2.0)
-
-
-def fisheye_face_px(f_px: float) -> int:
-    """Cube-face size that samples a fisheye's centre at its own density: a face reaches half the seam band past each
-    seam, and its centre density (N/2 − margin) / tan(45° + band/2) is at least f (Vantage's sizing; six 1920 × 1536
-    fisheyes at f = 900 px/rad with instance and depth come to the 306 Mpx that crashed a 12 GB server)."""
-    t = math.tan(math.radians(45.0 + SEAM_BLEND_DEG / 2.0))
-    return 2 * int(math.ceil(f_px * t + FACE_MARGIN_PX))
 
 
 def sensor_mpx(s: dict) -> float:
@@ -65,8 +53,10 @@ def sensor_mpx(s: dict) -> float:
     n = 1 + len(label_cameras(s.get('labels')))
     w, h = int(s.get('width', 0)), int(s.get('height', 0))
     if t == 'camera.fisheye':
-        f = fisheye_face_px(fisheye_focal_px(s))
-        return FISHEYE_VIEWS * f * f * n / 1e6
+        # the pinhole views it is planned with (core.lens: the cube faces its rays need, sized to its lens), so the
+        # budget and the renderer never disagree
+        from . import lens
+        return lens.camera_mpx(s)
     return w * h * n / 1e6
 
 

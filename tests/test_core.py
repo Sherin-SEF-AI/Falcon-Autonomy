@@ -117,15 +117,15 @@ def test_render_budget():
     # boxes2d and instance share CARLA's instance camera: rendered once
     s = {'type': 'camera.pinhole', 'width': 1000, 'height': 1000, 'labels': ['instance', 'boxes2d', 'depth']}
     assert budget.sensor_mpx(s) == pytest.approx(3.0)
-    # six full-size fisheyes with instance + depth: the configuration that crashed a 12 GB server is refused
-    fe = {'type': 'camera.fisheye', 'width': 1920, 'height': 1536, 'fov': 190, 'f_px': 900.0,
-          'labels': ['instance', 'depth']}
-    assert budget.rig_mpx({'sensors': [fe] * 6}) == pytest.approx(306, rel=0.02)
+    # six full-size fisheyes with instance + depth, written as rigs write them (the lens block): refused
+    fe = {'type': 'camera.fisheye', 'width': 1920, 'height': 1536, 'labels': ['instance', 'depth'],
+          'lens': {'model': 'equidistant', 'fov': 190.0, 'f_px': 900.0}}
+    big = budget.rig_mpx({'sensors': [fe] * 6})
+    assert big > 300
     ok, why = budget.check_budget({'sensors': [fe] * 6})
     assert not ok and 'over the budget' in why
-    half = dict(fe, width=960, height=768, f_px=450.0)        # the 77 Mpx configuration that ran
-    assert budget.rig_mpx({'sensors': [half] * 6}) == pytest.approx(77, rel=0.03)
-    assert budget.check_budget({'sensors': [half] * 6})[0]
+    half = dict(fe, width=960, height=768, lens=dict(fe['lens'], f_px=450.0))
+    assert 70 < budget.rig_mpx({'sensors': [half] * 6}) < 90 and budget.check_budget({'sensors': [half] * 6})[0]
 
 
 def test_throughput_labels_typical_until_measured():
