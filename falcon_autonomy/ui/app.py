@@ -37,6 +37,18 @@ def main(project_path: str | None = None, fake_carla: str = '') -> int:
             print(f'could not open {path}: {e}', file=sys.stderr)
     win = MainWindow(st, project, fake_carla=fake_carla)
     win.show()
+    # Ctrl+C in the terminal closes the window as File ▸ Quit does (jobs asked to stop, the server stopped), instead
+    # of a KeyboardInterrupt inside a Qt slot; the timer lets Python run its signal handler while Qt waits
+    import signal
+    from PyQt6.QtCore import QTimer
+    def interrupt(*_):
+        if win.close():                   # it may ask to save first; then every window goes (the wizard's too)
+            app.closeAllWindows()
+            app.quit()
+    signal.signal(signal.SIGINT, interrupt)
+    tick = QTimer(app)
+    tick.timeout.connect(lambda: None)
+    tick.start(250)
     if not st.get('first_run_done') and not fake_carla:
         win.show_wizard()
     return app.exec()

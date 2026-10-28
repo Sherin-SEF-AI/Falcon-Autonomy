@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Falcon Autonomy
+Comment=Worlds, scenarios, labelled data, training and stack testing on CARLA 0.9.16
+Exec=falcon %f
+Icon=falcon-autonomy
+Terminal=false
+Categories=Science;Development;
+MimeType=application/x-falcon-project;
