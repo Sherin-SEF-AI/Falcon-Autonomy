@@ -21,7 +21,8 @@ downloads one only when asked (licence shown first) and every file is checked ag
 loaded, wherever it was found (the workspace's models/pretrained/, a folder given, or torch's hub cache).
 
 Data. A source is "KIND:PATH?key=value&…" (parse_source) or the same as a dict:
-- falcon: a recorded drive (falcon-raw); camera= (default the first pinhole camera), every= (every n-th frame).
+- falcon: a recorded drive (falcon-raw); camera= (default the first pinhole camera), every= (every n-th frame),
+  select= (a JSON file whose "ids" lists the frames to keep: an acquisition's choice, core.activelearn).
 - version: a dataset version file (core.datasets; datasets/<spec>/versions/vNNN.json) and split= train | val | test;
   each run's run.json must still have the SHA-256 the version recorded (else refused: the data changed).
 - kitti_object, coco, bdd100k, nuscenes: read in place through core.realgap.read_set (labels=, camera=, limit=,
@@ -389,7 +390,16 @@ def load_source(src, classes) -> tuple:
     kind = src.get('kind')
     if kind == 'falcon':
         smp = _falcon_samples(src['path'], classes, src.get('camera'), src.get('every', 1))
-        return smp, [], {f'falcon:{src["path"]}/run.json': os.path.join(src['path'], 'run.json')}
+        ins = {f'falcon:{src["path"]}/run.json': os.path.join(src['path'], 'run.json')}
+        notes = []
+        if src.get('select'):                     # an acquisition's choice of frames (core.activelearn)
+            from .provenance import read_json
+            keep = set(read_json(src['select']).get('ids') or ())
+            n0 = len(smp)
+            smp = [x for x in smp if x['id'] in keep]
+            ins[f'select:{src["path"]}'] = src['select']
+            notes.append(f'{src["path"]}: {len(smp)} of {n0} frames selected by {src["select"]}')
+        return smp, notes, ins
     if kind == 'version':
         return _version_samples(src, classes)
     if kind in REAL_KINDS:

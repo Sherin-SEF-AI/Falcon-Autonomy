@@ -78,10 +78,13 @@ def _conditions(run) -> dict:
 
 
 def collect(runs: list, m: dict, workspace: str = '', camera: str | None = None, every: int = 1, progress=None,
-            out_path: str | None = None, cancel=None) -> dict:
+            out_path: str | None = None, cancel=None, runner=None, meta_run: str | None = None) -> dict:
     """Run the model over the drives' frames: {'frames': [frame records], 'providers', 'latency_ms', 'classes'}.
     A frame record: {'image_id', 'drive', 'step', 'image', 'gt': [...], 'det': [...], 'conditions'} (detector) or
-    {'image_id', 'drive', 'step', 'image', 'confusion': [[...]]} (segmenter). out_path: predictions.jsonl."""
+    {'image_id', 'drive', 'step', 'image', 'confusion': [[...]]} (segmenter). out_path: predictions.jsonl.
+    runner: a models.Runner already loaded (several calls share one); meta_run: the run name a plug-in is told
+    (meta['run']) instead of the folder's — a seeded test model then draws the same numbers for a re-run of a frame
+    (core.rootcause's counterfactuals)."""
     import cv2
     from .exporters import ExportError, Run, is_pinhole
     from .models import Runner
@@ -92,7 +95,7 @@ def collect(runs: list, m: dict, workspace: str = '', camera: str | None = None,
         raise HarnessError(str(e)) from None
     if not loaded:
         raise HarnessError('no drives to evaluate on')
-    runner = Runner(m, workspace)
+    runner = runner if runner is not None else Runner(m, workspace)
     seg = m['kind'] == 'segmenter'
     classes = model_classes(m)
     cmap = m.get('class_map') or {}
@@ -127,7 +130,8 @@ def collect(runs: list, m: dict, workspace: str = '', camera: str | None = None,
             if run.key not in conds:
                 conds[run.key] = _conditions(run)
             cond = conds[run.key]
-            meta = {'objects': objs, 'weather': run.cfg.get('weather') or {}, 'run': run.name, 'step': rec['step']}
+            meta = {'objects': objs, 'weather': run.cfg.get('weather') or {}, 'run': meta_run or run.name,
+                    'step': rec['step']}
             t0 = time.perf_counter()
             out = runner.predict(rgb, meta)
             lat.append((time.perf_counter() - t0) * 1000.0)

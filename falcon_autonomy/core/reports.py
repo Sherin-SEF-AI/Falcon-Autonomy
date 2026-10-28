@@ -16,7 +16,14 @@ Kinds (KINDS) and their source:
                against the targets, per class, range bin and cell
 - study        a scenario study's folder (workspace/studies/NAME): the search, its curve and the failing cases
 - leaderboard  a Leaderboard evaluation's folder (leaderboard.json): driving score, route completion and infraction
-               penalty with intervals, per scenario and per km
+               penalty with intervals, per scenario and per km; the traffic-rule violations beside them when checked
+- rootcause    a root-cause attribution's folder (rootcause.json; core.rootcause, `falcon why`): a failing case's
+               factors with whether removing each fixes it (necessary) and whether it alone fails (sufficient), the
+               re-runs; or an evaluation's correlates of misses with intervals; or a policy failure by its inputs
+- rules        a traffic-rule check (core.rules): a folder with rules.json (`falcon rules check … --out DIR`, the
+               Data page's check, or a stack run's rules.json): the rule set and its formulas, per run each rule's
+               robustness, violations and counts per km, a timeline of the violations and the unknown stretches, and
+               the aggregate over runs with intervals
 
 Colours: before / first series blue (#2a78d6 light, #3987e5 dark), after / second orange (#eb6834, #d95926) — checked
 for colour-vision deficiency (ΔE ≥ 24 protan) — and the two also differ by mark shape (circle, square) and are named
@@ -33,7 +40,7 @@ from . import provenance as PV
 from .paths import tilde
 
 REPORT_SCHEMA = 'falcon.report/1'
-KINDS = ('iteration', 'evaluation', 'dataset', 'study', 'leaderboard')
+KINDS = ('iteration', 'evaluation', 'dataset', 'study', 'leaderboard', 'rules', 'rootcause')
 
 CSS = """
 :root{--bg:#fcfcfb;--panel:#f3f2ef;--ink:#0b0b0b;--ink2:#52514e;--muted:#6f6e69;--hair:#e1e0d9;--grid:#dcdad3;
@@ -503,7 +510,9 @@ def report_study(src: str) -> Page:
                ('rig', esc(st.get('rig'))), ('seed', esc(st.get('seed'))),
                ('weather', esc(json.dumps(st['weather'])) if st.get('weather') else 'the world\'s'),
                ('evaluations', esc(len(results)))]))
-    pg.note('The objective is the run\'s criticality (core.criticality; 1 for a collision): where driving the '
+    obj = st.get('objective') or {}
+    pg.note(f'The objective is {obj["about"]}.' if obj.get('about') else
+            'The objective is the run\'s criticality (core.criticality; 1 for a collision): where driving the '
             'scenario becomes critical, not where a perception model fails.')
     searches = sorted(f for f in os.listdir(src) if f.startswith('search-') and f.endswith('.json'))
     for f in searches:
@@ -553,6 +562,9 @@ def report_leaderboard(src: str) -> Page:
         pg.h2('Infractions per km')
         pg.add(table(['kind', 'per km', 'penalty'], [[esc(k), num(v), num((lb.get('penalties') or {}).get(k))]
                                                      for k, v in lb['infractions_per_km'].items()], numeric=(1, 2)))
+    if lb.get('rules'):
+        pg.h2('Traffic rules (beside the score, not in it)')
+        _rules_aggregate(pg, lb['rules'])
     if lb.get('failed'):
         pg.h2('Routes that could not run')
         pg.add(table(['scenario', 'error'], [[esc(f['scenario']), esc(f['error'])] for f in lb['failed']]))
@@ -560,8 +572,116 @@ def report_leaderboard(src: str) -> Page:
     return pg
 
 
+STATE_CLASS = {'violated': 'crit', 'satisfied': 'good', 'not evaluable': 'muted'}
+
+
+def timeline_chart(result: dict, width: int = 900) -> str:
+    """One row per rule over the run's time: violations as red bars, unknown stretches as grey ones (each with a
+    <title>); the table beside it lists the same intervals."""
+    rows = result['rules']
+    T = max(float(result.get('duration_s') or 0.0), 1e-6)
+    x0, rh, pw = 190, 18, width - 200
+    h = 26 + rh * len(rows)
+    out = [f'<svg viewBox="0 0 {width} {h}" role="img" aria-label="rule violations over time">']
+    for k, r in enumerate(rows):
+        y = 6 + k * rh
+        out.append(f'<text x="{x0 - 6}" y="{y + 12}" text-anchor="end">{esc(r["id"])}</text>'
+                   f'<line class="ax" x1="{x0}" y1="{y + rh - 2}" x2="{x0 + pw}" y2="{y + rh - 2}"/>')
+        for a, b in r.get('unknown') or ():
+            out.append(f'<rect x="{x0 + pw * a / T:.1f}" y="{y + 3}" width="{max(pw * (b - a) / T, 1):.1f}" '
+                       f'height="{rh - 6}" style="fill:var(--grid)"><title>{esc(r["id"])}: unknown '
+                       f'{a:.2f}–{b:.2f} s</title></rect>')
+        for v in r['violations']:
+            out.append(f'<rect x="{x0 + pw * v["start"] / T:.1f}" y="{y + 2}" '
+                       f'width="{max(pw * (v["end"] - v["start"]) / T, 2):.1f}" height="{rh - 4}" '
+                       f'style="fill:var(--crit)"><title>{esc(r["id"])}: violated {v["start"]:.2f}–{v["end"]:.2f} s, '
+                       f'worst robustness {v["min_robustness"]:.3f} at {v["at"]:.2f} s</title></rect>')
+    yb = 10 + rh * len(rows)
+    out.append(f'<text x="{x0}" y="{yb + 12}">0 s</text><text x="{x0 + pw}" y="{yb + 12}" text-anchor="end">'
+               f'{T:.1f} s</text></svg>')
+    return ''.join(out)
+
+
+def _rules_result(pg: Page, r: dict):
+    pg.add(kv([('samples', esc(f'{r["samples"]} every {r.get("step_s")} s ({r["duration_s"]} s)')),
+               ('distance', esc(f'{r["distance_km"]} km')), ('handedness of the run', esc(r.get('handedness'))),
+               ('sources', esc('; '.join(f'{k}: {v}' for k, v in (r.get('sources') or {}).items())))]))
+    for w in r.get('warnings') or ():
+        pg.note(w)
+    pg.add('<p class="legend"><span><i class="sw" style="background:var(--crit)"></i>violated</span><span><i '
+           'class="sw" style="background:var(--grid)"></i>unknown (not recorded or not measurable)</span></p>',
+           timeline_chart(r))
+    pg.add(table(['rule', 'state', 'robustness', 'violations', 'per km', 'evaluated', 'intervals (s)'], [
+        [f'{esc(x["title"])} <span class="mono">{esc(x["id"])}</span>',
+         f'<span class="{STATE_CLASS.get(x["state"], "muted")}">{esc(x["state"])}</span>',
+         '∞' if x.get('vacuous') else num(x['robustness']), esc(x['count']),
+         num(x['per_km'], 2), esc(f'{100 * (x["evaluated_share"] or 0):.0f} %'),
+         esc(', '.join(f'{v["start"]:.2f}–{v["end"]:.2f}' for v in x['violations'][:8])
+             + (' …' if len(x['violations']) > 8 else '')
+             + (f' (unknown: {", ".join(x["missing_signals"])})' if x.get('missing_signals') else ''))]
+        for x in r['rules']], numeric=(2, 3, 4, 5)))
+    for n in r.get('notes') or ():
+        pg.add(f'<p class="muted">{esc(n)}</p>')
+
+
+def _rules_aggregate(pg: Page, agg: dict):
+    pg.add(kv([('runs', esc(agg.get('runs'))), ('distance', esc(f'{agg.get("distance_km", 0):.3f} km')),
+               ('violations', esc(agg.get('violations'))), ('per km', num(agg.get('per_km'), 2)),
+               ('rule set', esc((agg.get('ruleset') or {}).get('name'))), ('intervals', esc(agg.get('interval')))]))
+    pg.add(table(['rule', 'runs evaluated', 'violations', 'per km [95 %]', 'runs violating [95 %]',
+                  'lowest robustness'], [
+        [esc(r['title']), esc(r['runs_evaluated']), esc(r['violations']),
+         num(r['per_km'], 2) + (f' [{num(r["per_km_ci95"][0], 2)}, {num(r["per_km_ci95"][1], 2)}]'
+                                if r.get('per_km_ci95') else ''),
+         esc(f'{r["runs_violating"]}') + (f' [{num(r["share_ci95"][0], 2)}, {num(r["share_ci95"][1], 2)}]'
+                                          if r.get('share_ci95') else ''), num(r['min_robustness'])]
+        for r in agg.get('rules') or ()], numeric=(1, 2, 3, 4, 5)))
+
+
+def report_rules(src: str) -> Page:
+    p = src if src.endswith('.json') else os.path.join(src, 'rules.json')
+    pg = Page('rules', 'Traffic-rule check', p)
+    doc = pg.json(p)
+    results = doc['results'] if doc.get('schema') == 'falcon.rules_results/1' else [doc]
+    if not results or results[0].get('schema') != 'falcon.rules_check/1':
+        raise ReportError(f'{p} is not a traffic-rule check (falcon.rules_check/1)')
+    sets = {}
+    for r in results:
+        sets.setdefault(r['ruleset']['id'], r)
+    pg.title = (f'Traffic rules: {", ".join(r["ruleset"].get("name") or k for k, r in sets.items())} on '
+                f'{len(results)} run(s)')
+    pg.note('Rules marked heuristic use thresholds that are Falcon\'s choices, not the law\'s. Not recorded, so not '
+            'checked: ' + '; '.join(results[0].get('not_recorded') or ()))
+    for k, first in sets.items():
+        rs = first['ruleset']
+        pg.h2(f'Rule set {rs.get("name") or k}')
+        pg.add(kv([('handedness', esc(rs.get('handedness'))),
+                   ('rule file', f'<span class="mono">{esc(rs.get("source"))}</span>'),
+                   ('its SHA-256', f'<span class="mono">{esc(rs.get("sha256"))}</span>'),
+                   ('method', esc(first.get('method')))]))
+        pg.add(table(['rule', 'tags', 'formula'], [[esc(f'{x["title"]} ({x["id"]})'), esc(' '.join(x['tags'])),
+                                                   f'<span class="mono">{esc(x["formula"])}</span>']
+                                                  for x in first['rules']]))
+        agg = (doc.get('aggregates') or {}).get(k)
+        if agg:
+            pg.add(f'<h3>Over its {agg["runs"]} runs</h3>')
+            _rules_aggregate(pg, agg)
+    for r in results:
+        pg.h2(f'Run {os.path.basename(str(r.get("run") or r.get("source") or ""))}'
+              + (f' episode {r["episode"]}' if r.get('episode') is not None else ''))
+        _rules_result(pg, r)
+    pg.provenance(doc.get('provenance'), 'the check')
+    return pg
+
+
 BUILDERS = {'iteration': report_iteration, 'evaluation': report_evaluation, 'dataset': report_dataset,
-            'study': report_study, 'leaderboard': report_leaderboard}
+            'study': report_study, 'leaderboard': report_leaderboard, 'rules': report_rules,
+            'rootcause': lambda src: _rootcause(src)}
+
+
+def _rootcause(src: str) -> Page:
+    from .rootcause import report
+    return report(src)
 
 
 def build(kind: str, src: str) -> Page:
@@ -650,6 +770,12 @@ def sources(ws: str) -> dict:
     for d in sorted(_listdir(os.path.join(ws, 'leaderboard')), reverse=True):      # the Training page's folders
         if os.path.isfile(os.path.join(ws, 'leaderboard', d, 'leaderboard.json')):
             out['leaderboard'].append((d, os.path.join(ws, 'leaderboard', d)))
+    for d in sorted(_listdir(os.path.join(ws, 'rootcause')), reverse=True):        # "Why did this fail?"
+        if os.path.isfile(os.path.join(ws, 'rootcause', d, 'rootcause.json')):
+            out['rootcause'].append((d, os.path.join(ws, 'rootcause', d)))
+    for d in sorted(_listdir(os.path.join(ws, 'rules')), reverse=True):            # the Data page's rule checks
+        if os.path.isfile(os.path.join(ws, 'rules', d, 'rules.json')):
+            out['rules'].append((d, os.path.join(ws, 'rules', d)))
     return out
 
 
@@ -680,8 +806,8 @@ def default_name(kind: str, src: str) -> str:
 
 
 def main_report(argv) -> int:
-    """`falcon report KIND SRC --out FILE` (KIND: iteration, evaluation, dataset, study, leaderboard): 0 ok, 2
-    failed."""
+    """`falcon report KIND SRC --out FILE` (KIND: iteration, evaluation, dataset, study, leaderboard, rules,
+    rootcause): 0 ok, 2 failed."""
     import argparse
     from . import protocol as P
     ap = argparse.ArgumentParser(prog='falcon report', description='a self-contained HTML report (docs/reports.md)')

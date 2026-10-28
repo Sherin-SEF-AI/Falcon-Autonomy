@@ -17,8 +17,8 @@ Each milestone ends with its tests passing, its docs and a demo. Pages appear in
 
 | # | milestone | contents | status |
 |---|---|---|---|
-| 9 | Sharper loop | model-in-the-loop rare-case search, automatic root-cause attribution, active learning, formal traffic-rule checking (temporal logic, Indian rules) | next |
-| 10 | Realism | weather and sensor physics CARLA lacks (lidar and radar in rain and fog, lens droplets, glare), Indian road assets within the packaged CARLA, runtime ODD monitoring | |
+| 9 | Sharper loop | model-in-the-loop rare-case search, automatic root-cause attribution, active learning, formal traffic-rule checking (temporal logic, Indian rules) | **done (1.1.0)** |
+| 10 | Realism | weather and sensor physics CARLA lacks (lidar and radar in rain and fog, lens droplets, glare), Indian road assets within the packaged CARLA, runtime ODD monitoring | next |
 | 11 | Real to sim | learned sim-to-real image translation (labels kept), neural reconstruction of real logs | |
 | 12 | Learned worlds | world-model / end-to-end training, adversarial multi-agent traffic, vision-language driving explanations scored against ground truth | |
 | 13 | Deployment | TensorRT export and profiling on the Jetson AGX Orin, CI mode for stacks on GitHub, release 2.0 | |

@@ -47,7 +47,10 @@ grid or seeded random samples, or a search — Bayesian optimisation, CMA-ES, ad
 random — maximising the criticality. Every evaluation is a drive whose folder is named by its cache key; a study
 resumes after a cancel and never runs the same parameters twice; a search starts from the sweeps of its study.
 **Rare cases** shows how the search went, the failing cases ranked (each replayable as a drive and exportable as
-OpenSCENARIO) and a map of the failure region over any two parameters.
+OpenSCENARIO) and a map of the failure region over any two parameters. The objective can instead be a registered
+model's **perception failure** on the run's labelled frames, or both, with weather fields searched beside the
+scenario's parameters ([model-in-the-loop](rare-cases-mil.md)); *Why did this fail?* attributes a failing case to its
+factors by re-runs ([root cause](root-cause.md)).
 
 ## OpenSCENARIO
 CARLA's ScenarioRunner is not part of a CARLA 0.9.16 install and is not on the reference machine (it was not

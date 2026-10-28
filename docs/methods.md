@@ -126,3 +126,14 @@ volume — with 120 evaluations each:
 
 Over 20 other seeds (100–119): random 115.3 (most seeds never reached five failures) and 3.4; CMA-ES 39.9 and 62.6;
 Bayesian optimisation 22.2 and 50.6; adaptive sampling 33.5 and 73.8. `core.search.compare` returns both curves.
+
+Bayesian optimisation by the **probability of failure** (`bayes-pof`: P(f ≥ t) = Φ((μ − t)/σ) instead of expected
+improvement) reaches the fifth failure as soon (25.2 on seeds 0–4, 22.5 on 100–109) and finds about twice the
+failures at 120 (99.2, 101.8) with nearly three times the coverage of the planted region; straddle and expected
+improvement over the threshold were measured and not adopted ([model-in-the-loop](rare-cases-mil.md#searchers-probability-of-failure)).
+
+## Perception failure and root cause
+
+The model-in-the-loop objective — window recall, lost lead, miss rate and the perception failure (heuristic) — is
+defined in [model-in-the-loop](rare-cases-mil.md#the-perception-failure); counterfactual and correlational
+attribution in [root cause](root-cause.md).

@@ -20,12 +20,15 @@
     falcon experiment mixed|list|best|results|export ...   the mixed sim/real experiment, run tracking, MLflow
     falcon policy bc|offline|ppo|rollout ...   driving policies: behaviour cloning, PPO, evaluation in the environment
     falcon sweep PROJECT --scenario S --name N [--grid K | --samples K]   a parameter sweep (resumable)
-    falcon search PROJECT --scenario S --name N [--method bayes|cmaes|adaptive|random] [--budget B]   rare cases
+    falcon search PROJECT --scenario S --name N [--method bayes|bayes-pof|cmaes|adaptive|random] [--budget B]
+                  [--objective criticality|perception|both --model ID --weather FIELD]   rare cases
     falcon stack topics|image|bridge|run|suite|replay|odd|report ...   stack testing: ROS 2 bridge, suites, safety case
     falcon hil device|deploy|session|report|acceptance ...   hardware in the loop: a Jetson (or a simulated device)
     falcon loop PROJECT [status|next|run --until STEP|show N|new|set]   the closed loop (docs/loop.md)
     falcon report KIND SRC --out FILE          a self-contained HTML report (docs/reports.md)
     falcon replay import|match|run|compare ...   real logs (nuScenes, Waymo v2, ROS 2 bags) replayed with changes
+    falcon rules check RUN... [--set india|generic|FILE] | list | show SET   traffic rules as temporal logic
+    falcon why case|evaluation|episode ...   root-cause attribution of a failure (docs/root-cause.md)
     falcon schema                              print the project schema's path
 
 Exit codes: 0 ok; otherwise the worker's code (falcon_autonomy.core.protocol: 2 failed, 3 cancelled, 4 server lost,
@@ -322,6 +325,9 @@ def parser() -> argparse.ArgumentParser:
                                 'docs/loop.md)')
     sub.add_parser('report', help='an HTML report: falcon report KIND SRC --out FILE (see docs/reports.md)')
     sub.add_parser('replay', help='log replay: falcon replay import|match|run|compare (see docs/log-replay.md)')
+    sub.add_parser('rules', help='traffic rules as temporal logic: falcon rules check RUN... | list | show SET (see '
+                                 'docs/traffic-rules.md)')
+    sub.add_parser('why', help='why did it fail: falcon why case|evaluation|episode (see docs/root-cause.md)')
     return ap
 
 
@@ -401,6 +407,12 @@ def main(argv=None) -> int:
     if argv[:1] == ['hil']:                       # hardware in the loop (falcon_autonomy.hil)
         from .hil.cli import main_hil
         return main_hil(argv[1:])
+    if argv[:1] == ['rules']:                     # traffic rules as temporal logic (core.rules)
+        from .core.rules import main_rules
+        return main_rules(argv[1:])
+    if argv[:1] == ['why']:                       # root-cause attribution (core.rootcause)
+        from .core.rootcause import main_why
+        return main_why(argv[1:])
     if argv[:1] == ['replay']:                    # log replay: import, re-simulate with changes, compare
         from .core.logreplay.commands import main_replay
         return main_replay(argv[1:])

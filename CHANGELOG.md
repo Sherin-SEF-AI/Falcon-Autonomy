@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.1.0 — milestone 9: a sharper loop
+
+- **Model-in-the-loop rare-case search** (`falcon search --objective perception|both --model M`): each evaluation runs
+  the model on the scenario's frames and scores its failure on the actors that matter — recall over the 3 s before the
+  critical moment and how late the first detection came (heuristic, defined and tested). A new acquisition rule,
+  probability of failure, kept only because it measurably helped on the planted objective (99–102 failures in 120
+  evaluations against 51). On the fake: the third failure at 18.1 evaluations against random's 27.7 (10 seeds); on a
+  real server (one seed, an illustration) 9 failures in 24 against random's 1. Criticality stays the default; the Loop
+  can use either.
+- **Why did this fail?** (`falcon why`): counterfactual re-runs of a kinematic case, one factor at a time (occlusion,
+  range, lighting, fog, rain, appearance, sensor faults), with necessary/sufficient per factor — "in this scenario, with
+  this model: a single-case attribution, not a general cause"; correlates of an evaluation's misses with intervals
+  (labelled correlational); a Leaderboard infraction by the policy's input features. From the Models gallery and the
+  Rare cases list; a report kind.
+- **Active learning** (`falcon experiment active`, Training ▸ Active learning): entropy, margin, detection
+  uncertainty, k-centre diversity and a hybrid against random selection, same budget per round, paired intervals and
+  seed spread, the area under the AP-vs-frames curve and the frames needed to match random. The Loop's data step can
+  select by acquisition. Measured on real drives: no finding yet (too few test drives, no COCO weights on disk), and the
+  result says so.
+- **Traffic rules in temporal logic** (`falcon rules`): a small formula language (parsed, never evaluated as Python)
+  with quantitative semantics and three-valued handling of unknown signals; an Indian rule set (left-hand traffic) and
+  a right-hand set, editable; lanes, junctions, speed limits and crossings from lanes.json and the map's OpenDRIVE
+  (Town10 lanes within a median 0.4 mm of CARLA's waypoints). Violations beside Leaderboard scores, in stack suites,
+  the safety case, reports and the run browser. Not checkable, as not recorded: indicators, horn, right of way at
+  unsignalled junctions.
+
 ## 1.0.0 — milestones 7 and 8: stack, replay, hardware, the Loop
 
 - **The Loop** becomes the home page: model + ODD → evaluate → weak cells (class × range × condition, a heuristic

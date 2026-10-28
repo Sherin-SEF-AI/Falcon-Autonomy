@@ -171,6 +171,7 @@ class SuiteRunner:
         summ = ST.summarise(rows, seed=0)
         summ.update(name=doc['name'], driver=st['driver'], planned=len(plan),
                     finished=sum(1 for r in rows if r.get('status') == 'ok'))
+        summ['rules'] = ST.rule_summary(rows, doc.get('rules') or None)
         write_json(os.path.join(self.dir, 'results.json'), summ)
         ST.write_table(rows, os.path.join(self.dir, 'results.csv'))
         write_json(os.path.join(self.dir, 'run.json'), {

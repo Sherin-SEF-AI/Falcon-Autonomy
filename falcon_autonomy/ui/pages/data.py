@@ -1,13 +1,14 @@
 """Data: record a drive (its cost shown before it starts), and browse recorded runs frame by frame with their label
-layers. The dataset engine, exports and coverage dashboards join this page in milestone 3."""
+layers and their traffic-rule check (core.rules: each rule's violations on a timeline under the frames, with the
+robustness and counts per km). The dataset engine, exports and coverage dashboards are the Datasets tab."""
 from __future__ import annotations
 
 import json
 import os
 
 import numpy as np
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QImage, QPixmap
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel, QMessageBox, QSlider,
                              QSpinBox, QSplitter, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
@@ -46,6 +47,189 @@ class ImageView(QLabel):
         if self._pm is not None:
             self.setPixmap(self._pm.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio,
                                            Qt.TransformationMode.SmoothTransformation))
+
+
+class RuleTimeline(QWidget):
+    """One row per rule over the run's time: violations as red bars, unknown stretches as grey ones, the current
+    frame as a line; a click asks for that time (seeked to by the browser)."""
+    seek = pyqtSignal(float)
+
+    def __init__(self):
+        super().__init__()
+        self.result = None
+        self.t = None
+        self.setMinimumHeight(60)
+        self.setMouseTracking(True)
+
+    def set_result(self, res):
+        self.result = res
+        self.setMinimumHeight(30 + 18 * len((res or {}).get('rules') or ()))
+        self.update()
+
+    def set_time(self, t):
+        self.t = t
+        self.update()
+
+    def _geom(self):
+        return 150, self.width() - 12, max(float((self.result or {}).get('duration_s') or 0.0), 1e-6)
+
+    def mousePressEvent(self, ev):
+        x0, x1, T = self._geom()
+        if self.result and x0 <= ev.position().x() <= x1:
+            self.seek.emit(T * (ev.position().x() - x0) / (x1 - x0))
+
+    def paintEvent(self, ev):
+        from ..theme import STATUS, THEME
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(THEME.tok['panel']))
+        res = self.result
+        if not res:
+            p.setPen(QColor(THEME.tok['muted']))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, 'Not checked yet')
+            return
+        x0, x1, T = self._geom()
+        rh = 18
+
+        def X(t):
+            return x0 + (x1 - x0) * min(max(t / T, 0.0), 1.0)
+        for k, r in enumerate(res['rules']):
+            y = 4 + k * rh
+            p.setPen(QColor(THEME.tok['ink2'] if r['state'] != 'not evaluable' else THEME.tok['muted']))
+            p.drawText(QRectF(0, y, x0 - 8, rh), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, r['id'])
+            p.setPen(QColor(THEME.tok['grid2']))
+            p.drawLine(QPointF(x0, y + rh - 2), QPointF(x1, y + rh - 2))
+            for a, b in r.get('unknown') or ():
+                p.fillRect(QRectF(X(a), y + 4, max(X(b) - X(a), 1.0), rh - 8), QColor(THEME.tok['strong']))
+            for v in r['violations']:
+                p.fillRect(QRectF(X(v['start']), y + 2, max(X(v['end']) - X(v['start']), 2.0), rh - 4),
+                           QColor(STATUS['critical']))
+        yb = 4 + rh * len(res['rules'])
+        p.setPen(QColor(THEME.tok['muted']))
+        p.drawText(QRectF(x0, yb + 2, 80, 14), Qt.AlignmentFlag.AlignLeft, '0 s')
+        p.drawText(QRectF(x1 - 80, yb + 2, 80, 14), Qt.AlignmentFlag.AlignRight, f'{T:.1f} s')
+        p.drawText(QRectF(x0 + 80, yb + 2, x1 - x0 - 160, 14), Qt.AlignmentFlag.AlignCenter,
+                   'red: violated · grey: unknown (not recorded) · click to go there')
+        if self.t is not None:
+            p.setPen(QPen(QColor(THEME.tok['ink']), 1.5))
+            p.drawLine(QPointF(X(self.t), 2), QPointF(X(self.t), yb))
+
+
+class RulesPanel(QWidget):
+    """The traffic-rule check of the run being browsed (core.rules, in the background): the rule set (by the run's
+    handedness, India, generic or a file), the timeline, each rule's state, robustness, violations and counts per km;
+    Save writes it to the workspace's rules/ folder for a report (Reports ▸ Traffic-rule check)."""
+
+    def __init__(self, browse):
+        super().__init__()
+        self.browse = browse
+        self.result = None
+        self.path = ''
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        row = QHBoxLayout()
+        self.set_box = QComboBox()
+        self.set_box.addItem('By the run\'s traffic side', '')
+        self.set_box.addItem('India (left-hand)', 'india')
+        self.set_box.addItem('Generic (right-hand)', 'generic')
+        self.set_box.addItem('A rule file…', 'file')
+        self.set_box.currentIndexChanged.connect(lambda _: self.check())
+        row.addWidget(label('Rules', muted=True))
+        row.addWidget(self.set_box)
+        self.status = label('', muted=True)
+        row.addWidget(self.status, 1)
+        self.save_btn = button('Save for a report', self.save)
+        row.addWidget(self.save_btn)
+        v.addLayout(row)
+        self.timeline = RuleTimeline()
+        self.timeline.seek.connect(self.browse.seek_time)
+        v.addWidget(self.timeline)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(['Rule', 'State', 'Robustness', 'Violations', 'Per km', 'Evaluated', 'First at'])
+        self.tree.setRootIsDecorated(False)
+        self.tree.setMinimumHeight(120)
+        self.tree.itemDoubleClicked.connect(self._go)
+        v.addWidget(self.tree)
+        self.rule_file = ''
+
+    def show_run(self, path):
+        self.path = path or ''
+        self.result = None
+        self.tree.clear()
+        self.timeline.set_result(None)
+        if self.path:
+            self.check()
+
+    def check(self):
+        from ...core import rules as RU
+        if not self.path:
+            return
+        spec = self.set_box.currentData()
+        if spec == 'file':
+            from PyQt6.QtWidgets import QFileDialog
+            f, _ = QFileDialog.getOpenFileName(self, 'A rule file (falcon.rules/1)', '',
+                                               'Rules (*.rules *.txt);;All (*)')
+            if not f:
+                self.set_box.setCurrentIndex(0)
+                return
+            self.rule_file = f
+            spec = f
+        path = self.path
+        self.status.setText('checking…')
+
+        def work():
+            return path, RU.check_run(path, spec or None)
+
+        def fail(e):
+            if path == self.path:
+                self.status.setText(f'not checked: {e}')
+        tasks.run(self, work, self._done, fail)
+
+    def _done(self, res):
+        path, r = res
+        if path != self.path:
+            return
+        self.result = r
+        self.timeline.set_result(r)
+        self.tree.clear()
+        from ..theme import STATUS
+        for x in r['rules']:
+            rob = '∞' if x['vacuous'] else ('—' if x['robustness'] is None else f'{x["robustness"]:.3f}')
+            it = QTreeWidgetItem([x['title'], x['state'], rob, str(x['count']),
+                                  '—' if x['per_km'] is None else f'{x["per_km"]:.2f}',
+                                  f'{100 * (x["evaluated_share"] or 0):.0f} %',
+                                  f'{x["violations"][0]["start"]:.2f} s' if x['violations'] else ''])
+            it.setData(0, 256, x['violations'][0]['start'] if x['violations'] else None)
+            it.setToolTip(0, f'{x["id"]}: {x["formula"]}' + (f'\nunknown: {", ".join(x["missing_signals"])}'
+                                                              if x['missing_signals'] else ''))
+            sev = {'violated': 'critical', 'satisfied': 'good'}.get(x['state'])
+            if sev and (x['state'] == 'violated' or (x['evaluated_share'] or 0) >= 0.5):
+                it.setForeground(1, QColor(STATUS[sev]))       # satisfied on under half the run: not coloured good
+            self.tree.addTopLevelItem(it)
+        for c in range(7):
+            self.tree.resizeColumnToContents(c)
+        rs = r['ruleset']
+        warn = ' ⚠ ' + ' '.join(r['warnings']) if r.get('warnings') else ''
+        self.status.setText(f'{rs.get("name")}: {r["totals"]["violations"]} violation(s) in {r["duration_s"]} s, '
+                            f'{r["distance_km"]} km{warn}')
+
+    def _go(self, it, _c):
+        t = it.data(0, 256)
+        if t is not None:
+            self.browse.seek_time(float(t))
+
+    def save(self):
+        from ...core.provenance import block, write_json
+        if not self.result:
+            return
+        ws = self.browse.win.workspace()
+        name = f'{os.path.basename(self.path.rstrip("/"))}-{self.result["ruleset"]["id"]}'
+        d = os.path.join(ws, 'rules', name)
+        os.makedirs(d, exist_ok=True)
+        write_json(os.path.join(d, 'rules.json'), {
+            'schema': 'falcon.rules_results/1', 'results': [self.result], 'aggregates': {},
+            'provenance': block({'run': os.path.join(self.path, 'frames.jsonl')},
+                                settings={'ruleset': self.result['ruleset']})})
+        self.status.setText(f'saved to {tilde(d)} (Reports ▸ Traffic-rule check)')
 
 
 class RecordTab(QWidget):
@@ -201,9 +385,22 @@ class BrowseTab(QWidget):
         self.objects.setRootIsDecorated(False)
         self.objects.setMinimumHeight(140)
         objs.add(self.objects)
-        rv.addWidget(objs)
-        rv.addLayout(lower)
-        split.addWidget(right)
+        below = QWidget()                     # the frame's details and the run's rules, under a splitter
+        bv = QVBoxLayout(below)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.addWidget(objs)
+        bv.addLayout(lower)
+        rules = Section('Traffic rules', 'Each rule as a temporal-logic formula over what the run recorded '
+                                         '(docs/traffic-rules.md): red where it was violated, grey where a fact it '
+                                         'needs was not recorded.')
+        self.rules = RulesPanel(self)
+        rules.add(self.rules)
+        bv.addWidget(rules)
+        vsplit = QSplitter(Qt.Orientation.Vertical)
+        vsplit.addWidget(right)
+        vsplit.addWidget(scroll(below))
+        vsplit.setSizes([620, 520])
+        split.addWidget(vsplit)
         split.setSizes([300, 900])
         self.slider.valueChanged.connect(self.load_frame)
         self.sensor.currentIndexChanged.connect(lambda _: self.load_frame(self.slider.value()))
@@ -228,10 +425,19 @@ class BrowseTab(QWidget):
                     self.runs.setCurrentItem(it)
         self.runs.blockSignals(False)
 
+    def seek_time(self, t: float):
+        """Go to the frame nearest t seconds from the run's first."""
+        if not self.frames:
+            return
+        t0 = float(self.frames[0].get('sim_t') or 0.0)
+        ts = np.array([float(f.get('sim_t') or 0.0) - t0 for f in self.frames])
+        self.slider.setValue(int(np.argmin(np.abs(ts - t))))
+
     def show_run(self, path):
         self.run_dir = path or ''
         self.frames, self.cache = [], None
         self.info.clear()
+        self.rules.show_run(path)
         self.sensor.blockSignals(True)
         self.sensor.clear()
         self.sensor.blockSignals(False)
@@ -288,6 +494,7 @@ class BrowseTab(QWidget):
             return
         f = self.frames[i]
         s = self.sensor.currentText()
+        self.rules.timeline.set_time(float(f.get('sim_t') or 0.0) - float(self.frames[0].get('sim_t') or 0.0))
         self.frame_lbl.setText(f'step {f["step"]}  frame {f["frame"]}  t {f["sim_t"]:.2f} s  '
                                f'{f.get("speed_mps", 0) * 3.6:.0f} km/h')
         files = {k.split('/')[1]: os.path.join(self.run_dir, v) for k, v in f['files'].items()

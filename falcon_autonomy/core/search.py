@@ -29,6 +29,14 @@ Methods.
   refitted at every evaluation up to 30, then at every 5th. A batch is chosen by the kriging believer (Ginsbourger,
   Le Riche & Carraro 2010): each chosen or pending point is added at its predicted mean before the next is chosen.
   Starts with max(2n + 2, 6) uniform points.
+- BayesFailure ("bayes_pof"): the same surrogate with a threshold-aware acquisition, the probability that the value
+  reaches the failure threshold, P(f(x) ≥ t) = Φ((μ(x) − t) / σ(x)) — an active-learning-style rule that samples
+  where a failure is likeliest, so it maps the failure region rather than refining its peak. Measured on the planted
+  objective (120 evaluations, seeds 0–9 and 100–109; docs/rare-cases-mil.md): the same evaluations to the first
+  and the fifth failure as expected improvement, about twice the failures found and 2.8 times the share of the
+  planted region within 0.1 of a found failure (0.47–0.49 against 0.17–0.18). Straddle (Bryan et al. 2005,
+  1.96σ − |μ − t|) and expected improvement over the threshold were measured too and did not help; they are not
+  offered.
 - AdaptiveSampling: the cross-entropy method for rare events (Rubinstein 1997, Optimization of computer simulation
   models with rare events, EJOR 99; Rubinstein 1999, The cross-entropy method for combinatorial and continuous
   optimization; as used for AV testing by O'Kelly et al. 2018, Scalable end-to-end autonomous vehicle testing via
@@ -521,13 +529,39 @@ class BayesOpt(Search):
         top = X[np.argsort(-y, kind='stable')[:5]]
         local = (np.repeat(top, 100, axis=0) + self.rng.standard_normal((100 * len(top), d)) * sd)
         cand = np.vstack([self.rng.random((self.n_candidates, d)), np.clip(local, 0, 1)])
-        mu, s = gp.predict(cand)
-        ei = expected_improvement(mu, s, best, self.xi)
+        ei = self._acquire(gp, cand, best)
         x0 = cand[int(np.argmax(ei))]
         ref = np.clip(x0 + self.rng.standard_normal((200, d)) * sd * 0.25, 0, 1)
-        mu, s = gp.predict(ref)
-        ei_r = expected_improvement(mu, s, best, self.xi)
+        ei_r = self._acquire(gp, ref, best)
         return ref[int(np.argmax(ei_r))] if ei_r.max() > ei.max() else x0
+
+    def _acquire(self, gp, cand, best):
+        mu, s = gp.predict(cand)
+        return expected_improvement(mu, s, best, self.xi)
+
+
+def probability_of_failure(mu, sd, t):
+    """P(f ≥ t) under the GP's normal predictive distribution: Φ((μ − t) / σ)."""
+    return 0.5 * (1.0 + _erf((mu - t) / sd / math.sqrt(2.0)))
+
+
+class BayesFailure(BayesOpt):
+    """BayesOpt choosing the candidate likeliest to reach the failure threshold (module doc): maps the failure
+    region; batches by the kriging believer as BayesOpt."""
+
+    method = 'bayes_pof'
+
+    def __init__(self, space, seed: int = 0, threshold: float = 0.5, n_init: int | None = None,
+                 n_candidates: int = 2000, xi: float = 0.01, history=None):
+        self.threshold = float(threshold)
+        super().__init__(space, seed, n_init, n_candidates, xi, history)
+
+    def _options(self):
+        return dict(super()._options(), threshold=self.threshold)
+
+    def _acquire(self, gp, cand, best):
+        mu, s = gp.predict(cand)
+        return probability_of_failure(mu, s, float(gp.standardise(self.threshold)))
 
 
 # --- adaptive sampling (cross-entropy method) ----------------------------------------------------------------------
@@ -581,13 +615,14 @@ class AdaptiveSampling(Search):
         return out
 
 
-METHODS = {'random': RandomSearch, 'cmaes': CMAES, 'bayesopt': BayesOpt, 'adaptive': AdaptiveSampling}
+METHODS = {'random': RandomSearch, 'cmaes': CMAES, 'bayesopt': BayesOpt, 'adaptive': AdaptiveSampling,
+           'bayes_pof': BayesFailure}
 
 
 def make(method: str, space, seed: int = 0, threshold: float | None = None, **opts) -> Search:
-    """A searcher by name; the failure threshold goes to the methods that use it (adaptive)."""
+    """A searcher by name; the failure threshold goes to the methods that use it (adaptive, bayes_pof)."""
     cls = METHODS[method]
-    if cls is AdaptiveSampling and threshold is not None:
+    if cls in (AdaptiveSampling, BayesFailure) and threshold is not None:
         opts.setdefault('threshold', threshold)
     return cls(space, seed=seed, **opts)
 

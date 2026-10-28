@@ -121,6 +121,12 @@ Search a scenario's parameters for where it becomes critical (Bayesian optimisat
 random): the curve of the search, the failing cases ranked — replay one, export it as OpenSCENARIO, browse its run —
 and the failure region over two parameters.
 
+Rare-case search can also aim at the **model's** failures (*Objective: perception*): each evaluation runs a
+registered model on the scenario's frames and scores how it misses the actors that matter before the critical moment
+([model-in-the-loop search](rare-cases-mil.md)). **Why did this fail?** re-runs a failing case changing one factor at a
+time — occlusion, range, light, fog, rain, appearance, sensor faults — and says which were necessary or sufficient, in
+that case ([root cause](root-cause.md)).
+
 ### Models
 Register a perception model (ONNX, TorchScript or a plug-in; its licence and pinned SHA-256 shown, AGPL refused,
 weights downloaded only when asked), **evaluate** it on checked drives — AP/AR or mIoU with a 95 % bootstrap interval
@@ -156,6 +162,12 @@ never repeats a finished drive. The **coverage** dashboard shows what the datase
 and distance bin. A **version** freezes the finished drives with a train/validation/test split by drive or by place
 that never puts one drive (or world) in two splits. **Browse** shows any label layer (semantic, instance, range,
 boxes) and the frame's objects. The format is in [dataset format](dataset-format.md).
+
+The run browser checks a drive against **traffic rules** written in temporal logic (the Indian set: keep left,
+overtake on the right, stop at red, yield at crossings, a two-second gap, junctions clear; or a right-hand set, or your
+own): a timeline of violations with how close each rule came to breaking ([traffic rules](traffic-rules.md)). The
+Training page's **Active learning** tab measures which frames help a detector most, against random selection
+([active learning](active-learning.md)).
 
 ### Stack testing
 Connect an external driving stack through ROS 2: Falcon's bridge publishes the rig's sensors and waits each step for

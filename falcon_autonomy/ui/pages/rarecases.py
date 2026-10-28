@@ -1,6 +1,9 @@
-"""Rare cases: search a scenario's parameters for where it becomes critical — Bayesian optimisation, CMA-ES, adaptive
-sampling or random (core.search) — and see the failing cases ranked (each replayable), how the search went, and a map
-of the failure region over two parameters."""
+"""Rare cases: search a scenario's parameters for where it becomes critical — Bayesian optimisation (by expected
+improvement, or by the probability of failure), CMA-ES, adaptive sampling or random (core.search) — and see the failing
+cases ranked (each replayable), how the search went, and a map of the failure region over two parameters. The
+objective is the run's criticality, a registered model's perception failure on the run's labelled frames
+(core.milsearch: model-in-the-loop), or both; weather fields can be searched beside the scenario's parameters. "Why
+did this fail?" attributes a failing case to its factors by re-runs (core.rootcause) as a job and shows the table."""
 from __future__ import annotations
 
 import json
@@ -9,8 +12,8 @@ import sys
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QMessageBox, QSpinBox, QSplitter,
-                             QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QMessageBox, QSpinBox,
+                             QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ...core import scenarios as SC
 from ...core import search as S
@@ -18,8 +21,12 @@ from ...core.jobs import FINAL, JobSpec
 from ..theme import SEQ, STATUS, THEME
 from ..widgets import Form, KeyValues, Page, Section, button, label
 
-METHODS = (('bayes', 'Bayesian optimisation'), ('cmaes', 'CMA-ES'), ('adaptive', 'Adaptive sampling'),
-           ('random', 'Random (baseline)'))
+METHODS = (('bayes', 'Bayesian optimisation'),
+           ('bayes-pof', 'Bayesian optimisation, probability of failure (maps the region)'), ('cmaes', 'CMA-ES'),
+           ('adaptive', 'Adaptive sampling'), ('random', 'Random (baseline)'))
+OBJECTIVES = (('criticality', 'Criticality of the run'), ('perception', 'Perception failure of a model'),
+              ('both', 'Both: perception failure and criticality'))
+WEATHER = (('fog_density', 'Fog'), ('sun_altitude_angle', 'Sun altitude'), ('precipitation', 'Rain'))
 
 
 class Curve(QWidget):
@@ -136,9 +143,11 @@ class RareCasesPage(Page):
         lv = QVBoxLayout(left)
         lv.addWidget(label(self.title, title=True))
         lv.addWidget(label(self.about, muted=True, wrap=True))
-        sec = Section('Search', 'Each evaluation runs the scenario in CARLA with the parameters the method asks for; '
-                                'the objective is the run\'s criticality (1 for a collision). A search resumes where '
-                                'it stopped, and starts from the sweeps of the same study.')
+        sec = Section('Search', 'Each evaluation runs the scenario in CARLA with the parameters the method asks for. '
+                                'The objective: the run\'s criticality (1 for a collision), or a model\'s perception '
+                                'failure on the scenario\'s actors (the run is recorded with the rig\'s labels, then '
+                                'the model runs on its frames — under the GPU lock for a GPU model), or both. A search '
+                                'resumes where it stopped, and starts from the sweeps of the same study.')
         f = Form()
         self.scenario = QComboBox()
         self.scenario.currentIndexChanged.connect(lambda _: self.load())
@@ -161,9 +170,32 @@ class RareCasesPage(Page):
         self.threshold.valueChanged.connect(lambda _: self.load())
         self.seed = QSpinBox()
         self.seed.setRange(0, 2 ** 31 - 1)
-        for text, w in (('Scenario', self.scenario), ('Method', self.method), ('World', self.world),
+        self.objective = QComboBox()
+        for k, text in OBJECTIVES:
+            self.objective.addItem(text, k)
+        self.objective.currentIndexChanged.connect(lambda _: self.objective_changed())
+        self.model = QComboBox()
+        self.model.currentIndexChanged.connect(lambda _: self.load())
+        wx = QWidget()
+        wl = QHBoxLayout(wx)
+        wl.setContentsMargins(0, 0, 0, 0)
+        self.weather_fields = {}
+        for k, text in WEATHER:
+            cb = QCheckBox(text)
+            cb.toggled.connect(lambda _: self.load())
+            wl.addWidget(cb)
+            self.weather_fields[k] = cb
+        wl.addStretch(1)
+        self.fps = QSpinBox()
+        self.fps.setRange(5, 60)
+        self.fps.setValue(20)
+        self.fps.setSuffix(' Hz')
+        self.fps.valueChanged.connect(lambda _: self.load())
+        for text, w in (('Scenario', self.scenario), ('Objective', self.objective), ('Model', self.model),
+                        ('Also search', wx), ('Method', self.method), ('World', self.world),
                         ('Rig', self.rig), ('Evaluations', self.budget), ('In batches of', self.batch),
-                        ('Failure at criticality ≥', self.threshold), ('Seed', self.seed)):
+                        ('Failure at objective ≥', self.threshold), ('Simulation rate', self.fps),
+                        ('Seed', self.seed)):
             f.row(text, w)
         sec.add(f)
         b = QHBoxLayout()
@@ -183,7 +215,7 @@ class RareCasesPage(Page):
         rv.addWidget(self.curve)
         rv.addWidget(label('Failing cases, most critical first', h=True))
         self.failures = QTreeWidget()
-        self.failures.setHeaderLabels(['#', 'Criticality', 'Values', 'Run'])
+        self.failures.setHeaderLabels(['#', 'Objective', 'Criticality', 'Perception failure', 'Values', 'Run'])
         self.failures.setRootIsDecorated(False)
         self.failures.setMinimumHeight(160)
         rv.addWidget(self.failures)
@@ -191,6 +223,8 @@ class RareCasesPage(Page):
         fb.addWidget(button('Replay the selected case', self.replay))
         fb.addWidget(button('Export it as OpenSCENARIO…', self.export_case))
         fb.addWidget(button('Browse its run', self.browse))
+        fb.addWidget(button('Why did this fail?', self.why, tip='Attribute the case to its factors by re-runs that '
+                                                                'change one at a time (a job)'))
         fb.addStretch(1)
         rv.addLayout(fb)
         mh = QHBoxLayout()
@@ -209,7 +243,10 @@ class RareCasesPage(Page):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll)
         self.timer.start(2000)
-        win.bridge.finished.connect(lambda j: self.load() if j is self.job else None)
+        self.why_job = None
+        self.why_view = None
+        self._why_dir = ''
+        win.bridge.finished.connect(self.finished)
         self.refresh()
 
     def scenarios(self):
@@ -227,17 +264,34 @@ class RareCasesPage(Page):
         self.scenario.setCurrentIndex(k if k >= 0 else 0)
         self.scenario.blockSignals(False)
         doc = self.win.project.doc
-        for combo, items in ((self.world, doc['worlds']), (self.rig, doc['rigs'])):
+        detectors = [m for m in doc['models'] if m.get('kind') == 'detector']
+        for combo, items in ((self.world, doc['worlds']), (self.rig, doc['rigs']), (self.model, detectors)):
             c = combo.currentData()
             combo.clear()
             for it in items:
                 combo.addItem(it['name'], it['id'])
             k = combo.findData(c)
             combo.setCurrentIndex(k if k >= 0 else 0)
+        self.objective_changed()
+
+    def objective_changed(self):
+        self.model.setEnabled(self.objective.currentData() != 'criticality')
         self.load()
 
+    def weather_dims(self) -> list:
+        return [k for k, _ in WEATHER if self.weather_fields[k].isChecked()]
+
     def study(self):
-        return f'search-{self.scenario.currentData()}'
+        """The study's name: one per scenario, objective (and model), searched weather and rate — a study's runs
+        and objective values only compare among themselves."""
+        obj = self.objective.currentData()
+        parts = ['search', self.scenario.currentData()] if obj == 'criticality' else \
+            ['mil', self.scenario.currentData(), self.model.currentData() or 'none', obj]
+        parts += [{'fog_density': 'fog', 'sun_altitude_angle': 'sun', 'precipitation': 'rain'}[k]
+                  for k in self.weather_dims()]
+        if self.fps.value() != 20:
+            parts.append(f'{self.fps.value()}hz')
+        return '-'.join(parts)
 
     def study_dir(self):
         return os.path.join(self.win.workspace(), 'studies', self.study())
@@ -249,15 +303,28 @@ class RareCasesPage(Page):
         if not w.project.path or w.project.dirty:
             if not w.save():
                 return
+        obj = self.objective.currentData()
+        if obj != 'criticality' and not self.model.currentData():
+            QMessageBox.information(self, 'Search', 'The perception objective needs a model: register one (or add '
+                                                    'the synthetic detector) on the Models page.')
+            return
         argv = [sys.executable, '-m', 'falcon_autonomy', 'search', w.project.path, '--scenario',
                 self.scenario.currentData(), '--name', self.study(), '--method', self.method.currentData(),
                 '--budget', str(self.budget.value()), '--batch', str(self.batch.value()), '--threshold',
                 str(self.threshold.value()), '--seed', str(self.seed.value()), '--world', self.world.currentData(),
-                '--rig', self.rig.currentData()]
+                '--rig', self.rig.currentData(), '--objective', obj]
+        if obj != 'criticality':
+            argv += ['--model', self.model.currentData()]
+        for k in self.weather_dims():
+            argv += ['--weather', k]
+        if self.fps.value() != 20:
+            argv += ['--fps', str(self.fps.value())]
         if w.fake_carla:
             argv += ['--fake-carla', w.fake_carla]
         self.job = w.queue.submit(JobSpec('study', f'Search {self.scenario.currentText()} '
-                                                   f'({self.method.currentText()}, {self.budget.value()})',
+                                                   f'({self.method.currentText()}, {self.budget.value()}'
+                                                   + (f', {self.objective.currentText().lower()}'
+                                                      if obj != 'criticality' else '') + ')',
                                           argv, memory_gb=0.5))
         w.jobs_dock.raise_()
 
@@ -278,19 +345,28 @@ class RareCasesPage(Page):
         thr = self.threshold.value()
         self.curve.set_values([r.get('objective', 0.0) for r in rows], thr)
         self.failures.clear()
-        hist = [{'params': r['values'], 'value': r.get('objective', 0.0), 'i': k, 'run': r['run']}
+        hist = [{'params': r['values'], 'value': r.get('objective', 0.0), 'i': k, 'run': r['run'],
+                 'criticality': r.get('criticality', r.get('objective')),
+                 'perception': (r.get('perception') or {}).get('value'), 'kind': r.get('objective_kind',
+                                                                                         'criticality')}
                 for k, r in enumerate(rows)]
         self.history = hist
         for rank, h in enumerate(S.failures(hist, thr), 1):
-            it = QTreeWidgetItem([str(rank), f'{h["value"]:.3f}',
+            it = QTreeWidgetItem([str(rank), f'{h["value"]:.3f}', f'{h["criticality"]:.3f}'
+                                  if h['criticality'] is not None else '—',
+                                  f'{h["perception"]:.3f}' if h['perception'] is not None else '—',
                                   ', '.join(f'{k}={v:.3g}' if isinstance(v, float) else f'{k}={v}'
                                             for k, v in sorted(h['params'].items())), os.path.basename(h['run'])])
             it.setData(0, 256, h)
             self.failures.addTopLevelItem(it)
+        what = {'criticality': 'criticality', 'perception': 'perception failure',
+                'both': 'perception failure and criticality'}[self.objective.currentData() or 'criticality']
         if not (self.job is not None and self.job.state not in FINAL):
             self.state.set('State', f'{len(rows)} evaluations, {self.failures.topLevelItemCount()} failures '
-                                    f'(criticality ≥ {thr:g})' if rows else 'no evaluations yet')
-        space = SC.search_space(dict(self.scenarios())[self.scenario.currentData()]) if self.scenario.count() else []
+                                    f'({what} ≥ {thr:g})' if rows else 'no evaluations yet')
+        from ...core import milsearch as MS
+        space = (SC.search_space(dict(self.scenarios())[self.scenario.currentData()]) if self.scenario.count()
+                 else []) + MS.weather_space(self.weather_dims())
         names = [p['name'] for p in space]
         for c, default in ((self.px, 0), (self.py, 1)):
             cur = c.currentText()
@@ -326,10 +402,13 @@ class RareCasesPage(Page):
             return
         w = self.win
         scn = dict(self.scenarios())[self.scenario.currentData()]
+        from ...core import milsearch as MS
+        values, weather = MS.split_values(h['params'])
         cfg = scenario_config(w.project, scn, self.world.currentData(), self.rig.currentData(),
                               os.path.join(w.service.runs_dir(), run_dir_name('replay')), w.service.port,
-                              w.service.tm_port, seed=self.seed.value(), values=h['params'],
-                              workspace=w.workspace())
+                              w.service.tm_port, seed=self.seed.value(), values=values,
+                              workspace=w.workspace(), fps=float(self.fps.value()))
+        MS.apply_weather(cfg, weather)
         w.service.submit_drive(cfg, title=f'Replay: {scn["name"]}')
         w.jobs_dock.raise_()
 
@@ -343,13 +422,53 @@ class RareCasesPage(Page):
                                                                                    'rare-case.xosc'),
                                               'OpenSCENARIO (*.xosc)')
         if path:
+            from ...core import milsearch as MS
             with open(path, 'w', encoding='utf-8') as fh:
-                fh.write(X.export_xosc(dict(SC.concrete(scn, h['params']), seed=self.seed.value())))
+                fh.write(X.export_xosc(dict(SC.concrete(scn, MS.split_values(h['params'])[0]),
+                                            seed=self.seed.value())))
 
     def browse(self):
         h = self.selected()
         if h is not None:
             self.win.go('data').show_run(h['run'])
+
+    def why(self):
+        """Attribute the selected failing case to its factors (core.rootcause) as a job; the table opens when it
+        ends."""
+        from .. import rootcause as RV
+        h = self.selected()
+        w = self.win
+        if h is None:
+            QMessageBox.information(self, 'Why did this fail?', 'Choose a failing case first.')
+            return
+        if self.why_job is not None and self.why_job.state not in FINAL:
+            return
+        if not w.project.path or w.project.dirty:
+            if not w.save():
+                return
+        kind = h.get('kind') or 'criticality'
+        self._why_dir = RV.out_dir(w.workspace(), f'{self.scenario.currentData()}-{os.path.basename(h["run"])}')
+        argv = ['case', w.project.path, '--run', h['run'], '--failure', kind, '--threshold',
+                str(self.threshold.value()), '--out', self._why_dir]
+        if kind != 'criticality':
+            mid = self.model.currentData()
+            if not mid:
+                QMessageBox.information(self, 'Why did this fail?', 'The case was scored by a model: choose it.')
+                return
+            argv += ['--model', mid]
+        if w.fake_carla:
+            argv += ['--fake-carla', w.fake_carla]
+        self.why_job = RV.submit(w, argv, f'Why did it fail? {self.scenario.currentText()} '
+                                          f'#{h["i"]} ({os.path.basename(h["run"])})')
+
+    def finished(self, job):
+        if job is self.job:
+            self.load()
+        elif job is self.why_job:
+            from ..rootcause import RootCauseDialog
+            d = RootCauseDialog(self, self._why_dir, job)
+            self.why_view = d.view
+            d.show()
 
     def shutdown(self):
         self.timer.stop()

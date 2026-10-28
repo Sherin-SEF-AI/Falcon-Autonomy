@@ -17,7 +17,12 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon reproduce RUN [--into DIR] [--pose-tol M] [--rgb-tol L]` | re-runs a run from its input and compares |
 | `falcon runs PROJECT [--rebuild]` | lists a project's runs (re-indexing the workspace) |
 | `falcon sweep PROJECT --scenario S --name N [--grid K \| --samples K] [--seed N] [--world W] [--rig R]` | a scenario sweep (a study; resumable) |
-| `falcon search PROJECT --scenario S --name N [--method bayes\|cmaes\|adaptive\|random] [--budget B] [--batch K] [--threshold T]` | a rare-case search in a study (resumes, and starts from its sweeps) |
+| `falcon search PROJECT --scenario S --name N [--method bayes\|bayes-pof\|cmaes\|adaptive\|random] [--budget B] [--batch K] [--threshold T] [--objective criticality\|perception\|both --model ID] [--weather FIELD[:LO:HI]] [--metric M] [--fps F] [--search-seed N]` | a rare-case search in a study (resumes, and starts from its sweeps) |
+| `falcon rules check RUN... [--set india\|generic\|FILE] [--out DIR]` · `falcon rules list\|show\|signals` | checks recorded runs (or an episodes.jsonl) against traffic rules written in temporal logic: robustness, violation intervals, counts per km ([traffic rules](traffic-rules.md)) |
+| `falcon experiment active --id ID --pool SRC... --test SRC [--strategies entropy,margin,kcenter,hybrid] [--rounds R] [--budget B] [--seeds K] --workspace W` | active learning: which frames to add, against random selection with paired intervals ([active learning](active-learning.md)) |
+| `falcon why case PROJECT --run RUN --out DIR [--failure F] [--model ID] [--actor A \| --track N] [--step S]` | why a scenario run failed: counterfactual re-runs, one factor at a time ([root cause](root-cause.md)) |
+| `falcon why evaluation EVAL --out DIR` | the correlates of an evaluation's misses, with intervals |
+| `falcon why episode PROJECT --episodes FILE --episode N --policy P --out DIR` | a Leaderboard infraction by the policy's inputs |
 | `falcon schema` | prints the project schema's path |
 | `falcon model fetch PROJECT ID` | downloads a registered model's pinned weights (URL, licence and SHA-256 printed first; refused on a hash mismatch) |
 | `falcon evaluate PROJECT --model ID --run RUN... --out DIR [--camera C] [--every N] [--boot N] [--seed S] [--grid X,Y]` | scores a model on drives: COCO AP/AR (or mIoU) with drive-level bootstrap CIs, breakdowns, a condition heat map, the worst frames ([models](models.md)) |

@@ -56,7 +56,9 @@ rare-case search a model whose weakness is known. Every evaluation made with it 
    per value for a sweep (few distinct values), else quantile bins. Each cell shows its frames and objects. A cell
    with fewer than 10 objects is grey and gets no colour: a number from three objects is not a finding.
 6. **Failures.** The frames with the most errors, worst first: missed objects (red) and false positives scoring 0.5 or
-   more (orange), matched per class at IoU 0.5.
+   more (orange), matched per class at IoU 0.5. *Why did this fail?* attributes a frame's missed object to its factors
+   by re-runs of its drive (a repeatable scenario run), and *Correlates of misses* relates the evaluation's misses to
+   the objects' and frames' attributes, with intervals ([root cause](root-cause.md)).
 7. **Latency** is measured here, per frame (pre-processing, inference, decoding), with the runtime's providers (for
    example `CUDAExecutionProvider`). It is this machine's latency, not a target device's (Jetson: milestone 7).
 

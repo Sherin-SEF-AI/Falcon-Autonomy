@@ -28,7 +28,11 @@ CARLA's physics off: the motion is computed here and repeats bit for bit; collis
 Every pose and velocity is read from the world snapshot of exactly the frame just ticked (sync()).
 
 Records: per step the ego's and every actor's (t, x, y, yaw, vx, vy, length, width) and the ego's collision events
-(sensor.other.collision), for core.criticality; the timeline's firings with their times.
+(sensor.other.collision), for core.criticality; the timeline's firings with their times; each scenario actor's CARLA
+id and blueprint (report(): 'actor_ids', 'blueprints'), which the labels' track ids refer to.
+
+Appearance. An actor's optional "variant": k (core.rootcause's appearance swap) spawns the k-th next blueprint of its
+kind's pool (adults among adults, children among children) with the generator drawn from exactly as without it.
 """
 from __future__ import annotations
 
@@ -253,23 +257,35 @@ class Director:
         return {'bus': (10.3, 3.9), 'truck': (6.0, 2.6), 'van': (5.5, 2.0), 'motorcycle': (2.2, 0.9),
                 'bicycle': (1.7, 0.6), 'pedestrian': (0.5, 0.5), 'child': (0.4, 0.4)}.get(kind, (4.6, 2.0))
 
-    def blueprint(self, kind):
+    def blueprint(self, kind, variant: int = 0):
+        """The blueprint of an actor of this kind. variant k > 0 takes the k-th next blueprint of the same pool (the
+        root-cause attribution's appearance swap, core.rootcause): the generator is drawn from exactly as for the
+        variant 0, so nothing else in the run changes. Adults stay adults and children children."""
+        variant = int(variant or 0)
         if kind in ('pedestrian', 'child'):
+            def age(b):
+                return b.get_attribute('age').as_str() if b.has_attribute('age') else ''
             bps = sorted(self.lib.filter('walker.pedestrian.*'), key=lambda b: b.id)
             if kind == 'child':
-                kids = [b for b in bps if b.has_attribute('age') and b.get_attribute('age').as_str() == 'child']
-                bps = kids or bps
-            bp = bps[int(self.rng.integers(len(bps)))]
+                bps = [b for b in bps if age(b) == 'child'] or bps
+            bp = bps[int(self.rng.integers(len(bps)))]          # the same draw whatever the variant
+            if variant:
+                pool = [b for b in bps if age(b) == age(bp)]
+                ids = [b.id for b in pool]
+                bp = pool[(ids.index(bp.id) + variant) % len(pool)]
             if bp.has_attribute('is_invincible'):
                 bp.set_attribute('is_invincible', 'false')
             return bp
         ids = {b.id for b in self.lib.filter('vehicle.*')}
-        for c in KIND_BLUEPRINTS.get(kind, KIND_BLUEPRINTS['car']):
-            if c in ids:
-                return self.lib.find(c)
+        avail = [c for c in KIND_BLUEPRINTS.get(kind, KIND_BLUEPRINTS['car']) if c in ids]
+        if avail and (not variant or len(avail) > 1):
+            return self.lib.find(avail[variant % len(avail)])
         from .scene import blueprints_by_type
         pool = sorted(blueprints_by_type(self.lib).get(kind, []) or blueprints_by_type(self.lib)['car'],
                       key=lambda b: b.id)
+        if avail and variant:                            # one listed blueprint: the variant from the type's pool
+            pool = [b for b in pool if b.id != avail[0]] or pool
+            return pool[(variant - 1) % len(pool)]
         return pool[int(self.rng.integers(len(pool)))]
 
     def setup(self, ego, ego_wp):
@@ -283,7 +299,7 @@ class Director:
         for a in self.scn.get('actors', []):
             path, lateral = self.actor_path(a, ego_wp)
             x, y, yaw = path.at(0.0, lateral)
-            bp = self.blueprint(a['kind'])
+            bp = self.blueprint(a['kind'], a.get('variant', 0))
             bp.set_attribute('role_name', ROLE_PREFIX + 'scenario')
             tf = carla.Transform(carla.Location(x=x, y=y, z=path.z + (1.0 if a['kind'] in ('pedestrian', 'child')
                                                                        else 0.5)), carla.Rotation(yaw=yaw))
@@ -568,7 +584,9 @@ class Director:
         return {'id': self.scn.get('id'), 'name': self.scn.get('name'), 'values': self.scn.get('values'),
                 'motion': 'kinematic' if self.kinematic else 'physics',
                 'seed': self.scn.get('seed'), 'fired': self.fired, 'collisions': self.events,
-                'handedness': 'LHT' if self.lht else 'RHT'}
+                'handedness': 'LHT' if self.lht else 'RHT',
+                'actor_ids': {k: int(v['actor'].id) for k, v in self.actors.items()},
+                'blueprints': {k: v['actor'].type_id for k, v in self.actors.items()}}
 
 
 def follow(actor, path, lateral, speed, dt, st, tr, v):

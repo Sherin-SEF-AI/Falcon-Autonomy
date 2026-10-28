@@ -30,7 +30,13 @@ Residual risks: every scenario with a failure (its failure rate and Wilson inter
 with none whose failure rate may still be above max_failure_rate (5 % by default: a reporting threshold, not a validated
 acceptance criterion) by the interval's upper bound; every ODD gap (no evidence); missed
 control deadlines; failing parameter sets a rare-case search found; and the simulation's limits that bound all of the
-evidence (docs/carla-lessons.md). Outputs: safety-case.json and safety-case.html (inline CSS and SVG, no network).
+evidence (docs/carla-lessons.md); and, first, every traffic rule a run violated.
+
+Traffic rules (core.rules through core.stack.rule_summary, the suite's "rules" set or the one for the runs'
+handedness): per rule the runs evaluated, the violations, per km with a bootstrap interval over runs, the runs
+violating with Wilson's interval and the lowest robustness — beside the pass/fail results, not part of them; each
+run's check is written to its folder (rules.json). Outputs: safety-case.json ("traffic_rules") and safety-case.html
+(inline CSS and SVG, no network).
 """
 from __future__ import annotations
 
@@ -330,6 +336,15 @@ def build_report(suite_dir: str, odd: dict, out_dir: str, studies=(), odd_path: 
     cov = coverage(odd, coords)
     trig = triggering_conditions(results, list(studies))
     risks = residual_risks(results, cov, trig, max_failure_rate)
+    from .stack import rule_summary
+    rules = rule_summary(rows, suite.get('rules') or None)
+    for rr in (rules or {}).get('rules') or ():
+        if rr['violations']:
+            risks.insert(0, {'kind': 'traffic_rule', 'severity': 'medium',
+                             'text': f'{rr["title"]} ({rr["id"]}): {rr["violations"]} violation(s) in '
+                                     f'{rr["runs_violating"]} of {rr["runs_evaluated"]} runs'
+                                     + (f', {rr["per_km"]:.2f} per km' if rr['per_km'] is not None else ''),
+                             'evidence': []})
     inputs = {'suite_results': os.path.join(suite_dir, 'results.jsonl')}
     if odd_path:
         inputs['odd'] = odd_path
@@ -340,6 +355,7 @@ def build_report(suite_dir: str, odd: dict, out_dir: str, studies=(), odd_path: 
                                                  'driver': (suite.get('stack') or {}).get('driver'),
                                                  'criteria': suite.get('criteria')},
            'odd': odd, 'coverage': cov, 'results': results, 'triggering_conditions': trig, 'residual_risks': risks,
+           'traffic_rules': rules,
            'limits': {'sotif_not_covered': SOTIF_NOT_COVERED, 'simulation': [{'title': t, 'text': x}
                                                                             for t, x in SIM_LIMITS],
                       'road_type': 'heuristic: the road features the scenario director required at the start, not a '
@@ -428,6 +444,35 @@ def _shade(n: int, top: int) -> str:
     return f'background:rgba(43,93,155,{a:.2f});color:#fff'
 
 
+def _rules_html(rules: dict | None) -> str:
+    """The traffic-rule section (core.rules through core.stack.rule_summary): per rule the runs evaluated, the
+    violations, per km with the bootstrap interval over runs, the runs violating with Wilson's interval."""
+    if not rules:
+        return ('<h2>Traffic rules</h2><p class="muted">Not checked: no run could be read by the rule checker '
+                '(docs/traffic-rules.md).</p>')
+    rs = rules.get('ruleset') or {}
+    out = [f'<h2>Traffic rules</h2><p class="muted">Rule set {_e(rs.get("name") or rs.get("id"))} '
+           f'(<code>{_e((rs.get("sha256") or "")[:12])}</code>), checked as signal-temporal-logic formulas on each '
+           f'run\'s recorded state; beside the pass/fail criteria, not part of them. {rules["runs"]} runs, '
+           f'{rules["distance_km"]:.3f} km. Per km: {_e(rules.get("interval"))}. Rules marked heuristic use Falcon\'s '
+           f'thresholds; facts not recorded (turn indicators, light states in drives) are not checked.</p>',
+           '<table><tr><th>rule</th><th class="num">runs evaluated</th><th class="num">violations</th>'
+           '<th class="num">per km (95 %)</th><th class="num">runs violating (95 %)</th>'
+           '<th class="num">lowest robustness</th></tr>']
+    for r in rules['rules']:
+        pk = '—' if r['per_km'] is None else f'{r["per_km"]:.2f}'
+        if r.get('per_km_ci95') and r['per_km_ci95'][0] is not None:
+            pk += f' ({r["per_km_ci95"][0]:.2f}–{r["per_km_ci95"][1]:.2f})'
+        sh = r.get('share_ci95') or [None, None]
+        rob = '—' if r['min_robustness'] is None else f'{r["min_robustness"]:.3f}'
+        out.append(f'<tr><td>{_e(r["title"])} <span class="tag">{_e(r["id"])}</span></td><td class="num">'
+                   f'{r["runs_evaluated"]}</td><td class="num{" fail" if r["violations"] else ""}">{r["violations"]}'
+                   f'</td><td class="num">{pk}</td><td class="num">{r["runs_violating"]} ({_pct(sh[0])}–'
+                   f'{_pct(sh[1])})</td><td class="num">{rob}</td></tr>')
+    out.append('</table>')
+    return ''.join(out)
+
+
 def render_html(rep: dict) -> str:
     res, cov = rep['results'], rep['coverage']
     o = res['overall']
@@ -472,6 +517,7 @@ def render_html(rep: dict) -> str:
             p.append(f'<tr><td>{_e(f["scenario"])}</td><td class="num">{f["seed"]}</td><td class="fail">{_e(bad)}'
                      f'</td><td><code>{_e(f.get("run"))}</code></td></tr>')
         p.append('</table>')
+    p.append(_rules_html(rep.get('traffic_rules')))
     p.append('<h2>ODD coverage</h2><p class="muted">Runs per value or bin of each dimension of the ODD; an empty cell '
              'is a gap. Runs outside a dimension\'s values are counted apart.</p>')
     for name, d in cov['dimensions'].items():

@@ -25,7 +25,7 @@ The project's `loop.odd`, a JSON object (Loop ▸ Edit the ODD…, or `falcon lo
 | `range_bins` | edges in metres from 0; the last bin is open (default 0, 20, 40, 60, 80) |
 | `evaluation` | `drives_per_cell` (3), `drive_s` (20), `fps` (20), `record_every` (5), `seed` (1), `every` (1), `n_boot` (1000) |
 | `weak_cells` | `min_objects` (30), `max_cells` (3), `fallback` (`none` or `lowest`) |
-| `search` | `method` (bayes, cmaes, adaptive, random), `budget` (16 runs per cell), `batch` (4), `threshold` (0.5), `fps` (20), `traffic_vehicles` (0), `seed` (0) |
+| `search` | `method` (bayes, bayes-pof, cmaes, adaptive, random), `budget` (16 runs per cell), `batch` (4), `threshold` (0.5), `fps` (20), `traffic_vehicles` (0), `seed` (0), `objective` (`criticality`; or `perception`, `both`: [model-in-the-loop](rare-cases-mil.md)), `metric` (`perception`) |
 | `generate` | `objects_per_cell` (300), `drive_s` (30), `fps` (20), `record_every` (5), `max_drives` (20), `seed` (2), `reruns_per_failure` (1), `max_failures` (4) |
 | `retrain` | `epochs`: `null` keeps the model's own |
 
@@ -114,9 +114,13 @@ and the next is tried), in the cell's weather (for "all conditions": the conditi
 lowest), with the ODD's rig **without label cameras** (the criticality needs none; it renders a third of the pixels).
 A class without a scenario is served by the targeted dataset alone.
 
-**The objective is the scenario's criticality** (`core.criticality`; 1 for a collision), **not the model's
-detections**: the search finds where driving is hard in the weak cell's conditions, not where the model fails. The
-range bin is not mapped onto scenario parameters.
+**By default the objective is the scenario's criticality** (`core.criticality`; 1 for a collision), **not the
+model's detections**: the search finds where driving is hard in the weak cell's conditions, not where the model fails,
+and the range bin is not mapped onto scenario parameters. With `search.objective` `perception` or `both` the search is
+**model-in-the-loop** ([details](rare-cases-mil.md#the-loop)): it runs with the ODD's labelled rig, scores the
+iteration's model on the scenario's actors and on the cell's class within the cell's range bin, and searches the cell
+weather's ranged fields instead of drawing them. A model that cannot be run falls back to the criticality, and the
+step's decisions say why. The criticality stays the default.
 
 ### Generation
 
@@ -212,8 +216,8 @@ machine, the throughput and the latest runs.
 
 - 2D box detectors only (the harness's and the trainer's limit), one camera.
 - The weak-cell rule is a heuristic (above); its intervals need five drives or more per condition to be read as such.
-- The search's objective is the scenario's criticality, not the model's misses; a class without a matched scenario
-  gets no search.
+- The search's objective is the scenario's criticality unless `search.objective` asks for the model's perception
+  failure ([model-in-the-loop](rare-cases-mil.md)); a class without a matched scenario gets no search.
 - Retraining needs a model Falcon trained; it repeats the model's whole training on the old and new data (no
   fine-tuning from the previous weights), so the before and after differ by the data, at the cost of a full training.
 - One loop job at a time from the page; the steps share the machine-wide CARLA and GPU locks with every other job.

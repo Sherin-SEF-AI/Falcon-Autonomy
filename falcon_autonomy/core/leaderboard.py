@@ -73,13 +73,19 @@ def score_episode(e: dict) -> dict:
             'infraction_counts': {k: int(v) for k, v in counts.items() if v}}
 
 
-def score(episodes: list, n_boot: int = 1000, seed: int = 0) -> dict:
-    """The set's scores: per route, the means with bootstrap intervals over routes, infractions per km by kind."""
+def score(episodes: list, n_boot: int = 1000, seed: int = 0, ruleset=None) -> dict:
+    """The set's scores: per route, the means with bootstrap intervals over routes, infractions per km by kind; and,
+    beside them, the traffic-rule violations (core.rules) of the routes whose episodes carry a trace — not part of the
+    driving score (the Leaderboard has no such term)."""
     from .metrics import bootstrap
     if not episodes:
         raise LeaderboardError('no episodes to score')
     rows = [dict(score_episode(e), episode=e.get('episode'), seed=e.get('seed'),
                  scenario=(e.get('scenario') or {}).get('id') or 'free') for e in episodes]
+    rules = rule_checks(episodes, ruleset, n_boot, seed)
+    for r, rc in zip(rows, rules['per_route'] if rules else ()):
+        r['rule_violations'] = rc['totals']['violations'] if rc else None
+        r['rule_violations_per_km'] = rc['totals']['per_km'] if rc else None
 
     def means(rs):
         return {k: float(np.mean([r[k] for r in rs])) for k in ('driving_score', 'route_completion',
@@ -96,8 +102,28 @@ def score(episodes: list, n_boot: int = 1000, seed: int = 0) -> dict:
                         for k, v in boot['metrics'].items()},
             'infractions_per_km': per_km, 'by_scenario': {k: float(np.mean(v)) for k, v in sorted(by_scn.items())},
             'per_route': rows, 'penalties': PENALTY, 'not_scored': NOT_SCORED,
+            'rules': rules['summary'] if rules else None,
             'method': 'CARLA Leaderboard scoring (module doc); intervals: percentile bootstrap over routes',
             'n_boot': n_boot, 'seed': seed}
+
+
+def rule_checks(episodes: list, ruleset=None, n_boot: int = 1000, seed: int = 0) -> dict | None:
+    """core.rules on every episode with a trace: {'per_route': [result or None], 'summary': aggregate + the rule
+    set}; None when no episode carries a trace (episodes recorded before Falcon 1.1)."""
+    from . import rules as RU
+    if not any(e.get('trace') for e in episodes):
+        return None
+    per = []
+    for e in episodes:
+        try:
+            per.append(RU.check_episode(e, ruleset))
+        except RU.RulesError:
+            per.append(None)
+    summ = RU.aggregate([r for r in per if r], n_boot, seed)
+    summ['routes_checked'] = sum(1 for r in per if r)
+    summ['note'] = ('beside the driving score, not in it; per km over the routes with a trace; the rule set\'s '
+                    'heuristic thresholds and unrecorded facts are in docs/traffic-rules.md')
+    return {'per_route': per, 'summary': summ}
 
 
 def route_set(scenarios: list | None = None, seeds_per: int = 5, free: int = 5, seed: int = 0) -> list:

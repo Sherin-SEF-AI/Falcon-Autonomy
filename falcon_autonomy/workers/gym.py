@@ -42,7 +42,9 @@ traffic-manager traffic) is not bit-for-bit repeatable (docs/scenarios.md). Traf
 from the reset, so they repeat too where reset_all_traffic_lights is honoured.
 
 Outputs in the run folder: episodes.jsonl (one line per finished or interrupted episode: seed, options, the concrete
-scenario, start, route, return, reward terms, termination, infractions, and the actions when log_actions), lanes.json
+scenario, start, route, return, reward terms, termination, infractions, the actions when log_actions, and a per-step
+trace for traffic-rule checking when log_trace — core.rules.TRACE_COLUMNS: pose, speed, lane facts, lead and
+vulnerable-road-user gaps, the light ahead, CARLA's speed limit), lanes.json
 when the BEV is on, run.json. The watchdog guards every call to the server; between commands the worker is idle (not
 guarded) until idle_timeout_s, and it ends when the client's socket closes.
 """
@@ -58,6 +60,7 @@ import socket
 import time
 
 from ..core import drivefeatures as DF
+from ..core.rules import TRACE_COLUMNS
 from ..core import protocol as P
 from ..core.livelink import pack
 from ..core.provenance import read_json
@@ -474,7 +477,7 @@ class Gym(Worker):
             'start': {k: round(v, 4) for k, v in zip(('x', 'y', 'yaw'), (ego_wp.transform.location.x,
                                                                        ego_wp.transform.location.y,
                                                                        ego_wp.transform.rotation.yaw))},
-            'stale_actors': stale,
+            'stale_actors': stale, 'trace': [],
         }
         self.n_episodes += 1
         state, facts, arrays, rows = self.observe(frame)
@@ -596,6 +599,52 @@ class Gym(Worker):
         outside = not junction and bool(keys) and (int(wp.road_id), int(wp.lane_id)) not in keys
         return {'off_road': False, 'offroad_m': 0.0, 'wrong_way': wrong, 'outside_lanes': outside}
 
+    def trace_row(self, sim_t, pose, state, lf) -> list:
+        """One row of the episode's trace (core.rules.TRACE_COLUMNS): the ego, its lane on CARLA's map (heading,
+        lateral offset + right, width, junction, same-direction lanes beside it by Waypoint.get_left_lane /
+        get_right_lane, its markings), the lead and vulnerable-road-user gaps and the light ahead from the observation,
+        and CARLA's speed limit for the ego (Vehicle.get_speed_limit; None where the API has none)."""
+        carla, FI = self.carla, DF.FI
+        r = lambda v, nd=3: None if v is None or not math.isfinite(float(v)) else round(float(v), nd)   # noqa: E731
+        wp = self.map.get_waypoint(carla.Location(x=pose['x'], y=pose['y'], z=pose['z']), project_to_road=False,
+                                   lane_type=carla.LaneType.Driving)
+        lane = [0, None, None, None, None, None, None, None, None]
+        if wp is not None:
+            t = wp.transform
+            ry = math.radians(t.rotation.yaw)
+            lat = (pose['x'] - t.location.x) * -math.sin(ry) + (pose['y'] - t.location.y) * math.cos(ry)
+
+            def count(step):
+                n, w, seen = 0, wp, 0
+                while seen < 8:
+                    w = step(w)
+                    seen += 1
+                    if w is None or str(getattr(w, 'lane_type', 'Driving')) != 'Driving' or \
+                            (w.lane_id > 0) != (wp.lane_id > 0):
+                        break
+                    n += 1
+                return n
+            mk = lambda m: None if m is None else str(getattr(m.type, 'name', m.type))     # noqa: E731
+            lane = [1, int(bool(wp.is_junction)), r(t.rotation.yaw), r(lat), r(wp.lane_width),
+                    count(lambda w: w.get_left_lane()), count(lambda w: w.get_right_lane()),
+                    mk(getattr(wp, 'left_lane_marking', None)), mk(getattr(wp, 'right_lane_marking', None))]
+        lead = r(state[FI['lead_gap_m']]) if state[FI['lead_present']] > 0.5 else None
+        vru = r(state[FI['vru_ahead_m']]) if state[FI['vru_present']] > 0.5 else None
+        known = state[FI['tl_known']] > 0.5
+        tl_red = (1 if state[FI['tl_red']] > 0.5 else 0) if known else None
+        tl_d = r(state[FI['tl_distance_m']]) if known and state[FI['tl_distance_m']] < DF.TL_RANGE_M else None
+        if known and tl_d is None:
+            tl_red = 0
+        limit = None
+        get = getattr(self.ep['ego'], 'get_speed_limit', None)
+        if get is not None:
+            try:
+                limit = r(get(), 2)
+            except Exception:            # noqa: BLE001 (an API without it: unknown)
+                limit = None
+        return [r(sim_t, 4), r(pose['x']), r(pose['y']), r(pose['yaw']), r(pose['speed_mps'])] + lane + \
+            [lead, vru, tl_red, tl_d, limit]
+
     def contacts(self, pose, rows) -> list:
         """[(other id, kind, source)]: box overlaps with vehicles and walkers, and the collision sensor's new
         events (whatever it hit)."""
@@ -687,6 +736,8 @@ class Gym(Worker):
         if self.cfg.get('log_actions', True):
             ep['actions'].append(applied if self.action_kind == 'continuous' else
                                  int(self.np.asarray(cmd.get('action')).reshape(-1)[0]))
+        if self.cfg.get('log_trace', True):
+            ep['trace'].append(self.trace_row(sim_t, pose, state, lf))
         terminated = reason is not None
         truncated = not terminated and k >= ep['max_steps']
         info = {'episode': ep['n'], 'step': k, 'sim_t': round(sim_t, 4), 'reward_terms': terms,
@@ -725,9 +776,13 @@ class Gym(Worker):
         summ['success'] = DF.episode_success(summ)
         if self.cfg.get('log_actions', True):
             summ['actions'] = ep['actions']
+        if self.cfg.get('log_trace', True):
+            summ['trace'] = {'columns': list(TRACE_COLUMNS), 'rows': ep['trace'],
+                             'ego': {'length': round(ep['len'], 3), 'width': round(ep['wid'], 3)},
+                             'handedness': self.cfg.get('handedness'), 'town': self.cfg.get('town') or None}
         self.ep_log.write(json.dumps(summ, separators=(',', ':')) + '\n')
         self.ep_log.flush()
-        return {k2: v for k2, v in summ.items() if k2 != 'actions'}
+        return {k2: v for k2, v in summ.items() if k2 not in ('actions', 'trace')}
 
     # ------------------------------------------------------------------ tidy-up
     def tidy(self):

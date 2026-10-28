@@ -11,6 +11,8 @@ A suite (schema falcon.suite/1; docs/stack-testing.md):
                "domain_id": 0},
      "world": "world-town10", "rig": "rig-default", "fps": 20.0, "motion": "kinematic", "traffic_vehicles": 0,
      "criteria": {"no_collision": true, "min_ttc_s": 1.0, "max_missed_deadlines": 0},
+     "rules": "india" | "generic" | "<rule file>",          optional: the traffic rules checked (core.rules); default
+                                                            by the map's handedness (LHT india, else generic)
      "entries": [{"scenario": "<built-in key or project scenario id>",
                   "seeds": [0, 1, 2] | "samples": 10, "seed": 0,      seeds, or that many from seed (seed·1000003+i)
                   "values": {...},                                    fixed parameter values (others sampled)
@@ -28,7 +30,8 @@ kinematic motion).
 
 Results (summarise): per scenario the runs, passes, the pass rate with its Wilson 95 % interval (Wilson 1927), the mean
 criticality with a percentile bootstrap 95 % interval over runs (core.metrics.uncertainty.bootstrap, seeded), the
-minimum time to collision, collisions and missed deadlines; the same overall.
+minimum time to collision, collisions and missed deadlines; the same overall; and beside them (rule_summary) the
+traffic-rule violations of the runs (core.rules), per km with intervals.
 """
 from __future__ import annotations
 
@@ -115,6 +118,8 @@ def validate_suite(doc: dict, project=None) -> list:
         out += [f'stack.bridge: {p}' for p in check_bridge(dict(bridge_defaults(), **(st.get('bridge') or {})))]
     if doc.get('motion', 'kinematic') not in ('kinematic', 'physics'):
         out.append('motion: kinematic or physics')
+    if doc.get('rules') and doc['rules'] not in ('india', 'generic') and not os.path.isfile(str(doc['rules'])):
+        out.append(f'rules {doc["rules"]!r}: india, generic or a rule file')
     if not doc.get('entries'):
         out.append('no entries')
     for k, e in enumerate(doc.get('entries') or []):
@@ -253,6 +258,34 @@ def summarise(rows: list, seed: int = 0) -> dict:
                                                        'min_ttc_s', 'collision', 'missed_deadlines')}
                                 for r in rows if r.get('status') == 'ok' and r.get('passed') is False],
                                key=lambda r: -(r.get('criticality') or 0.0))}
+
+
+def rule_summary(rows: list, ruleset=None, n_boot: int = 1000, seed: int = 0) -> dict | None:
+    """Traffic-rule checks (core.rules) of a suite's finished runs: the aggregate over runs (violations per km with a
+    bootstrap interval over runs, runs violating with Wilson's interval, per rule) and per scenario; each run's result
+    is written to its folder as rules.json. ruleset: the suite's "rules" (india, generic or a rule file; default by the
+    run's handedness). None when no run could be checked. Reported beside pass/fail, not part of it."""
+    from . import rules as RU
+    from .provenance import write_json
+    res, by = [], {}
+    for r in rows:
+        if r.get('status') != 'ok' or not r.get('run') or not os.path.isdir(r['run']):
+            continue
+        try:
+            c = RU.check_run(r['run'], ruleset)
+        except (RU.RulesError, OSError, ValueError):
+            continue
+        write_json(os.path.join(r['run'], 'rules.json'), c)
+        res.append(c)
+        by.setdefault(r['scenario'], []).append(c)
+    if not res:
+        return None
+    out = RU.aggregate(res, n_boot, seed)
+    out['scenarios'] = {s: {k: v for k, v in RU.aggregate(cs, n_boot, seed).items() if k in ('runs', 'distance_km',
+                                                                                                'violations', 'per_km')}
+                        for s, cs in sorted(by.items())}
+    out['note'] = 'beside the pass/fail criteria, not part of them (docs/traffic-rules.md)'
+    return out
 
 
 TABLE_COLUMNS = ('scenario', 'seed', 'status', 'passed', 'criticality', 'min_ttc_s', 'min_distance_m', 'collision',

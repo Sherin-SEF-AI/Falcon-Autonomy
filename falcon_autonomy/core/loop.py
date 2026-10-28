@@ -18,7 +18,8 @@ The ODD (a JSON object, the project's loop.odd; ODD_SCHEMA, docs/loop.md):
      "classes": [Falcon classes of interest], "range_bins": [0, 20, 40, 60, 80]   (metres; the last bin is open),
      "evaluation": {"drives_per_cell", "drive_s", "fps", "record_every", "seed", "every", "n_boot"},
      "weak_cells": {"min_objects", "max_cells", "fallback": "none" | "lowest"},
-     "search": {"method", "budget", "batch", "threshold", "fps", "traffic_vehicles", "seed"},
+     "search": {"method", "budget", "batch", "threshold", "fps", "traffic_vehicles", "seed",
+                "objective": "criticality" | "perception" | "both", "metric"},
      "generate": {"objects_per_cell", "drive_s", "fps", "record_every", "max_drives", "seed", "reruns_per_failure",
                   "max_failures"},
      "retrain": {"epochs": null (the model's own) | n}}
@@ -46,15 +47,23 @@ The steps (STEPS) and their rules:
 4. search — per chosen cell, a rare-case search (sim.studio.Study, core.search) on a built-in scenario matched to the
    cell's class (SCENARIOS_FOR_CLASS; the first whose runs succeed) in the cell's world and weather (for "*" the
    condition with the lowest AP for that class and bin). The search's rig is the ODD's without label cameras (the
-   criticality needs none, and it renders a third of the pixels). THE OBJECTIVE IS THE SCENARIO'S CRITICALITY
-   (core.criticality; 1 for a collision), NOT THE MODEL'S DETECTIONS: it finds where driving is hard in the weak
-   cell's conditions, not where the model fails. The range bin is not mapped onto scenario parameters.
+   criticality needs none, and it renders a third of the pixels). BY DEFAULT THE OBJECTIVE IS THE SCENARIO'S
+   CRITICALITY (core.criticality; 1 for a collision), NOT THE MODEL'S DETECTIONS: it finds where driving is hard in
+   the weak cell's conditions, not where the model fails, and the range bin is not mapped onto scenario parameters.
+   The ODD's search.objective "perception" or "both" (core.milsearch) makes it model-in-the-loop instead: the search
+   runs with the ODD's labelled rig, scores the iteration's model on the scenario's actors and on the cell's class
+   within the cell's range bin, and searches the cell weather's ranged fields as dimensions instead of drawing
+   them; a model that cannot be run falls back to the criticality, and the record says why (search_objective).
 5. generate — (a) a dataset spec targeting the chosen cells (their classes, range bins and weathers): the drives
    needed come from the yield of the cell's class in its range bin measured on the evaluation set (objects per
    recorded frame), planned with core.datasets.plan and run through sim.engine (cache-keyed, resumable); (b) the
    search's failing cases (criticality ≥ threshold; with none, the most critical cases, said so) re-run with the
    labelled rig: the same seed (the same case, now labelled) and reruns_per_failure − 1 further seeds (the director
-   places the scenario at another start).
+   places the scenario at another start). Optional (generate.acquisition, {"strategy": core.activelearn strategy,
+   "frames": N, "aggregate": "max"}; absent by default, and then every generated frame is kept): the model being
+   retrained scores the generated frames and only the N it is least sure of (or the most diverse, by the strategy)
+   go to training (core.activelearn.select_frames; acquisition.json). It needs a detector Falcon trained; otherwise
+   every frame is kept and the record says why.
 6. retrain — `falcon train` with the model's own training settings (its training run.json) on its original sources
    plus the new drives; a model Falcon did not train (a plug-in, an imported file) cannot be retrained: the step
    stops, saying why. The retrained model is exported and registered (its model.json).
@@ -226,8 +235,17 @@ def normalise_odd(odd: dict | None, project) -> tuple:
                 errs.append(f'{k}: at least 1')
     if wc.get('fallback') not in ('none', 'lowest'):
         errs.append('weak_cells.fallback: none or lowest')
-    if se['method'] not in ('bayes', 'cmaes', 'adaptive', 'random'):
-        errs.append('search.method: bayes, cmaes, adaptive or random')
+    if se['method'] not in ('bayes', 'bayes-pof', 'cmaes', 'adaptive', 'random'):
+        errs.append('search.method: bayes, bayes-pof, cmaes, adaptive or random')
+    if se.get('objective', 'criticality') not in ('criticality', 'perception', 'both'):
+        errs.append('search.objective: criticality, perception or both')
+    acq = ge.get('acquisition')
+    if acq is not None:
+        from .activelearn import AGGREGATES, STRATEGIES
+        if not isinstance(acq, dict) or acq.get('strategy') not in STRATEGIES or int(acq.get('frames') or 0) < 1 \
+                or acq.get('aggregate', 'max') not in AGGREGATES:
+            errs.append(f'generate.acquisition: {{"strategy": one of {", ".join(STRATEGIES)}, "frames": N ≥ 1, '
+                        f'"aggregate": max, mean or sum}} or absent')
     return o, errs
 
 
@@ -695,16 +713,16 @@ def _study_class():
     class CellStudy(Study):
         """A study run in an ODD cell's weather, with a given rig document (the loop's) and frame rate."""
 
-        def __init__(self, svc, project, scenario, name, world, rig_id, seed, weather, rig_doc, fps, traffic=0):
+        def __init__(self, svc, project, scenario, name, world, rig_id, seed, weather, rig_doc, fps, traffic=0,
+                     objective=None, extra_space=None):
             self.weather, self.rig_doc, self.fps = copy.deepcopy(weather), copy.deepcopy(rig_doc), float(fps)
-            super().__init__(svc, project, scenario, name, world, rig_id, seed, traffic)
-            PV.write_json(os.path.join(self.dir, 'study.json'),
-                          {'name': name, 'scenario': scenario, 'world': world, 'rig': rig_id, 'seed': seed,
-                           'traffic': traffic, 'weather': weather, 'rig_doc': rig_doc, 'fps': fps,
-                           'made_by': 'loop'})
+            super().__init__(svc, project, scenario, name, world, rig_id, seed, traffic, objective, extra_space)
+            self._write_doc(weather=weather, rig_doc=rig_doc, fps=fps, made_by='loop')
 
-        def config(self, values, k):
-            from . import datasets as D
+        def _rig(self):
+            return self.rig_doc
+
+        def base_config(self, values):
             from . import weather as W
             from .drive import scenario_config
             cfg = scenario_config(self.project, self.scn, self.world, self.rig, '/pending', self.svc.port,
@@ -715,12 +733,37 @@ def _study_class():
             cfg['weather'] = W.resolve(self.weather)
             cfg['weather_source'] = copy.deepcopy(self.weather)
             cfg['rig'] = copy.deepcopy(self.rig_doc)
-            key = D.drive_key(cfg)
-            cfg['out'] = os.path.join(self.dir, 'runs', key[:16])
-            cfg['name'] = f'{self.name} #{k}'
-            cfg['cache_key'] = key
             return cfg
     return CellStudy
+
+
+def search_objective(odd: dict, model: dict, ws: str) -> tuple:
+    """(the objective the search step uses, why when it is not the one asked for). The ODD's search.objective:
+    "criticality" (the default), "perception" or "both" (core.milsearch) — the latter two only when the iteration's
+    model can be run (else the criticality, and the record says why)."""
+    from . import milsearch as MS
+    kind = (odd.get('search') or {}).get('objective') or 'criticality'
+    if kind not in MS.OBJECTIVES:
+        return 'criticality', f'search.objective {kind!r} is not one of {", ".join(MS.OBJECTIVES)}'
+    if kind != 'criticality':
+        why = MS.evaluable(model, ws)
+        if why:
+            return 'criticality', f'the {kind} objective needs a model it can run ({why})'
+    return kind, None
+
+
+def cell_objective(kind: str, cell: dict, cond: dict, odd: dict, model: dict) -> tuple:
+    """(objective spec or None, extra search dimensions) of a weak cell's search: with a model, its failure on the
+    cell's class within the cell's range bin, and the cell weather's ranged fields searched instead of drawn."""
+    from . import milsearch as MS
+    if kind == 'criticality':
+        return None, []
+    se = odd.get('search') or {}
+    lo, hi = cell['bin'][0], cell['bin'][1]
+    spec = {'objective': kind, 'model': model, 'target_classes': [cell['class']],
+            'range_m': [float(lo), float(hi if hi is not None else SPEC_FAR_M)],
+            'metric': se.get('metric') or 'perception'}
+    return MS.normalise_spec(spec), MS.weather_space((cond['weather'].get('ranges') or {}))
 
 
 def unlabelled_rig(rig: dict) -> dict:
@@ -887,7 +930,9 @@ def estimate(project, it: dict | None, step: str, throughput, odd: dict | None =
             if os.path.isfile(sdir):                   # a resumed search: its finished runs are not run again
                 with open(sdir, encoding='utf-8') as fh:
                     done = sum(1 for x in fh if x.strip())
-            p = _drive_estimate(throughput, steps, rig_mpx(unlabelled_rig(rig)), max(int(se['budget']) - done, 0))
+            kind = search_objective(odd, (it or {}).get('model'), ws)[0]
+            p = _drive_estimate(throughput, steps, rig_mpx(unlabelled_rig(rig) if kind == 'criticality' else rig),
+                                max(int(se['budget']) - done, 0))
             p['source'] = f'{key}: ' + p['source']
             parts.append(p)
         return _combine(parts) if parts else {'seconds': 0.0, 'label': 'measured', 'source': 'no weak cell'}
@@ -1305,13 +1350,19 @@ class Runner:
         Study = _study_class()
         out_cells, outs, decisions = [], [], []
         chosen = wc['chosen']
+        kind, why_not = search_objective(odd, it['model'], self.ws)
+        if why_not:
+            decisions.append(f'objective: the criticality, not {se.get("objective")!r}: {why_not}')
         for k, cell in enumerate(chosen):
             _check(self.cancel)
             cond = search_condition(cell, wc['rows'], odd)
             weather = sample_weather(cond['weather'], int(se['seed']) * 1000 + it['n'])
+            spec, extra = cell_objective(kind, cell, cond, odd, it['model'])
+            from . import milsearch as MS
             entry = {'cell': _cell_name(cell), 'class': cell['class'], 'bin': cell['bin'],
                      'condition': cond['label'], 'world': cond['world'], 'weather': weather, 'scenario': None,
-                     'tried': [], 'objective': OBJECTIVE_NOTE}
+                     'tried': [], 'objective': OBJECTIVE_NOTE if spec is None else MS.describe(spec),
+                     'objective_kind': kind, 'searched_weather': [p['name'] for p in extra]}
             cands = SCENARIOS_FOR_CLASS.get(cell['class']) or []
             if not cands:
                 entry['note'] = f'no built-in scenario for the class {cell["class"]}: the targeted dataset alone ' \
@@ -1320,8 +1371,9 @@ class Runner:
                 scn = scenario_for(cell['class'], fixed, key)
                 name = f'loop-{it["n"]:03d}-{k + 1}-{key}'
                 st = Study(self.svc, self.project, scn, name, cond['world'], odd['rig'],
-                           int(se['seed']) + it['n'], weather, unlabelled_rig(rig), se['fps'],
-                           int(se['traffic_vehicles']))
+                           int(se['seed']) + it['n'], weather, unlabelled_rig(rig) if spec is None else rig,
+                           se['fps'], int(se['traffic_vehicles']), spec, extra)
+                st.emit = self.em
                 prog = self.sub(k / len(chosen), (k + 1) / len(chosen))
                 try:
                     res = st.search(se['method'], int(se['budget']), int(se['batch']), float(se['threshold']),
@@ -1348,14 +1400,20 @@ class Runner:
                              best=ranked[0]['value'] if ranked else None, failures=fails, rerun_cases=cases,
                              rerun_note=note)
                 outs.append(os.path.join(st.dir, f'search-{se["method"]}.json'))
+                what = 'criticality' if spec is None else ('perception failure' if kind == 'perception' else
+                                                            'perception failure and criticality')
                 decisions.append(f'{_cell_name(cell)}: {key} in {cond["label"]}, {len(res["history"])} runs, '
-                                 f'{len(fails)} failing (criticality ≥ {se["threshold"]})')
+                                 f'{len(fails)} failing ({what} ≥ {se["threshold"]})')
                 break
             else:
                 if cands:
                     decisions.append(f'{_cell_name(cell)}: no matched scenario could run in {cond["label"]}')
             out_cells.append(entry)
-        doc = {'schema': 'falcon.loop_search/1', 'n': it['n'], 'objective': OBJECTIVE_NOTE,
+        doc = {'schema': 'falcon.loop_search/1', 'n': it['n'],
+               'objective': OBJECTIVE_NOTE if kind == 'criticality' else
+               f'{kind} (core.milsearch): {MS.DEFINITION}' + ('' if kind == 'perception' else
+                                                             f'; {MS.BOTH_DEFINITION}'),
+               'objective_kind': kind,
                'mapping': {k: [s for s, _ in v] for k, v in SCENARIOS_FOR_CLASS.items()}, 'cells': out_cells,
                'provenance': PV.block({'weak_cells': self._file(it, 'weak_cells.json')}, int(se['seed']), se)}
         p = self._file(it, 'search.json')
@@ -1408,6 +1466,7 @@ class Runner:
                         raise LoopError('refused: a re-run is an evaluation drive (same cache key)')
                     reruns.append({'run': rel(self.ws, r['run']), 'scenario': cell['scenario'], 'seed': seed,
                                    'values': c['params'], 'criticality_at_search': c['value'],
+                                   'objective_at_search': cell.get('objective_kind') or 'criticality',
                                    'criticality': r.get('objective'), 'same_seed_as_search': j == 0})
             self.progress(0.6 + 0.4 * (k + 1) / len(sd['cells']), 'failing cases re-run with labels')
         all_runs = new_runs + [absp(self.ws, r['run']) for r in reruns]
@@ -1428,15 +1487,57 @@ class Runner:
                'reruns': reruns, 'runs': [rel(self.ws, r) for r in all_runs], 'frames': frames,
                'provenance': PV.block({'search': self._file(it, 'search.json')}, spec['seed'], {'spec': spec})}
         p = self._file(it, 'generate.json')
+        acq = self._acquire(it, odd, all_runs, frames, doc, rec)
         PV.write_json(p, doc)
-        rec['result'] = {'drives': len(cfgs), 'reruns': len(reruns), 'frames': frames}
+        rec['result'] = {'drives': len(cfgs), 'reruns': len(reruns), 'frames': frames,
+                         'frames_to_training': (acq or {}).get('chosen', frames)}
         rec['decisions'] = [f'targeted dataset {spec["id"]}: {len(cfgs)} drive(s) for '
                             + (', '.join(f'{v} {c}' for c, v in spec['targets'].items()) or 'nothing')
                             + f' in the weak range bins (yield measured on the evaluation set)',
                             f'{len(reruns)} failing-case re-run(s) with labels']
         if plan.get('capped'):
             rec['decisions'].append(f'capped at max_drives = {spec["max_drives"]}')
-        return [p] + [os.path.join(r, 'run.json') for r in all_runs]
+        if doc.get('acquisition'):
+            rec['decisions'].append(doc['acquisition']['decision'])
+        extra = [self._file(it, 'acquisition.json')] if acq else []
+        return [p] + extra + [os.path.join(r, 'run.json') for r in all_runs]
+
+    def _acquire(self, it, odd, runs, frames, doc, rec) -> dict | None:
+        """generate.acquisition (module doc, step 5): the model being retrained picks the generated frames that go to
+        training; writes acquisition.json and notes it in generate.json (doc). None when not asked for, or not
+        possible (then every frame is kept, said in the step's decisions)."""
+        acq = odd['generate'].get('acquisition')
+        if not acq or not runs:
+            return None
+        n = int(acq['frames'])
+        try:
+            tdir, run = training_run_of(it['model'])
+        except Stopped as e:
+            doc['acquisition'] = {'asked': acq, 'done': False, 'why': f'not possible: {e}',
+                                  'decision': f'acquisition by {acq["strategy"]} not possible ({e}): every generated '
+                                              f'frame is kept'}
+            return None
+        if n >= frames:
+            doc['acquisition'] = {'asked': acq, 'done': False, 'why': f'{frames} frames ≤ {n} asked: all kept',
+                                  'decision': f'acquisition: {frames} generated frames, {n} asked: all kept'}
+            return None
+        from . import training as T
+        from .activelearn import select_frames
+        out = self._file(it, 'acquisition.json')
+        locks = []
+        try:
+            if T._device(T.normalise(run['provenance']['settings'])).type == 'cuda':      # a GPU job: the GPU lock
+                locks = T.gpu_locks(None, self.cancel, os.environ.get('FALCON_GPU_LOCK_HELD') == '1')
+            sel = select_frames(tdir, runs, n, acq['strategy'], self.ws, acq.get('aggregate', 'max'),
+                                int(odd['generate'].get('seed', 0)), out, self.cancel)
+        finally:
+            for lk in locks:
+                lk.release()
+        doc['acquisition'] = {'asked': acq, 'done': True, 'selection': rel(self.ws, out), 'chosen': sel['chosen'],
+                              'frames': sel['frames'],
+                              'decision': f'acquisition by {acq["strategy"]}: {sel["chosen"]} of {sel["frames"]} '
+                                          f'generated frames go to training (the model being retrained scored them)'}
+        return {'chosen': sel['chosen']}
 
     # -- 6
     def step_retrain(self, it, rec):
@@ -1448,6 +1549,9 @@ class Runner:
         prev = copy.deepcopy(run['provenance']['settings'])
         gen = PV.read_json(self._file(it, 'generate.json'))
         new = [{'kind': 'falcon', 'path': absp(self.ws, r)} for r in gen['runs']]
+        acq = gen.get('acquisition') or {}
+        if acq.get('done'):                       # only the frames the acquisition chose (step 5)
+            new = [dict(x, select=absp(self.ws, acq['selection'])) for x in new]
         evalset = PV.read_json(absp(self.ws, it['evalset']))
         assert_no_leak(list(prev.get('train') or []) + list(prev.get('val') or []) + list(prev.get('test') or [])
                        + new, evalset, self.ws)

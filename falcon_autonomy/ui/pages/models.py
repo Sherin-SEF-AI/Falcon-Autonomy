@@ -1,7 +1,9 @@
 """Models: register a perception model (ONNX, TorchScript or a Python plug-in), download its pinned weights when asked,
 score it on recorded drives (core.harness: AP with drive-level CIs, a condition heat map, the worst frames), compare
 two evaluations (paired bootstrap: regressions), and measure the sim-to-real gap of the drives' images against a real
-dataset (core.realgap)."""
+dataset (core.realgap). From the failure gallery, "Why did this fail?" attributes a missed object to its factors by
+re-runs of a scenario drive (core.rootcause, a job), and "Correlates of misses" relates the whole evaluation's misses
+to the objects' and frames' attributes (correlational, with intervals)."""
 from __future__ import annotations
 
 import json
@@ -333,6 +335,9 @@ class ModelsPage(Page):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll)
         self.timer.start(1500)
+        self.why_job = None
+        self.why_view = None
+        self._why_dir = ''
         win.bridge.finished.connect(self.finished)
         self.refresh()
 
@@ -375,6 +380,15 @@ class ModelsPage(Page):
         bv.addWidget(self.frame, 1)
         bv.addWidget(label('Red: missed objects · orange: false positives scoring ≥ 0.5 (IoU 0.5, per class)',
                            muted=True))
+        bar = QHBoxLayout()
+        bar.addWidget(button('Why did this fail?', self.why,
+                             tip='Attribute the frame\'s first missed object to its factors by re-runs that change '
+                                 'one at a time (a scenario drive only: it repeats bit for bit)'))
+        bar.addWidget(button('Correlates of misses', self.why_correlates,
+                             tip='Which attributes of objects and frames go with misses over the whole evaluation '
+                                 '(correlational, with intervals; no re-run)'))
+        bar.addStretch(1)
+        bv.addLayout(bar)
         w.addWidget(box)
         return w
 
@@ -616,7 +630,72 @@ class ModelsPage(Page):
         if live:
             self.state.set('Job', ' · '.join(j.summary() for j in live))
 
+    # ------------------------------------------------------------------ why did this fail?
+    def _why_submit(self, argv, title, folder):
+        from .. import rootcause as RV
+        if self.why_job is not None and self.why_job.state not in FINAL:
+            return None
+        self._why_dir = folder
+        self.why_job = RV.submit(self.win, argv, title)
+        return self.why_job
+
+    def why(self):
+        """The selected gallery frame's first missed object, attributed by counterfactual re-runs of its drive; a
+        drive that cannot be re-run exactly gets the evaluation's correlates instead (and says why)."""
+        from ...core import rootcause as RC
+        from .. import rootcause as RV
+        it = self.gal.currentItem()
+        d = self.ev.currentData()
+        row = it.data(0, 256) if it is not None else None
+        if not row or not d:
+            self.state.set('Job', 'Choose a frame of the failure gallery first.')
+            return
+        if not row.get('missed'):
+            self.state.set('Job', 'That frame has no missed object (only false positives): nothing to attribute.')
+            return
+        e = read_json(os.path.join(d, 'evaluation.json'))
+        mid = (e.get('model') or {}).get('id')
+        if self.win.project.item('models', mid) is None:
+            self.state.set('Job', f'The evaluated model {mid!r} is no longer in the project.')
+            return
+        run = next((r for r in e.get('runs') or () if os.path.basename(os.path.normpath(r)) == row['drive']), None)
+        try:
+            cfg = read_json(os.path.join(run, 'drive.json')) if run else None
+        except (OSError, ValueError):
+            cfg = None
+        why_not = 'its drive folder is gone' if cfg is None else RC.repeatable(cfg)
+        if why_not:
+            self.state.set('Job', f'This drive cannot be re-run exactly ({why_not}): the correlates of misses over '
+                                  'the evaluation instead.')
+            self.why_correlates()
+            return
+        if not self._ready():
+            return
+        miss = row['missed'][0]
+        folder = RV.out_dir(self.win.workspace(), f'{row["drive"]}-{row["step"]}')
+        argv = ['case', self.win.project.path, '--run', run, '--model', mid, '--failure', 'missed', '--step',
+                str(row['step']), '--track', str(miss.get('track_id')), '--out', folder]
+        if self.win.fake_carla:
+            argv += ['--fake-carla', self.win.fake_carla]
+        self._why_submit(argv, f'Why was it missed? {row["image_id"]}', folder)
+
+    def why_correlates(self):
+        from .. import rootcause as RV
+        d = self.ev.currentData()
+        if not d:
+            self.state.set('Job', 'Choose an evaluation first.')
+            return
+        folder = RV.out_dir(self.win.workspace(), f'correlates-{os.path.basename(d)}')
+        self._why_submit(['evaluation', d, '--out', folder], f'Correlates of misses: {os.path.basename(d)}',
+                         folder)
+
     def finished(self, job):
+        if job is self.why_job:
+            from ..rootcause import RootCauseDialog
+            dlg = RootCauseDialog(self, self._why_dir, job)
+            self.why_view = dlg.view
+            dlg.show()
+            return
         if job.id not in self.jobs:
             return
         self.jobs.pop(job.id)

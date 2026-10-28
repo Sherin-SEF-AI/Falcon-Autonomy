@@ -17,13 +17,15 @@ from ...core.paths import tilde
 from ..widgets import KeyValues, Page, Section, button, label
 
 KIND_TITLES = {'iteration': 'Loop iteration', 'evaluation': 'Model evaluation', 'dataset': 'Dataset coverage',
-               'study': 'Rare-case study', 'leaderboard': 'Leaderboard result'}
+               'study': 'Rare-case study', 'leaderboard': 'Leaderboard result', 'rules': 'Traffic-rule check',
+               'rootcause': 'Root cause'}
 
 
 class ReportsPage(Page):
     key, title, icon = 'reports', 'Reports', 'report'
     about = ('Self-contained HTML reports — no network assets, light and dark — of loop iterations, evaluations, '
-             'datasets, rare-case studies and Leaderboard results, each with the provenance of every number.')
+             'datasets, rare-case studies, Leaderboard results and traffic-rule checks, each with the provenance of every '
+             'number.')
 
     def __init__(self, win):
         super().__init__(win)

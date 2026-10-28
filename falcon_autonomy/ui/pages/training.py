@@ -1,7 +1,8 @@
 """Training: fine-tune detectors on drives and real data (core.training), run the mixed sim/real experiment
-(core.experiments), learn driving policies by behaviour cloning or PPO (core.imitation, core.rl), and score a policy
-in the style of the CARLA Leaderboard with a replay of any infraction (core.leaderboard). Every action is a job; the
-heavy work runs in its own process."""
+(core.experiments) and the active-learning experiment (core.activelearn: AP against training frames per acquisition
+strategy, with intervals), learn driving policies by behaviour cloning or PPO (core.imitation, core.rl), and score a
+policy in the style of the CARLA Leaderboard with a replay of any infraction and its traffic-rule violations beside
+the score (core.leaderboard, core.rules). Every action is a job; the heavy work runs in its own process."""
 from __future__ import annotations
 
 import glob
@@ -10,11 +11,11 @@ import os
 import sys
 import time
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor, QPixmap
-from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-                             QPlainTextEdit, QSlider, QSpinBox, QSplitter, QTabWidget, QTreeWidget, QTreeWidgetItem,
-                             QVBoxLayout, QWidget)
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
+from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                             QMessageBox, QPlainTextEdit, QSlider, QSpinBox, QSplitter, QTabWidget, QTreeWidget,
+                             QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ...core import leaderboard as LB
 from ...core import scenarios as SC
@@ -23,7 +24,7 @@ from ...core.jobs import FINAL, JobSpec
 from ...core.paths import tilde
 from ...core.project import Edit
 from ...core.provenance import read_json
-from ..theme import STATUS
+from ..theme import STATUS, THEME
 from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
 
 
@@ -37,6 +38,101 @@ def _jsonl(p):
             return [json.loads(x) for x in fh if x.strip()]
     except (OSError, ValueError):
         return []
+
+
+def _marker(p: QPainter, shape: int, x: float, y: float, r: float = 4.5):
+    """Marker shape by series index (circle, square, triangle, diamond, …), so colour is never the only cue."""
+    k = shape % 5
+    if k == 0:
+        p.drawEllipse(QPointF(x, y), r, r)
+    elif k == 1:
+        p.drawRect(QRectF(x - r, y - r, 2 * r, 2 * r))
+    elif k == 2:
+        p.drawPolygon(QPolygonF([QPointF(x, y - r - 1), QPointF(x + r + 1, y + r), QPointF(x - r - 1, y + r)]))
+    elif k == 3:
+        p.drawPolygon(QPolygonF([QPointF(x, y - r - 1), QPointF(x + r + 1, y), QPointF(x, y + r + 1),
+                                 QPointF(x - r - 1, y)]))
+    else:                                         # a downward triangle
+        p.drawPolygon(QPolygonF([QPointF(x - r - 1, y - r), QPointF(x + r + 1, y - r), QPointF(x, y + r + 1)]))
+
+
+class CurveChart(QWidget):
+    """AP against training frames, one line per strategy (colour and marker shape), each point with its 95 % interval
+    as a vertical whisker (core.activelearn results.json); a legend names each strategy."""
+
+    def __init__(self):
+        super().__init__()
+        self.res = None
+        self.setMinimumHeight(260)
+
+    def set_results(self, res):
+        self.res = res
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor(THEME.tok['panel']))
+        res = self.res
+        if not res or not res.get('results'):
+            p.setPen(QColor(THEME.tok['muted']))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, 'No active-learning results yet')
+            return
+        frames = res['frames']
+        vals = [v for s in res['results'] for r in s['rounds'] for v in (r['AP']['value'], r['AP']['ci_low'],
+                                                                        r['AP']['ci_high']) if v is not None]
+        lo, hi = (min(vals), max(vals)) if vals else (0.0, 1.0)
+        pad = max((hi - lo) * 0.1, 0.01)
+        lo, hi = max(0.0, lo - pad), min(1.0, hi + pad)
+        x0, x1, y0, y1 = 56, self.width() - 16, 14, self.height() - 58
+        f0, f1 = frames[0], frames[-1] if frames[-1] > frames[0] else frames[0] + 1
+
+        def X(f):
+            return x0 + (x1 - x0) * (f - f0) / (f1 - f0)
+
+        def Y(v):
+            return y1 - (y1 - y0) * (v - lo) / max(hi - lo, 1e-9)
+        p.setPen(QColor(THEME.tok['grid2']))
+        for k in range(5):
+            v = lo + (hi - lo) * k / 4
+            p.drawLine(QPointF(x0, Y(v)), QPointF(x1, Y(v)))
+        p.setPen(QColor(THEME.tok['muted']))
+        for k in range(5):
+            v = lo + (hi - lo) * k / 4
+            p.drawText(QRectF(0, Y(v) - 8, x0 - 6, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                       f'{v:.3f}')
+        for f in frames:
+            p.drawText(QRectF(X(f) - 30, y1 + 4, 60, 14), Qt.AlignmentFlag.AlignCenter, str(f))
+        p.drawText(QRectF(x0, y1 + 18, x1 - x0, 14), Qt.AlignmentFlag.AlignCenter, 'training frames')
+        n = len(res['results'])
+        for i, s in enumerate(res['results']):
+            col = THEME.cam(i)
+            dx = (i - (n - 1) / 2) * 4.0                  # a small offset so whiskers do not hide each other
+            pts = [(X(r['frames']) + dx, r['AP']) for r in s['rounds']]
+            p.setPen(QPen(col, 2))
+            for (xa, a), (xb, b) in zip(pts, pts[1:]):
+                if a['value'] is not None and b['value'] is not None:
+                    p.drawLine(QPointF(xa, Y(a['value'])), QPointF(xb, Y(b['value'])))
+            for x, a in pts:
+                if a['ci_low'] is not None and a['ci_high'] is not None:
+                    p.setPen(QPen(col, 1.5))
+                    p.drawLine(QPointF(x, Y(a['ci_low'])), QPointF(x, Y(a['ci_high'])))
+                if a['value'] is not None:
+                    p.setPen(QPen(QColor(THEME.tok['panel']), 1.2))
+                    p.setBrush(col)
+                    _marker(p, i, x, Y(a['value']))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+        lx, ly = x0, self.height() - 14
+        for i, s in enumerate(res['results']):
+            p.setPen(QPen(QColor(THEME.tok['panel']), 1.2))
+            p.setBrush(THEME.cam(i))
+            _marker(p, i, lx + 5, ly - 4)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QColor(THEME.tok['ink2']))
+            p.drawText(QPointF(lx + 14, ly), s['strategy'])
+            lx += 24 + p.fontMetrics().horizontalAdvance(s['strategy'])
+        p.setPen(QColor(THEME.tok['muted']))
+        p.drawText(QPointF(lx + 10, ly), 'whiskers: 95 % intervals over test units; mean over seeds')
 
 
 class Flipbook(QWidget):
@@ -92,6 +188,7 @@ class TrainingPage(Page):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._perception_tab(), 'Detectors')
         self.tabs.addTab(self._experiment_tab(), 'Sim + real experiment')
+        self.tabs.addTab(self._active_tab(), 'Active learning')
         self.tabs.addTab(self._policy_tab(), 'Driving policies')
         self.tabs.addTab(self._leaderboard_tab(), 'Leaderboard')
         v.addWidget(self.tabs)
@@ -174,10 +271,11 @@ class TrainingPage(Page):
         self.refresh()
 
     def refresh(self):
-        for w in (self.det_runs, self.exp_synth, self.bc_runs):
+        for w in (self.det_runs, self.exp_synth, self.bc_runs, self.al_pool, self.al_test):
             self._fill_runs(w)
         self.load_trainings()
         self.load_experiments()
+        self.load_active()
         self.load_policies()
         self.load_leaderboards()
 
@@ -453,7 +551,12 @@ class TrainingPage(Page):
         p = os.path.join(d, 'results.json')
         if os.path.isfile(p):
             try:
-                self.exp_text.setPlainText(table(read_json(p)))
+                doc = read_json(p)
+                if doc.get('schema') == 'falcon.active_results/1':
+                    from ...core.activelearn import table as active_table
+                    self.exp_text.setPlainText(active_table(doc))
+                else:
+                    self.exp_text.setPlainText(table(doc))
                 return
             except (OSError, ValueError, KeyError, TypeError) as e:
                 self.exp_text.setPlainText(f'results.json could not be read: {e}')
@@ -461,6 +564,159 @@ class TrainingPage(Page):
         n = len(glob.glob(os.path.join(d, 'runs', '*', 'run.json')))
         self.exp_text.setPlainText(f'Running or stopped: {n} run(s) so far; the analysis is written when every arm '
                                    'and seed has finished.')
+
+    # ================================================================== active learning
+    def _active_tab(self):
+        from ...core.activelearn import STRATEGIES
+        split = QSplitter()
+        left = QWidget()
+        lv = QVBoxLayout(left)
+        sec = Section('Choose frames by what the model does not know',
+                      'Rounds of a fixed budget of frames added to training, chosen by the model\'s uncertainty or '
+                      'diversity, against random choice from the same pool. Falcon\'s labels are free: the point is '
+                      'the same AP from fewer frames. Every strategy is scored on the same held-out drives, paired '
+                      'with random, over several seeds.')
+        f = Form()
+        self.al_id = QLineEdit('active')
+        self.al_initial, self.al_budget, self.al_rounds, self.al_seeds, self.al_epochs = (QSpinBox() for _ in range(5))
+        for w, lo, hi, v in ((self.al_initial, 1, 100000, 32), (self.al_budget, 1, 100000, 32),
+                             (self.al_rounds, 1, 50, 3), (self.al_seeds, 1, 20, 3), (self.al_epochs, 1, 200, 6)):
+            w.setRange(lo, hi)
+            w.setValue(v)
+        self.al_arch = QComboBox()
+        for k in T.ARCHS:
+            self.al_arch.addItem(k, k)
+        self.al_init = QComboBox()
+        self.al_init.addItems(list(T.INITS))
+        self.al_init.setCurrentText('coco')
+        for text, w in (('Experiment', self.al_id), ('Initial frames', self.al_initial),
+                        ('Frames per round', self.al_budget), ('Rounds', self.al_rounds), ('Seeds', self.al_seeds),
+                        ('Epochs per training', self.al_epochs), ('Architecture', self.al_arch),
+                        ('Initialisation', self.al_init)):
+            f.row(text, w)
+        sec.add(f)
+        from PyQt6.QtWidgets import QGridLayout
+        grid = QGridLayout()
+        self.al_strats = {}
+        for i, k in enumerate(x for x in STRATEGIES if x != 'random'):
+            c = QCheckBox(k)
+            c.setChecked(k in ('entropy', 'kcenter', 'hybrid'))
+            self.al_strats[k] = c
+            grid.addWidget(c, i // 3, i % 3)
+        sec.add(label('Strategies (against random choice, which always runs: the baseline)', h=True))
+        sec.add(grid)
+        sec.add(label('Pool: drives to choose frames from', h=True))
+        self.al_pool = self._runs_list()
+        sec.add(self.al_pool)
+        sec.add(label('Test: held-out drives (never in the pool)', h=True))
+        self.al_test = self._runs_list()
+        sec.add(self.al_test)
+        b = QHBoxLayout()
+        b.addWidget(button('Run the experiment', self.run_active, role='primary'))
+        b.addStretch(1)
+        sec.add(b)
+        lv.addWidget(sec)
+        lv.addStretch(1)
+        split.addWidget(scroll(left))
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        self.als = QComboBox()
+        self.als.currentIndexChanged.connect(lambda _: self.show_active())
+        rv.addWidget(self.als)
+        self.al_chart = CurveChart()
+        rv.addWidget(self.al_chart, 2)
+        self.al_table = QTreeWidget()
+        self.al_table.setHeaderLabels(['Strategy', 'AP at each frame count [95 %]', 'Area under the curve',
+                                       'vs random (combined 95 %)', 'Reaches random\'s final AP'])
+        self.al_table.setRootIsDecorated(False)
+        rv.addWidget(self.al_table, 1)
+        self.al_note = label('', muted=True, wrap=True)
+        rv.addWidget(self.al_note)
+        split.addWidget(right)
+        split.setSizes([460, 800])
+        return split
+
+    def load_active(self):
+        cur = self.als.currentData()
+        self.als.blockSignals(True)
+        self.als.clear()
+        root = self.ws('experiments')
+        if os.path.isdir(root):
+            for d in sorted(os.listdir(root), reverse=True):
+                p = os.path.join(root, d, 'experiment.json')
+                try:
+                    if os.path.isfile(p) and read_json(p).get('kind') == 'active':
+                        self.als.addItem(d, os.path.join(root, d))
+                except (OSError, ValueError):
+                    continue
+        k = self.als.findData(cur)
+        self.als.setCurrentIndex(k if k >= 0 else 0)
+        self.als.blockSignals(False)
+        self.show_active()
+
+    def run_active(self):
+        pool, test = self._checked(self.al_pool), self._checked(self.al_test)
+        if not pool or not test:
+            QMessageBox.information(self, 'Active learning', 'Check the pool drives and the held-out test drives.')
+            return
+        if set(pool) & set(test):
+            QMessageBox.information(self, 'Active learning', 'A test drive cannot also be in the pool.')
+            return
+        if not self._ready():
+            return
+        strats = ['random'] + [k for k, c in self.al_strats.items() if c.isChecked()]
+        argv = ['experiment', 'active', '--workspace', self.win.workspace(), '--id', self.al_id.text().strip(),
+                '--strategies', ','.join(strats), '--initial', str(self.al_initial.value()), '--budget',
+                str(self.al_budget.value()), '--rounds', str(self.al_rounds.value()), '--seeds',
+                str(self.al_seeds.value()), '--epochs', str(self.al_epochs.value()), '--arch',
+                self.al_arch.currentData(), '--init', self.al_init.currentText()]
+        for r in pool:
+            argv += ['--pool', f'falcon:{r}']
+        for r in test:
+            argv += ['--test', f'falcon:{r}']
+        self._cli('experiment', f'Active learning {self.al_id.text().strip()}', argv, needs_gpu=True, memory_gb=6.0,
+                  gpu_held=True)
+
+    def show_active(self):
+        self.al_table.clear()
+        d = self.als.currentData()
+        res = None
+        if d and os.path.isfile(os.path.join(d, 'results.json')):
+            try:
+                res = read_json(os.path.join(d, 'results.json'))
+            except (OSError, ValueError):
+                res = None
+        self.al_chart.set_results(res)
+        if not res:
+            n = len(glob.glob(os.path.join(d, 'runs', '*', 'run.json'))) if d else 0
+            self.al_note.setText(f'Running or stopped: {n} run(s) so far; the analysis is written when every '
+                                 f'strategy, seed and round has finished.' if d else 'No active-learning experiment '
+                                                                                    'yet.')
+            return
+        for i, s in enumerate(res['results']):
+            aps = ', '.join(f'{r["frames"]}: {_fmt(r["AP"]["value"], 4)} [{_fmt(r["AP"]["ci_low"], 4)}, '
+                            f'{_fmt(r["AP"]["ci_high"], 4)}]' for r in s['rounds'])
+            vs = s.get('aulc_vs_random') or {}
+            cmp_ = '' if not vs else (f'{vs["diff"]:+.4f} ' + (f'[{vs["combined_ci"][0]:+.4f}, '
+                                                              f'{vs["combined_ci"][1]:+.4f}] '
+                                                              if vs.get('combined_ci') else '') + vs['verdict']) \
+                if vs.get('diff') is not None else (vs.get('verdict') or '')
+            rf = s['frames_to_reach_random_final']
+            reach = 'not within the frames tried' if rf['value'] is None else \
+                f'{rf["value"]:.0f} frames (saves {100 * rf["saving"]:.0f} %)'
+            it = QTreeWidgetItem([s['strategy'], aps, _fmt(s['aulc']['value'], 4), cmp_ or 'the baseline', reach])
+            it.setForeground(0, THEME.cam(i))
+            if vs.get('verdict', '').startswith('better'):
+                it.setForeground(3, QColor(STATUS['good']))
+            elif vs.get('verdict', '').startswith('worse'):
+                it.setForeground(3, QColor(STATUS['critical']))
+            self.al_table.addTopLevelItem(it)
+        for c in range(5):
+            self.al_table.resizeColumnToContents(c)
+        t = res['test']
+        self.al_note.setText(f'{len(res["seeds"])} seeds; test {t["images"]} images, {t["objects"]} objects, '
+                             f'{t["n_units"]} {t["unit"]}s. {res["labels"]}. '
+                             + ' '.join(w[:1].upper() + w[1:].rstrip('.') + '.' for w in res.get('warnings') or ()))
 
     # ================================================================== driving policies
     def _policy_tab(self):
@@ -612,10 +868,10 @@ class TrainingPage(Page):
         self.lbs.currentIndexChanged.connect(lambda _: self.show_leaderboard())
         tv.addWidget(self.lbs)
         self.lb_info = KeyValues(('Driving score', 'Route completion', 'Infraction penalty', 'Routes',
-                                  'Infractions per km', 'Not scored'))
+                                  'Infractions per km', 'Traffic rules', 'Not scored'))
         tv.addWidget(self.lb_info)
         self.infr = QTreeWidget()
-        self.infr.setHeaderLabels(['Route', 'Scenario', 'DS', 'Infraction', 'Step', 'Time'])
+        self.infr.setHeaderLabels(['Route', 'Scenario', 'DS', 'Infraction', 'Step', 'Time', 'Rule violations'])
         self.infr.setRootIsDecorated(False)
         tv.addWidget(self.infr, 1)
         b = QHBoxLayout()
@@ -669,19 +925,30 @@ class TrainingPage(Page):
         self.lb_info.set('Infractions per km', ', '.join(f'{k} {_fmt(v, 2)}' for k, v in
                                                          doc['infractions_per_km'].items()) or 'none')
         self.lb_info.set('Not scored', doc.get('not_scored', ''))
+        rules = doc.get('rules')
+        if rules:
+            worst = sorted((r for r in rules['rules'] if r['violations']), key=lambda r: -r['violations'])[:3]
+            self.lb_info.set('Traffic rules', (f'{rules["violations"]} violations, {_fmt(rules["per_km"], 2)} per km '
+                                               f'({(rules.get("ruleset") or {}).get("name")}; beside the score, not '
+                                               f'in it)') + ('; most: ' + ', '.join(
+                f'{r["id"]} {r["violations"]}' for r in worst) if worst else ''))
+        else:
+            self.lb_info.set('Traffic rules', 'not checked: the episodes carry no trace (recorded before Falcon 1.1)')
         eps = _jsonl(os.path.join(d, 'episodes.jsonl'))
         per = doc.get('per_route') or []
         for i, e in enumerate(eps):
             ds = per[i]['driving_score'] if i < len(per) else None
+            rv = per[i].get('rule_violations') if i < len(per) else None
+            rvs = '—' if rv is None else str(rv)
             scn = (e.get('scenario') or {}).get('id') or 'free'
             infs = e.get('infractions') or []
             if not infs:
-                it = QTreeWidgetItem([str(i), scn, _fmt(ds), 'none', '', ''])
+                it = QTreeWidgetItem([str(i), scn, _fmt(ds), 'none', '', '', rvs])
                 self.infr.addTopLevelItem(it)
                 continue
             for k, inf in enumerate(infs):
                 it = QTreeWidgetItem([str(i), scn, _fmt(ds), inf['kind'], str(inf['step']),
-                                      f'{inf.get("sim_t", 0):.2f} s'])
+                                      f'{inf.get("sim_t", 0):.2f} s', rvs])
                 it.setData(0, 256, (i, k))
                 if inf['kind'] in LB.PENALTY:
                     it.setForeground(3, QColor(STATUS['critical']))

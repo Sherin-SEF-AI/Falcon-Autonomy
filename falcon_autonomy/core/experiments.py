@@ -777,13 +777,18 @@ def table(res: dict) -> str:
 
 # ================================================================================================ the command
 def main_experiment(argv) -> int:
-    """`falcon experiment mixed|list|best|results|export …`: protocol lines on stdout; 0 ok, 2 failed, 3 cancelled."""
+    """`falcon experiment mixed|active|list|best|results|export …`: protocol lines on stdout; 0 ok, 2 failed, 3
+    cancelled. `active` is core.activelearn.main_active."""
     import argparse
     from . import protocol as P
     from . import provenance as PV
     from . import training as T
+    if argv[:1] == ['active']:                    # active learning against random choice (core.activelearn)
+        from .activelearn import main_active
+        return main_active(argv[1:])
     ap = argparse.ArgumentParser(prog='falcon experiment', description='experiments: the mixed sim/real training '
-                                                                       'experiment, run tracking, MLflow export')
+                                                                       'experiment, active learning, run tracking, '
+                                                                       'MLflow export')
     sub = ap.add_subparsers(dest='action', required=True)
     mx = sub.add_parser('mixed', help='real only against real + X %% synthetic, at a fixed budget (resumable)')
     mx.add_argument('--root', default='', help='the experiments folder (default WORKSPACE/experiments)')
@@ -809,7 +814,10 @@ def main_experiment(argv) -> int:
     mx.add_argument('--device')
     mx.add_argument('--no-export', action='store_true', help='do not export each run\'s model to ONNX')
     mx.add_argument('--weights-dir', action='append', default=[])
-    for name, hlp in (('list', 'the runs and their latest metrics'), ('results', 'a mixed experiment\'s table')):
+    sub.add_parser('active', help='active learning against random choice (falcon experiment active --help; '
+                                  'docs/active-learning.md)')
+    for name, hlp in (('list', 'the runs and their latest metrics'), ('results', 'a mixed or active experiment\'s '
+                                                                                 'table')):
         p = sub.add_parser(name, help=hlp)
         p.add_argument('experiment')
     b = sub.add_parser('best', help='the finished run with the best latest value of a metric')
@@ -846,7 +854,12 @@ def main_experiment(argv) -> int:
             p = os.path.join(a.experiment, 'results.json')
             if not os.path.isfile(p):
                 raise ExperimentError(f'{a.experiment} has no results.json (not a finished mixed experiment)')
-            print(table(PV.read_json(p)), flush=True)
+            doc = PV.read_json(p)
+            if doc.get('schema') == 'falcon.active_results/1':
+                from .activelearn import table as active_table
+                print(active_table(doc), flush=True)
+            else:
+                print(table(doc), flush=True)
             em.result('ok')
             return P.OK
         if a.action == 'export':
