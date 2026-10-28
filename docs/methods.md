@@ -90,3 +90,39 @@ Measured on the reference machine (CARLA 0.9.16, Town10HD_Opt, 40 vehicles, 20 s
 | slices matched by order | 400 of 400 (11.2 M points), worst direction 3.5·10⁻⁶°, range RMS 1.500 cm (noise set 1.5 cm) | — |
 | points in vehicle boxes labelled vehicle | 100 % of 262 282 | ≥ 99 % |
 | lidar range − camera range | median 0.9 mm, median absolute 1.15 cm, 90th percentile 3.2 cm (338 311 points; 24 608 hidden from the camera) | median ≤ 2 cm |
+
+## Criticality
+
+Computed from the recorded trajectories (every 0.05 s: position, heading, velocity, box) — `core/criticality.py`.
+
+- **Time to collision (TTC)** — the first time the two oriented boxes overlap if both keep their velocity (exact, by
+  the separating-axis test on moving boxes; Hayward 1972). Its minimum over the run.
+- **Post-encroachment time (PET)** — the time between one road user leaving the area where the two paths' footprints
+  overlap and the other entering it (Allen, Shin & Cooper 1978); computed pointwise, it can only overestimate, by less
+  than two samples.
+- **Minimum distance** — between the boxes (Ericson 2005).
+- **Required deceleration (DRAC)** — v_rel² / (2 · gap) for a road user ahead in the ego's path (Almqvist et al. 1991;
+  Archer 2005).
+- **Collisions** — steps where the boxes overlap, and the ego's collision-sensor events.
+- **The criticality scalar** (heuristic, what searches maximise): 1 for a collision, else
+  0.9 · (1 − (1 − s_ttc)(1 − s_pet)(1 − s_drac)(1 − s_dist)) with s_ttc = exp(−TTC / 1.5 s) (1.5 s: van der Horst
+  1990's critical TTC), s_pet = exp(−PET / 1 s), s_drac = 1 − exp(−DRAC / 3.35 m/s²) (Archer 2005's threshold),
+  s_dist = exp(−d / 2 m); the maximum over the actors.
+
+## Rare-case search
+
+Random (uniform or Halton), CMA-ES (Hansen 2016), Bayesian optimisation (a Gaussian process with a Matérn-5/2 kernel,
+hyperparameters by marginal likelihood, expected improvement; Jones et al. 1998, Snoek et al. 2012) and adaptive
+sampling (the cross-entropy method; Rubinstein 1999, O'Kelly et al. 2018). Tested on a known-weak synthetic model — a
+detector-miss probability over fog, distance, sun altitude and occlusion with a planted failure region of 2.96 % of the
+volume — with 120 evaluations each:
+
+| method | evaluations to the 5th failure (mean, seeds 0–4) | failures found at 120 |
+|---|---|---|
+| random | 98.8 | 6.2 |
+| CMA-ES | 48.6 | 49.8 |
+| Bayesian optimisation | 22.0 | 51.0 |
+| adaptive sampling | 43.0 | 64.8 |
+
+Over 20 other seeds (100–119): random 115.3 (most seeds never reached five failures) and 3.4; CMA-ES 39.9 and 62.6;
+Bayesian optimisation 22.2 and 50.6; adaptive sampling 33.5 and 73.8. `core.search.compare` returns both curves.

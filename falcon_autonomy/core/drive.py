@@ -90,4 +90,5 @@ def scenario_config(project: Project, scenario: dict, world_id: str, rig_id: str
     cfg['traffic'] = dict(cfg['traffic'], vehicles=int(traffic_vehicles), walkers=0)
     cfg['scenario'] = conc
     cfg['warmup_steps'] = 5
+    cfg['reload_world'] = True            # bit-for-bit repetition needs the same initial world state
     return cfg

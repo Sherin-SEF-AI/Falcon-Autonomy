@@ -52,6 +52,16 @@ def load_map(w, cfg: dict):
         w.alive()
         return world
     town = cfg.get('town')
+    if town and cfg.get('reload_world') and world.get_map().name.rpartition('/')[2] == town:
+        # a fresh world: CARLA's physics repeat bit for bit only from the same initial state
+        w.emit.progress(0.01, f'reloading {town}', force=True)
+        w.expect(load_s)
+        client.set_timeout(load_s)
+        world = client.reload_world(False)
+        client.set_timeout(w.timeout)
+        w.world = world
+        w.alive()
+        return world
     if town and world.get_map().name.rpartition('/')[2] != town:
         w.emit.progress(0.01, f'loading {town}', force=True)
         w.expect(load_s)

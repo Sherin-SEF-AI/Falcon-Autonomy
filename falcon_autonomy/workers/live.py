@@ -337,7 +337,8 @@ class Live(Worker):
             l = a.get_location()
             for k, p in enumerate(route):
                 if abs(l.x - p[0]) < 2.5 and abs(l.y - p[1]) < 2.5 and math.hypot(l.x - p[0], l.y - p[1]) < 1.8:
-                    d = 2.0 * (k + 1)
+                    # bumper to bumper: the route distance less both half-lengths
+                    d = max(2.0 * (k + 1) - self.ego.bounding_box.extent.x - a.bounding_box.extent.x, 0.0)
                     if best is None or d < best[0]:
                         av = a.get_velocity()
                         best = (d, math.sqrt(av.x ** 2 + av.y ** 2))

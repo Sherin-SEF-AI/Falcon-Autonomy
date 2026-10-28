@@ -15,6 +15,18 @@ Moving actors and the ego start at their speed (set_target_velocity on the first
 built-in lane follower along its route (driver "follower": it brakes for what is ahead in its corridor), at constant
 set speed without braking ("none"), or by CARLA's traffic manager ("autopilot").
 
+Motion: kinematic (the default) or physics. Measured on CARLA 0.9.16 (Town10HD_Opt, the reference machine): with
+CARLA's vehicle physics, two runs of the same scenario with the same seed — synchronous mode, a fixed step, a freshly
+reloaded world, every state read from the snapshot of the frame just ticked — drift apart: the ego by 3 cm with no
+feedback controller and by up to 0.4 m with its lane follower within 12 s, whatever its blueprint, role or sensors.
+In "kinematic" motion the director integrates every scenario vehicle (the ego included) with a kinematic bicycle
+model driven by the same controllers, and walkers along their direction, and places them with set_transform with
+CARLA's physics off: the motion is computed here and repeats bit for bit; collisions are measured on the boxes
+(core.criticality). Its limits: the wheels do not turn, and there are no tyre, suspension or collision dynamics.
+"physics" motion drives them through CARLA's physics (realistic dynamics, not bit-for-bit repeatable).
+
+Every pose and velocity is read from the world snapshot of exactly the frame just ticked (sync()).
+
 Records: per step the ego's and every actor's (t, x, y, yaw, vx, vy, length, width) and the ego's collision events
 (sensor.other.collision), for core.criticality; the timeline's firings with their times.
 """
@@ -107,6 +119,9 @@ class Director:
         self.events = []
         self.t = 0.0
         self.started = False
+        self.snap = None
+        self.kinematic = str(cfg.get('scenario', {}).get('motion', cfg.get('motion', 'kinematic'))) == 'kinematic'
+        self.kin = {}                     # actor id -> [x, y, z, yaw_deg, v] when kinematic
 
     # ------------------------------------------------------------------ lanes relative to the handedness
     def overtaking(self, wp):
@@ -292,16 +307,104 @@ class Director:
         if self.driver == 'autopilot':
             ego.set_autopilot(True, self.w.tm.get_port())
 
+    # ------------------------------------------------------------------ frame-consistent state
+    def sync(self, frame, timeout=5.0):
+        """Wait until the client holds the world snapshot of `frame` (World.tick()'s), then read from it."""
+        import time
+        t0 = time.monotonic()
+        while True:
+            snap = self.world.get_snapshot()
+            if snap.frame >= frame:
+                self.snap = snap
+                return
+            if time.monotonic() - t0 > timeout:
+                raise Failed(f'the snapshot of frame {frame} did not arrive within {timeout:g} s')
+            time.sleep(0.0005)
+
+    def tf(self, actor):
+        k = self.k_tf(actor)
+        if k is not None:
+            return k
+        a = self.snap.find(actor.id) if self.snap is not None else None
+        return a.get_transform() if a is not None else actor.get_transform()
+
+    def vel(self, actor):
+        k = self.k_vel(actor)
+        if k is not None:
+            return k
+        a = self.snap.find(actor.id) if self.snap is not None else None
+        return a.get_velocity() if a is not None else actor.get_velocity()
+
+    def loc(self, actor):
+        return self.tf(actor).location
+
+    # ------------------------------------------------------------------ kinematic motion
+    ACCEL, BRAKE, STEER_DEG = 3.0, 8.0, 70.0
+
+    def kin_init(self, actor):
+        tr = actor.get_transform()
+        wp = self.map.get_waypoint(tr.location)
+        z = wp.transform.location.z if wp is not None else tr.location.z
+        actor.set_simulate_physics(False)
+        self.kin[actor.id] = [tr.location.x, tr.location.y, z, tr.rotation.yaw, 0.0]
+
+    def kin_step(self, actor, u, walk=None):
+        """Integrate one step: a vehicle by the kinematic bicycle model from its controls (u), a walker along
+        `walk` = (yaw_deg, speed). Places the actor; its state stays here."""
+        carla = self.carla
+        x, y, z, yaw, v = self.kin[actor.id]
+        dt = self.dt
+        if walk is not None:
+            yaw, v = walk
+            r = math.radians(yaw)
+            x, y = x + math.cos(r) * v * dt, y + math.sin(r) * v * dt
+        else:
+            if u.get('hand_brake'):
+                v = 0.0
+            else:
+                v = max(v + (self.ACCEL * u.get('throttle', 0.0) - self.BRAKE * u.get('brake', 0.0)) * dt, 0.0)
+            wheelbase = max(2.0 * actor.bounding_box.extent.x * 0.6, 0.8)
+            yaw2 = yaw + math.degrees(v * math.tan(u.get('steer', 0.0) * math.radians(self.STEER_DEG)) /
+                                      wheelbase * dt)
+            mid = math.radians((yaw + yaw2) / 2.0)
+            x, y, yaw = x + math.cos(mid) * v * dt, y + math.sin(mid) * v * dt, yaw2
+        self.kin[actor.id] = [x, y, z, yaw, v]
+        actor.set_transform(carla.Transform(carla.Location(x=x, y=y, z=z), carla.Rotation(yaw=yaw)))
+
+    def k_tf(self, actor):
+        k = self.kin.get(actor.id)
+        if k is None:
+            return None
+        carla = self.carla
+        return carla.Transform(carla.Location(x=k[0], y=k[1], z=k[2]), carla.Rotation(yaw=k[3]))
+
+    def k_vel(self, actor):
+        k = self.kin.get(actor.id)
+        if k is None:
+            return None
+        r = math.radians(k[3])
+        return self.carla.Vector3D(k[4] * math.cos(r), k[4] * math.sin(r), 0.0)
+
     # ------------------------------------------------------------------ stepping
     def start(self):
         """At the first step: everyone at their speed."""
         carla = self.carla
         self.started = True
-        a = math.radians(self.ego.get_transform().rotation.yaw)
+        if self.kinematic:
+            # an ego on the traffic manager's autopilot keeps CARLA's physics (the traffic manager drives through it)
+            ego_kin = self.driver != 'autopilot'
+            for a in ([self.ego] if ego_kin else []) + [st['actor'] for st in self.actors.values()]:
+                self.kin_init(a)
+            if ego_kin:
+                self.kin[self.ego.id][4] = self.ego_speed
+            for st in self.actors.values():
+                self.kin[st['actor'].id][4] = st['speed']
+            return
+        a = math.radians(self.tf(self.ego).rotation.yaw)
         self.ego.set_target_velocity(carla.Vector3D(self.ego_speed * math.cos(a), self.ego_speed * math.sin(a), 0))
         for st in self.actors.values():
             if st['speed'] > 0 and not st['walker']:
-                y = math.radians(st['actor'].get_transform().rotation.yaw)
+                y = math.radians(self.tf(st['actor']).rotation.yaw)
                 st['actor'].set_target_velocity(carla.Vector3D(st['speed'] * math.cos(y), st['speed'] * math.sin(y),
                                                                0))
 
@@ -319,7 +422,7 @@ class Director:
     def record(self, t):
         for aid, a in [('ego', self.ego)] + [(k, v['actor']) for k, v in self.actors.items()]:
             try:
-                tr, v, bb = a.get_transform(), a.get_velocity(), a.bounding_box
+                tr, v, bb = self.tf(a), self.vel(a), a.bounding_box
             except RuntimeError:
                 continue
             self.traj[aid].append((round(t, 4), tr.location.x, tr.location.y, tr.rotation.yaw, v.x, v.y,
@@ -363,11 +466,12 @@ class Director:
         elif do == 'lane_change':
             ks = self.kerb_sign()
             p = st['path']
-            s_now = p.project(*_xy(st['actor']))
+            ax, ay = self.loc(st['actor']).x, self.loc(st['actor']).y
+            s_now = p.project(ax, ay)
             to = a.get('to', 'ego')
-            here = self.map.get_waypoint(self.ego.get_location())
+            here = self.map.get_waypoint(self.loc(self.ego))
             # the lateral offset (from the actor's own path) that puts it on the target lane's centre
-            ego_s = self.ego_path.project(*_xy(st['actor']))
+            ego_s = self.ego_path.project(ax, ay)
             ex, ey, _ = self.ego_path.at(ego_s, 0.0)
             px, py, pyaw = p.at(s_now, 0.0)
             r = math.radians(pyaw)
@@ -388,7 +492,9 @@ class Director:
         carla = self.carla
         actor = st['actor']
         if st['walker']:
-            if st['walking']:
+            if self.kinematic:
+                self.kin_step(actor, {}, walk=(st['path'].yaw[0], st['walk_speed'] if st['walking'] else 0.0))
+            elif st['walking']:
                 yaw = math.radians(st['path'].yaw[0])
                 actor.apply_control(carla.WalkerControl(direction=carla.Vector3D(math.cos(yaw), math.sin(yaw), 0.0),
                                                         speed=st['walk_speed']))
@@ -401,13 +507,16 @@ class Director:
         if st['lat_dur'] > 0:
             f = min(max((t - st['lat_t0']) / st['lat_dur'], 0.0), 1.0)
             st['lateral'] = st['lat_from'] + (st['lat_to'] - st['lat_from']) * f
-        u = follow(actor, st['path'], st['lateral'], st['speed'], self.dt, st)
-        actor.apply_control(carla.VehicleControl(**u))
+        u = follow(actor, st['path'], st['lateral'], st['speed'], self.dt, st, self.tf(actor), self.vel(actor))
+        if self.kinematic:
+            self.kin_step(actor, u)
+        else:
+            actor.apply_control(carla.VehicleControl(**u))
 
     def drive_ego(self):
         carla = self.carla
-        tr = self.ego.get_transform()
-        v = self.ego.get_velocity()
+        tr = self.tf(self.ego)
+        v = self.vel(self.ego)
         s = self.ego_path.project(tr.location.x, tr.location.y)
         route = [list(self.ego_path.at(s + 2.0 * k, 0.0)[:2]) + [None] for k in range(1, 26)]
         lead = self.lead(route) if self.driver == 'follower' else None
@@ -415,6 +524,9 @@ class Director:
                'ego': {'x': tr.location.x, 'y': tr.location.y, 'yaw': tr.rotation.yaw,
                        'speed_mps': math.hypot(v.x, v.y)}, 'route': route, 'lead': lead}
         u = self.policy.act(obs)
+        if self.kinematic:
+            self.kin_step(self.ego, u)
+            return
         self.ego.apply_control(carla.VehicleControl(throttle=float(u['throttle']), steer=float(u['steer']),
                                                     brake=float(u['brake'])))
 
@@ -424,46 +536,42 @@ class Director:
         cands = [st['actor'] for st in self.actors.values()]
         for a in cands:
             try:
-                l = a.get_location()
+                l = self.loc(a)
             except RuntimeError:
                 continue
             for k, p in enumerate(route):
                 if math.hypot(l.x - p[0], l.y - p[1]) < 1.8:
-                    d = 2.0 * (k + 1)
+                    # bumper to bumper: the route distance less both half-lengths
+                    d = max(2.0 * (k + 1) - self.ego.bounding_box.extent.x - a.bounding_box.extent.x, 0.0)
                     if best is None or d < best[0]:
-                        av = a.get_velocity()
+                        av = self.vel(a)
                         best = (d, math.hypot(av.x, av.y))
                     break
         return None if best is None else {'distance_m': best[0], 'speed_mps': best[1]}
 
     def dist(self, actor):
-        a, b = actor.get_location(), self.ego.get_location()
+        a, b = self.loc(actor), self.loc(self.ego)
         return math.hypot(a.x - b.x, a.y - b.y)
 
     def gap_ahead(self, actor):
         """The actor's rear ahead of the ego's front along the ego's heading (m), or None when behind."""
-        et = self.ego.get_transform()
+        et = self.tf(self.ego)
         r = math.radians(et.rotation.yaw)
         f = np.array([math.cos(r), math.sin(r)])
-        a = actor.get_location()
+        a = self.loc(actor)
         along = (a.x - et.location.x) * f[0] + (a.y - et.location.y) * f[1]
         return along - actor.bounding_box.extent.x - self.ego.bounding_box.extent.x
 
     def report(self):
         return {'id': self.scn.get('id'), 'name': self.scn.get('name'), 'values': self.scn.get('values'),
+                'motion': 'kinematic' if self.kinematic else 'physics',
                 'seed': self.scn.get('seed'), 'fired': self.fired, 'collisions': self.events,
                 'handedness': 'LHT' if self.lht else 'RHT'}
 
 
-def _xy(actor):
-    l = actor.get_location()
-    return l.x, l.y
-
-
-def follow(actor, path, lateral, speed, dt, st):
-    """Pure-pursuit steering along the path (shifted by lateral) and a PI speed controller: VehicleControl kwargs."""
-    tr = actor.get_transform()
-    v = actor.get_velocity()
+def follow(actor, path, lateral, speed, dt, st, tr, v):
+    """Pure-pursuit steering along the path (shifted by lateral) and a PI speed controller: VehicleControl kwargs.
+    tr, v: the actor's transform and velocity at this frame."""
     vel = math.hypot(v.x, v.y)
     s = path.project(tr.location.x, tr.location.y)
     la = max(4.0, 0.8 * vel)

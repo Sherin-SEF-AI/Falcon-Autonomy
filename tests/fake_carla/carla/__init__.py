@@ -1603,6 +1603,10 @@ class Client:
         LOG.append(('generate_opendrive_world', len(opendrive)))
         return STATE['world']
 
+    def reload_world(self, reset_settings=True):
+        name = STATE['world']._map.name.rpartition('/')[2] if STATE['world'] is not None else 'Town10HD_Opt'
+        return self.load_world(name, reset_settings)
+
     def load_world(self, name, reset_settings=True):
         STATE['world'] = World(name)
         LOG.append(('load_world', name))

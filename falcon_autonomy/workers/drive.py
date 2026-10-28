@@ -91,7 +91,7 @@ class Drive(Worker):
             director = Director(self, world, cfg, lib, rng)
             start, ego_wp = director.place_ego(spawns, order)
             ego_bp = lib.find(cfg['rig']['vehicle'])
-            ego_bp.set_attribute('role_name', 'hero')
+            ego_bp.set_attribute('role_name', cfg.get('ego_role', 'hero'))
             st0 = ego_wp.transform
             st0.location.z += 0.3
             ego = world.try_spawn_actor(ego_bp, st0)
@@ -132,6 +132,8 @@ class Drive(Worker):
             frame = world.tick()
             self.alive()
             cams.drain(frame)
+            if director is not None:
+                director.sync(frame)
             self.emit.progress(0.02 + 0.03 * (k + 1) / max(warm, 1), 'warming up')
         steps = int(cfg.get('steps', 200))
         if director is not None:
@@ -159,6 +161,7 @@ class Drive(Worker):
                     director.step(i / fps)
                 frame = world.tick()
                 if director is not None:
+                    director.sync(frame)
                     director.record((i + 1) / fps)
                 self.alive()
                 snap_t = world.get_snapshot().timestamp.elapsed_seconds
@@ -271,11 +274,15 @@ def scenario_result(director, fps) -> dict:
     summ = C.summarise(ego, actors, 1.0 / fps, director.events)
     crit = director.scn.get('pass') or {}
     checks = []
+    overall = summ.get('overall') or {}
     if crit.get('no_collision'):
-        n = len(summ.get('collisions') or [])
-        checks.append({'name': 'no collision', 'ok': n == 0, 'detail': f'{n} collision steps or events'})
+        hit = sorted(k for k, a in (summ.get('actors') or {}).items() if a.get('collision'))
+        n = len(hit) + len(summ.get('other_collisions') or [])
+        checks.append({'name': 'no collision', 'ok': n == 0,
+                       'detail': f'collided with {", ".join(hit + ["another object"] * len(summ.get("other_collisions") or []))}'
+                       if n else 'none'})
     if crit.get('min_ttc_s') is not None:
-        ttc = summ.get('min_ttc_s')
+        ttc = overall.get('min_ttc_s')
         checks.append({'name': f'time to collision ≥ {crit["min_ttc_s"]:g} s',
                        'ok': ttc is None or ttc >= float(crit['min_ttc_s']),
                        'detail': f'minimum {ttc:.2f} s' if ttc is not None else 'never on a collision course'})

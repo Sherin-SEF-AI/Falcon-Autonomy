@@ -13,7 +13,7 @@ class LaneFollower:
     needs_images = False
 
     def __init__(self, cruise_kmh: float = 30.0, lookahead_min_m: float = 4.0, lookahead_s: float = 0.8,
-                 time_gap_s: float = 1.8, min_gap_m: float = 5.0, wheelbase_m: float = 2.9,
+                 time_gap_s: float = 1.8, min_gap_m: float = 3.0, wheelbase_m: float = 2.9,
                  max_steer_deg: float = 70.0):
         self.cruise = cruise_kmh / 3.6
         self.la_min, self.la_s = lookahead_min_m, lookahead_s
@@ -46,9 +46,13 @@ class LaneFollower:
         limit = min(self.cruise, float(target[2]) if len(target) > 2 and target[2] else self.cruise)
         lead = obs.get('lead')
         if lead is not None:
+            # lead['distance_m'] is the gap bumper to bumper along the route
             safe = self.min_gap + self.gap_s * v
             if lead['distance_m'] < safe:
                 limit = min(limit, max(lead['speed_mps'] * lead['distance_m'] / safe, 0.0))
+                if limit < 0.3 and lead['distance_m'] < self.min_gap + 2.0:
+                    self.i_err = 0.0                       # stop and hold (a proportional brake fades near 0)
+                    return {'throttle': 0.0, 'steer': max(min(steer, 1.0), -1.0), 'brake': 1.0}
         err = limit - v
         self.i_err = max(min(self.i_err + err * obs.get('dt', 0.05), 5.0), -5.0)
         u = 0.35 * err + 0.05 * self.i_err

@@ -16,7 +16,8 @@ Policy (runs inside a live or drive worker, in CARLA's Python — no Qt, no carl
             'ego': {'x', 'y', 'z', 'yaw' (°, CARLA's frame), 'speed_mps', 'length', 'width'},
             'route': [[x, y, speed_limit_mps], ...]    # lane centre ahead every 2 m (the worker follows the lane,
                                                         # straight-most through junctions)
-            'lead': {'distance_m', 'speed_mps'} | None, # the nearest vehicle ahead in the route's corridor
+            'lead': {'distance_m', 'speed_mps'} | None, # the nearest vehicle ahead in the route's corridor; distance
+                                                        # bumper to bumper along the route
             'images': {sensor_id: HxWx3 uint8 RGB}}     # only when the policy asks for them (needs_images)
     act -> {'throttle': 0..1, 'steer': -1..1, 'brake': 0..1}
 

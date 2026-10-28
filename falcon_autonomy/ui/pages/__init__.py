@@ -4,8 +4,10 @@ from .data import DataPage
 from .help import HelpPage
 from .home import HomePage
 from .live import LivePage
+from .rarecases import RareCasesPage
 from .rigs import RigsPage
+from .scenarios import ScenariosPage
 from .settings import SettingsPage
 from .worlds import WorldsPage
 
-PAGES = [HomePage, WorldsPage, LivePage, RigsPage, DataPage, SettingsPage, HelpPage]
+PAGES = [HomePage, WorldsPage, LivePage, RigsPage, ScenariosPage, DataPage, RareCasesPage, SettingsPage, HelpPage]

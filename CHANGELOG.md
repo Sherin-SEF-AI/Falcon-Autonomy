@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0 — milestone 4: scenarios and rare cases
+
+- The scenario model (actors, a timeline of triggers and actions, parameters as distributions, seeded sampling) and
+  eleven built-ins, four for Indian roads; the director runs them inside drives (they record labelled data).
+- Measured: CARLA 0.9.16's vehicle physics does not repeat bit for bit across runs; scenarios default to kinematic
+  motion, and all eleven built-ins then repeat bit for bit on a real server.
+- Criticality: time to collision, post-encroachment time, minimum distance, required deceleration, collisions, a
+  documented scalar; pass criteria per scenario.
+- Sweeps and rare-case searches (Bayesian optimisation, CMA-ES, adaptive sampling) as resumable studies; on a planted
+  failure region they find five failures in 22–49 evaluations against random's 99.
+- OpenSCENARIO 1.x subset import and export (ScenarioRunner is not part of the install).
+- The Scenarios and Rare cases pages; falcon sweep and falcon search.
+- Fixed: an intermittent segfault in the GUI (a background-task result object freed from a worker thread); Falcon
+  processes share Falcon's own server (a registry) instead of refusing a busy port; the lane follower now measures
+  gaps bumper to bumper and holds behind a stopped vehicle.
+
 ## 0.3.0 — milestone 3: rigs and data engine
 
 - Rig editor: pinhole and fisheye cameras, lidar, radar, GNSS, IMU; poses by numbers or by dragging in a 3D view

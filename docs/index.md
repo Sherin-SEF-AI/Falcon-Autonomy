@@ -94,6 +94,17 @@ and static TF, nuScenes calibration (CARLA's left-handed frame converted through
 rain on the lens, glare, rolling shutter, compression, motion blur. Outputs keep the planned calibration, as a real
 faulty rig's would; each frame says which faults touched it.
 
+### Scenarios
+The scenario studio: the library (eleven built-ins, four of them for Indian roads) and the project's own scenarios; a
+sketch of the scene with the actors where the seed's sample puts them and each parameter's range as a band; the
+actors, the parameters as distributions and the timeline. **Run this sample** runs one; **Sweep** runs many,
+unattended, and resumes where it stopped. OpenSCENARIO import and export. See [scenarios](scenarios.md).
+
+### Rare cases
+Search a scenario's parameters for where it becomes critical (Bayesian optimisation, CMA-ES, adaptive sampling or
+random): the curve of the search, the failing cases ranked — replay one, export it as OpenSCENARIO, browse its run —
+and the failure region over two parameters.
+
 ### Data
 **Record** a drive (see *Getting started*). **Browse** recorded runs: choose the camera and the layer, scrub the
 frames, set the overlay's opacity. A cancelled or failed run keeps only `run.json` (why it ended) and its input,

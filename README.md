@@ -5,10 +5,10 @@ One desktop application for the whole loop of building a self-driving AI on the
 generate perfectly labelled data where models are weak, train and evaluate, and test a full AV stack — with every
 number traceable to the run that produced it.
 
-**Status: milestones 1–3 of 8 (foundation; worlds and live; rigs and data engine).** What works today is listed under *What works*; everything else in the
+**Status: milestones 1–4 of 8 (foundation; worlds and live; rigs and data engine; scenarios and rare cases).** What works today is listed under *What works*; everything else in the
 [roadmap](docs/roadmap.md) is planned, not present. The app shows only pages that do what they say.
 
-## What works (0.3.0)
+## What works (0.4.0)
 
 - **The app shell** (PyQt6): a page navigator, Jobs and Log docks, undo and redo for every project edit, a command
   palette (Ctrl+K), dark and light themes, a status bar with the CARLA server, the GPU and memory.
@@ -30,6 +30,11 @@ number traceable to the run that produced it.
   lines, lidar point labels proven point for point); a data engine that plans, costs and fills coverage targets;
   exports to COCO, YOLO, KITTI, nuScenes, Waymo-style, BDD lanes and ROS 2 MCAP, checked with the official devkits
   ([dataset format](docs/dataset-format.md)).
+- **Scenarios and rare cases**: a scenario studio with eleven built-ins (four for Indian roads), parameters as
+  distributions, runs that repeat bit for bit with the same seed (measured), criticality measures (TTC, PET, minimum
+  distance, required deceleration), resumable sweeps, rare-case search (Bayesian optimisation, CMA-ES, adaptive
+  sampling) with ranked, replayable failures and a failure-region map, OpenSCENARIO import/export
+  ([scenarios](docs/scenarios.md)).
 - **Worlds**: CARLA's towns with weather presets and sliders (sun, cloud, rain, wetness, puddles, fog, wind), and
   **real places imported from OpenStreetMap** (.osm or .osm.pbf, offline) with a road-graph preview, a lane check
   against OSM, **left-hand traffic** (verified on the server) and the **Indian mixed-traffic profile**

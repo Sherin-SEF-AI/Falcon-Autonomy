@@ -55,7 +55,7 @@ def window(qapp, tmp_path, project):
 
 def test_pages_and_navigation(window, qapp):
     keys = [p.key for p in window.pages]
-    assert keys == ['home', 'worlds', 'live', 'rigs', 'data', 'settings', 'help']
+    assert keys == ['home', 'worlds', 'live', 'rigs', 'scenarios', 'data', 'rarecases', 'settings', 'help']
     assert window.go('data') is window.stack.currentWidget()
     window.actions_['page_worlds'].trigger()
     assert window.stack.currentWidget().key == 'worlds'
@@ -308,3 +308,38 @@ def test_datasets_tab_and_browser_layers(window, qapp, tmp_path):
     assert pump(qapp, lambda: b.objects.topLevelItemCount() > 0, 20)
     b.layer.setCurrentText('range')
     assert pump(qapp, lambda: b.cache is not None and b.cache[1] is not None, 20)
+
+
+def test_scenario_studio_and_rare_cases(window, qapp, tmp_path):
+    window.project.path = str(tmp_path / 'proj.falcon.json')
+    window.project.doc['rigs'][0]['sensors'][0].update(width=48, height=32, labels=[])
+    window.save()
+    window.service.set_workspace(window.workspace())
+    page = window.go('scenarios')
+    assert page.list.count() == 11 and not page.editable()
+    page.list.setCurrentRow(0)
+    page.copy_builtin()
+    assert page.editable() and window.project.doc['scenarios'][0]['name'].endswith('(copy)')
+    page.set_actor_field(0, 'ahead_m', 25.0)
+    assert window.project.doc['scenarios'][0]['actors'][0]['place']['ahead_m'] == 25.0
+    window.undo.undo()
+    page.sketch.resize(600, 260)
+    assert not page.sketch.grab().isNull()
+    page.samples.setValue(2)
+    page.sweep()
+    job = window.queue.jobs[-1]
+    assert pump(qapp, lambda: job.state in ('done', 'failed'), 300), job.log
+    assert job.state == 'done', job.log
+    page.load_results()
+    assert page.results.topLevelItemCount() == 2
+    rc = window.go('rarecases')
+    rc.scenario.setCurrentIndex(rc.scenario.findData('lead_brake'))
+    rc.budget.setValue(4)
+    rc.batch.setValue(2)
+    rc.start()
+    assert pump(qapp, lambda: rc.job.state in ('done', 'failed'), 300), rc.job.log
+    assert rc.job.state == 'done', rc.job.log
+    rc.load()
+    assert len(rc.curve.values) == 4 and rc.px.count() >= 2
+    rc.heat.resize(400, 300)
+    assert not rc.heat.grab().isNull()

@@ -16,6 +16,8 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon tidy` | tidies Falcon's server after a killed worker |
 | `falcon reproduce RUN [--into DIR] [--pose-tol M] [--rgb-tol L]` | re-runs a run from its input and compares |
 | `falcon runs PROJECT [--rebuild]` | lists a project's runs (re-indexing the workspace) |
+| `falcon sweep PROJECT --scenario S --name N [--grid K \| --samples K] [--seed N] [--world W] [--rig R]` | a scenario sweep (a study; resumable) |
+| `falcon search PROJECT --scenario S --name N [--method bayes\|cmaes\|adaptive\|random] [--budget B] [--batch K] [--threshold T]` | a rare-case search in a study (resumes, and starts from its sweeps) |
 | `falcon schema` | prints the project schema's path |
 | `falcon export RUN... --format F --out DIR [--split-json FILE] [--option K=V]... [--overwrite]` | exports runs as `coco`, `yolo`, `kitti`, `nuscenes` (with lidarseg and panoptic), `waymo` (a documented Waymo-style JSON layout, not TFRecords), `bdd_lanes` or `mcap` (ROS 2); `falcon_export.json` in DIR says what was filled, left out and why |
 
