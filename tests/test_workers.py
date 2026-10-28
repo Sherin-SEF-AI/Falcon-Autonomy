@@ -269,3 +269,21 @@ def test_osm_import_of_central_bengaluru_sample(tmp_path):
     for f in ('area.osm', 'raw.xodr', 'world.xodr', 'graph.json', 'run.json'):
         assert (tmp_path / 'w' / f).is_file()
     assert 'rule="LHT"' in (tmp_path / 'w' / 'world.xodr').read_text()
+
+
+def test_osm_import_clamps_converter_objects_in_the_loaded_file(tmp_path, monkeypatch):
+    """The file CARLA loads (world.xodr, after the left-hand conversion) has no object past its road's end."""
+    import xml.etree.ElementTree as ET
+    from falcon_autonomy.core import xodr
+    from falcon_autonomy.core.worlds import import_config
+    src = os.path.join(os.path.dirname(__file__), 'data', 'blr_small.osm')
+    cfg = import_config(src, str(tmp_path / 'w'), lht=True)
+    p = tmp_path / 'imp.json'
+    p.write_text(json.dumps(cfg))
+    r = subprocess.run([sys.executable, '-m', 'falcon_autonomy.workers', 'osm_import', str(p)], capture_output=True,
+                       text=True, env=worker_env({'FAKE_CARLA_OBJECT_PAST_END_M': '0.0035'}), timeout=120)
+    assert r.returncode == P.OK, r.stderr
+    world = (tmp_path / 'w' / 'world.xodr').read_text()
+    assert xodr.sanitize(world)[1] == [] and 'crosswalk' in world
+    rep = json.loads((tmp_path / 'w' / 'import.json').read_text())
+    assert any('moved from s' in n for n in rep['notes'])

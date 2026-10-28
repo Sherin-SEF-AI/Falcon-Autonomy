@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — milestone 2: worlds and live (in progress)
+## 0.2.0 — milestone 2: worlds and live
 
 - Live sessions: chase, free and sensor views streamed over a local socket (latest frame only, drops counted), ground-
   truth boxes, a top-down map; manual driving by keyboard or Linux joystick/wheel (input loss brakes), CARLA's
@@ -11,6 +11,9 @@
   crosswalks lying past their road's end (which crash CARLA's world generation).
 - Traffic profiles, the Indian mixed-traffic profile (autorickshaw substitute labelled), a handedness guard and a
   measured handedness verification; pedestrians on the navigation mesh.
+- Acceptance, central Bengaluru (1 km²): drivable with traffic 12–17 s after the import starts; 22 of 23 sampled ways
+  match OSM's lanes; traffic measured keeping left in 100 % of 1044 samples.
+- Known limit, reported per run: CARLA labels a generated world's road and sidewalk meshes as sky.
 
 ## 0.1.0 — milestone 1: foundation (unreleased)
 

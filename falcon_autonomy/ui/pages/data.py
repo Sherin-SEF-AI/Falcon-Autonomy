@@ -246,7 +246,14 @@ class BrowseTab(QWidget):
         if run.get('config_sha256'):
             self.info.set('Config', run['config_sha256'][:16] + '…', 'SHA-256 of drive.json (canonical JSON)')
         for n in run.get('notes') or []:
-            self.info.set('Note', n)
+            if not n.startswith('semantic labels:'):
+                self.info.set('Note', n)
+        try:
+            with open(os.path.join(path, 'dataset.json'), encoding='utf-8') as fh:
+                for wtext in json.load(fh).get('label_warnings') or []:
+                    self.info.set('⚠ Labels', wtext)
+        except (OSError, ValueError):
+            pass
         idx = os.path.join(path, 'frames.jsonl')
         if not os.path.isfile(idx):
             self.view.set_rgb(None)

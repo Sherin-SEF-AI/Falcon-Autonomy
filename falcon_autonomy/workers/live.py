@@ -522,7 +522,7 @@ class Live(Worker):
         t0 = world.get_snapshot().timestamp.elapsed_seconds
         run = new_run('live-recording', self.argv, self.cfg.get('seed', 0), self.cfg)
         run['provenance']['host'].update(self.run['provenance']['host'])
-        self.rec = {'dir': d, 'cams': cams, 'n': 0, 't0': t0, 'run': run, 'started': time.monotonic(),
+        self.rec = {'dir': d, 'cams': cams, 'n': 0, 't0': t0, 'run': run, 'started': time.monotonic(), 'warnings': [],
                     'index': open(os.path.join(d, 'frames.jsonl'), 'w', encoding='utf-8'),
                     'events': open(os.path.join(d, 'events.jsonl'), 'w', encoding='utf-8')}
         self.log_event('record', {'on': True, 'dir': d})
@@ -541,6 +541,11 @@ class Live(Worker):
             failed = self.failures.get(s['id'])
             for kind, sensor in sensors.items():
                 data = cams.get(sensor.id, frame)
+                if kind == 'semantic' and i == 0:
+                    warn = scene.ground_label_check(data)
+                    if warn:
+                        r['warnings'].append(warn)
+                        self.emit.log(warn, 'warning')
                 if failed is not None and failed[0] == 'drop':
                     continue
                 rel = os.path.join(kind, s['id'], f'{i:06d}.{"jpg" if kind == "rgb" else "png"}')
@@ -568,9 +573,11 @@ class Live(Worker):
         wall = time.monotonic() - r['started']
         write_json(os.path.join(r['dir'], 'dataset.json'), scene.dataset_doc(
             f'{self.cfg.get("name", "live")} recording', r['cams'].cams, r['n'], 1.0 / self.dt, r['run'],
-            {'town': self.cfg.get('town'), 'xodr': self.cfg.get('xodr'), 'live': True, 'events': 'events.jsonl'}))
+            {'town': self.cfg.get('town'), 'xodr': self.cfg.get('xodr'), 'live': True, 'events': 'events.jsonl',
+             'label_warnings': r['warnings']}))
         run = r['run']
         run.update(status='ok', exit_code=0, finished=utc_now(), name=f'{self.cfg.get("name", "live")} recording',
+                   notes=list(r['warnings']),
                    performance={'steps': r['n'], 'wall_s': round(wall, 3), 'sim_s': round(r['n'] * self.dt, 3),
                                 'realtime_factor': round(r['n'] * self.dt / max(wall, 1e-6), 3),
                                 'source': 'measured'},

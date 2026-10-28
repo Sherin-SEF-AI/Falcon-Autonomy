@@ -81,6 +81,7 @@ class Handedness(Worker):
         seconds = float(cfg.get('seconds', 30.0))
         steps = int(seconds * fps)
         left = right = aligned = moving = 0
+        vanished = set()
         for i in range(steps):
             self.check()
             world.tick()
@@ -88,11 +89,22 @@ class Handedness(Worker):
             if (i + 1) % int(fps) or i < fps * 3:           # after 3 s, once a second
                 continue
             for a, _kind in placed:
-                v = a.get_velocity()
+                if a.id in vanished:
+                    continue
+                try:
+                    if not a.is_alive:
+                        raise RuntimeError('destroyed')
+                    v = a.get_velocity()
+                    loc = a.get_location()
+                except RuntimeError:
+                    # the traffic manager removed it (measured on imported OpenDRIVE worlds: vehicles that reach
+                    # a dead end or stay stuck are destroyed by the server)
+                    vanished.add(a.id)
+                    continue
                 speed = math.hypot(v.x, v.y)
                 if speed < 1.0:
                     continue
-                wp = cmap.get_waypoint(a.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
+                wp = cmap.get_waypoint(loc, project_to_road=True, lane_type=carla.LaneType.Driving)
                 if wp is None or wp.is_junction:
                     continue
                 d = lane_travels_plus_s(wp)
@@ -115,7 +127,7 @@ class Handedness(Worker):
                'with_lane_share': round(aligned / moving, 4), 'verdict': verdict,
                'map_lanes_sampled': lanes_known,
                'map_left_lanes_along_plus_s_share': round(lanes_left_plus / max(lanes_known, 1), 4),
-               'expected': cfg.get('handedness'), 'seconds': seconds,
+               'expected': cfg.get('handedness'), 'seconds': seconds, 'vehicles_removed_during_run': len(vanished),
                'method': 'traffic-manager vehicles sampled once a second after 3 s, outside junctions, moving > 1 m/s'}
         self.emit.log(f'{verdict}: {100 * share_left:.1f} % of {moving} samples keep left, '
                       f'{100 * aligned / moving:.1f} % move with their lane')

@@ -1606,12 +1606,15 @@ class Osm2Odr:
                     s += L
                 if not geo:
                     continue
+                past = os.environ.get('FAKE_CARLA_OBJECT_PAST_END_M')   # as SUMO does now and then (tests)
+                objs = (f'<objects><object id=":x{rid}_c0" type="crosswalk" s="{s + float(past):.8f}" t="0" '
+                        f'hdg="0"/></objects>') if past and rid == 1 else ''
                 lanes = ''.join(f'<lane id="-{k}" type="driving" level="true"><link/><width sOffset="0" '
                                 f'a="{settings.default_lane_width}" b="0" c="0" d="0"/></lane>' for k in range(1, n + 1))
                 roads.append(f'<road name={quoteattr(tags.get("name", ""))} length="{s:.4f}" id="{rid}" '
                              f'junction="-1"><link/><planView>{"".join(geo)}</planView><lanes><laneSection s="0">'
                              f'<center><lane id="0" type="none" level="true"><link/></lane></center>'
-                             f'<right>{lanes}</right></laneSection></lanes></road>')
+                             f'<right>{lanes}</right></laneSection></lanes>{objs}</road>')
                 rid += 1
         return ('<?xml version="1.0" encoding="UTF-8"?>\n<OpenDRIVE><header revMajor="1" revMinor="4" name="" '
                 f'version="1.00"><geoReference><![CDATA[{settings.proj_string}]]></geoReference></header>'

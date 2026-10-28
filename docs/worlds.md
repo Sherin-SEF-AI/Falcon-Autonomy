@@ -84,6 +84,27 @@ barriers, benches, boxes); it cannot build arbitrary meshes such as extruded bui
 therefore does not place buildings in an imported world and reports the OSM extract's building count as *not
 represented*.
 
+## Measured on central Bengaluru (CARLA 0.9.16, the reference machine)
+
+1 km² around (12.9716° N, 77.5946° E) from `bangalore-roads.osm`, left-hand traffic, the Indian mixed-traffic profile:
+
+| step | result |
+|---|---|
+| import (read, crop, convert, left-hand, check) | 0.7 s: 245 roads (19.0 km, one per travel direction), 95 junctions, 7 signals; driving lanes per direction 1: 162, 2: 42, 3: 2, 4: 2 |
+| lane check against OSM | 22 of 23 comparable ways agree (95.7 %), a seeded sample of the 25 named, lane-tagged ways |
+| world generation on the server | 2.1–2.6 s, 880 spawn points |
+| a 20 s drive with 60 vehicles (23 motorcycles, 21 cars, 8 autorickshaw substitutes, 5 buses, 2 bicycles, 1 van) and 40 walkers | 46 steps/s with one 1280 × 720 camera and semantic labels |
+| import to a recorded drive with traffic | 12–17 s (the acceptance asks for under 5 minutes) |
+| handedness, measured | **left**: 100 % of 1044 samples of 40 vehicles keep left, 98.4 % move with their lane; 100 % of 3234 sampled map lanes run the left-hand way; the server removed 11 vehicles at dead ends of the cut area during the 40 s |
+
+## Semantic labels in an imported world (a CARLA limit, reported)
+CARLA 0.9.16's semantic camera labels the road and sidewalk meshes that `generate_opendrive_world` builds as **sky
+(tag 11)** — 100 % of the lower third of a forward camera's image in the Bengaluru drive — whereas its towns label them
+road (1) and sidewalk (2). Vehicles, walkers, poles and traffic lights are labelled correctly. Every drive and recording
+checks its first semantic frame and, when the ground reads as sky, writes a warning into `dataset.json` and
+`run.json`, shown in Data ▸ Browse. Map-based ground relabelling (the lane polygons from the map, the depth camera
+for each pixel's position) comes with the data engine in milestone 3.
+
 ## The full-fidelity path (external, advanced)
 For a place with its buildings, vegetation and textures, build a CARLA map package:
 

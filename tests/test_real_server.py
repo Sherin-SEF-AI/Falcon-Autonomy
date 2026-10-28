@@ -45,3 +45,40 @@ def test_drive_records_and_tidies(svc, tmp_path):
     assert svc.throughput().measured
     probe = svc.submit_probe(wait_s=10.0)
     assert svc.queue.wait(probe, 120) and not probe.result['summary']['synchronous_mode']
+
+
+def test_bengaluru_import_drive_and_handedness(svc, tmp_path):
+    """Milestone 2's acceptance on a real server: a central Bengaluru area (the full extract when present, else the
+    300 m fixture) imported with left-hand traffic, driven with the Indian profile, its handedness measured."""
+    import time
+    from falcon_autonomy.core import osm as O
+    from falcon_autonomy.core.drive import drive_config
+    from falcon_autonomy.core.project import Project
+    from falcon_autonomy.core.traffic import preset
+    from falcon_autonomy.core.worlds import import_config, world_entry
+    full = '/home/jo/Desktop/LabeloxAV/.scratch/maps/bangalore-roads.osm'
+    src = full if os.path.isfile(full) else os.path.join(os.path.dirname(__file__), 'data', 'blr_small.osm')
+    bbox = O.bbox_around(12.9716, 77.5946, 1000.0) if src == full else None
+    p = Project.new('blr')
+    p.save(str(tmp_path / 'blr.falcon.json'))
+    ws = p.workspace
+    t0 = time.monotonic()
+    cfg = import_config(src, os.path.join(ws, 'worlds', 'w-blr'), bbox, True)
+    job = svc.submit_osm_import(cfg)
+    assert svc.queue.wait(job, 300) and job.state == 'done', job.log
+    rep = json.load(open(os.path.join(ws, 'worlds', 'w-blr', 'import.json')))
+    assert rep['handedness'] == 'LHT' and rep['lane_check']['agreement'] >= 0.9
+    p.doc['traffic_profiles'].append(preset('tp-india-mixed'))
+    p.doc['worlds'].append(world_entry('w-blr', 'Bengaluru', cfg, rep, None, 'tp-india-mixed'))
+    dc = drive_config(p, 'w-blr', 'rig-default', os.path.join(ws, 'runs', 'd'), svc.port, svc.tm_port, seconds=10.0,
+                      seed=7, workspace=ws)
+    job = svc.submit_drive(dc)
+    assert svc.queue.wait(job, 600) and job.state == 'done', job.log
+    assert time.monotonic() - t0 < 300                        # drivable with traffic in under 5 minutes
+    run = json.load(open(os.path.join(ws, 'runs', 'd', 'run.json')))
+    assert run['traffic']['placed'].get('motorcycle', 0) > 0
+    hc = dict(dc, out=os.path.join(ws, 'worlds', 'w-blr', 'verify'), seconds=30.0, vehicles=30)
+    job = svc.submit_handedness(hc)
+    assert svc.queue.wait(job, 600) and job.state == 'done', job.log
+    h = json.load(open(os.path.join(ws, 'worlds', 'w-blr', 'verify', 'run.json')))['handedness']
+    assert h['verdict'] == 'LHT' and h['keep_left_share'] >= 0.95

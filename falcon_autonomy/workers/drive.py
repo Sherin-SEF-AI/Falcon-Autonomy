@@ -101,6 +101,7 @@ class Drive(Worker):
         t_rec = time.monotonic()
         n = late = 0
         sim_t0 = None
+        label_warnings = []
         try:
             for i in range(steps):
                 self.check()
@@ -113,6 +114,11 @@ class Drive(Worker):
                 for s, sensors in cams.cams:
                     for kind, sensor in sensors.items():
                         data = cams.get(sensor.id, frame)
+                        if kind == 'semantic' and i == 0 and s['pose']['pitch'] <= 5.0:
+                            warn = scene.ground_label_check(data)
+                            if warn:
+                                self.note(warn)
+                                label_warnings.append(warn)
                         rel = os.path.join(kind, s['id'], f'{i:06d}.{"jpg" if kind == "rgb" else "png"}')
                         rec['files'][f'{s["id"]}/{kind}'] = rel
                         cams.submit_write(kind, data, os.path.join(self.out_dir, rel))
@@ -140,7 +146,8 @@ class Drive(Worker):
             self.emit.metric(k, perf[k], unit)
         write_json(os.path.join(self.out_dir, 'dataset.json'), scene.dataset_doc(
             cfg.get('name', 'drive'), cams.cams, n, fps, self.run,
-            {'town': cfg.get('town'), 'xodr': cfg.get('xodr'), 'weather': cfg.get('weather')}))
+            {'town': cfg.get('town'), 'xodr': cfg.get('xodr'), 'weather': cfg.get('weather'),
+             'label_warnings': label_warnings}))
         self.emit.progress(1.0, f'recorded {n} steps in {wall:.1f} s', force=True)
         return {'performance': perf, 'summary': {'steps': n, 'cameras': len(cams.cams), 'town': cfg.get('town'),
                                                   'steps_per_s': perf['steps_per_s'],

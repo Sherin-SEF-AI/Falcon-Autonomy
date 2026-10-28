@@ -225,6 +225,12 @@ class Worker:
                 return r
             except Exception as e:                         # noqa: BLE001
                 return e
+        def alive(a):
+            try:
+                return bool(a.is_alive)
+            except RuntimeError:
+                return False
+        self.spawned = [a for a in self.spawned if alive(a)]     # the server may have removed some (traffic)
         sensors = [a for a in self.spawned if a.type_id.startswith('sensor.')]
         walkers_ai = [a for a in self.spawned if a.type_id.startswith('controller.')]
         rest = [a for a in self.spawned if a not in sensors and a not in walkers_ai]

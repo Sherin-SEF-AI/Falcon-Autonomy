@@ -365,3 +365,23 @@ def dataset_doc(name, cams, n, fps, run, extra=None) -> dict:
            'provenance': run['provenance']}
     doc.update(extra or {})
     return doc
+
+
+GROUND_AS_SKY_SHARE = 0.5
+
+
+def ground_label_check(data) -> str | None:
+    """A warning when a semantic image labels the ground as sky: measured on CARLA 0.9.16, the road and sidewalk
+    meshes of a world built by generate_opendrive_world come out as tag 11 (sky) — 99 % of pixels of a central
+    Bengaluru drive — while CARLA's towns label them road (1) and sidewalk (2). Checked on the image's lower third,
+    which a forward camera sees as ground."""
+    import numpy as np
+    tags = np.frombuffer(data.raw_data, np.uint8).reshape(data.height, data.width, 4)[:, :, 2]
+    low = tags[2 * data.height // 3:]
+    share = float(np.mean(low == 11))
+    if share < GROUND_AS_SKY_SHARE:
+        return None
+    return (f'semantic labels: {100 * share:.0f} % of the lower third of the image is tagged sky — CARLA 0.9.16 '
+            'labels the road and sidewalk meshes of a generated OpenDRIVE world as sky (11). Road, sidewalk and '
+            'ground pixels of this run are mislabelled; other classes (vehicles, walkers, poles, lights) are not '
+            'affected. Map-based ground relabelling comes with the data engine (milestone 3).')

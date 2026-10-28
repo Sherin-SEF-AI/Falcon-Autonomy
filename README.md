@@ -5,10 +5,10 @@ One desktop application for the whole loop of building a self-driving AI on the
 generate perfectly labelled data where models are weak, train and evaluate, and test a full AV stack — with every
 number traceable to the run that produced it.
 
-**Status: milestone 1 of 8 (foundation).** What works today is listed under *What works*; everything else in the
+**Status: milestones 1–2 of 8 (foundation; worlds and live).** What works today is listed under *What works*; everything else in the
 [roadmap](docs/roadmap.md) is planned, not present. The app shows only pages that do what they say.
 
-## What works (0.1.0)
+## What works (0.2.0)
 
 - **The app shell** (PyQt6): a page navigator, Jobs and Log docks, undo and redo for every project edit, a command
   palette (Ctrl+K), dark and light themes, a status bar with the CARLA server, the GPU and memory.
@@ -25,7 +25,13 @@ number traceable to the run that produced it.
   stopped answering; cancels always tidy the server.
 - **Recorded drives**: synchronous mode at a fixed step, the ego and traffic on the traffic manager, the rig's
   cameras with semantic labels rendered at the same pose and tick; browse them frame by frame with the label overlay.
-- **Worlds**: CARLA's towns with weather presets and sliders (sun, cloud, rain, wetness, puddles, fog, wind).
+- **Worlds**: CARLA's towns with weather presets and sliders (sun, cloud, rain, wetness, puddles, fog, wind), and
+  **real places imported from OpenStreetMap** (.osm or .osm.pbf, offline) with a road-graph preview, a lane check
+  against OSM, **left-hand traffic** (verified on the server) and the **Indian mixed-traffic profile**
+  ([worlds](docs/worlds.md)).
+- **Live**: drive in real time by keyboard, controller or wheel, autopilot or a policy plug-in; chase, free and sensor
+  views with ground-truth boxes and a top-down map; live events; recording as labelled runs. 1280 × 720 at 20 frames/s
+  measured.
 - **The first-run wizard**: finds CARLA, checks the GPU, the Vulkan driver and memory, runs a 30 s smoke drive and
   records this machine's measured throughput for every cost estimate after.
 - **A CLI** for every heavy action, on the same code paths as the GUI, including `falcon reproduce`.

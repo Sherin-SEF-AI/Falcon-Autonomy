@@ -36,3 +36,13 @@ What Falcon does because of how CARLA 0.9.16 behaves (measured on the reference 
   *(Milestone 3.)*
 - **Fisheye from cube faces** needs ~1.5° of overlap past the seams with feathering, and Unreal's vignette removed in
   linear light through CARLA's camera response. *(Milestone 3.)*
+- **OpenStreetMap conversion (`carla.Osm2Odr`)** writes right-hand roads only (no handedness option; no `rule`),
+  projects with `+proj=tmerc` centred on 0°E unless told otherwise (central Bengaluru came out stretched about 3× by
+  4×), and writes some crosswalk objects a few millimetres past their road's end — which makes
+  `generate_opendrive_world` crash the server (signal 11, *s <= road->GetLength()*).
+- **`rule="LHT"` is honoured** by CARLA 0.9.16's map (waypoint directions) and traffic manager (driving side).
+- **Generated OpenDRIVE worlds label their road and sidewalk meshes as sky (11)** in the semantic camera.
+- **The server removes traffic-manager vehicles** that reach a dead end (a cut area has many): a client then gets
+  "trying to operate on a destroyed actor" from that vehicle's methods. Check `is_alive` and catch it.
+- **Python's own modules can be shadowed** by a script's folder: a helper named `bisect.py` beside a script broke
+  `urllib.request`. Name scratch scripts after what they do, not after a word that is also a module.

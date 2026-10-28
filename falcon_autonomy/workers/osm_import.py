@@ -90,8 +90,10 @@ class OsmImport(Worker):
         notes += fixes
         if cfg.get('lht'):
             self.emit.progress(0.6, 'converting to left-hand traffic', force=True)
-            text, lht_notes = X.to_lht(raw)
+            text, lht_notes = X.to_lht(text)
             notes += lht_notes
+        if X.sanitize(text)[1]:                  # the file CARLA loads must have nothing past a road's end
+            raise Failed('positions past a road\'s end remain after the conversion (a bug): world.xodr not written')
         with open(os.path.join(self.out_dir, 'world.xodr'), 'w', encoding='utf-8') as fh:
             fh.write(text)
         self.emit.progress(0.7, 'road graph and lane check', force=True)
