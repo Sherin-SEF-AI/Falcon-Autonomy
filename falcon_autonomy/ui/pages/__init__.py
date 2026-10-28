@@ -1,0 +1,9 @@
+"""The pages of the main window, in navigator order. A page appears here only when it does what it says: pages of
+later milestones are added as they are built (docs/roadmap.md)."""
+from .data import DataPage
+from .help import HelpPage
+from .home import HomePage
+from .settings import SettingsPage
+from .worlds import WorldsPage
+
+PAGES = [HomePage, WorldsPage, DataPage, SettingsPage, HelpPage]

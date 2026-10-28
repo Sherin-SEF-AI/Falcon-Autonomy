@@ -131,11 +131,17 @@ def test_render_budget():
 def test_throughput_labels_typical_until_measured():
     t = budget.Throughput.from_settings({})
     assert not t.measured and t.estimate(100, 2.0)['label'] == 'typical' and 'typical' in t.source
-    m = budget.Throughput.measure(600, 30.0, 1.84, 'measured on this machine', t)
-    assert m.measured and m.estimate(100, 1.84)['label'] == 'measured'
-    assert m.seconds_per_step(1.84) == pytest.approx(30.0 / 600, rel=1e-6)
-    m2 = budget.Throughput.from_settings(m.to_dict())
-    assert m2.measured and m2.mpx_per_s == pytest.approx(m.mpx_per_s)
+    # one rendering load: no overhead can be told apart, all of the time is rendering
+    m = t.add(1.84, 0.02, 'run A')
+    assert m.measured and m.overhead_s == 0 and m.mpx_per_s == pytest.approx(92.0)
+    assert m.estimate(100, 1.84)['label'] == 'measured'
+    assert m.estimate(100, 77.0)['label'] == 'extrapolated from measured'
+    # two loads: the line through them
+    m2 = m.add(20.0, 0.2016, 'run B')
+    assert m2.overhead_s == pytest.approx(0.0016, abs=1e-9) and m2.mpx_per_s == pytest.approx(100.0, rel=1e-6)
+    back = budget.Throughput.from_settings(m2.to_dict())
+    assert back.measured and back.mpx_per_s == pytest.approx(m2.mpx_per_s) and len(back.points) == 2
+    assert 'measured on this machine (2 drives' in back.source
 
 
 # ------------------------------------------------------------------------------------------------ weather, labels

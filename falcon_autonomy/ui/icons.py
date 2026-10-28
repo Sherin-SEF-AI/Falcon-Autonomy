@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import tempfile
 
-from PyQt6.QtCore import QByteArray, QRectF, QSize, Qt
+from PyQt6.QtCore import QByteArray, QRectF, Qt
 from PyQt6.QtGui import QIcon, QPainter, QPixmap, QColor, QImage, QGuiApplication
 from PyQt6.QtSvg import QSvgRenderer
 

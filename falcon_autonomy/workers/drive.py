@@ -50,6 +50,7 @@ class Drive(Worker):
                          {'config': cfg_path} if cfg_path else None)
         self.cfg = cfg
         self.remove_outputs_on_cancel = True
+        self.keep_files = {'run.json', os.path.basename(cfg_path) if cfg_path else 'drive.json'}
         self.queues: dict = {}
         self.cams: list = []            # [(sensor dict, {kind: carla sensor})]
         self.pool = cf.ThreadPoolExecutor(max_workers=4)
@@ -312,6 +313,10 @@ class Drive(Worker):
         np = self.np
         a = np.frombuffer(data.raw_data, np.uint8).reshape(data.height, data.width, 4).copy()
         self.pending.append(self.pool.submit(_write, kind, a, path))
+
+    def stop_writers(self):
+        self.pool.shutdown(wait=True, cancel_futures=True)
+        self.pending.clear()
 
     def flush(self, keep):
         while len(self.pending) > keep:

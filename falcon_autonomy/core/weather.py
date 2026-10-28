@@ -47,7 +47,7 @@ DEFAULT_PRESET = 'ClearNoon'
 # slider ranges for the GUI: field -> (lo, hi, unit, label)
 SLIDERS = {
     'sun_altitude_angle': (-90.0, 90.0, '°', 'Sun altitude'),
-    'sun_azimuth_angle': (0.0, 360.0, '°', 'Sun azimuth'),
+    'sun_azimuth_angle': (-1.0, 360.0, '°', 'Sun azimuth'),       # −1: CARLA's default (the presets')
     'cloudiness': (0.0, 100.0, '%', 'Cloud'),
     'precipitation': (0.0, 100.0, '%', 'Rain'),
     'wetness': (0.0, 100.0, '%', 'Wetness'),

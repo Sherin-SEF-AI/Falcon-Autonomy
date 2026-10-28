@@ -67,6 +67,7 @@ class Worker:
         self.client = self.world = self.tm = None
         self.carla = None
         self.remove_outputs_on_cancel = False
+        self.keep_files = {'run.json'}     # never removed: run.json and the run's inputs
         self._done = False
 
     # ---------------------------------------------------------------- life and cancel
@@ -150,12 +151,16 @@ class Worker:
             os.makedirs(self.out_dir, exist_ok=True)
             write_json(self.run_json_path, self.run)
 
+    def stop_writers(self):
+        """Wait for (or cancel) background writers before outputs are removed; subclasses with writers override."""
+
     def remove_outputs(self):
-        """A cancelled or failed run leaves only its run.json (never half a dataset)."""
+        """A cancelled or failed run leaves only its run.json and inputs (never half a dataset)."""
         if not self.out_dir or not os.path.isdir(self.out_dir):
             return
+        self.stop_writers()
         for f in os.listdir(self.out_dir):
-            if f == 'run.json':
+            if f in self.keep_files:
                 continue
             p = os.path.join(self.out_dir, f)
             shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else os.remove(p)

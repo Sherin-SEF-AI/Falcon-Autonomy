@@ -46,7 +46,7 @@
         "precipitation": {"type": "number", "minimum": 0, "maximum": 100},
         "precipitation_deposits": {"type": "number", "minimum": 0, "maximum": 100},
         "wind_intensity": {"type": "number", "minimum": 0, "maximum": 100},
-        "sun_azimuth_angle": {"type": "number", "minimum": 0, "maximum": 360},
+        "sun_azimuth_angle": {"type": "number", "minimum": -1, "maximum": 360, "description": "-1: CARLA's default"},
         "sun_altitude_angle": {"type": "number", "minimum": -90, "maximum": 90},
         "fog_density": {"type": "number", "minimum": 0, "maximum": 100},
         "fog_distance": {"type": "number", "minimum": 0},

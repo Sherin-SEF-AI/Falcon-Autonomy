@@ -85,42 +85,72 @@ def check_budget(rig: dict, budget: float = RENDER_BUDGET_MPX) -> tuple[bool, st
 
 
 class Throughput:
-    """Seconds per step = overhead_s + Mpx / mpx_per_s, from a measurement on this machine or TYPICAL."""
+    """Seconds per step = overhead_s + Mpx / mpx_per_s.
 
-    def __init__(self, mpx_per_s: float, overhead_s: float, source: str, measured: bool):
+    Fitted to the drives measured on this machine (points: (Mpx per step, seconds per step, source)): with points at
+    two or more clearly different rendering loads, a least-squares line (overhead ≥ 0); with one load only, no
+    overhead can be told apart, so all of the time is put on rendering. Without any, TYPICAL. An estimate for a load
+    far outside the measured ones (more than twice the largest, or under half the smallest) is labelled extrapolated.
+    """
+
+    MAX_POINTS = 30
+
+    def __init__(self, mpx_per_s: float, overhead_s: float, source: str, measured: bool, points=()):
         self.mpx_per_s, self.overhead_s = float(mpx_per_s), float(overhead_s)
         self.source, self.measured = source, bool(measured)
+        self.points = [tuple(p) for p in points]
 
     @classmethod
     def from_settings(cls, measured: dict | None) -> 'Throughput':
-        d = measured if measured and measured.get('mpx_per_s') else TYPICAL
-        return cls(d['mpx_per_s'], d.get('overhead_s', TYPICAL['overhead_s']), d.get('source', ''),
-                   d.get('measured', False))
+        if measured and measured.get('points'):
+            return cls.fit(measured['points'])
+        d = TYPICAL
+        return cls(d['mpx_per_s'], d['overhead_s'], d['source'], False)
 
     @classmethod
-    def measure(cls, steps: int, wall_s: float, mpx_per_step: float, source: str,
-                previous: 'Throughput | None' = None) -> 'Throughput':
-        """From a run: steps simulated in wall_s at mpx_per_step. With little rendering the run says more about the
-        overhead than the throughput, so the previous throughput is kept and only the overhead updated."""
-        per = wall_s / max(steps, 1)
-        prev = previous or cls.from_settings(None)
-        if mpx_per_step < 1.0:
-            return cls(prev.mpx_per_s, max(per - mpx_per_step / prev.mpx_per_s, 0.0), source, True)
-        over = min(prev.overhead_s, per * 0.5)
-        return cls(mpx_per_step / max(per - over, 1e-3), over, source, True)
+    def fit(cls, points) -> 'Throughput':
+        pts = [tuple(p) for p in points][-cls.MAX_POINTS:]
+        x = [p[0] for p in pts]
+        y = [p[1] for p in pts]
+        n = len(pts)
+        latest = pts[-1][2] if len(pts[-1]) > 2 else ''
+        src = f'measured on this machine ({n} drive{"s" if n != 1 else ""}; latest: {latest})'
+        if n >= 2 and max(x) > 1.2 * max(min(x), 1e-6):
+            mx, my = sum(x) / n, sum(y) / n
+            sxx = sum((xi - mx) ** 2 for xi in x)
+            b = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y)) / sxx
+            a = my - b * mx
+            if b > 0 and a >= 0:
+                return cls(1.0 / b, a, src, True, pts)
+        # one load (or a fit that makes no sense): all of the time on rendering, at the mean measured rate
+        rate = sum(xi for xi in x) / max(sum(y), 1e-9)
+        return cls(max(rate, 1e-3), 0.0, src, True, pts)
+
+    def add(self, mpx_per_step: float, seconds_per_step: float, source: str) -> 'Throughput':
+        prev = self.points if self.measured else []
+        return Throughput.fit(prev + [(float(mpx_per_step), float(seconds_per_step), source)])
 
     def to_dict(self) -> dict:
         return {'mpx_per_s': self.mpx_per_s, 'overhead_s': self.overhead_s, 'source': self.source,
-                'measured': self.measured}
+                'measured': self.measured, 'points': [list(p) for p in self.points]}
 
     def seconds_per_step(self, mpx: float) -> float:
         return self.overhead_s + mpx / max(self.mpx_per_s, 1e-6)
 
+    def label_for(self, mpx: float) -> str:
+        if not self.measured:
+            return 'typical'
+        xs = [p[0] for p in self.points]
+        if xs and (mpx > 2.0 * max(xs) or mpx < 0.5 * min(xs)):
+            return 'extrapolated from measured'
+        return 'measured'
+
     def estimate(self, steps: int, mpx: float, setup_s: float = 20.0) -> dict:
-        """{'seconds', 'per_step_s', 'source', 'label'}: label is 'measured' or 'typical'."""
+        """{'seconds', 'per_step_s', 'source', 'label'}: label is 'measured', 'extrapolated from measured' or
+        'typical'."""
         per = self.seconds_per_step(mpx)
         return {'seconds': setup_s + steps * per, 'per_step_s': per, 'source': self.source,
-                'label': 'measured' if self.measured else 'typical'}
+                'label': self.label_for(mpx)}
 
 
 def fmt_duration(s: float) -> str:

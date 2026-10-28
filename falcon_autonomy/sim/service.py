@@ -191,9 +191,9 @@ class CarlaService:
             return
         if self.fake_carla:
             return                         # a fake server says nothing about this machine
-        t = Throughput.measure(perf['steps'], perf['wall_s'], perf['mpx_per_step'],
-                               f'measured on this machine: {perf["steps"]} steps at {perf["mpx_per_step"]:.2f} Mpx '
-                               f'in {perf["wall_s"]:.1f} s ({tilde(run_dir)})', self.throughput())
+        t = self.throughput().add(perf['mpx_per_step'], perf['wall_s'] / perf['steps'],
+                                  f'{perf["steps"]} steps at {perf["mpx_per_step"]:.2f} Mpx in {perf["wall_s"]:.1f} s, '
+                                  f'{tilde(run_dir)}')
         self.settings.set('measured', t.to_dict())
 
     def subscribe(self, fn):

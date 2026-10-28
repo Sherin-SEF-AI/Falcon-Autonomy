@@ -1,4 +1,4 @@
-"""Design tokens, QSS and fonts. Token names map 1:1 to @placeholders in the QSS template."""
+"""Design tokens, QSS and fonts (Vantage's look). Token names map 1:1 to @placeholders in the QSS template."""
 from __future__ import annotations
 
 import math
@@ -158,6 +158,12 @@ QWidget#card { background: @raised; border: 1px solid @strong; border-radius: 4p
 QListWidget#steps { background: @base; border: none; border-right: 1px solid @hair; }
 QListWidget#steps::item { min-height: 40px; padding-left: 0; }
 QListWidget#steps::item:selected { background: @sel; }
+QListWidget#nav { background: @panel; border: none; border-right: 1px solid @hair; padding-top: 6px; }
+QListWidget#nav::item { min-height: 30px; padding-left: 10px; color: @ink2; border-left: 2px solid transparent; }
+QListWidget#nav::item:selected { background: @sel; color: @ink; border-left: 2px solid @ink; }
+QListWidget#nav::item:hover:!selected { background: @raised; }
+QLabel[stat="true"] { font-family: "IBM Plex Mono"; font-size: @fs13px; font-weight: 600; }
+QLineEdit#paletteInput { min-height: 30px; max-height: 32px; font-size: @fs13px; }
 '''
 
 
@@ -297,6 +303,7 @@ def seq_lut(lo=3.0, hi=16.0, n=256):
 
 
 def fmt(v, dp=3, unit=''):
-    from ..core.mathutil import fmt_num
-    s = fmt_num(v, dp)
+    if v is None:
+        return '—'
+    s = f'{v:.{dp}f}'.rstrip('0').rstrip('.') if isinstance(v, float) else str(v)
     return f'{s} {unit}'.rstrip() if unit else s

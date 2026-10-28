@@ -1,0 +1,71 @@
+# Falcon Autonomy
+
+One desktop application for the whole loop of building a self-driving AI on the
+[CARLA](https://carla.org) 0.9.16 simulator: build or import a world, drive it, script and search scenarios,
+generate perfectly labelled data where models are weak, train and evaluate, and test a full AV stack — with every
+number traceable to the run that produced it.
+
+**Status: milestone 1 of 8 (foundation).** What works today is listed under *What works*; everything else in the
+[roadmap](docs/roadmap.md) is planned, not present. The app shows only pages that do what they say.
+
+## What works (0.1.0)
+
+- **The app shell** (PyQt6): a page navigator, Jobs and Log docks, undo and redo for every project edit, a command
+  palette (Ctrl+K), dark and light themes, a status bar with the CARLA server, the GPU and memory.
+- **The project file**: JSON with a [published schema](falcon_autonomy/schemas/project.schema.json), a format
+  version and migrations ([format reference](docs/project-format.md)). Large data lives in a workspace folder beside
+  it, indexed by a local SQLite catalogue.
+- **Falcon's own CARLA server**: headless, in a systemd scope capped in memory with no swap, on its own ports, with
+  the NVIDIA Vulkan driver pinned. Falcon never touches a server you started, nor ports 2000–2010 and 8100, unless
+  you choose them in Settings.
+- **Background jobs** with progress, ETA and cancel; an app-wide (machine-wide) CARLA lock so one CARLA job runs at a
+  time; a memory guard that queues rather than overcommits.
+- **Workers** in CARLA's own Python, speaking a [documented JSON-lines protocol](docs/protocol.md), each writing a
+  `run.json` and exiting with a [documented code](docs/cli.md#exit-codes). A watchdog ends a worker whose server
+  stopped answering; cancels always tidy the server.
+- **Recorded drives**: synchronous mode at a fixed step, the ego and traffic on the traffic manager, the rig's
+  cameras with semantic labels rendered at the same pose and tick; browse them frame by frame with the label overlay.
+- **Worlds**: CARLA's towns with weather presets and sliders (sun, cloud, rain, wetness, puddles, fog, wind).
+- **The first-run wizard**: finds CARLA, checks the GPU, the Vulkan driver and memory, runs a 30 s smoke drive and
+  records this machine's measured throughput for every cost estimate after.
+- **A CLI** for every heavy action, on the same code paths as the GUI, including `falcon reproduce`.
+
+## Requirements
+
+- Linux x86_64 (developed on Ubuntu 26.04), an NVIDIA GPU with its Vulkan driver, systemd (user scopes).
+- CARLA 0.9.16 (not bundled; Falcon finds it) and a Python venv beside it with `carla==0.9.16`, `numpy` and
+  `opencv-python-headless` — the workers run there.
+- For the app: Python ≥ 3.12 with PyQt6, numpy, OpenCV, jsonschema, pyqtgraph and PyOpenGL.
+
+## Running
+
+```sh
+python3 -m falcon_autonomy                 # the application (the first run opens the wizard)
+python3 -m falcon_autonomy doctor          # check the machine and CARLA
+python3 -m falcon_autonomy project new Demo ~/demo.falcon.json
+python3 -m falcon_autonomy smoke ~/demo.falcon.json
+python3 -m falcon_autonomy drive ~/demo.falcon.json --seconds 30 --seed 7
+python3 -m falcon_autonomy reproduce ~/demo.falcon/runs/<run>
+```
+
+## Tests
+
+The whole suite runs without a GPU or a server, against a fake `carla` package (`tests/fake_carla`) whose instance
+ids match its boxes, whose depth matches its lidar and whose semantic lidar matches its lidar. Run it memory-capped
+with a throw-away config folder (the suite sets `XDG_CONFIG_HOME` itself):
+
+```sh
+systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 python3 -m pytest
+FALCON_REAL_CARLA=1 python3 -m pytest -m real_server     # also against a real CARLA server (starts Falcon's own)
+```
+
+## Documentation
+
+[The manual](docs/index.md) · [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
+[project format](docs/project-format.md) · [CLI and exit codes](docs/cli.md) · [methods](docs/methods.md) ·
+[CARLA lessons](docs/carla-lessons.md) · [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
+
+## Licence
+
+GPL-3.0-or-later. Falcon ports its theme, icons, fonts (IBM Plex, SIL OFL) and parts of its CARLA bridge and fake
+`carla` from Vantage (also GPL-3.0-or-later, same author).

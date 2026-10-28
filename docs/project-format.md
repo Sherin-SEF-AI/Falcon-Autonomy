@@ -1,0 +1,74 @@
+# Project format
+
+A project is one JSON file, `name.falcon.json`, validated against
+[`falcon_autonomy/schemas/project.schema.json`](../falcon_autonomy/schemas/project.schema.json) (JSON Schema
+2020-12) on every load and save. It holds **definitions only**; runs, datasets and models live in the workspace
+folder beside it (`name.falcon/`). Machine settings (CARLA's folder, ports) and secrets are never in a project.
+
+## Top level
+
+| field | type | meaning |
+|---|---|---|
+| `format` | `"falcon.project"` | identifies the file |
+| `version` | integer | the format version (this build: **1**) |
+| `name` | string | the project's name |
+| `created`, `modified` | UTC ISO 8601 | stamps |
+| `app_version` | string | the Falcon version that last saved it |
+| `worlds` | [world] | towns and imported places with weather and a traffic profile |
+| `traffic_profiles` | [traffic profile] | named, editable traffic |
+| `rigs` | [rig] | vehicles with their sensors |
+| `scenarios`, `dataset_specs`, `models`, `experiments` | [{`id`, `name`, …}] | filled by later milestones |
+| `loop` | object | the closed loop's settings and iterations |
+
+Ids match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` and are unique within their list.
+
+## world
+
+| field | meaning |
+|---|---|
+| `id`, `name` | |
+| `kind` | `town` (a CARLA map), `osm` (an OpenStreetMap import), `xodr` (an OpenDRIVE file) |
+| `town` | the CARLA map name (`kind: town`), e.g. `Town10HD_Opt` |
+| `osm` | the import's source and converter settings (`kind: osm`) |
+| `weather` | `{"preset": "ClearNoon", …overrides}`: any of CARLA's `WeatherParameters` fields override the preset |
+| `traffic_profile` | the id of a traffic profile |
+
+## traffic profile
+
+| field | meaning |
+|---|---|
+| `id`, `name` | |
+| `handedness` | `map` (what the map's lanes say), `left` or `right` (an assertion checked against the map) |
+| `vehicles`, `walkers` | how many |
+| `fleet` | weights per CARLA base type (`car`, `truck`, `van`, `bus`, `motorcycle`, `bicycle`), normalised at run time |
+| `behaviour` | traffic-manager settings: `distance_to_leading_m`, `speed_difference_pct`, `ignore_lights_pct`, `ignore_signs_pct`, `auto_lane_change`, `walker_crossing_factor` |
+
+## rig and sensor
+
+A rig: `id`, `name`, `vehicle` (a CARLA blueprint id, `vehicle.*`), `sensors`. A sensor:
+
+| field | meaning |
+|---|---|
+| `id`, `name` | |
+| `type` | `camera.pinhole`, `camera.fisheye`, `lidar`, `radar`, `gnss`, `imu` |
+| `pose` | `x y z` metres, `roll pitch yaw` degrees, in CARLA's vehicle frame (x forward, y right, z up; left-handed), from the vehicle's origin |
+| `width`, `height`, `fov` | cameras: image size in pixels, horizontal field of view in degrees |
+| `labels` | cameras: label layers rendered beside the image: `semantic`, `instance`, `depth`, `boxes2d`, `boxes3d` |
+
+This build records pinhole cameras with `semantic` labels; the other sensor types and label layers are accepted by
+the schema and recorded from milestone 3 on.
+
+## Versions and migrations
+
+`version` is checked on load. A file from an older format is migrated in memory (the project is then marked
+modified, and the log says so) and written in the current format on the next save; `falcon project migrate PATH`
+does it in place. A file from a newer format than the build knows is refused with a message to update Falcon.
+
+| from → to | what changes |
+|---|---|
+| 0 → 1 | rigs' `cameras` become typed `sensors`; traffic profiles and empty sections are added |
+
+## Edits
+
+Every change made in the app is an edit (`set` a value, `insert` into or `remove` from a list) at a path into the
+document, e.g. `["worlds", 0, "weather"]`; each edit knows its inverse, which is how undo and redo work.
