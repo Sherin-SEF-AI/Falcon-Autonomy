@@ -93,7 +93,16 @@ def fetch(m: dict, workspace: str, progress=None) -> str:
 
 # ------------------------------------------------------------------------------------------------ preprocessing
 def preprocess(img: np.ndarray, spec: dict) -> tuple[np.ndarray, dict]:
-    """An RGB uint8 image (H, W, 3) to the model's input tensor (1, …) and the transform back to image pixels."""
+    """An RGB uint8 image (H, W, 3) to the model's input tensor (1, …) and the transform back to image pixels:
+    geometry() then normalise() (split so that core.deploy can do the first on the host and the second on a device,
+    which runs a verbatim copy of this module)."""
+    x, back = geometry(img, spec)
+    return normalise(x, spec), back
+
+
+def geometry(img: np.ndarray, spec: dict) -> tuple[np.ndarray, dict]:
+    """The geometric half of preprocess(): the model's channel order, resized or letterboxed to its input size, still
+    uint8 (h, w, 3); and the transform back to image pixels."""
     import cv2
     H, W = img.shape[:2]
     w, h = int(spec.get('width', W)), int(spec.get('height', H))
@@ -108,13 +117,19 @@ def preprocess(img: np.ndarray, spec: dict) -> tuple[np.ndarray, dict]:
     else:
         x = cv2.resize(x, (w, h), interpolation=cv2.INTER_LINEAR) if (w, h) != (W, H) else x
         back = {'kx': w / W, 'ky': h / H, 'px': 0, 'py': 0}
+    back.update(model_w=w, model_h=h)
+    return x, back
+
+
+def normalise(x: np.ndarray, spec: dict) -> np.ndarray:
+    """The arithmetic half of preprocess() (numpy only): scale, mean and std, layout; a uint8 (h, w, 3) image in the
+    model's channel order and size to its float32 input tensor (1, …)."""
     t = x.astype(np.float32) * float(spec.get('scale', 1.0 / 255.0))
     if spec.get('mean') is not None:
         t = (t - np.asarray(spec['mean'], np.float32)) / np.asarray(spec.get('std', [1, 1, 1]), np.float32)
     if spec.get('layout', 'NCHW') == 'NCHW':
         t = t.transpose(2, 0, 1)
-    back.update(model_w=w, model_h=h)
-    return t[None].astype(np.float32), back
+    return t[None].astype(np.float32)
 
 
 def to_image(boxes: np.ndarray, back: dict) -> np.ndarray:
@@ -126,9 +141,10 @@ def to_image(boxes: np.ndarray, back: dict) -> np.ndarray:
 
 # ------------------------------------------------------------------------------------------------ decoders
 def nms(boxes, scores, iou=0.5) -> np.ndarray:
-    """Greedy non-maximum suppression (xyxy); indices kept, by score."""
+    """Greedy non-maximum suppression (xyxy); indices kept, by score — equal scores in index order (a stable sort:
+    numpy's default quicksort orders ties differently between versions, and a device runs another numpy)."""
     b = np.asarray(boxes, float)
-    order = np.argsort(-np.asarray(scores, float))
+    order = np.argsort(-np.asarray(scores, float), kind='stable')
     keep = []
     area = np.maximum(b[:, 2] - b[:, 0], 0) * np.maximum(b[:, 3] - b[:, 1], 0)
     while len(order):
