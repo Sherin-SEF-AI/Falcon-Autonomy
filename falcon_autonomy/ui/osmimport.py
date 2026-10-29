@@ -17,7 +17,7 @@ from ..core.project import Edit, new_id
 from ..core.worlds import MESH_DEFAULTS, import_config, world_dir, world_entry
 from . import tasks
 from .theme import SEQ, THEME
-from .widgets import Form, KeyValues, Section, button, label
+from .widgets import Form, KeyValues, Section, button, label, set_enabled
 
 
 class _Canvas(QWidget):
@@ -27,13 +27,15 @@ class _Canvas(QWidget):
         super().__init__()
         self.lines = []                         # [(xy list, colour, width)]
         self.bounds = None                      # (x0, y0, x1, y1)
+        self.bottom_pad = 0                     # room kept under the drawing for a caption
         self.setMinimumSize(320, 260)
 
     def fit(self):
         if self.bounds is None:
             return 1.0, 0.0, 0.0
         x0, y0, x1, y1 = self.bounds
-        k = min((self.width() - 20) / max(x1 - x0, 1e-6), (self.height() - 20) / max(y1 - y0, 1e-6))
+        k = min((self.width() - 20) / max(x1 - x0, 1e-6),
+                (self.height() - 20 - self.bottom_pad) / max(y1 - y0, 1e-6))
         return k, x0, y1
 
     def to_px(self, x, y):
@@ -135,6 +137,10 @@ class AreaPicker(_Canvas):
 class RoadGraphView(_Canvas):
     """A converted road network: each road coloured by its driving lanes per direction; junction connections thin."""
 
+    def __init__(self):
+        super().__init__()
+        self.bottom_pad = 22                    # the caption sits under the roads, not on them
+
     def set_graph(self, g: dict):
         self.lines = []
         conn_col = THEME.tok['strong']
@@ -188,7 +194,7 @@ class ImportDialog(QDialog):
         geo.addWidget(self.geo_btn)
         allowed = bool(win.settings.get('geocoding_allowed'))
         self.place.setEnabled(allowed)
-        self.geo_btn.setEnabled(allowed)
+        set_enabled(self.geo_btn, allowed, 'Place-name search is off: allow it in Settings ▸ Geocoding')
         if not allowed:
             self.place.setPlaceholderText('place-name search is off (Settings ▸ Geocoding): work from files')
         lv.addLayout(geo)
@@ -283,8 +289,11 @@ class ImportDialog(QDialog):
         split.setSizes([420, 360, 420])
         bb = QDialogButtonBox()
         self.add_btn = bb.addButton('Add as a world', QDialogButtonBox.ButtonRole.AcceptRole)
+        self.drive_btn = bb.addButton('Add and drive it', QDialogButtonBox.ButtonRole.ApplyRole)
+        self.drive_btn.clicked.connect(lambda: self.add_world(drive=True))
         bb.addButton(QDialogButtonBox.StandardButton.Close)
-        self.add_btn.setEnabled(False)
+        for b in (self.add_btn, self.drive_btn):
+            set_enabled(b, False, 'Convert an area first')
         bb.accepted.connect(self.add_world)
         bb.rejected.connect(self.reject)
         v.addWidget(bb)
@@ -377,7 +386,8 @@ class ImportDialog(QDialog):
             QMessageBox.warning(self, 'Import', str(e))
             return
         self.go.setEnabled(False)
-        self.add_btn.setEnabled(False)
+        for b in (self.add_btn, self.drive_btn):
+            set_enabled(b, False, 'Converting…')
 
     def on_job(self, job):
         if job is not self.job:
@@ -396,9 +406,10 @@ class ImportDialog(QDialog):
         with open(os.path.join(out, 'import.json'), encoding='utf-8') as fh:
             self.rep = json.load(fh)
         show_report(self.report, self.rep)
-        self.add_btn.setEnabled(True)
+        for b in (self.add_btn, self.drive_btn):
+            set_enabled(b, True)
 
-    def add_world(self):
+    def add_world(self, drive=False):
         mesh = {k: sb.value() for k, sb in self.mesh.items()}
         mesh['smooth_junctions'] = self.smooth.isChecked()
         doc = self.win.project.doc
@@ -408,6 +419,10 @@ class ImportDialog(QDialog):
         w = world_entry(self.world_id, name, self.cfg, self.rep, mesh, tp)
         self.win.edit(Edit('insert', ['worlds'], w, text=f'Import {name}'))
         self.accept()
+        if drive:                                 # straight to Live with the new world chosen
+            live = self.win.go('live')
+            if live is not None:
+                live.choose_world(w['id'])
 
 
 def show_report(kv: KeyValues, rep: dict):

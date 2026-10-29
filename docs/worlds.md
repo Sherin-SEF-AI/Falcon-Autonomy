@@ -33,7 +33,12 @@ are within 5 cm and lists each in the report; anything further out is refused ra
 
 **The lane check.** A seeded sample of the area's named, lane-tagged OSM ways is matched to same-named converted roads
 running within 8 m of them; each direction's driving-lane count is compared with what the OSM tags say. The report
-gives the agreement over the comparable ways and lists the others.
+gives the agreement over the comparable ways and lists the others. It also checks **where** the lanes lie: every 2 m
+of each matched road, the middle of its driving lanes in each direction against where OSM puts it (on the way for a
+one-way way; beside it on the driving side, half that direction's width out, for a two-way way). It reports the
+median and 95th percentile error and the ways whose lanes are mostly off by more than 0.75 of a lane width
+(*misplaced*). The converter's own placement counts too: in central Bengaluru one of 23 checked ways is misplaced
+before any conversion (a one-way road the converter puts beside its way rather than on it).
 
 ## Left-hand traffic: what was verified
 Measured on CARLA 0.9.16 (the reference machine, 2026-10-28), with a straight two-lane OpenDRIVE road loaded by
@@ -48,13 +53,35 @@ So **CARLA 0.9.16 honours OpenDRIVE's `rule="LHT"`** in its map (waypoint direct
 
 **CARLA's OSM converter (`carla.Osm2Odr`, SUMO's netconvert inside) does not**: its settings have no handedness
 option, and its OpenDRIVE has no `rule` — every road is right-hand. Each travel direction of a street is its own road
-with right lanes only and its reference line at the street's centre.
+with right lanes only. Where the reference line lies differs (measured on central Bengaluru): the two directions of a
+two-way street share one, the street's centre (the OSM way); a one-way street — or one carriageway of a dual
+carriageway — is one road whose reference line is its carriageway's **left edge**, with the way down its middle.
 
 **What Falcon does**: with *Left-hand traffic* on (the default for an Indian place), Falcon converts the converter's
-output: every road's lanes are mirrored across its reference line (lane k → −k), every road gets `rule="LHT"`, lane
-offsets, lane links, junction lane links and signal positions are mirrored with them. Each road keeps its travel
-direction; only the side changes. After loading, a verification run spawns traffic and checks which side it drives
-on; the report says so.
+output: every road's lanes are mirrored (lane k → −k), every road gets `rule="LHT"`, lane offsets, lane links,
+junction lane links and signal positions are mirrored with them. Each road keeps its travel direction; only the side
+changes. The mirror line is the line the road's OSM way runs along: the reference line for a two-way street (its
+directions swap sides), the carriageway's centre for a one-way road (it stays where it is: a laneOffset does it).
+Without the OSM ways (a file converted on its own) a road that shares its reference line with an opposite road is
+mirrored there and a lone one-way road about its carriageway's centre. Junction connecting roads then get a smooth
+(cubic) laneOffset that meets the lanes they link at both ends. After loading, a verification run spawns traffic and
+checks which side it drives on; the report says so.
+
+Before this (Falcon 2.1.0 and earlier) every road was mirrored across its reference line, which moved each one-way
+road a whole carriageway width sideways: in central Bengaluru 36 of 245 roads (4.2 of 19.0 km) lay 3.35–13.4 m
+(median 6.7 m) off their way, and 11 of the 23 checked ways were misplaced; on a highway mapped as two one-way ways a
+dashcam's GPS fell on a lane 0.7 % of the time against 59.9 % now. A world imported before needs importing again
+(*Import a place…* with the same area) to get the corrected lanes.
+
+| central Bengaluru, 1 km² (245 roads, 390 junction roads) | the converter (right-hand) | mirrored only (2.1.0) | now |
+|---|---|---|---|
+| lane positions against OSM, 23 checked ways: 95th percentile; misplaced | 0.58 m; 1 | 10.05 m; 11 | 0.58 m; 1 |
+| linked lanes that do not meet (> 0.5 m), of 1136 links; 95th percentile gap | 150; 0.77 m | 202; 6.7 m | 150; 2.25 m |
+
+The remaining gaps are where the converter's junction roads meet a road at an angle (a kink): mirrored about two
+lines at an angle, a lane's ends move apart **along** the road, which a laneOffset (sideways only) cannot close —
+up to 5 m in central Bengaluru. The converter's own file has such gaps too (whole-city export: 822 of 14 168 links
+over 0.5 m before conversion, 820 after; mirroring only: 1214). The whole export (7554 roads) converts in 4–5 s.
 
 **The limit**, stated in the import's report: on approaches with two or more lanes per direction, which lane turns
 where at a junction is the right-hand converter's assignment mirrored (the inner lane keeps the turns it had), not a

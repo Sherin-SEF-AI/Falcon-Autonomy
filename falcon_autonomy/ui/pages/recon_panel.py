@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout
                              QSpinBox, QWidget)
 
 from ...core.jobs import DONE, FINAL
-from ..widgets import Form, KeyValues, Section, SliderField, button, label
+from ..widgets import Form, KeyValues, Section, SliderField, button, label, set_enabled
 
 READS = {'falcon': 'falcon', 'kitti_raw': 'kitti_raw', 'nuscenes': 'nuscenes'}
 VIEW_WIDTH = 480
@@ -208,7 +208,7 @@ class ReconPanel(QWidget):
         name = os.path.basename(os.path.dirname(path)) if path else 'log'
         self.rec_dir = os.path.join(self.win.workspace(), 'recon', name)
         self.info.set('Source', self.source or why)
-        self.train_btn.setEnabled(self.source is not None)
+        set_enabled(self.train_btn, self.source is not None, f'Cannot reconstruct this log: {why}')
         self.rec = None
         self.view.clear()
         if os.path.isfile(os.path.join(self.rec_dir, 'point_cloud.ply')):

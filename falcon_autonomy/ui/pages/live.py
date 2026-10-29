@@ -26,7 +26,7 @@ from ...core.paths import tilde
 from ...core.project import ProjectError
 from .. import input_devices
 from ..theme import STATUS, THEME
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
+from ..widgets import Form, KeyValues, Note, Page, Section, button, label, scroll, set_enabled
 
 VIEW_SIZES = {'1280 × 720': (1280, 720), '960 × 540': (960, 540), '640 × 360': (640, 360)}
 KIND_COLOR = {'v': '#3987e5', 'w': '#d95926', 'e': '#199e70'}
@@ -203,8 +203,8 @@ class LivePage(Page):
         panel = QWidget()
         pv = QVBoxLayout(panel)
         pv.setContentsMargins(12, 12, 12, 12)
-        pv.addWidget(label(self.title, title=True))
-        pv.addWidget(label(self.about, muted=True, wrap=True))
+        pv.addWidget(label(self.title, page=True))
+        pv.addWidget(Note(self.about, limit=160))
 
         ses = Section('Session')
         f = Form()
@@ -224,8 +224,12 @@ class LivePage(Page):
         b = QHBoxLayout()
         self.start_btn = button('Start', self.start, role='primary')
         self.stop_btn = button('Stop', self.stop)
+        self.rec_btn = button('● Record', self.toggle_record,
+                              tip='Record the session as a run (Data ▸ Browse opens it)')
+        self.rec_btn.setCheckable(True)
         b.addWidget(self.start_btn)
         b.addWidget(self.stop_btn)
+        b.addWidget(self.rec_btn)
         b.addStretch(1)
         ses.add(b)
         pv.addWidget(ses)
@@ -259,12 +263,16 @@ class LivePage(Page):
         vf.row('Input', self.device)
         self.axes = {}
         ax = QHBoxLayout()
+        ax.setContentsMargins(0, 0, 0, 0)
         for name, default in (('steer', 0), ('throttle', 1), ('brake', 2)):
             cb = QComboBox()
-            cb.addItems([f'{name}: axis {i}' for i in range(8)])
+            cb.addItems([str(i) for i in range(8)])
             cb.setCurrentIndex(default)
+            cb.setToolTip(f'The input device\'s axis for {name}')
+            cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
             self.axes[name] = cb
-            ax.addWidget(cb)
+            ax.addWidget(label(name.title(), muted=True))
+            ax.addWidget(cb, 1)
         self.pedals = QCheckBox('Pedals rest at −1 (wheels)')
         vf.row('Axes', ax)
         vf.row('', self.pedals)
@@ -295,9 +303,6 @@ class LivePage(Page):
 
         rec = Section('Recording', 'Records the rig\'s cameras with their labels, the events and the controls as a '
                                    'run of its own (Data ▸ Browse opens it).')
-        self.rec_btn = button('● Record', self.toggle_record)
-        self.rec_btn.setCheckable(True)
-        rec.add(self.rec_btn)
         self.rec_list = label('', muted=True, wrap=True, small=True)
         rec.add(self.rec_list)
         pv.addWidget(rec)
@@ -318,6 +323,13 @@ class LivePage(Page):
         self.update_buttons()
 
     # ------------------------------------------------------------------ project
+    def choose_world(self, world_id):
+        """Choose this world (Worlds' *Drive this world*); it applies when the session starts."""
+        self.refresh()
+        k = self.world.findData(world_id)
+        if k >= 0 and self.world.isEnabled():
+            self.world.setCurrentIndex(k)
+
     def refresh(self):
         doc = self.win.project.doc
         for combo, items in ((self.world, doc['worlds']), (self.rig, doc['rigs'])):
@@ -411,11 +423,11 @@ class LivePage(Page):
 
     def update_buttons(self):
         r = self.running
-        self.start_btn.setEnabled(not r)
-        self.stop_btn.setEnabled(r)
-        self.rec_btn.setEnabled(r)
+        set_enabled(self.start_btn, not r, 'A session is running: stop it first')
+        set_enabled(self.stop_btn, r, 'No session is running')
+        set_enabled(self.rec_btn, r, 'Start a session first: recording captures a running session')
         for wd in (self.world, self.rig, self.size, self.fps):
-            wd.setEnabled(not r)
+            set_enabled(wd, not r, 'Fixed while a session runs: stop it to change')
 
     # ------------------------------------------------------------------ the link
     def on_connection(self):

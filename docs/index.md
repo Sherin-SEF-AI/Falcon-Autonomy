@@ -23,19 +23,35 @@ does; the [roadmap](roadmap.md) lists what is planned.
 
 ## The window
 
-- **Navigator** (left): the pages. Ctrl+1 … Ctrl+9 go to them.
-- **Jobs** (bottom): every long action — queued, waiting (and why), running with its progress and ETA, finished.
-  The ✕ cancels a job; a cancelled worker tidies the server first.
-- **Log** (bottom): what every job and the app said.
-- **Status bar**: Falcon's CARLA server (start or stop it there), the GPU's memory and load, free memory.
-- **Command palette** (Ctrl+K): every command and page by name; type a few letters.
+- **Navigator** (left): Home, then the pages in groups — **Build** (Worlds, Rigs, Scenarios), **Drive** (Live, Data,
+  Replay), **Improve** (Loop, Rare cases, Training, Models), **Ship** (Stack testing, Hardware, Reports) — and Settings
+  and Help. Ctrl+0 goes Home, Ctrl+1 … Ctrl+9 to the next nine pages; the rest by the command palette.
+- **Jobs and Log** (bottom): every long action — queued, waiting (and why), running with its progress and ETA,
+  finished — and what every job and the app said. The panel stays out of the way until a job starts, and opens
+  then; the **Jobs** badge in the status bar (or Ctrl+J) shows or hides it, and says how many jobs run and wait. The ✕
+  cancels a job (a cancelled worker tidies the server first); a finished job's **Open** (or a double-click) goes to its
+  result — a recorded drive in Data ▸ Browse, anything else on the page it was started from.
+- **Status bar**: the jobs badge, Falcon's CARLA server (start or stop it there), the GPU's memory and load, free
+  memory.
+- **Command palette** (Ctrl+K, also at the foot of the navigator): every command and page by name; type a few letters.
+- **Explanations**: a page or section opens with one line; *more* reads the rest in place (the method, the numbers,
+  the limits — nothing is left out). A greyed-out button says in its tooltip why it is off. An empty list says what
+  goes there and how to get some.
 - **Undo and redo** (Ctrl+Z, Ctrl+Shift+Z): every change to the project. Dragging a slider is one step.
 - **Themes**: View ▸ Dark theme / Light theme.
 
 ## Pages
 
+### Home
+The start page: the **next step** this project needs, in the order the work goes (a world, a rig, a recorded dataset,
+a model, an evaluation, then the search for what it gets wrong), with a button to where it is done; the project's
+worlds, rigs, scenarios and models (each a link); Falcon's CARLA server (start, stop, probe) and the machine's GPU and
+memory; the recent runs (double-click: Data ▸ Browse), evaluations (double-click: Models) and this session's jobs
+(double-click a finished one: its result). Everything on it is read from the project and the workspace; it computes
+nothing.
+
 ### Loop
-The home page: the closed loop ([loop](loop.md)). Choose a **model** and a target **operational design domain** — the
+The closed loop ([loop](loop.md)). Choose a **model** and a target **operational design domain** — the
 worlds, weathers (with ranges, such as dusk's sun altitude), traffic profile, classes of interest and range bins; *Use
 the Bengaluru monsoon-dusk example* writes one and says what the project still needs — then run the eight steps one at
 a time or up to a step, each a job with progress, ETA and cancel: **pick** (the model and ODD are frozen and hashed),
@@ -55,9 +71,11 @@ The **Status** tab: the server (state, port, folder, client Python, the last pro
 throughput Falcon uses for estimates and where it came from, and the latest runs (double-click one to browse it).
 
 ### Worlds
-A world is a CARLA town with its weather and time of day, and the traffic profile it drives with. Presets set all
-of CARLA's weather fields; sliders override them one by one. *Reads as* says what the weather amounts to (day or
-night, rain, fog visibility).
+A world is a CARLA town with its weather and time of day, and the traffic profile it drives with. *Import a place…*
+and *Add town* sit above the list of worlds. Presets set all of CARLA's weather fields; sliders override them one by
+one. *Reads as* says what the weather amounts to (day or night, rain, fog visibility). An imported place has no town
+to choose, so its Town field is not shown. *Drive this world* opens Live with it chosen; *Record a dataset here* opens
+Data ▸ Record with it chosen; the import dialog's *Add and drive it* adds the place and goes to Live.
 
 **Traffic profiles** are named and shared between worlds: vehicle and walker counts, fleet shares per CARLA base type,
 behaviour (gaps, speed spread, ignoring lights and signs, random lane changes, walkers crossing anywhere) and an
@@ -137,8 +155,8 @@ that case ([root cause](root-cause.md)).
 Register a perception model (ONNX, TorchScript or a plug-in; its licence and pinned SHA-256 shown, AGPL refused,
 weights downloaded only when asked), **evaluate** it on checked drives — AP/AR or mIoU with a 95 % bootstrap interval
 over whole drives, breakdowns by range, occlusion, truncation and height, AP over a grid of two conditions, the
-worst frames with their misses and false positives — and **compare** two evaluations (a paired bootstrap: a
-regression is a drop whose whole interval is below zero). **Sim-to-real gap**: the drives' images against a real
+worst frames with their misses and false positives (*Open the run in Data* shows a failing frame in its drive) — and
+**compare** two evaluations (a paired bootstrap: a regression is a drop whose whole interval is below zero). **Sim-to-real gap**: the drives' images against a real
 dataset (KITTI, nuScenes, BDD100K, COCO or a folder), statistic by statistic and in a fixed feature space, each
 distance next to its real-vs-real floor; optional appearance matching with its effect measured. See
 [models](models.md) and [sim-to-real](sim-to-real.md). World-model and language data are derived from drives by
@@ -157,8 +175,10 @@ distance next to its real-vs-real floor; optional appearance matching with its e
   ([policies](policies.md)).
 
 ### Data
-**Record** a drive (see *Getting started*). **Browse** recorded runs: choose the camera and the layer, scrub the
-frames, set the overlay's opacity. A cancelled or failed run keeps only `run.json` (why it ended) and its input,
+**Record** a drive (see *Getting started*). **Browse** recorded runs: filter them by name or status, choose the camera
+and the layer, scrub the frames, set the overlay's opacity; it opens on the newest run. Select one or more runs
+(Ctrl/Shift-click) and *Evaluate on these* (Models ▸ Evaluate with them checked) or *Train on these* (Training ▸
+Detectors with them checked). A cancelled or failed run keeps only `run.json` (why it ended) and its input,
 never half a dataset.
 
 **Datasets**: a dataset spec sets targets — objects per class, over worlds × weathers — and the engine **plans** the

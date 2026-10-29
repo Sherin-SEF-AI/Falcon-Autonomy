@@ -1,6 +1,6 @@
 # The loop
 
-The Loop page (the home page) and `falcon loop` close the loop: **pick a model and a target operational design
+The Loop page and `falcon loop` close the loop: **pick a model and a target operational design
 domain (ODD) → evaluate → find the weak cells → search for rare cases there → generate targeted data → retrain →
 evaluate again → the before and after, with intervals.** Each iteration is a versioned, reproducible record, and each
 step's cost is shown before it runs. Code: `falcon_autonomy/core/loop.py` (its docstring is the reference);

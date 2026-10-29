@@ -24,7 +24,16 @@ refused. Known limit: on approaches with two or more lanes per direction, which 
 converter's assignment mirrored (the inner lane keeps the turns it had), not a true left-hand assignment;
 single-lane approaches are unaffected.
 
-lane_check() compares lane counts on a seeded sample of OSM ways with the network converted from them (see there).
+Where the lanes go: mirroring across the reference line is right for a road whose reference line is its OSM way
+(carla.Osm2Odr writes the two directions of a two-way way as two roads sharing the way as reference line). A lone
+one-way road's reference line is its carriageway's left edge instead, so mirrored there the carriageway would move a
+whole carriageway width sideways (measured on central Bengaluru: 3.35–10 m, 33 of 72 one-way roads). Such roads (one
+side of lanes only, no opposite road along the same line) are mirrored about their carriageway's centre with a
+laneOffset, and junction connecting roads get a cubic laneOffset that meets the lanes they link at both ends.
+lane_link_gaps() measures how well linked lanes meet.
+
+lane_check() compares lane counts on a seeded sample of OSM ways with the network converted from them, and where
+their lanes lie against the ways (see there).
 """
 from __future__ import annotations
 
@@ -296,6 +305,47 @@ def sample_reference_line(road: Road, step: float = 2.0) -> np.ndarray:
     return np.concatenate(parts) if parts else np.zeros((0, 3))
 
 
+def _cubic_at(entries, s: float, key=0) -> float:
+    """The record in force at s (the last with start <= s) of [(start, a, b, c, d)], evaluated; 0 when none is."""
+    best = None
+    for e in entries:
+        if e[key] <= s + 1e-9:
+            best = e
+    if best is None:
+        return 0.0
+    u = s - best[0]
+    return best[1] + best[2] * u + best[3] * u * u + best[4] * u ** 3
+
+
+def lane_centres(road: Road, step: float = 2.0, types=('driving',)) -> np.ndarray:
+    """(N, 6) x, y, travel heading, lane id, width, s of the centres of the road's lanes of the given types, every
+    `step` metres of reference line: the reference line moved by laneOffset and the lane widths. Lanes travel along +s
+    when they are right lanes of a right-hand road or left lanes of a left-hand one."""
+    ref = sample_reference_line(road, step)
+    if not len(ref) or not road.sections:
+        return np.zeros((0, 6))
+    ss = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(ref[:, :2], axis=0).T))))
+    if ss[-1] > 0 and road.length > 0:
+        ss *= road.length / ss[-1]
+    starts = [sec.s for sec in road.sections]
+    rows = []
+    for (x, y, h), s in zip(ref, ss):
+        sec = road.sections[max(0, int(np.searchsorted(starts, s + 1e-9, side='right')) - 1)]
+        ls = s - sec.s
+        nx, ny = -math.sin(h), math.cos(h)
+        for lanes, sign in ((sec.right, -1.0), (sorted(sec.left, key=lambda q: q.id), 1.0)):
+            t = _cubic_at(road.lane_offsets, s)
+            for ln in lanes:
+                w = _cubic_at(ln.widths, ls)
+                c = t + sign * w / 2.0
+                t += sign * w
+                if ln.type not in types or w <= 0.05:
+                    continue
+                along = (sign < 0) != road.lht
+                rows.append((x + nx * c, y + ny * c, h if along else h + math.pi, ln.id, w, s))
+    return np.array(rows, float).reshape(-1, 6)
+
+
 def _rdp(xy: np.ndarray, tol: float) -> np.ndarray:
     """Indices kept by Ramer–Douglas–Peucker with tolerance tol (iterative)."""
     n = len(xy)
@@ -436,11 +486,335 @@ def _mirror_section(sec, negate_pred, negate_succ, counts):
             sec.insert(at, el)
 
 
-def to_lht(text: str | bytes, force: bool = False) -> tuple[str, list]:
+def _shift_poly(rec, s0: float) -> tuple:
+    """A cubic record (start, a, b, c, d) re-expanded about s0 (>= start): the same curve with start s0."""
+    st, a, b, c, d = rec
+    h = s0 - st
+    return (s0, a + b * h + c * h * h + d * h ** 3, b + 2 * c * h + 3 * d * h * h, c + 3 * d * h, d)
+
+
+def _pw_add(*parts) -> list:
+    """The sum of piecewise cubics [(start, a, b, c, d)] (each record in force from its start to the next; zero
+    before the first), as one piecewise cubic over the union of their breakpoints."""
+    starts = sorted({r[0] for p in parts for r in p})
+    out = []
+    for s0 in starts:
+        acc = [0.0, 0.0, 0.0, 0.0]
+        for p in parts:
+            rec = None
+            for r in p:
+                if r[0] <= s0 + 1e-9:
+                    rec = r
+            if rec is not None:
+                q = _shift_poly(rec, s0)
+                for i in range(4):
+                    acc[i] += q[i + 1]
+        if out and all(abs(x - y) < 1e-12 for x, y in zip(_shift_poly(out[-1], s0)[1:], acc)):
+            continue                                       # the previous record already continues this way
+        out.append((s0, *acc))
+    return out
+
+
+def _carriageway(road: Road, side: str) -> list:
+    """The width of a road's carriageway on one side as a piecewise cubic over s: per lane section, the lanes from
+    the centre out to the outermost driving lane (every lane when the section has no driving lane)."""
+    out = []
+    for k, sec in enumerate(road.sections):
+        end = road.sections[k + 1].s if k + 1 < len(road.sections) else road.length
+        lanes = sorted(sec.right if side == 'right' else sec.left, key=lambda q: abs(q.id))
+        drive = [i for i, ln in enumerate(lanes) if ln.type == 'driving']
+        lanes = lanes[:drive[-1] + 1] if drive else lanes
+        pieces = [[(sec.s + so, a, b, c, d) for so, a, b, c, d in ln.widths if sec.s + so < end - 1e-9]
+                  for ln in lanes]
+        total = _pw_add(*pieces) if pieces else []
+        if not total or total[0][0] > sec.s + 1e-9:
+            total = [(sec.s, 0.0, 0.0, 0.0, 0.0)] + total
+        out += total
+    return out
+
+
+def _ref_pose(road: Road, s: float) -> tuple[float, float, float]:
+    """x, y, heading of a parsed road's reference line at s."""
+    geoms = [g for g in road.geometries if g.length > 0] or road.geometries
+    g = geoms[0]
+    for cand in geoms:
+        if cand.s <= s + 1e-9:
+            g = cand
+    x, y, h = eval_geometry(g, np.array([s - g.s]))
+    return float(x[0]), float(y[0]), float(h[0])
+
+
+def _lane_t(road: Road, s: float, lane_id: int) -> float | None:
+    """Lateral position (left of the reference line +) of a lane's centre at s; None when the lane is not there."""
+    if not road.sections:
+        return None
+    sec = road.sections[0]
+    for c in road.sections:
+        if c.s <= s + 1e-9:
+            sec = c
+    ls = s - sec.s
+    t = _cubic_at(road.lane_offsets, s)
+    lanes, sign = (sec.left, 1.0) if lane_id > 0 else (sec.right, -1.0)
+    for ln in sorted(lanes, key=lambda q: abs(q.id)):
+        w = _cubic_at(ln.widths, ls)
+        if ln.id == lane_id:
+            return t + sign * w / 2.0
+        t += sign * w
+    return None
+
+
+def _lane_xy(road: Road, s: float, lane_id: int):
+    t = _lane_t(road, s, lane_id)
+    if t is None:
+        return None
+    x, y, h = _ref_pose(road, s)
+    return np.array([x - math.sin(h) * t, y + math.cos(h) * t])
+
+
+def lane_link_gaps(od: OpenDrive) -> np.ndarray:
+    """For every lane link between roads (a lane's predecessor or successor on the road its road links to), the
+    distance in metres between the two lanes' centres where they meet: 0 for a network whose lanes join up."""
+    gaps = []
+    for r in od.roads:
+        if not r.sections:
+            continue
+        for link, s_here, sec in ((r.predecessor, 0.0, r.sections[0]), (r.successor, r.length, r.sections[-1])):
+            other = od.road(link['id']) if link and link.get('type') == 'road' else None
+            if other is None:
+                continue
+            s_other = 0.0 if link.get('contact') == 'start' else other.length
+            for ln in sec.left + sec.right:
+                to = ln.predecessor if s_here == 0.0 else ln.successor
+                if to is None:
+                    continue
+                p, q = _lane_xy(other, s_other, to), _lane_xy(r, s_here, ln.id)
+                if p is not None and q is not None:
+                    gaps.append(float(np.hypot(*(p - q))))
+    return np.array(gaps)
+
+
+def _paired(od: OpenDrive, tol: float = 0.3, step: float = 2.0) -> set:
+    """Ids of the non-junction roads whose reference line another non-junction road runs along in the opposite
+    direction for at least half its length: the two directions (or a direction and its sidewalk) of one OSM way,
+    whose shared reference line is the way itself. carla.Osm2Odr (SUMO) writes a lone one-way road's reference line
+    at its carriageway's left edge instead."""
+    roads = [r for r in od.roads if not r.in_junction]
+    pts = {r.id: sample_reference_line(r, step) for r in roads}
+    cell = 10.0
+    grid: dict = {}
+    for r in roads:
+        for key in {(int(math.floor(x / cell)), int(math.floor(y / cell))) for x, y, _ in pts[r.id]}:
+            grid.setdefault(key, set()).add(r.id)
+    by_id = {r.id: r for r in roads}
+    out = set()
+    for r in roads:
+        a = pts[r.id]
+        if len(a) < 2:
+            continue
+        near = set()
+        for x, y, _ in a:
+            i, j = int(math.floor(x / cell)), int(math.floor(y / cell))
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    near |= grid.get((i + di, j + dj), set())
+        for q in near - {r.id}:
+            b = pts[q]
+            if len(b) < 2 or by_id[q].in_junction:
+                continue
+            d, u = _seg_dist(a[:, :2], b[:, :2])
+            dot = np.cos(a[:, 2]) * u[:, 0] + np.sin(a[:, 2]) * u[:, 1]
+            if ((d <= tol) & (dot < -0.9)).mean() >= 0.5:
+                out.add(r.id)
+                break
+    return out
+
+
+def _fmt(v: float) -> str:
+    v = 0.0 if abs(v) < 1e-12 else v
+    return f'{v:.10g}'
+
+
+def _set_offsets(road_el, records: list):
+    """Replace a road element's laneOffset records (they come first inside <lanes>)."""
+    lanes = road_el.find('lanes')
+    for lo in lanes.findall('laneOffset'):
+        lanes.remove(lo)
+    for i, (s, a, b, c, d) in enumerate(records):
+        el = ET.Element('laneOffset', {'s': _fmt(s), 'a': _fmt(a), 'b': _fmt(b), 'c': _fmt(c), 'd': _fmt(d)})
+        lanes.insert(i, el)
+
+
+def _one_side(road: Road) -> str | None:
+    """'right' or 'left' when every lane section has lanes on that side only, else None."""
+    sides = {('right' if s.right else '') + ('left' if s.left else '') for s in road.sections}
+    return sides.pop() if len(sides) == 1 and next(iter(sides)) in ('right', 'left') else None
+
+
+def _mirror_line(road: Road, side: str, ways, grid, cell: float, paired: set, step: float = 2.0):
+    """Where a one-sided road should be mirrored for left-hand traffic, as 'ref' (its reference line) or 'centre'
+    (its carriageway's centre), and why. With OSM ways (to_lht's `ways`): whichever of the two the nearest parallel
+    way runs along (median within 0.75 m; the way is what both conversions are faithful to). Without one: 'ref' when
+    an opposite road shares the reference line (the two directions of one way), else 'centre'."""
+    fallback = ('ref', 'shares its reference line with an opposite road') if road.id in paired else \
+        ('centre', 'a lone one-way road: its reference line is its carriageway\'s edge')
+    if not ways:
+        return fallback
+    ref = sample_reference_line(road, step)
+    if len(ref) < 2:
+        return fallback
+    keys = {(int(math.floor(x / cell)), int(math.floor(y / cell))) for x, y, _ in ref}
+    cands = set()
+    for i, j in keys:
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                cands |= grid.get((i + di, j + dj), set())
+    ss = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(ref[:, :2], axis=0).T))))
+    if ss[-1] > 0:
+        ss *= road.length / ss[-1]
+    sign = -1.0 if side == 'right' else 1.0
+    centre = np.array([_cubic_at(road.lane_offsets, s) + sign * _cubic_at(_carriageway(road, side), s) / 2.0
+                       for s in ss])
+    nrm = np.column_stack((-np.sin(ref[:, 2]), np.cos(ref[:, 2])))
+    best = None
+    for k in cands:
+        poly = ways[k]
+        d, u = _seg_dist(ref[:, :2], poly)
+        par = np.abs(np.cos(ref[:, 2]) * u[:, 0] + np.sin(ref[:, 2]) * u[:, 1]) > 0.95
+        a, b = poly[:-1], poly[1:]
+        ab = b - a
+        L2 = np.maximum((ab ** 2).sum(1), 1e-12)
+        ap = ref[:, None, :2] - a[None]
+        t = np.clip((ap * ab[None]).sum(2) / L2[None], 0.0, 1.0)
+        foot = a[None] + t[..., None] * ab[None]
+        kk = np.hypot(*(ref[:, None, :2] - foot).transpose(2, 0, 1)).argmin(1)
+        lat = ((foot[np.arange(len(ref)), kk] - ref[:, :2]) * nrm).sum(1)      # the way, left of the ref line +
+        ok = par & (d < 15.0)
+        if ok.mean() < 0.6:
+            continue
+        e_ref, e_centre = float(np.median(np.abs(lat[ok]))), float(np.median(np.abs(lat[ok] - centre[ok])))
+        e = min(e_ref, e_centre)
+        if best is None or e < best[0]:
+            best = (e, 'ref' if e_ref <= e_centre else 'centre')
+    if best is None or best[0] > 0.75:
+        return fallback
+    return best[1], f'the OSM way runs along its {"reference line" if best[1] == "ref" else "carriageway's centre"}'
+
+
+def osm_lines(osm_data, proj, transform=None) -> list:
+    """The polylines (OpenDRIVE x, y) of the OSM highways carla.Osm2Odr converts, for to_lht's `ways`."""
+    from . import osm as O
+    to_local = proj.to_local if hasattr(proj, 'to_local') else proj
+    tf = _transformer(transform)
+    out = []
+    for w in osm_data.ways:
+        if w.get('kind') != 'highway' or w['tags'].get('highway') not in O.CARLA_HIGHWAYS:
+            continue
+        nodes = [n for n in w['nodes'] if n in osm_data.nodes]
+        if len(nodes) < 2:
+            continue
+        lat = np.array([osm_data.nodes[n][0] for n in nodes])
+        lon = np.array([osm_data.nodes[n][1] for n in nodes])
+        x, y = tf(*to_local(lat, lon))
+        out.append(np.column_stack((np.asarray(x, float), np.asarray(y, float))))
+    return out
+
+
+def _place(root, original: str, conv: set, ways=None) -> dict:
+    """After mirroring (to_lht), put lanes where left-hand traffic needs them. Mirroring across the reference line is
+    right for a road whose reference line is its OSM way (both directions of a two-way way share it), but a lone
+    one-way road's reference line is its carriageway's edge: mirrored there, the carriageway would move a whole
+    carriageway width sideways. Such roads (_mirror_line) get a laneOffset that mirrors them about their
+    carriageway's centre instead: the carriageway stays where it was. Junction connecting roads then get a
+    laneOffset, a smooth cubic from one end to the other, that makes their lanes meet the lanes they link to at both
+    ends (a connector built for right-hand traffic, mirrored about its own reference line, would otherwise not).
+    Objects and signals move with the laneOffset added. Returns counts."""
+    od0 = parse(original)
+    paired = _paired(od0)
+    cell = 20.0
+    grid: dict = {}
+    for k, poly in enumerate(ways or []):
+        dense = np.concatenate([np.linspace(a, b, max(2, int(math.ceil(np.hypot(*(b - a)) / (cell / 2))) + 1))
+                                for a, b in zip(poly[:-1], poly[1:])]) if len(poly) > 1 else poly
+        for key in {(int(math.floor(x / cell)), int(math.floor(y / cell))) for x, y in dense}:
+            grid.setdefault(key, set()).add(k)
+    els = {r.get('id'): r for r in root.findall('road')}
+    corr: dict = {}
+    why: dict = {}
+    for r in od0.roads:
+        if r.id not in conv or r.in_junction:
+            continue
+        side = _one_side(r)
+        if side is None:
+            continue
+        line, reason = _mirror_line(r, side, ways, grid, cell, paired)
+        why[reason] = why.get(reason, 0) + 1
+        if line == 'ref':
+            continue
+        sign = -1.0 if side == 'right' else 1.0       # reflection about the centre m = o ∓ W/2: t -> 2m - t
+        corr[r.id] = _pw_add([(s, 2 * a, 2 * b, 2 * c, 2 * d) for s, a, b, c, d in r.lane_offsets],
+                             [(s, sign * a, sign * b, sign * c, sign * d) for s, a, b, c, d in _carriageway(r, side)])
+    for rid, c in corr.items():
+        _set_offsets(els[rid], _pw_add(parse_offsets(els[rid]), c))
+    kept = len(corr)
+    od1 = parse(ET.tostring(root, encoding='unicode'))
+    moved = 0
+    for r in od1.roads:
+        if r.id not in conv or not r.in_junction or not r.sections:
+            continue
+        ends = []
+        for link, s_here, sec in ((r.predecessor, 0.0, r.sections[0]), (r.successor, r.length, r.sections[-1])):
+            other = od1.road(link['id']) if link and link.get('type') == 'road' else None
+            vals = []
+            if other is not None:
+                s_other = 0.0 if link.get('contact') == 'start' else other.length
+                x, y, h = _ref_pose(r, s_here)
+                n = np.array([-math.sin(h), math.cos(h)])
+                for ln in sec.left + sec.right:
+                    to = ln.predecessor if s_here == 0.0 else ln.successor
+                    if to is None:
+                        continue
+                    p, q = _lane_xy(other, s_other, to), _lane_xy(r, s_here, ln.id)
+                    if p is not None and q is not None:
+                        vals.append(float((p - q) @ n))
+            ends.append(float(np.mean(vals)) if vals else None)
+        c0, c1 = ends
+        if c0 is None and c1 is None:
+            continue
+        c0 = c1 if c0 is None else c0
+        c1 = c0 if c1 is None else c1
+        if max(abs(c0), abs(c1)) < 1e-3:
+            continue
+        L = max(r.length, 1e-6)
+        dc = c1 - c0
+        corr[r.id] = [(0.0, c0, 0.0, 3 * dc / L ** 2, -2 * dc / L ** 3)]
+        _set_offsets(els[r.id], _pw_add(r.lane_offsets, corr[r.id]))
+        moved += 1
+    for rid, c in corr.items():                   # objects and signals are placed by t, which laneOffset does not move
+        el = els[rid]
+        for ob in el.findall('signals/signal') + el.findall('signals/signalReference') + \
+                el.findall('objects/object') + el.findall('objects/objectReference'):
+            if ob.get('t') is not None:
+                ob.set('t', _fmt(float(ob.get('t')) + _cubic_at(c, float(ob.get('s', '0')))))
+            for cr in ob.iter('cornerRoad'):
+                if cr.get('t') is not None:
+                    cr.set('t', _fmt(float(cr.get('t')) + _cubic_at(c, float(cr.get('s', '0')))))
+    return {'kept': kept, 'moved': moved, 'why': why}
+
+
+def parse_offsets(road_el) -> list:
+    """A road element's laneOffset records [(s, a, b, c, d)]."""
+    lanes = road_el.find('lanes')
+    return [(_f(o, 's'), _f(o, 'a'), _f(o, 'b'), _f(o, 'c'), _f(o, 'd'))
+            for o in (lanes.findall('laneOffset') if lanes is not None else [])]
+
+
+def to_lht(text: str | bytes, force: bool = False, ways=None) -> tuple[str, list]:
     """A right-hand-traffic OpenDRIVE document converted to left-hand traffic (see the module docstring) and notes
     saying what was changed. A file whose roads all say rule="LHT" is refused (ValueError), so converting twice is
     an error, never a silent flip back. A mixed file is refused unless force=True, which converts only the roads not
-    already LHT (lane links into an already-LHT road are left as they are)."""
+    already LHT (lane links into an already-LHT road are left as they are). `ways` (osm_lines(): the OSM highways
+    in OpenDRIVE coordinates) lets each one-way road be mirrored about the line its OSM way runs along; without it,
+    whether an opposite road shares its reference line decides (_mirror_line)."""
     if isinstance(text, bytes):
         text = text.decode('utf-8')
     m = re.search(r'<OpenDRIVE[\s>]', text)
@@ -513,6 +887,7 @@ def to_lht(text: str | bytes, force: bool = False) -> tuple[str, list]:
                 if nt:
                     ll.set('to', _neg(ll.get('to')))
                 counts['lane_link_junction'] += 1
+    placed = _place(root, text, conv, ways)
     ET.indent(root, space='    ')
     body = ET.tostring(root, encoding='unicode')
     body = re.sub(r'<geoReference>(.*?)</geoReference>',
@@ -529,6 +904,11 @@ def to_lht(text: str | bytes, force: bool = False) -> tuple[str, list]:
         f'hOffset and orientation kept)',
         f'{counts["objects"]} objects mirrored (t, hdg, cornerLocal v, cornerRoad t); '
         f'{counts["superelevations"]} superelevations negated',
+        f'{placed["kept"]} one-way roads kept in place, mirrored about their carriageway\'s centre by a laneOffset '
+        f'(the converter draws a lone one-way road\'s reference line at its carriageway\'s edge); one-sided roads: '
+        + '; '.join(f'{v} {k}' for k, v in sorted(placed['why'].items())) +
+        f'; {placed["moved"]} junction connecting roads given a laneOffset that meets the lanes they link at both '
+        f'ends',
         'Limit: on approaches with two or more lanes per direction, which lane turns where is the right-hand '
         'converter\'s assignment mirrored (the inner lane keeps the turns it had), not a true left-hand assignment; '
         'single-lane approaches are unaffected.',
@@ -565,6 +945,41 @@ def _transformer(transform):
     return lambda e, n: (np.asarray(e) + dx, np.asarray(n) + dy)
 
 
+def _position_errors(road: Road, poly: np.ndarray, one_way: int, tol: float, step: float) -> list:
+    """[(error, lane width)] per s sample and travel direction of a road matched to an OSM way: how far the centre of
+    the road's driving lanes in that direction is from where OSM puts it. OSM draws a one-way way along its
+    carriageway's middle and a two-way way between the directions, so the expected centre is on the way (one-way) or
+    half the direction's driving width out on its driving side (two-way: left for LHT, right for RHT). one_way: 0 for
+    a two-way way, 1 or -1 (OSM oneway) for a one-way one, whose lanes in the other direction belong to another way
+    (a dual carriageway's other half) and are left out."""
+    lc = lane_centres(road, step)
+    if not len(lc):
+        return []
+    d, u = _seg_dist(lc[:, :2], poly)
+    a, b = poly[:-1], poly[1:]
+    ab = b - a
+    L2 = np.maximum((ab ** 2).sum(1), 1e-12)
+    ap = lc[:, None, :2] - a[None]
+    t = np.clip((ap * ab[None]).sum(2) / L2[None], 0.0, 1.0)
+    foot = a[None] + t[..., None] * ab[None]
+    k = np.hypot(*(lc[:, None, :2] - foot).transpose(2, 0, 1)).argmin(1)
+    v = lc[:, :2] - foot[np.arange(len(lc)), k]
+    along = np.sign(np.cos(lc[:, 2]) * u[:, 0] + np.sin(lc[:, 2]) * u[:, 1])
+    lateral = np.sign(u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0]) * along * d     # left of the lane's travel +
+    out = []
+    keep = d <= tol + 15.0
+    for s in np.unique(lc[keep, 5]):
+        for dirn in ((1.0, -1.0) if not one_way else (float(one_way),)):
+            m = keep & (lc[:, 5] == s) & (along == dirn)
+            if not m.any():
+                continue
+            w = lc[m, 4]
+            centre = float((lateral[m] * w).sum() / w.sum())
+            expected = 0.0 if one_way else (w.sum() / 2.0) * (1.0 if road.lht else -1.0)
+            out.append((abs(centre - expected), float(w.mean())))
+    return out
+
+
 def lane_check(od: OpenDrive, osm_data, proj, sample: int = 50, seed: int = 0, transform=None,
                tol: float = 8.0, step: float = 2.0) -> dict:
     """Whether the road network matches OSM's lane tags on a checked SAMPLE of ways (not the whole map).
@@ -582,7 +997,9 @@ def lane_check(od: OpenDrive, osm_data, proj, sample: int = 50, seed: int = 0, t
     (0 when no road carries that direction).
 
     A way is comparable when at least one road was found; matched when found == expected. agreement = matched /
-    comparable."""
+    comparable. `position`: where the matched roads' driving lanes lie against the way (_position_errors): the
+    median and 95th percentile error over every sample, and the ways where most samples are off by more than 0.75
+    of a lane width (misplaced)."""
     from . import osm as O
     to_local = proj.to_local if hasattr(proj, 'to_local') else proj
     tf = _transformer(transform)
@@ -595,7 +1012,7 @@ def lane_check(od: OpenDrive, osm_data, proj, sample: int = 50, seed: int = 0, t
                        and w['tags'].get('highway') in O.CARLA_HIGHWAYS and O.expected_lanes(w) is not None),
                       key=lambda w: w['id'])
     chosen = random.Random(seed).sample(eligible, min(sample, len(eligible)))
-    rows = []
+    rows, all_errs = [], []
     for w in sorted(chosen, key=lambda w: w['id']):
         exp = O.expected_lanes(w)
         row = {'way': w['id'], 'name': w['tags']['name'], 'highway': w['tags'].get('highway'), 'expected': exp,
@@ -610,6 +1027,8 @@ def lane_check(od: OpenDrive, osm_data, proj, sample: int = 50, seed: int = 0, t
         x, y = tf(*to_local(lat, lon))
         poly = np.column_stack((np.asarray(x, float), np.asarray(y, float)))
         votes = {1: {}, -1: {}}                  # direction -> {lane count: metres}
+        one_way = O.oneway(w['tags']) if O.oneway(w['tags']) in (1, -1) else 0
+        errs = []
         for r in cands:
             pts = samples.get(r.id)
             if pts is None:
@@ -629,6 +1048,10 @@ def lane_check(od: OpenDrive, osm_data, proj, sample: int = 50, seed: int = 0, t
                 if n:
                     votes[direction][n] = votes[direction].get(n, 0.0) + metres
             row['roads'].append(r.id)
+            errs += _position_errors(r, poly, one_way, tol, step)
+        row['position_error_m'] = round(float(np.median([e for e, _ in errs])), 3) if errs else None
+        row['misplaced'] = bool(errs) and float(np.median([e > 0.75 * lw for e, lw in errs])) > 0.5
+        all_errs += errs
         if not row['roads']:
             row['reason'] = f'no road with this name within {tol:g} m of the way for half its length'
             continue
@@ -637,12 +1060,24 @@ def lane_check(od: OpenDrive, osm_data, proj, sample: int = 50, seed: int = 0, t
         row['matched'] = found == tuple(exp)
     comparable = [r for r in rows if r['found'] is not None]
     matched = sum(1 for r in comparable if r['matched'])
+    e = np.array([x for x, _ in all_errs])
+    position = {
+        'median_m': round(float(np.median(e)), 3) if len(e) else None,
+        'p95_m': round(float(np.percentile(e, 95)), 3) if len(e) else None,
+        'checked': sum(1 for r in comparable if r['position_error_m'] is not None),
+        'misplaced': sum(1 for r in comparable if r['misplaced']),
+        'method': 'per comparable way, every 2 m of each matched road: the centre of its driving lanes in each '
+                  'direction against where OSM puts them (on the way for a one-way way; beside it on the driving '
+                  'side, half that direction\'s lanes\' width out, for a two-way way); a way is misplaced when most '
+                  'of its samples are off by more than 0.75 of a lane width',
+    }
     return {
         'rows': rows, 'eligible': len(eligible), 'sampled': len(rows), 'comparable': len(comparable),
         'matched': matched, 'agreement': (matched / len(comparable)) if comparable else None, 'seed': seed,
         'method': f'a seeded sample (seed {seed}) of {len(rows)} of {len(eligible)} named, lane-tagged OSM ways; '
                   f'comparable = a same-named road within {tol:g} m along the way; per-direction driving-lane '
                   f'counts compared with OSM expected_lanes',
+        'position': position,
     }
 
 

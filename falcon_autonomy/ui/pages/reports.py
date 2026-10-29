@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLay
 from ...core import reports as R
 from ...core.jobs import FINAL, JobSpec
 from ...core.paths import tilde
-from ..widgets import KeyValues, Page, Section, button, label
+from ..widgets import KeyValues, Page, PlaceholderTree, Section, button, label
 
 KIND_TITLES = {'iteration': 'Loop iteration', 'evaluation': 'Model evaluation', 'dataset': 'Dataset coverage',
                'study': 'Rare-case study', 'leaderboard': 'Leaderboard result', 'rules': 'Traffic-rule check',
@@ -40,6 +40,7 @@ class ReportsPage(Page):
             self.kind.addItem(KIND_TITLES[k], k)
         self.kind.currentIndexChanged.connect(self.fill_sources)
         self.src = QComboBox()
+        self.src.setPlaceholderText('Nothing of this kind yet: make one first (its page says how)')
         self.src.setMinimumWidth(360)
         row.addWidget(label('Kind', muted=True))
         row.addWidget(self.kind)
@@ -49,7 +50,7 @@ class ReportsPage(Page):
         sec.add(row)
         v.addWidget(sec)
         sec = Section('Reports', 'In the workspace\'s reports folder. Double-click one to open it in the browser.')
-        self.list = QTreeWidget()
+        self.list = PlaceholderTree('No reports yet: choose a kind and a source above, then Make the report.')
         self.list.setHeaderLabels(['Created', 'Kind', 'Title', 'File'])
         self.list.setRootIsDecorated(False)
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -102,8 +103,7 @@ class ReportsPage(Page):
             self.src.addItem(name, path)
             self.src.setItemData(self.src.count() - 1, tilde(path), Qt.ItemDataRole.ToolTipRole)
         i = self.src.findData(cur)
-        if i >= 0:
-            self.src.setCurrentIndex(i)
+        self.src.setCurrentIndex(i if i >= 0 else 0)       # a placeholder keeps Qt from choosing the first itself
 
     def _current(self):
         it = self.list.currentItem()

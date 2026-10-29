@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased — milestone 14: workbench (first wave)
+
+- **Drive your dashcam route** (`falcon dashcam route`, Worlds ▸ Drive a dashcam route…): the streets a clip's GPS
+  track drives are imported (from a local OSM or PBF file; a download from Overpass only after confirmation), the track
+  is snapped to the imported lanes, driven in CARLA as an ordinary recorded run (its run.json names the clips and the
+  window) and paired frame by frame with the footage by GPS time. On one 60 s clip of the user's: 99.5 % snapped,
+  lateral median 0.39 m; the follower tracked the recorded speed within 1.05 m/s mean absolute.
+- **Home** is the start page: the next step the project needs (a world, a rig, a dataset, a model, an evaluation,
+  then the rare-case search), the project's counts, the server and the machine, the recent runs, evaluations and
+  jobs — every item a link. Read from the project and the workspace only.
+- **Navigation**: the navigator groups its pages (Build, Drive, Improve, Ship); Ctrl+0 Home, Ctrl+1 … Ctrl+9 the next
+  nine pages; the command palette is at the navigator's foot.
+- **Layout**: side panels widen to what their forms need, so no field is cut off; a tall side pane scrolls, so the
+  window fits a 1280 × 720 screen; combo boxes no longer size to their longest item; spin boxes read left-aligned in
+  the body font. The Jobs and Log panel stays hidden until a job starts (the status bar's Jobs badge or Ctrl+J shows
+  it), with no second title.
+- **Theme**: a type scale (page 18 px, section 14 px, body 12 px); check boxes in lists visible in the dark theme; the
+  page's main action is the primary button; a disabled control says why in its tooltip.
+- **Text**: a page or section opens with one line, the rest of its explanation behind *more* — nothing removed.
+- **Empty states and hand-offs**: empty lists and result pickers say what goes there; Data ▸ Browse opens on the
+  newest run, filters runs, and hands selected drives to *Evaluate on these* and *Train on these*; Worlds has *Drive
+  this world* and *Record a dataset here*; the import dialog *Add and drive it*; Models ▸ Failures *Open the run in
+  Data* (at the failing frame); a finished job's *Open* goes to its result. An imported place hides the Town field;
+  the road map's caption no longer covers the roads; the dashcam folder shows from ~.
+- **Left-hand imports: one-way roads in the right place.** The conversion mirrored every road about its reference
+  line, but the OSM converter draws a one-way road's reference line at its carriageway's edge, so one-way roads moved
+  a whole carriageway sideways (central Bengaluru: 36 of 245 roads, 3.35–13.4 m; a dual-carriageway highway: GPS on
+  a lane 0.7 % instead of 59.9 %). Each road is now mirrored about the line its OSM way runs along, and junction
+  roads get a laneOffset that meets their links. The lane check also measures lane positions against OSM. Worlds
+  imported before need importing again.
+- **Poses land in their own step.** `set_transform` is asynchronous in CARLA's client: a log replay showed the
+  previous step's ego pose in 22 of 1181 frames on a real server. Replays, kinematic scenarios, the gym's start and
+  the road-end guard now place actors in one synchronous batch before the tick (0 of 1181).
+
 ## 2.1.0 — your own dashcam
 
 - **Dashcam ingest** (`falcon dashcam list|gps|extract|match`, [dashcam](docs/dashcam.md)): reads the GPS that

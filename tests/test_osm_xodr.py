@@ -21,7 +21,7 @@ SMALL_OSM = os.path.join(DATA, 'blr_small.osm')
 SMALL_XODR = os.path.join(DATA, 'sumo_small.xodr')
 BIG_OSM = '/home/jo/Desktop/LabeloxAV/.scratch/maps/bangalore-roads.osm'
 BIG_XODR = ('/tmp/claude-1000/-home-jo-Desktop-FalconAutonomy/62da7238-0b01-4122-bd39-3110fdc3b02f/scratchpad/osm/'
-            'blr.xodr')
+            'blr.xodr')                     # carla.Osm2Odr of BIG_OSM (2026-10-29: 7554 roads), centre from its summary
 big_osm = pytest.mark.skipif(not os.path.isfile(BIG_OSM), reason='full Bengaluru OSM export not on this machine')
 big_xodr = pytest.mark.skipif(not os.path.isfile(BIG_XODR), reason='full Bengaluru OpenDRIVE not on this machine')
 
@@ -487,8 +487,11 @@ def test_to_lht_converts_the_sumo_fixture():
     assert xodr.handedness(after) == 'LHT' and all(r.rule == 'LHT' for r in after.roads)
     assert new.startswith('<?xml') and '<!-- Cut from carla.Osm2Odr' in new and '<![CDATA[' in new
     assert any('Limit' in n for n in notes)
+    paired = xodr._paired(before)
     for b, a in zip(before.roads, after.roads):
         assert a.id == b.id and a.geometries == b.geometries       # travel direction (reference line) unchanged
+        if b.id in paired:                                         # mirrored across the shared reference line
+            assert a.lane_offsets == [(s, -p, -q, -r, -t) for s, p, q, r, t in b.lane_offsets]
         for sb, sa in zip(b.sections, a.sections):
             assert not sa.right and [ln.id for ln in sa.left] == sorted((-ln.id for ln in sb.right), reverse=True)
             for ln in sa.left:
@@ -497,13 +500,15 @@ def test_to_lht_converts_the_sumo_fixture():
                 assert ln.predecessor == (None if old.predecessor is None else -old.predecessor)
                 assert ln.successor == (None if old.successor is None else -old.successor)
             assert all(ln.id > 0 for ln in sa.left if ln.type == 'driving')
-        assert a.lane_offsets == [(s, -p, -q, -r, -t) for s, p, q, r, t in b.lane_offsets]
+    raw_gaps, gaps = xodr.lane_link_gaps(before), xodr.lane_link_gaps(after)
+    assert len(gaps) == len(raw_gaps) == 38                         # linked lanes still meet (pure mirroring: 13.4 m)
+    assert np.percentile(gaps, 95) < 1.5 and gaps.max() < 2.3 and (gaps > 0.5).sum() <= (raw_gaps > 0.5).sum()
+    assert any('8 one-way roads kept in place' in n for n in notes)
     for jb, ja in zip(before.junctions, after.junctions):
         for cb, ca in zip(jb.connections, ja.connections):
             assert ca.lane_links == [(-f, -t) for f, t in cb.lane_links]
     for m in re.finditer(r'<validity fromLane="(-?\d+)" toLane="(-?\d+)"', new):
         assert int(m.group(1)) <= int(m.group(2))
-    assert 'laneOffset s="0" a="-3.35"' in new
     with pytest.raises(ValueError, match='already'):
         xodr.to_lht(new)
 
@@ -512,7 +517,18 @@ def test_to_lht_twice_with_rule_reset_is_the_identity():
     text = _text(SMALL_XODR)
     once, _ = xodr.to_lht(text)
     twice, _ = xodr.to_lht(once.replace(' rule="LHT"', ''))
-    assert _structure(xodr.parse(twice)) == _structure(xodr.parse(text))
+    a, b = xodr.parse(twice), xodr.parse(text)
+    got, want = _structure(a), _structure(b)
+    assert got[1] == want[1] and set(got[0]) == set(want[0])
+    for rid, (lanes, _, geoms) in want[0].items():
+        assert got[0][rid][0] == lanes and got[0][rid][2] == geoms
+        r = b.road(rid)
+        if r.in_junction:                     # a connector's laneOffset is made to meet its links, which the
+            continue                          # converter's own connectors miss by up to 1.5 m here (checked below)
+        for s in np.linspace(0, r.length, 9):
+            assert xodr._cubic_at(a.road(rid).lane_offsets, s) == pytest.approx(xodr._cubic_at(r.lane_offsets, s),
+                                                                                abs=1e-6), rid
+    assert np.percentile(xodr.lane_link_gaps(a), 95) <= np.percentile(xodr.lane_link_gaps(b), 95) + 1e-6
 
 
 def _road_xml(rid, name, x, y, hdg, length, right=(), left=(), junction='-1', extra='', rule=''):
@@ -542,7 +558,8 @@ def test_to_lht_signals_objects_and_refusals():
              '<signals><signal id="s" s="3" t="-4.5" orientation="+" hOffset="0.1">'
              '<validity fromLane="-2" toLane="-1"/></signal></signals>'
              '<lateralProfile><superelevation s="0" a="0.02" b="0" c="0" d="0"/></lateralProfile>')
-    text = _doc(_road_xml(1, 'A', 0, 0, 0, 50, right=[(-1, 'driving', 3.5), (-2, 'driving', 3.5)], extra=extra))
+    text = _doc(_road_xml(1, 'A', 0, 0, 0, 50, right=[(-1, 'driving', 3.5), (-2, 'driving', 3.5)], extra=extra),
+                _road_xml(3, 'A', 50, 0, math.pi, 50, right=[(-1, 'driving', 3.5)]))   # the other direction
     new, notes = xodr.to_lht(text)
     assert 'signal id="s" s="3" t="4.5"' in new and 'hOffset="0.1"' in new and 'orientation="+"' in new
     assert '<validity fromLane="1" toLane="2"' in new
@@ -632,6 +649,74 @@ def test_lane_check_on_synthetic_network():
     assert len(few['rows']) == 3 and few == xodr.lane_check(xodr.parse(text), d, P, sample=3, seed=1)
 
 
+def _sumo_like():
+    """A network written the way carla.Osm2Odr writes one (measured on central Bengaluru): a two-way way as two
+    roads sharing the way as reference line, each with its lanes on its right; a one-way way as one road whose
+    reference line is its carriageway's left edge (the way runs down the carriageway's middle); a junction road from
+    the first to the second; and a two-way way only one of whose directions became a road. OSM ways in local metres."""
+    P = osm.local_projection(LAT0, LON0)
+    nodes, ways = {}, []
+
+    def way(wid, pts, **tags):
+        refs = []
+        for e, n in pts:
+            nodes[len(nodes) + 1] = P.to_geo(e, n)
+            refs.append(len(nodes))
+        ways.append({'id': wid, 'nodes': refs, 'tags': {'highway': 'secondary', **tags}, 'kind': 'highway'})
+    way(1, [(-100, 0), (40, 0)], name='Two Way', lanes='2')
+    way(2, [(50, 6.65), (50, 150)], name='One Way', oneway='yes', lanes='2')
+    way(3, [(-100, -60), (100, -60)], name='Half Way', lanes='2')
+    d = osm.OsmData(nodes, ways, (LAT0 - 0.01, LON0 - 0.01, LAT0 + 0.01, LON0 + 0.01), 'synthetic')
+    one = [(-1, 'driving', 3.35), (-2, 'sidewalk', 2.8)]
+    R = 6.65                  # a quarter circle, tangent at both ends, whose lane joins both roads' lanes
+    link = ('<lane id="-1" type="driving" level="false"><link><predecessor id="-1"/><successor id="-1"/></link>'
+            '<width sOffset="0" a="3.35" b="0" c="0" d="0"/></lane>')
+    conn = (f'<road name="" length="{math.pi * R / 2}" id="4" junction="1"><link>'
+            '<predecessor elementType="road" elementId="1" contactPoint="end"/>'
+            '<successor elementType="road" elementId="3" contactPoint="start"/></link>'
+            f'<planView><geometry s="0" x="40" y="0" hdg="0" length="{math.pi * R / 2}"><arc curvature="{1 / R}"/>'
+            '</geometry></planView><lanes><laneSection s="0"><center><lane id="0" type="none" level="false"/></center>'
+            f'<right>{link}</right></laneSection></lanes></road>')
+    text = _doc(_road_xml(1, 'Two Way', -100, 0, 0, 140, right=one),
+                _road_xml(2, 'Two Way', 40, 0, math.pi, 140, right=one),
+                _road_xml(3, 'One Way', 50 - 3.35, R, math.pi / 2, 140,
+                          right=[(-1, 'driving', 3.35), (-2, 'driving', 3.35)]),
+                conn,
+                _road_xml(5, 'Half Way', -100, -60, 0, 200, right=one))
+    return d, text, P
+
+
+def _span(road, x=None, y=None):
+    """Median position (x or y) of a road's driving lanes' middle."""
+    lc = xodr.lane_centres(road)
+    return float(np.median(lc[:, 0] if x else lc[:, 1]))
+
+
+def test_to_lht_keeps_one_way_roads_on_their_way_and_lanes_joined():
+    d, text, P = _sumo_like()
+    raw = xodr.parse(text)
+    assert _span(raw.road('3'), x=True) == pytest.approx(50.0) and xodr.lane_link_gaps(raw).max() < 1e-6
+    for ways in (xodr.osm_lines(d, P), None):
+        new, notes = xodr.to_lht(text, ways=ways)
+        od = xodr.parse(new)
+        assert _span(od.road('3'), x=True) == pytest.approx(50.0, abs=1e-6)      # the one-way road stays on its way
+        assert _span(od.road('1'), y=True) == pytest.approx(1.675)               # two-way: driving on the left
+        assert _span(od.road('2'), y=True) == pytest.approx(-1.675)
+        assert xodr.lane_link_gaps(od).max() < 1e-6                              # the junction road meets both
+        check = xodr.lane_check(od, d, P)
+        rows = {r['way']: r for r in check['rows']}
+        assert rows[1]['position_error_m'] == pytest.approx(0, abs=1e-6)
+        assert rows[2]['position_error_m'] == pytest.approx(0, abs=1e-6)
+        # the half-built two-way way: its road's reference line is the way (mirror there) - which only the OSM way
+        # can tell; without it the road is taken for a lone one-way road and kept where it was
+        assert rows[3]['position_error_m'] == pytest.approx(0 if ways else 3.35, abs=1e-6)
+        assert rows[3]['misplaced'] is (ways is None)
+        assert check['position']['misplaced'] == (0 if ways else 1)
+        assert any('kept in place' in n and 'junction connecting roads' in n for n in notes)
+    rht = xodr.lane_check(raw, d, P)['position']
+    assert rht['median_m'] == pytest.approx(0, abs=1e-6) and rht['misplaced'] == 0
+
+
 def test_lane_check_with_an_offset():
     d, text, P = _synthetic(offset=(1000.0, -2000.0))
     od = xodr.parse(text)
@@ -647,15 +732,19 @@ def test_full_sumo_output_smoke():
     t = time.perf_counter()
     od = xodr.parse(text)
     assert time.perf_counter() - t < 10
-    assert len(od.roads) == 7844 and len(od.junctions) == 938 and xodr.handedness(od) == 'RHT'
+    assert len(od.roads) == 7554 and len(od.junctions) == 828 and xodr.handedness(od) == 'RHT'
     g = xodr.road_graph(od)
-    assert g['totals']['roads'] == 2603 and g['totals']['connecting_roads'] == 5241
+    assert g['totals']['roads'] == 2422 and g['totals']['connecting_roads'] == 5132
+    t = time.perf_counter()
     new, notes = xodr.to_lht(text)
+    assert time.perf_counter() - t < 20
     after = xodr.parse(new)
     assert xodr.handedness(after) == 'LHT'
     assert all(ln.id > 0 for r in after.roads for s in r.sections for ln in s.left) and \
         not any(s.right for r in after.roads for s in r.sections)
-    assert sum(len(r.lane_offsets) for r in after.roads) == 277
+    assert sum(len(r.lane_offsets) for r in after.roads) == 1599
+    gaps, raw = xodr.lane_link_gaps(after), xodr.lane_link_gaps(od)
+    assert (gaps > 0.5).sum() <= (raw > 0.5).sum() and np.percentile(gaps, 95) < 2.5     # mirroring alone: 1214, 6.6 m
 
 
 def test_sanitize_clamps_objects_past_the_road_end():

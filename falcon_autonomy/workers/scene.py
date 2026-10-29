@@ -13,7 +13,7 @@ import queue
 import time
 
 from ..core.budget import label_cameras
-from .common import ROLE_HERO, ROLE_SENSOR, ROLE_TRAFFIC, Failed
+from .common import ROLE_HERO, ROLE_SENSOR, ROLE_TRAFFIC, Failed, place_now
 
 FRAME_TIMEOUT_S = 10.0
 OPENDRIVE_DEFAULTS = {'vertex_distance': 2.0, 'max_road_length': 500.0, 'wall_height': 0.0, 'additional_width': 0.6,
@@ -158,7 +158,7 @@ class RoadEndGuard:
             return None
         self.ego.set_target_velocity(carla.Vector3D(0.0, 0.0, 0.0))
         self.ego.set_target_angular_velocity(carla.Vector3D(0.0, 0.0, 0.0))
-        self.ego.set_transform(target)
+        place_now(self.w.client, carla, [(self.ego, target)])     # applied before the next tick
         self.last_road_z = target.location.z
         ev = {'sim_t': round(float(sim_t), 3), 'kind': 'road_end',
               'from': {'x': round(loc.x, 2), 'y': round(loc.y, 2), 'z': round(loc.z, 2)},

@@ -65,7 +65,7 @@ from ..core import protocol as P
 from ..core.livelink import pack
 from ..core.provenance import read_json
 from . import scene
-from .common import Failed, Worker
+from .common import Failed, Worker, place_now
 
 GYM_SCHEMA = 'falcon.gym_config/1'
 WARMUP_TICKS = 1
@@ -524,9 +524,10 @@ class Gym(Worker):
         carla = self.carla
         t = ego_wp.transform
         k = director.kin.get(ego.id)          # an ego on the traffic manager keeps CARLA's physics (not in kin)
+        moves = []
         if k is not None:
             k[0], k[1], k[3] = t.location.x, t.location.y, t.rotation.yaw
-            ego.set_transform(carla.Transform(carla.Location(x=k[0], y=k[1], z=k[2]), carla.Rotation(yaw=k[3])))
+            moves.append((ego, carla.Transform(carla.Location(x=k[0], y=k[1], z=k[2]), carla.Rotation(yaw=k[3]))))
         for st in director.actors.values():
             a = st['actor']
             if a.id not in director.kin:
@@ -534,7 +535,8 @@ class Gym(Worker):
             x, y, yaw = st['path'].at(0.0, st['lateral'])
             k = director.kin[a.id]
             k[0], k[1], k[3] = x, y, yaw
-            a.set_transform(carla.Transform(carla.Location(x=x, y=y, z=k[2]), carla.Rotation(yaw=yaw)))
+            moves.append((a, carla.Transform(carla.Location(x=x, y=y, z=k[2]), carla.Rotation(yaw=yaw))))
+        place_now(self.client, carla, moves)  # before the tick (set_transform is asynchronous)
 
     def route_lights(self, route) -> list:
         """[(light index, stop line arc length on the route)]: the stop lines on the route's lane, its direction."""

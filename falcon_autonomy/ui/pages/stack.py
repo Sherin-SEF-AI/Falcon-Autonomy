@@ -21,7 +21,7 @@ from ...core import stackbridge as SB
 from ...core.jobs import FINAL, JobSpec
 from ...core.paths import tilde
 from ...core.provenance import read_json, write_json
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
+from ..widgets import Form, KeyValues, Note, Page, Section, button, label, scroll
 
 DRIVERS = (('ros2', 'ROS 2 stack (Falcon\'s bridge)'), ('follower', 'Falcon\'s lane follower (baseline)'),
            ('autopilot', 'CARLA\'s autopilot (baseline)'))
@@ -44,8 +44,8 @@ class StackPage(Page):
         left = QWidget()
         lv = QVBoxLayout(left)
         lv.setContentsMargins(24, 18, 12, 18)
-        lv.addWidget(label(self.title, title=True))
-        lv.addWidget(label(self.about, muted=True, wrap=True))
+        lv.addWidget(label(self.title, page=True))
+        lv.addWidget(Note(self.about, limit=160))
 
         sec = Section('ROS 2 bridge', 'Falcon publishes the rig\'s sensors, the odometry, /tf and /clock per '
                                       'simulation step and waits for the stack\'s control of that step (or its '

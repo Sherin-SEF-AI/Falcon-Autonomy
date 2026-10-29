@@ -574,6 +574,14 @@ def crop(data: OsmData, bbox) -> OsmData:
     return _finish(data.nodes, data.node_tags, data.ways, None, bbox, data.source, counts, data.notes)
 
 
+def subset(data: OsmData, ways: list, bounds=None, notes=()) -> OsmData:
+    """The given ways (dicts as data.ways', node ids from data.nodes) with only the nodes they use; no crop rule.
+    bounds: the result's <bounds> (default: the nodes' extent)."""
+    counts = {k: v for k, v in data.counts.items() if k == 'relations_skipped'}
+    return _finish(data.nodes, data.node_tags, ways, tuple(bounds) if bounds else None, None, data.source, counts,
+                   list(data.notes) + list(notes))
+
+
 def _radii(lat: float) -> tuple[float, float]:
     """Meridional and prime-vertical radii of curvature of WGS84 at lat."""
     e2 = WGS84_F * (2 - WGS84_F)

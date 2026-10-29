@@ -527,6 +527,17 @@ class Actor:
         return self._w
 
     def set_transform(self, tr):
+        # asynchronous in LibCarla: FAKE_CARLA_LATE_SET_TRANSFORM=n delivers every n-th move a tick late (tests)
+        w = self._w
+        w._settle()
+        if w._late_every and self.parent is None:
+            w._late_n += 1
+            if w._late_n % w._late_every == 0:
+                w._late.append((self, tr))
+                return
+        self._apply_tf(tr)
+
+    def _apply_tf(self, tr):
         if self.parent is None:
             self._m_world = tr._m()
         else:
@@ -805,12 +816,12 @@ class Prop(Actor):
         k = self.scale                       # the drawn mesh: scaled about its origin
         self._box = BoundingBox(Location(0.0, 0.0, self._zc0 * k), Vector3D(*(e * k for e in self._ext0)))
 
-    def set_transform(self, tr):
+    def _apply_tf(self, tr):
         if self.type_id == 'static.prop.mesh':   # measured: not moved, and its scale back to 1
             self.scale = 1.0
             self._set_box()
             return
-        super().set_transform(tr)
+        super()._apply_tf(tr)
 
     @property
     def bounding_box(self):
@@ -1185,6 +1196,15 @@ class World:
         self.applied = []
         self._cast_cache = {}
         self._light = TrafficLight(self)
+        self._late_every = int(os.environ.get('FAKE_CARLA_LATE_SET_TRANSFORM', '0') or 0)
+        self._late, self._late_ready, self._late_n = [], [], 0
+
+    def _settle(self):
+        """Moves that missed a tick arrive now (before anything sent after them)."""
+        ready, self._late_ready = self._late_ready, []
+        for a, tr in ready:
+            if a.is_alive:
+                a._apply_tf(tr)
 
     # ---- queries
     def get_map(self):
@@ -1303,6 +1323,7 @@ class World:
             import time
             time.sleep(3600)
         dt = self._settings.fixed_delta_seconds or 0.05
+        self._settle()
         self._unseen = False
         self._frame += 1
         self._t = round(self._t + dt, 12)
@@ -1319,6 +1340,8 @@ class World:
                 data = self._measure(a, dt, boxes)
                 if data is not None and a._cb is not None:
                     a._cb(data)
+        self._late_ready += self._late            # sent before this tick but processed after it
+        self._late = []
         return self._frame
 
     def wait_for_tick(self, seconds=10.0):
@@ -1735,6 +1758,11 @@ class command:                       # carla.command (a submodule in the real wh
             self.actor_id = actor if isinstance(actor, int) else actor.id
             self.enabled, self.tm_port = bool(enabled), tm_port
 
+    class ApplyTransform:
+        def __init__(self, actor, transform):
+            self.actor_id = actor if isinstance(actor, int) else actor.id
+            self.transform = transform
+
 
 class Client:
     def __init__(self, host='127.0.0.1', port=2000, worker_threads=0):
@@ -1787,6 +1815,7 @@ class Client:
 
     def apply_batch_sync(self, commands, do_tick=False):
         w = self.get_world()
+        w._settle()
         out = []
         for c in commands:
             a = w._actors.get(c.actor_id)
@@ -1798,6 +1827,8 @@ class Client:
                 a.destroy()
             elif isinstance(c, command.SetAutopilot):
                 a.set_autopilot(c.enabled, c.tm_port)
+            elif isinstance(c, command.ApplyTransform):
+                a._apply_tf(c.transform)                 # a synchronous batch: applied before the call returns
             out.append(_Response(c.actor_id))
         if do_tick:
             w.tick()

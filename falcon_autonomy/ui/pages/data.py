@@ -9,15 +9,17 @@ import os
 import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
-from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel, QMessageBox, QSlider,
-                             QSpinBox, QSplitter, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QHeaderView,
+                             QLabel, QLineEdit, QMessageBox, QSlider, QSpinBox, QSplitter, QStackedWidget, QTabWidget,
+                             QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ...core import budget, labels
 from ...core.drive import drive_config, run_dir_name
 from ...core.paths import tilde
 from ...core.project import ProjectError
 from .. import icons, tasks
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
+from ..widgets import (EmptyState, Form, KeyValues, Note, Page, PlaceholderTree, Section, button, label, scroll,
+                       set_enabled)
 
 
 class ImageView(QLabel):
@@ -302,7 +304,7 @@ class RecordTab(QWidget):
         self.cost.set('Budget', ('' if ok else '⚠ ') + why)
         self.cost.set('Estimate', f'{steps} steps: about {budget.fmt_duration(est["seconds"])} '
                                   f'({est["per_step_s"] * 1000:.0f} ms per step, {est["label"]})', t.source)
-        self.go_btn.setEnabled(ok)
+        set_enabled(self.go_btn, ok, f'Over the render budget: {why}')
 
     def record(self):
         w = self.win
@@ -329,11 +331,36 @@ class BrowseTab(QWidget):
         h = QHBoxLayout(self)
         split = QSplitter()
         h.addWidget(split)
-        self.runs = QTreeWidget()
+        side = QWidget()
+        sv = QVBoxLayout(side)
+        sv.setContentsMargins(0, 0, 0, 0)
+        self.filter = QLineEdit()
+        self.filter.setPlaceholderText('Filter runs by name, status or world')
+        self.filter.setClearButtonEnabled(True)
+        self.filter.textChanged.connect(lambda _t: self.apply_filter())
+        sv.addWidget(self.filter)
+        self.runs = PlaceholderTree('No recorded runs yet: Record makes one.')
         self.runs.setHeaderLabels(['Run', 'Status', 'Steps'])
         self.runs.setRootIsDecorated(False)
+        self.runs.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.runs.header().setStretchLastSection(False)
+        self.runs.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for c in (1, 2):
+            self.runs.header().setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
         self.runs.currentItemChanged.connect(lambda it, _p: self.show_run(it.data(0, 256)) if it else None)
-        split.addWidget(self.runs)
+        sv.addWidget(self.runs, 1)
+        hb = QHBoxLayout()                    # hand-offs: use the selected drives elsewhere
+        self.eval_btn = button('Evaluate on these', self.evaluate_selected,
+                               tip='Open Models ▸ Evaluate with the selected drives checked (Ctrl/Shift-click to '
+                                   'select several)')
+        self.train_btn = button('Train on these', self.train_selected,
+                                tip='Open Training ▸ Detectors with the selected drives checked')
+        hb.addWidget(self.eval_btn)
+        hb.addWidget(self.train_btn)
+        hb.addStretch(1)
+        sv.addLayout(hb)
+        split.addWidget(side)
+        self.empty = EmptyState('Choose a run on the left to see its frames, labels, objects and traffic rules.')
         right = QWidget()
         rv = QVBoxLayout(right)
         top = QHBoxLayout()
@@ -352,14 +379,17 @@ class BrowseTab(QWidget):
         top.addWidget(label('Opacity', muted=True))
         top.addWidget(self.opacity)
         top.addStretch(1)
+        rv.addLayout(top)
         self.open_btn = button('Open folder', self.open_folder)
-        top.addWidget(self.open_btn)
         self.export_fmt = QComboBox()
         self.export_fmt.addItems(['coco', 'yolo', 'kitti', 'nuscenes', 'waymo', 'bdd_lanes', 'mcap'])
         self.export_fmt.setToolTip('waymo: a documented Waymo-style JSON layout, not TFRecords')
-        top.addWidget(self.export_fmt)
-        top.addWidget(button('Export…', self.export))
-        rv.addLayout(top)
+        xb = QHBoxLayout()                    # the chosen run's files: under the run list, with the hand-offs
+        xb.addWidget(self.export_fmt)
+        xb.addWidget(button('Export…', self.export))
+        xb.addWidget(self.open_btn)
+        xb.addStretch(1)
+        sv.addLayout(xb)
         self.view = ImageView()
         rv.addWidget(self.view, 1)
         fr = QHBoxLayout()
@@ -400,8 +430,12 @@ class BrowseTab(QWidget):
         vsplit.addWidget(right)
         vsplit.addWidget(scroll(below))
         vsplit.setSizes([620, 520])
-        split.addWidget(vsplit)
-        split.setSizes([300, 900])
+        self.body = QStackedWidget()          # the empty state until a run is chosen
+        self.body.addWidget(self.empty)
+        self.body.addWidget(vsplit)
+        split.addWidget(self.body)
+        split.setStretchFactor(1, 1)
+        split.setSizes([320, 900])
         self.slider.valueChanged.connect(self.load_frame)
         self.sensor.currentIndexChanged.connect(lambda _: self.load_frame(self.slider.value()))
         self.opacity.valueChanged.connect(lambda _: self.compose())
@@ -417,13 +451,51 @@ class BrowseTab(QWidget):
                     continue
                 it = QTreeWidgetItem([r['name'], r['status'], str(r['summary'].get('steps', ''))])
                 it.setData(0, 256, r['path'])
-                it.setToolTip(0, tilde(r['path']))
+                it.setToolTip(0, f'{r["name"]}\n{tilde(r["path"])}\n{r["created"].replace("T", " ").rstrip("Z")}')
                 sev = {'ok': 'good', 'cancelled': 'warning'}.get(r['status'], 'critical')
                 it.setIcon(1, icons.status_icon(sev))
                 self.runs.addTopLevelItem(it)
                 if r['path'] == cur:
                     self.runs.setCurrentItem(it)
         self.runs.blockSignals(False)
+        self.apply_filter()
+        self.empty.set_message('Choose a run on the left to see its frames, labels, objects and traffic rules.'
+                               if self.runs.topLevelItemCount() else
+                               'No recorded runs yet. Record a drive (the Record tab), or run a scenario, and it '
+                               'appears here.')
+
+    def apply_filter(self):
+        q = self.filter.text().strip().lower()
+        for i in range(self.runs.topLevelItemCount()):
+            it = self.runs.topLevelItem(i)
+            it.setHidden(bool(q) and q not in ' '.join(it.text(c) for c in range(3)).lower())
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if not self.run_dir and self.runs.topLevelItemCount():      # the newest run, rather than a blank viewer
+            self.runs.setCurrentItem(self.runs.topLevelItem(0))
+
+    def selected_runs(self) -> list:
+        sel = [it.data(0, 256) for it in self.runs.selectedItems()]
+        return sel or ([self.run_dir] if self.run_dir else [])
+
+    def evaluate_selected(self):
+        models = self.win.go('models')
+        if models is not None:
+            models.refresh()
+            models.check_runs(self.selected_runs())
+
+    def train_selected(self):
+        tr = self.win.go('training')
+        if tr is not None:
+            tr.refresh()
+            tr.check_runs(self.selected_runs())
+
+    def seek_step(self, step: int):
+        """Go to the frame recorded at this simulation step (Models ▸ Failures opens a failing frame here)."""
+        k = next((i for i, f in enumerate(self.frames) if f.get('step') == step), None)
+        if k is not None:
+            self.slider.setValue(k)
 
     def seek_time(self, t: float):
         """Go to the frame nearest t seconds from the run's first."""
@@ -435,6 +507,7 @@ class BrowseTab(QWidget):
 
     def show_run(self, path):
         self.run_dir = path or ''
+        self.body.setCurrentIndex(1 if self.run_dir else 0)
         self.frames, self.cache = [], None
         self.info.clear()
         self.rules.show_run(path)
@@ -613,8 +686,8 @@ class DataPage(Page):
         super().__init__(win)
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 12, 16, 12)
-        v.addWidget(label(self.title, title=True))
-        v.addWidget(label(self.about, muted=True))
+        v.addWidget(label(self.title, page=True))
+        v.addWidget(Note(self.about, limit=160))
         self.tabs = QTabWidget()
         from .datasets import DatasetsTab
         self.record = RecordTab(self)
@@ -630,6 +703,14 @@ class DataPage(Page):
         self.record.refresh()
         self.browse.refresh()
         self.datasets.refresh()
+
+    def record_in(self, world_id):
+        """Open Record with this world chosen (Worlds' *Record a dataset here*)."""
+        self.tabs.setCurrentIndex(0)
+        self.record.refresh()
+        k = self.record.world.findData(world_id)
+        if k >= 0:
+            self.record.world.setCurrentIndex(k)
 
     def show_run(self, path):
         self.tabs.setCurrentWidget(self.browse)

@@ -14,13 +14,28 @@ def _carla(fake_module):
     yield
 
 
+class _Client:
+    """Applies a synchronous ApplyTransform batch to the test's egos (by id)."""
+    egos: dict = {}
+
+    def apply_batch_sync(self, commands, do_tick=False):
+        out = []
+        for c in commands:
+            self.egos[c.actor_id].set_transform(c.transform)
+            out.append(types.SimpleNamespace(error=''))
+        return out
+
+
 class _W:
     def __init__(self):
         self.carla = carla
+        self.client = _Client()
 
 
 class _Ego:
     def __init__(self, x, y, z, vz=0.0):
+        self.id = 7000 + len(_Client.egos)
+        _Client.egos[self.id] = self
         self.t = carla.Transform(carla.Location(x, y, z), carla.Rotation())
         self.v = carla.Vector3D(0.0, 0.0, vz)
         self.moved_to = None

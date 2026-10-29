@@ -17,7 +17,7 @@ from ...core import rig as R
 from ...core.project import Edit, new_id
 from .. import icons
 from ..view3d import make_view
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
+from ..widgets import Form, KeyValues, Page, Section, button, label, scroll, set_enabled
 
 LABELS = ('semantic', 'instance', 'depth', 'boxes2d', 'boxes3d', 'flow')
 TYPE_NAMES = {'camera.pinhole': 'Pinhole camera', 'camera.fisheye': 'Fisheye camera', 'lidar': 'Lidar',
@@ -73,7 +73,7 @@ class RigsPage(Page):
         left = QWidget()
         lv = QVBoxLayout(left)
         lv.setContentsMargins(12, 12, 6, 12)
-        lv.addWidget(label(self.title, title=True))
+        lv.addWidget(label(self.title, page=True))
         self.rigs = QListWidget()
         self.rigs.setMaximumHeight(120)
         self.rigs.currentRowChanged.connect(lambda _: self.show_rig())
@@ -193,7 +193,8 @@ class RigsPage(Page):
 
     def show_rig(self):
         r = self.rig()
-        self.rm_rig.setEnabled(r is not None and len(self.win.project.doc['rigs']) > 1)
+        set_enabled(self.rm_rig, r is not None and len(self.win.project.doc['rigs']) > 1,
+                    'A project keeps at least one rig' if r is not None else 'Choose a rig first')
         if r is None:
             self.view.set_rig(None)
             return

@@ -16,7 +16,7 @@ from ...core.project import Edit, new_id
 from ...sim import engine as E
 from .. import tasks
 from ..theme import SEQ, STATUS, THEME
-from ..widgets import Form, KeyValues, Section, button, label
+from ..widgets import Form, KeyValues, Section, button, label, set_enabled
 
 
 class CoverageBars(QWidget):
@@ -120,7 +120,7 @@ class DatasetsTab(QWidget):
         b = QHBoxLayout()
         b.addWidget(button('Plan', self.make_plan, tip='How many drives the targets need, and what they cost'))
         self.run_btn = button('Run the plan', self.run, role='primary')
-        self.run_btn.setEnabled(False)
+        set_enabled(self.run_btn, False, 'Make a plan first')
         b.addWidget(self.run_btn)
         b.addStretch(1)
         ps.add(b)
@@ -307,7 +307,7 @@ class DatasetsTab(QWidget):
             e = p['estimate']
             self.plan_kv.set('Cost', f'about {budget.fmt_duration(e["seconds"])} ({e["label"]}; '
                                      f'{budget.fmt_duration(e["per_drive_s"])} per drive)', e['source'])
-        self.run_btn.setEnabled(bool(p['drives']))
+        set_enabled(self.run_btn, bool(p['drives']), 'The plan needs no drives')
 
     def run(self):
         i, s = self.current()

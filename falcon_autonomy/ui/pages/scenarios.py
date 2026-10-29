@@ -18,7 +18,7 @@ from ...core import scenarios as SC
 from ...core.jobs import JobSpec
 from ...core.project import Edit, new_id
 from ..theme import THEME
-from ..widgets import Form, Page, Section, button, label
+from ..widgets import Form, Page, Section, button, label, set_enabled
 
 ROWS = ('far_sidewalk', 'opposite', 'adjacent', 'line', 'ego', 'kerb', 'sidewalk')   # schematic, right-hand traffic
 KIND_COL = {'pedestrian': '#d95926', 'child': '#d95926', 'bicycle': '#c98500', 'motorcycle': '#c98500',
@@ -201,7 +201,7 @@ class ScenariosPage(Page):
         h.addWidget(split)
         left = QWidget()
         lv = QVBoxLayout(left)
-        lv.addWidget(label(self.title, title=True))
+        lv.addWidget(label(self.title, page=True))
         self.list = QListWidget()
         self.list.currentRowChanged.connect(lambda _: self.show_scenario())
         lv.addWidget(self.list, 1)
@@ -340,8 +340,8 @@ class ScenariosPage(Page):
 
     def show_scenario(self):
         src, ident, s = self.current()
-        self.copy_btn.setEnabled(src == 'builtin')
-        self.rm_btn.setEnabled(src == 'project')
+        set_enabled(self.copy_btn, src == 'builtin', 'Already a project scenario: edit it in place')
+        set_enabled(self.rm_btn, src == 'project', 'A built-in scenario cannot be removed (copy it to change it)')
         if s is None:
             return
         self.title_lbl.setText(s['name'] + ('  — built-in (copy it to edit)' if src == 'builtin' else ''))

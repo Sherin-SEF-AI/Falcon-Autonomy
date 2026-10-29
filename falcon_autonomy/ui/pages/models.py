@@ -26,7 +26,7 @@ from ...core.paths import tilde
 from ...core.project import Edit, new_id
 from ...core.provenance import read_json
 from ..theme import SEQ, STATUS, THEME
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
+from ..widgets import Form, KeyValues, Note, Page, PlaceholderList, PlaceholderTree, Section, button, label, scroll
 
 SYNTHETIC = {'name': 'Synthetic detector (testing only)', 'kind': 'detector', 'runtime': 'python',
              'entry': 'falcon_autonomy.plugins.synthetic_detector:SyntheticDetector', 'licence': 'GPL-3.0-or-later',
@@ -222,12 +222,13 @@ class ModelsPage(Page):
         h.addWidget(split)
         left = QWidget()
         lv = QVBoxLayout(left)
-        lv.addWidget(label(self.title, title=True))
-        lv.addWidget(label(self.about, muted=True, wrap=True))
+        lv.addWidget(label(self.title, page=True))
+        lv.addWidget(Note(self.about, limit=160))
         # ---- registered models
         sec = Section('Registered models', 'No model is bundled. Weights download only when you ask, from a pinned '
                                            'URL checked by SHA-256, with the licence shown first.')
-        self.models = QTreeWidget()
+        self.models = PlaceholderTree('No model registered: Register… your own, or add the synthetic detector to '
+                                      'try the harness.')
         self.models.setHeaderLabels(['Name', 'Kind', 'Runtime', 'Licence', 'Weights'])
         self.models.setRootIsDecorated(False)
         self.models.setMinimumHeight(110)
@@ -246,6 +247,7 @@ class ModelsPage(Page):
                                   'bootstrap 95 % CI over whole drives.')
         f = Form()
         self.model = QComboBox()
+        self.model.setPlaceholderText('Register a model above first')
         self.every = QSpinBox()
         self.every.setRange(1, 100)
         self.every.setValue(2)
@@ -266,7 +268,7 @@ class ModelsPage(Page):
             f.row(text, w)
         sec.add(f)
         sec.add(label('Drives', h=True))
-        self.runs = QListWidget()
+        self.runs = PlaceholderList('No recorded drives yet: record one in Data.')
         self.runs.setMinimumHeight(120)
         sec.add(self.runs)
         b = QHBoxLayout()
@@ -357,6 +359,7 @@ class ModelsPage(Page):
         w = QWidget()
         v = QVBoxLayout(w)
         self.ev = QComboBox()
+        self.ev.setPlaceholderText('No evaluations yet: choose a model and drives on the left, then Evaluate')
         self.ev.currentIndexChanged.connect(lambda _: self.show_eval())
         v.addWidget(self.ev)
         self.ev_info = KeyValues(('Model', 'Frames', 'Bootstrap', 'Ran on', 'Latency (this machine)', 'Note'))
@@ -376,7 +379,7 @@ class ModelsPage(Page):
 
     def _gallery_tab(self):
         w = QSplitter(Qt.Orientation.Vertical)
-        self.gal = QTreeWidget()
+        self.gal = PlaceholderTree('The frames with the most errors, worst first, once an evaluation has run.')
         self.gal.setHeaderLabels(['Frame', 'Errors', 'Missed', 'False positives', 'Conditions'])
         self.gal.setRootIsDecorated(False)
         self.gal.currentItemChanged.connect(lambda it, _: self.frame.show_row(it.data(0, 256) if it else None))
@@ -391,6 +394,8 @@ class ModelsPage(Page):
         bar.addWidget(button('Why did this fail?', self.why,
                              tip='Attribute the frame\'s first missed object to its factors by re-runs that change '
                                  'one at a time (a scenario drive only: it repeats bit for bit)'))
+        bar.addWidget(button('Open the run in Data', self.open_failure_run,
+                             tip='Browse the selected frame in its drive, with every label layer'))
         bar.addWidget(button('Correlates of misses', self.why_correlates,
                              tip='Which attributes of objects and frames go with misses over the whole evaluation '
                                  '(correlational, with intervals; no re-run)'))
@@ -403,6 +408,7 @@ class ModelsPage(Page):
         w = QWidget()
         v = QVBoxLayout(w)
         self.cmp = QComboBox()
+        self.cmp.setPlaceholderText('No comparisons yet: choose A and B on the left, then Compare')
         self.cmp.currentIndexChanged.connect(lambda _: self.show_compare())
         v.addWidget(self.cmp)
         self.cmp_info = KeyValues(('A', 'B', 'Paired over', 'Regressions', 'Improvements'))
@@ -417,6 +423,7 @@ class ModelsPage(Page):
         w = QWidget()
         v = QVBoxLayout(w)
         self.gapsel = QComboBox()
+        self.gapsel.setPlaceholderText('No gap measured yet: Sim-to-real gap on the left')
         self.gapsel.currentIndexChanged.connect(lambda _: self.show_gap())
         v.addWidget(self.gapsel)
         self.gap_info = KeyValues(('Simulated', 'Real', 'Fréchet distance', 'Kernel distance', 'After matching'))
@@ -508,6 +515,37 @@ class ModelsPage(Page):
         self.show_eval()
         self.show_compare()
         self.show_gap()
+
+    def open_failure_run(self):
+        it = self.gal.currentItem()
+        d = self.ev.currentData()
+        row = it.data(0, 256) if it is not None else None
+        if not row or not d:
+            self.state.set('Job', 'Choose a frame of the failure gallery first.')
+            return
+        e = read_json(os.path.join(d, 'evaluation.json'))
+        run = next((r for r in e.get('runs') or () if os.path.basename(os.path.normpath(r)) == row['drive']), None)
+        if not run or not os.path.isdir(run):
+            self.state.set('Job', f'The drive {row["drive"]!r} is no longer on disk.')
+            return
+        data = self.win.go('data')
+        data.show_run(run)
+        data.browse.seek_step(row['step'])
+
+    def open_evaluation(self, path):
+        """Show one evaluation's scores (Home's recent evaluations link here)."""
+        self.refresh()
+        k = self.ev.findData(path)
+        if k >= 0:
+            self.ev.setCurrentIndex(k)
+        self.tabs.setCurrentIndex(0)
+
+    def check_runs(self, paths):
+        """Check these drives in the Evaluate list (Data's *Evaluate on these drives* hands them over)."""
+        want = set(paths)
+        for i in range(self.runs.count()):
+            it = self.runs.item(i)
+            it.setCheckState(Qt.CheckState.Checked if it.data(256) in want else Qt.CheckState.Unchecked)
 
     def checked_runs(self):
         return [self.runs.item(i).data(256) for i in range(self.runs.count())

@@ -171,7 +171,7 @@ class DashcamSource(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         f = Form()
-        self.root = QLineEdit(DC.DEFAULT_ROOT)
+        self.root = QLineEdit(tilde(DC.DEFAULT_ROOT))          # shown from ~, read back expanded
         self.name = QLineEdit('dashcam-day')
         self.max_frames = QSpinBox()
         self.max_frames.setRange(10, 100000)
@@ -202,7 +202,7 @@ class DashcamSource(QWidget):
                 for w in proj.doc.get('worlds', ()) if (w.get('osm') or {}).get('bbox')]
 
     def read(self):
-        root = self.root.text().strip()
+        root = os.path.expanduser(self.root.text().strip())
         worlds = self.worlds()
         self.summary.setText('Reading the clips\' GPS…')
 
@@ -233,8 +233,8 @@ class DashcamSource(QWidget):
     def extract(self):
         import sys
         out = DC.default_set_dir(self.name.text().strip() or time.strftime('%Y%m%d-%H%M%S-dashcam'))
-        argv = ['dashcam', 'extract', '--root', self.root.text().strip(), '--out', out, '--max-frames',
-                str(self.max_frames.value())]
+        root = os.path.expanduser(self.root.text().strip())
+        argv = ['dashcam', 'extract', '--root', root, '--out', out, '--max-frames', str(self.max_frames.value())]
         if self.day.isChecked():
             argv += ['--day', '--min-sun', '5']
         else:

@@ -27,7 +27,7 @@ from ...core.paths import tilde
 from ...core.project import Edit
 from ...core.provenance import read_json
 from ..theme import STATUS, THEME
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
+from ..widgets import Form, KeyValues, Page, PlaceholderList, Section, button, label, scroll
 from .translation import TranslationTab
 from .worldmodel_tab import WorldModelTab
 
@@ -201,6 +201,8 @@ class TrainingPage(Page):
         self.tabs.addTab(self.worldmodel, 'World model')
         v.addWidget(self.tabs)
         self.state = KeyValues(('Job',))
+        self.state.setContentsMargins(12, 4, 12, 6)
+        self.state.grid.setContentsMargins(12, 4, 12, 6)
         v.addWidget(self.state)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll)
@@ -225,9 +227,17 @@ class TrainingPage(Page):
         return p
 
     def _runs_list(self):
-        w = QListWidget()
+        w = PlaceholderList('No recorded drives yet: record one in Data.')
         w.setMinimumHeight(110)
         return w
+
+    def check_runs(self, paths):
+        """Check these drives for a detector training (Data's *Train on these* hands them over)."""
+        self.tabs.setCurrentIndex(0)
+        want = set(paths)
+        for i in range(self.det_runs.count()):
+            it = self.det_runs.item(i)
+            it.setCheckState(Qt.CheckState.Checked if it.data(256) in want else Qt.CheckState.Unchecked)
 
     def _fill_runs(self, w):
         checked = {w.item(i).data(256) for i in range(w.count()) if w.item(i).checkState() == Qt.CheckState.Checked}
@@ -360,6 +370,7 @@ class TrainingPage(Page):
         right = QWidget()
         rv = QVBoxLayout(right)
         self.trainings = QComboBox()
+        self.trainings.setPlaceholderText('No trainings yet: check drives on the left and Train')
         self.trainings.currentIndexChanged.connect(lambda _: self.show_training())
         rv.addWidget(self.trainings)
         self.tr_info = KeyValues(('Model', 'Device', 'Best epoch', 'Export check', 'Peak GPU memory', 'Note'))
@@ -379,7 +390,7 @@ class TrainingPage(Page):
     def load_trainings(self):
         self._combo_dirs(self.trainings, self.ws('training'), 'run.json')
         self.val_run.clear()
-        self.val_run.addItem('—', '')
+        self.val_run.addItem('None (keep the last epoch)', '')
         for i in range(self.det_runs.count()):
             self.val_run.addItem(self.det_runs.item(i).text(), self.det_runs.item(i).data(256))
         self.weights.clear()

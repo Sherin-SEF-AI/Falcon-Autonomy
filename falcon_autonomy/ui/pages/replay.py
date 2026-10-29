@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout
 
 from ...core.jobs import FINAL
 from ..theme import STATUS, THEME
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
+from ..widgets import Form, KeyValues, Note, Page, Section, button, label, scroll
 
 KINDS = (('', 'Detect from the path'), ('nuscenes', 'nuScenes (JSON tables)'), ('waymo', 'Waymo Open Dataset v2'),
          ('ros2', 'ROS 2 bag (MCAP or .db3)'), ('kitti_raw', 'KITTI raw (OXTS)'), ('falcon', 'Falcon run'))
@@ -122,8 +122,8 @@ class ReplayPage(Page):
         h.addWidget(split)
         left = QWidget()
         lv = QVBoxLayout(left)
-        lv.addWidget(label(self.title, title=True))
-        lv.addWidget(label(self.about, muted=True, wrap=True))
+        lv.addWidget(label(self.title, page=True))
+        lv.addWidget(Note(self.about, limit=160))
 
         sec = Section('Log', 'Imported logs live in the workspace (logs/<name>/log.json): the trajectories only, never '
                              'the dataset\'s images or points.')

@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLineEdit, QListWidget, QLi
 from ...core import weather as W
 from ...core.project import Edit, new_id
 from .. import icons
-from ..widgets import Form, KeyValues, Page, Section, SliderField, button, label
+from ..widgets import Form, KeyValues, Page, Section, SliderField, button, label, set_enabled
 
 # the towns of CARLA 0.9.16's base package (the "_Opt" variants have layers that can be unloaded; Town10HD_Opt is the
 # default map). Town06, 07 and 11–15 come with CARLA's additional-maps package: once a probe has listed the server's
@@ -38,16 +38,26 @@ class WorldsPage(Page):
         row.setSpacing(18)
         v.addLayout(row, 1)
         left = QVBoxLayout()
+        bl = QHBoxLayout()                       # the ways to add a world first, above a list that can grow
+        bl.addWidget(button('Import a place…', self.import_place, role='primary',
+                            tip='Roads from OpenStreetMap, converted to an OpenDRIVE world'))
+        bl.addWidget(button('Add town', self.add_world, tip='One of CARLA\'s towns'))
+        bl.addStretch(1)
+        left.addLayout(bl)
+        dl = QHBoxLayout()
+        dl.addWidget(button('Drive a dashcam route…', self.dashcam_route,
+                            tip='Import the streets a dashcam clip drives, drive them in CARLA and pair the frames'))
+        dl.addStretch(1)
+        left.addLayout(dl)
         self.list = QListWidget()
         self.list.setFixedWidth(240)
         self.list.currentRowChanged.connect(lambda _: self.show_world())
         left.addWidget(self.list, 1)
-        bl = QHBoxLayout()
-        bl.addWidget(button('Add town', self.add_world))
-        bl.addWidget(button('Import a place…', self.import_place))
+        rb = QHBoxLayout()
         self.remove_btn = button('Remove', self.remove_world)
-        bl.addWidget(self.remove_btn)
-        left.addLayout(bl)
+        rb.addWidget(self.remove_btn)
+        rb.addStretch(1)
+        left.addLayout(rb)
         row.addLayout(left)
 
         self.editor = QWidget()
@@ -67,7 +77,15 @@ class WorldsPage(Page):
         self.traffic.activated.connect(lambda _: self.set_field(['traffic_profile'],
                                                                 self.traffic.currentData()))
         f.row('Traffic profile', self.traffic)
+        self.form = f
         sec.add(f)
+        hb = QHBoxLayout()                       # hand-offs: use this world elsewhere
+        self.drive_btn = button('Drive this world', self.drive_here, tip='Open Live with this world chosen')
+        self.record_btn = button('Record a dataset here', self.record_here, tip='Open Data ▸ Record with this world')
+        hb.addWidget(self.drive_btn)
+        hb.addWidget(self.record_btn)
+        hb.addStretch(1)
+        sec.add(hb)
         ev.addWidget(sec)
 
         self.place = Section('Imported place', 'An OpenDRIVE world: roads, lanes, sidewalks and junctions only — no '
@@ -162,14 +180,15 @@ class WorldsPage(Page):
     def show_world(self):
         _, w = self.current()
         self.editor.setEnabled(w is not None)
-        self.remove_btn.setEnabled(w is not None and len(self.worlds()) > 1)
+        set_enabled(self.remove_btn, w is not None and len(self.worlds()) > 1,
+                    'A project keeps at least one world' if w is not None else 'Choose a world first')
         if w is None:
             return
         for wd in (self.name, self.town, self.preset, self.traffic):
             wd.blockSignals(True)
         self.name.setText(w['name'])
         self.town.setCurrentText(w.get('town', ''))
-        self.town.setEnabled(w['kind'] == 'town')
+        self.form.set_row_visible(self.town, w['kind'] == 'town')     # an imported place has no town to choose
         self.show_place(w)
         k = self.traffic.findData(w.get('traffic_profile'))
         self.traffic.setCurrentIndex(max(k, 0))
@@ -258,6 +277,10 @@ class WorldsPage(Page):
             except (OSError, ValueError):
                 self.verify_kv.set('Handedness', job.summary())
 
+    def dashcam_route(self):
+        from ..dashcam_route import open_route_dialog
+        return open_route_dialog(self.win)
+
     def import_place(self):
         from ..osmimport import ImportDialog
         ImportDialog(self.win).exec()
@@ -299,6 +322,18 @@ class WorldsPage(Page):
         # one undo step per drag: the drag's moves merge, the release (committed) merges into them too
         self.win.edit(Edit('set', ['worlds', i, 'weather'], wt, text=f'{W.SLIDERS[field][3]} of {w["name"]}'),
                       merge_key=f'weather/{w["id"]}/{field}')
+
+    def drive_here(self):
+        _, w = self.current()
+        live = self.win.go('live') if w else None
+        if live is not None:
+            live.choose_world(w['id'])
+
+    def record_here(self):
+        _, w = self.current()
+        data = self.win.go('data') if w else None
+        if data is not None:
+            data.record_in(w['id'])
 
     def add_world(self):
         doc = self.win.project.doc

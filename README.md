@@ -48,7 +48,9 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
   an MLflow export ([training](docs/training.md)); a CARLA environment with the Gymnasium API, behaviour cloning, PPO
   with a scenario curriculum, Leaderboard-style driving scores and one-click replay of any infraction
   ([policies](docs/policies.md)).
-- **The Loop** (the home page): pick a model and an operational design domain, evaluate, find the weak cells, search
+- **Home**, the start page: the next step the project needs, its worlds, rigs, scenarios and models, the server
+  and the machine, and the recent runs, evaluations and jobs, each a link to where it is used.
+- **The Loop**: pick a model and an operational design domain, evaluate, find the weak cells, search
   for rare cases there, generate targeted data, retrain, evaluate again on the same held-out set and show before and
   after with intervals — each iteration a versioned, resumable record with its costs ([loop](docs/loop.md)); HTML
   reports with provenance ([reports](docs/reports.md)).

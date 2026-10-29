@@ -145,7 +145,74 @@ square (sliding on a 250 m grid) that holds the most moving footage — where an
 box.** The daylight footage is on highways well outside the imported area; the clips in the city were recorded
 **after sunset**. So the real footage does **not** show the simulated streets: to compare a clip with the same street
 simulated, import a world there (Worlds ▸ Import, centre and size from `match`, which proposes the densest square of
-moving footage).
+moving footage) — or let `falcon dashcam route` import exactly the stretch a clip drives
+([below](#driving-your-route-in-simulation)).
+
+## Driving your route in simulation
+
+`falcon dashcam route` (and the *Drive a dashcam route* dialog) imports the streets a stretch of footage was driven on,
+drives the same route in CARLA and pairs each simulated frame with the dashcam frame of the same moment. Code:
+`falcon_autonomy/core/dashcam_route.py` (its docstring is the reference), the dialog `falcon_autonomy/ui/dashcam_route.py`.
+
+```sh
+falcon dashcam route plan CLIP [CLIP...] [--start S] [--seconds N] [--out ROUTE]     # the window and its area
+falcon dashcam route import PROJECT ROUTE --osm FILE.osm.pbf [--world-id W] [--rht]  # roads → a world; the route
+falcon dashcam route import PROJECT ROUTE --download-osm                             # asks first (see below)
+falcon dashcam route match PROJECT ROUTE --world W                                   # the route against a world
+falcon dashcam route drive PROJECT ROUTE [--driver follower|log] [--frames]          # a replay run + pairs
+falcon dashcam route pairs ROUTE RUN [--rate 2] [--frames]
+```
+
+1. **Window** (`ROUTE/window.json`, by default under `~/FalconWorkspace/dashcam-routes/`): one clip or several
+   consecutive ones, joined on their GPS's UTC into one timeline, and a stretch of it. The area to import is the
+   track's extent plus 150 m on each side; one wider than 6 km is refused (choose a shorter stretch).
+2. **Roads.** From an OpenStreetMap file you name — `.osm` or `.osm.pbf`, read in place with Falcon's own readers
+   (no new dependency), cut to the box — keeping only roads with a node within 80 m of the track or passing it, each
+   cut at the box's edge (one node beyond it, so a highway that runs on for kilometres stops there). The corridor
+   file goes through the ordinary [import](worlds.md) (`carla.Osm2Odr`, left-hand traffic unless `--rht`, speed
+   breakers, lane check) and is added to the project as a world. **Downloading** the area instead
+   (`--download-osm`, *Download the area's roads…*) sends the box to the Overpass API (`overpass-api.de`) and only
+   happens when you confirm it; the data is © OpenStreetMap contributors under the ODbL 1.0, recorded in
+   `download.json`.
+3. **Route** (`ROUTE/route.json`). The track every 0.1 s in the world's frame, its fit to the imported lanes measured
+   with [log replay](log-replay.md)'s map match, and the route the car drives: the track snapped to lane centres. A
+   Viterbi pass picks one lane per sample from the driving lanes within 8 m in the direction of travel, trading the
+   GPS-to-lane distance (σ 5 m) against stepping across lanes (σ 0.5 m a sample): one lane is kept through GPS noise,
+   and a real lane change shows up late. Samples with no lane keep their GPS position (counted). The path is smoothed
+   (σ 1 s of travel) and held still where the GPS speed is below 0.5 m/s. These values are heuristic and listed in the
+   file.
+4. **Drive.** The route becomes a log (no other road users: the footage's traffic is not tracked) and runs through
+   [log replay](log-replay.md): `follower` re-drives it with the built-in lane follower at the recorded speeds
+   (default); `log` places the car on the route every step, so the frames line up with the footage exactly in time.
+   The run is an ordinary replay run — drive.json, run.json, replay.json with the match against the server's own lanes
+   — and its provenance carries `dashcam_route`: the clips' fingerprints, the window, the route's SHA-256.
+5. **Pairs** (`ROUTE/pairs/<run>/pairs.jsonl`, `pairs.json`). Dashcam frames at a rate (2 a second by default), each
+   with the replay step of the same moment (video frame *n* of clip *k* is at T = offset_k + n / fps_k, step
+   round((T − T₀) · fps)), both images' paths (the dashcam frame written only with `--frames`, at 640 × 360), the GPS
+   position, the route's pose, the simulated car's pose and its distance from the route, along and across.
+
+**Measured on the user's footage** (2026-10-29, RTX 5080; the footage is private, only numbers are given). A 60 s
+daylight stretch of one clip on a dual-carriageway highway (1.32 km by the GPS, 40–100 km/h, a long curve), its roads
+from a regional `.osm.pbf` extract on this machine (559 MB, no download):
+
+| step | result |
+|---|---|
+| window | 60 fixes, no hole; area 1.43 × 0.78 km with the margin |
+| roads | reading the extract cropped to the box: 323 s (pure-Python PBF reader, one core); 49 roads in the box, 24 in the corridor, 12 of them cut at its edge; conversion 0.1 s: 46 roads, 13.1 km, 19 junctions |
+| GPS against the imported lanes | 59.9 % of positions on a lane in their direction, lateral median 0.99 m, 95th percentile 6.3 m (*partial*), left-hand (the default) and `--rht` alike. GPS to the OSM centre line of the carriageway: median 2.1 m |
+| route (snapped) | 99.5 % of samples snapped, 3 lane changes; against the lanes: 100 % on a lane in direction, lateral median 0.39 m, 95th percentile 1.04 m (*match*); 1290 m against the GPS's 1319 m |
+| drive, `log` | the server's own lanes: *match* (100 %, median 0.41 m, 95th percentile 1.04 m); 1181 steps at 640 × 360 with every label in 16 s (74 steps/s); 118 pairs, dashcam frames written |
+| drive, `follower` | across the route: median 0.02 m, max 0.17 m; along: median 4.2 m behind, 95th percentile 6.4 m, max 18 m (its start: it begins at 5.9 m/s where the GPS says 11.4 m/s); speed minus GPS speed: median −0.01 m/s, mean \|difference\| 1.05 m/s |
+
+Two defects found on the way, both fixed since: with the left-hand conversion the same stretch first fitted *none*
+(0.7 % on a lane, lateral median 4.5 m): the highway is mapped as two one-way ways, the converter's reference line of
+a one-way road is the carriageway's left edge, and the conversion mirrored the lanes about that line, moving the
+whole carriageway sideways by its own width. It now mirrors each road about the line its OSM way runs along
+([worlds](worlds.md#left-hand-traffic-what-was-verified)), and the left-hand import fits as the right-hand one does
+(table). And in the `log` replay 22 of 1181 steps (1.9 %) recorded the ego's pose of the step before (0.5–1.4 m
+behind at 15–28 m/s): CARLA's `set_transform` is asynchronous and sometimes reached the server after the tick. Replays
+and kinematic scenarios now place their actors in one synchronous batch before each tick; the same 1181-step drive
+has no step off its own pose (largest difference 6 mm).
 
 ## Translation to your own roads, measured
 
@@ -261,5 +328,8 @@ falcon translate check $W/translated/town10-tr --real dashcam:~/FalconWorkspace/
 - Clips without a parsable name have no start time; a clip whose `moov` box is missing (still being written) is
   skipped.
 - Fingerprints are partial hashes (above).
+- Routes: the GPS has metres of error and the snapped lane is a best guess (a real lane change shows late); the
+  sub-second GPS-to-video offset is not known; the simulated camera is the rig's, not the dashcam's; the footage's
+  traffic is not reproduced; an imported world has roads only. Reading a large `.pbf` takes minutes.
 - The translation figures are single trainings (seed 0) measured on the same simulated drives that trained them, with
   FD and KD on 150 simulated against 150 real frames: their noise is not measured.

@@ -12,13 +12,14 @@ The import:
    geoReference is the area's — CARLA's default projection, centred on 0°E, stretches a place far from it (central
    Bengaluru by about 3× east-west and 4× north-south); objects and signals a few millimetres past their road's end
    (SUMO writes some) are clamped onto it, since CARLA's world generation crashes on them (core.xodr.sanitize);
-3. with lht, converts the right-hand output to left-hand traffic (core.xodr.to_lht; see docs/worlds.md);
+3. with lht, converts the right-hand output to left-hand traffic (core.xodr.to_lht with the OSM ways, so each one-way
+   road is mirrored about the line its way runs along; see docs/worlds.md);
 4. places speed breakers where OSM tags traffic_calming (bump, hump, table) as elevation profiles that CARLA's road
    mesh renders (core.roadfeatures; world.base.xodr keeps the file without them, features.json says what was placed
    and skipped) unless settings speed_breakers is "off";
 5. writes world.xodr, the road graph for the preview (graph.json), and import.json: what was read, converted and
-   dropped, the lane check against OSM on a seeded sample (core.xodr.lane_check), the handedness, what an OpenDRIVE
-   world does not contain (buildings, vegetation, textures), timings.
+   dropped, the lane check against OSM on a seeded sample (core.xodr.lane_check: lane counts and positions), the
+   handedness, what an OpenDRIVE world does not contain (buildings, vegetation, textures), timings.
 """
 from __future__ import annotations
 
@@ -93,7 +94,7 @@ class OsmImport(Worker):
         notes += fixes
         if cfg.get('lht'):
             self.emit.progress(0.6, 'converting to left-hand traffic', force=True)
-            text, lht_notes = X.to_lht(text)
+            text, lht_notes = X.to_lht(text, ways=X.osm_lines(data, O.local_projection(lat0, lon0)))
             notes += lht_notes
         if X.sanitize(text)[1]:                  # the file CARLA loads must have nothing past a road's end
             raise Failed('positions past a road\'s end remain after the conversion (a bug): world.xodr not written')
@@ -121,6 +122,11 @@ class OsmImport(Worker):
         proj = O.local_projection(lat0, lon0)
         check = X.lane_check(od, data, proj, sample=int(cfg.get('lane_check_sample', 50)),
                              seed=int(cfg.get('seed', 0)))
+        pos = check.get('position') or {}
+        if pos.get('checked'):
+            notes.append(f'lane positions against OSM: median {pos["median_m"]} m, 95th percentile {pos["p95_m"]} m '
+                         f'off; {pos["misplaced"]} of {pos["checked"]} checked ways misplaced by more than 0.75 of a '
+                         'lane width (the converter\'s own placement included)')
         offset = od.header.get('offset')
         if offset:
             notes.append(f'the converter shifted coordinates by {offset}: the lane check may not line up')

@@ -307,6 +307,20 @@ class Worker:
         return code
 
 
+def place_now(client, carla, moves) -> None:
+    """Put actors at poses before the next tick: [(actor, carla.Transform)] as one synchronous batch of
+    ApplyTransform. Actor.set_transform is asynchronous in CARLA's client (sent without waiting), so a move sent just
+    before world.tick() can reach the server's game thread after that tick and show a step late: measured on 0.9.16
+    in synchronous mode, a log replay that placed its ego every step had the previous step's pose in 22 of 1181
+    frames (0.5–1.4 m behind). apply_batch_sync returns once the server has applied the batch."""
+    if not moves:
+        return
+    res = client.apply_batch_sync([carla.command.ApplyTransform(a, tf) for a, tf in moves], False)
+    errors = [r.error for r in res if r.error]
+    if errors:
+        raise Failed(f'{len(errors)} of {len(moves)} actors could not be placed: {errors[0]}')
+
+
 def role(actor) -> str:
     try:
         return str((getattr(actor, 'attributes', None) or {}).get('role_name', ''))

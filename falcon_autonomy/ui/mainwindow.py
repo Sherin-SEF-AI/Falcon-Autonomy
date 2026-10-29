@@ -1,13 +1,14 @@
-"""The main window: a left navigator of pages, the Jobs and Log docks, the status bar (server, GPU, memory), undo and
-redo for every project edit, the command palette (Ctrl+K), dark and light themes."""
+"""The main window: a left navigator of pages in groups (Home first), the Jobs and Log docks (shown while there is
+work, behind a status-bar badge otherwise), the status bar (jobs, server, GPU, memory), undo and redo for every project
+edit, the command palette (Ctrl+K), dark and light themes."""
 from __future__ import annotations
 
 import os
 
 from PyQt6.QtCore import QProcess, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QKeySequence, QUndoCommand, QUndoStack
+from PyQt6.QtGui import QAction, QBrush, QIcon, QKeySequence, QUndoCommand, QUndoStack
 from PyQt6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QListWidget,
-                             QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
+                             QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QSizePolicy,
                              QStackedWidget, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from .. import APP_NAME, __version__
@@ -20,7 +21,8 @@ from ..core.settings import MEMORY_RESERVE_GB
 from ..sim.service import CarlaService
 from . import icons, tasks
 from .qtjobs import JobsBridge, QProcessLauncher
-from .theme import THEME
+from .theme import THEME, sans
+from .widgets import tidy
 
 
 class EditCommand(QUndoCommand):
@@ -68,6 +70,7 @@ class JobsDock(QWidget):
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         self.tree.setColumnWidth(1, 260)
         self.tree.setColumnWidth(2, 120)
+        self.tree.itemDoubleClicked.connect(lambda it, _c: self.win.open_job(it.data(0, 256)))
         v.addWidget(self.tree)
         self.items: dict = {}
         b = win.bridge
@@ -79,6 +82,7 @@ class JobsDock(QWidget):
         it = self.items.get(job.id)
         if it is None:
             it = QTreeWidgetItem([job.spec.title, '', '', '', ''])
+            it.setData(0, 256, job.id)
             self.tree.insertTopLevelItem(0, it)
             bar = QProgressBar()
             bar.setRange(0, 1000)
@@ -87,7 +91,8 @@ class JobsDock(QWidget):
             btn = QToolButton()
             btn.setIcon(icons.icon('close', 12))
             btn.setToolTip('Cancel this job (it tidies up first)')
-            btn.clicked.connect(lambda _=False, j=job: self.win.queue.cancel(j))
+            btn.clicked.connect(lambda _=False, j=job: self.win.queue.cancel(j) if j.state not in FINAL
+                                else self.win.open_job(j.id))
             self.tree.setItemWidget(it, 4, btn)
             self.items[job.id] = it
         it.setText(1, job.summary() if job.state in (RUNNING, WAITING) else
@@ -99,8 +104,12 @@ class JobsDock(QWidget):
         el = job.elapsed
         it.setText(3, f'{el:.0f} s' if el else '')
         btn = self.tree.itemWidget(it, 4)
-        if btn is not None:
-            btn.setEnabled(job.state not in FINAL)
+        if btn is not None and job.state in FINAL and not btn.property('open'):
+            btn.setProperty('open', True)
+            btn.setIcon(QIcon())
+            btn.setText('Open')
+            btn.setProperty('text-button', True)
+            btn.setToolTip('Go to where this job\'s result is shown')
         sev = {'failed': 'critical', 'cancelled': 'warning', 'done': 'good'}.get(job.state)
         it.setIcon(0, icons.status_icon(sev) if sev else icons.icon('history', 12))
 
@@ -136,6 +145,11 @@ class StatusBarWidgets:
     def __init__(self, win):
         self.win = win
         sb = win.statusBar()
+        self.jobs = QToolButton()
+        self.jobs.setObjectName('jobsBadge')
+        self.jobs.setToolTip('Show or hide the Jobs and Log panel')
+        self.jobs.clicked.connect(win.toggle_jobs)
+        sb.addWidget(self.jobs)
         self.server = QLabel()
         self.server_btn = QToolButton()
         self.server_btn.setProperty('text-button', True)
@@ -152,7 +166,18 @@ class StatusBarWidgets:
         self.timer.start(2000)
         self.refresh()
 
+    def refresh_jobs(self):
+        q = self.win.queue
+        running = sum(j.state == RUNNING for j in q.jobs)
+        waiting = sum(j.state not in FINAL and j.state != RUNNING for j in q.jobs)
+        parts = [f'{running} running'] * bool(running) + [f'{waiting} waiting'] * bool(waiting)
+        self.jobs.setText('Jobs' + (': ' + ', '.join(parts) if parts else ''))
+        self.jobs.setProperty('busy', bool(parts))
+        self.jobs.style().unpolish(self.jobs)
+        self.jobs.style().polish(self.jobs)
+
     def refresh(self):
+        self.refresh_jobs()
         svc = self.win.service
         st = svc.server_state()
         text = {'ready': f'CARLA ready · port {svc.port}', 'starting': f'CARLA starting · port {svc.port}',
@@ -240,15 +265,27 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout(central)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(0)
+        side = QWidget()
+        side.setFixedWidth(176)
+        sv = QVBoxLayout(side)
+        sv.setContentsMargins(0, 0, 0, 0)
+        sv.setSpacing(0)
         self.nav = QListWidget()
         self.nav.setObjectName('nav')
-        self.nav.setFixedWidth(176)
         self.nav.setIconSize(QSize(16, 16))
+        sv.addWidget(self.nav, 1)
+        self.palette_hint = QToolButton()
+        self.palette_hint.setObjectName('navFoot')
+        self.palette_hint.setText('Ctrl+K  Search commands')
+        self.palette_hint.setToolTip('The command palette: every page and action by name')
+        self.palette_hint.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.palette_hint.clicked.connect(lambda: self.show_palette())
+        sv.addWidget(self.palette_hint)
         self.stack = QStackedWidget()
-        h.addWidget(self.nav)
+        h.addWidget(side)
         h.addWidget(self.stack, 1)
         self.setCentralWidget(central)
-        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.nav.currentRowChanged.connect(self._nav_changed)
 
         self.jobs_dock = self._dock('Jobs', JobsDock(self), Qt.DockWidgetArea.BottomDockWidgetArea)
         self.log = LogDock(self)
@@ -257,13 +294,19 @@ class MainWindow(QMainWindow):
         self.jobs_dock.raise_()
         self.resizeDocks([self.jobs_dock], [170], Qt.Orientation.Vertical)
         self.status = StatusBarWidgets(self)
+        self.bridge.added.connect(lambda job: (self.show_jobs(), self.status.refresh_jobs()))
+        self.bridge.changed.connect(lambda job: self.status.refresh_jobs())
+        self.bridge.finished.connect(lambda job: self.status.refresh_jobs())
+        self._job_origin: dict = {}                      # job id -> the page it was started from
+        self.bridge.added.connect(lambda job: self._job_origin.setdefault(job.id, self.current_key()))
+        self.set_jobs_visible(False)                     # nothing to show until a job starts
         self._build_pages()
         self._build_actions()
         self.projectChanged.connect(self._on_project_changed)
         self.undo.cleanChanged.connect(lambda _: self._update_title())
         self.service.subscribe(self._on_service)
         self._update_title()
-        self.nav.setCurrentRow(0)
+        self.go('home')
         self.log.append_line(f'{APP_NAME} {__version__} — project {self.project.doc["name"]}'
                              + (f' ({tilde(self.project.path)})' if self.project.path else ' (not saved yet)'))
         for n in self.project.notes:
@@ -277,28 +320,88 @@ class MainWindow(QMainWindow):
         d.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable |
                       QDockWidget.DockWidgetFeature.DockWidgetFloatable |
                       QDockWidget.DockWidgetFeature.DockWidgetClosable)
+        d.setTitleBarWidget(QWidget())                   # the tab under the panel names it; no second title
         self.addDockWidget(area, d)
         return d
 
     def _build_pages(self):
-        from .pages import PAGES
-        for cls in PAGES:
-            page = cls(self)
-            self.pages.append(page)
-            it = QListWidgetItem(icons.icon(cls.icon, 16), cls.title)
-            it.setToolTip(cls.about)
-            self.nav.addItem(it)
-            self.stack.addWidget(page)
+        from .pages import GROUPS
+        for group, classes in GROUPS:
+            if group:
+                hd = QListWidgetItem(group.upper())
+                hd.setFlags(Qt.ItemFlag.NoItemFlags)
+                hd.setFont(sans(10, 600))
+                hd.setSizeHint(QSize(0, 26))
+                hd.setForeground(QBrush(THEME.color('muted')))
+                self.nav.addItem(hd)
+            elif self.nav.count():
+                sp = QListWidgetItem('')
+                sp.setFlags(Qt.ItemFlag.NoItemFlags)
+                sp.setSizeHint(QSize(0, 12))
+                self.nav.addItem(sp)
+            for cls in classes:
+                page = cls(self)
+                it = QListWidgetItem(icons.icon(cls.icon, 16), cls.title)
+                it.setToolTip(cls.about)
+                it.setData(Qt.ItemDataRole.UserRole, len(self.pages))
+                self.pages.append(page)
+                self.nav.addItem(it)
+                self.stack.addWidget(page)
+                tidy(page)
+
+    def _nav_rows(self):
+        """(row, page index) of the navigator's page items (group headers are not pages)."""
+        for r in range(self.nav.count()):
+            i = self.nav.item(r).data(Qt.ItemDataRole.UserRole)
+            if i is not None:
+                yield r, i
+
+    def _nav_changed(self, row):
+        it = self.nav.item(row)
+        i = it.data(Qt.ItemDataRole.UserRole) if it is not None else None
+        if i is not None:
+            self.stack.setCurrentIndex(i)
 
     def page(self, key):
         return next((p for p in self.pages if p.key == key), None)
 
+    def current_key(self) -> str:
+        w = self.stack.currentWidget()
+        return getattr(w, 'key', '')
+
     def go(self, key):
-        for i, p in enumerate(self.pages):
-            if p.key == key:
-                self.nav.setCurrentRow(i)
-                return p
+        for r, i in self._nav_rows():
+            if self.pages[i].key == key:
+                self.nav.setCurrentRow(r)
+                return self.pages[i]
         return None
+
+    # ------------------------------------------------------------------ jobs panel
+    def set_jobs_visible(self, on: bool):
+        for d in (self.jobs_dock, self.log_dock):
+            d.setVisible(on)
+        if on:
+            self.jobs_dock.raise_()
+
+    def show_jobs(self):
+        if not self.jobs_dock.isVisible():
+            self.set_jobs_visible(True)
+
+    def toggle_jobs(self):
+        self.set_jobs_visible(not (self.jobs_dock.isVisible() or self.log_dock.isVisible()))
+
+    def open_job(self, job_id):
+        """Go to where a job's result is shown: a recorded drive in Data, anything else on the page it was started
+        from."""
+        job = next((j for j in self.queue.jobs if j.id == job_id), None)
+        if job is None:
+            return None
+        if job.spec.kind in ('drive', 'smoke') and job.spec.run_dir and os.path.isdir(job.spec.run_dir):
+            data = self.go('data')
+            data.show_run(job.spec.run_dir)
+            return data
+        key = self._job_origin.get(job.id) or ''
+        return self.go(key) if key and key != 'home' else None
 
     def _act(self, name, text, slot, shortcut=None, menu=None, tip=''):
         a = QAction(text, self)
@@ -337,11 +440,10 @@ class MainWindow(QMainWindow):
         for name in ('dark', 'light'):
             self._act(f'theme_{name}', f'{name.title()} theme', lambda _=False, n=name: self.set_theme(n), menu=v)
         v.addSeparator()
-        v.addAction(self.jobs_dock.toggleViewAction())
-        v.addAction(self.log_dock.toggleViewAction())
-        for i, p in enumerate(self.pages):
+        self._act('jobs_panel', 'Jobs and log panel', self.toggle_jobs, 'Ctrl+J', v)
+        for i, p in enumerate(self.pages):            # Ctrl+0 Home, Ctrl+1 … Ctrl+9 the next nine pages
             self._act(f'page_{p.key}', f'Go to {p.title}', lambda _=False, k=p.key: self.go(k),
-                      f'Ctrl+{i + 1}' if i < 9 else None, v if i == 0 else None)
+                      f'Ctrl+{i}' if i <= 9 else None, v if i == 0 else None)
         t = mb.addMenu('&Tools')
         self._act('wizard', 'First-run wizard…', self.show_wizard, menu=t)
         self._act('probe', 'Probe the CARLA server', self.probe, menu=t)
@@ -466,8 +568,14 @@ class MainWindow(QMainWindow):
     def set_theme(self, name):
         THEME.apply(QApplication.instance(), name)
         self.settings.set('theme', name)
-        for i, p in enumerate(self.pages):           # icons are tinted per theme
-            self.nav.item(i).setIcon(icons.icon(p.icon, 16))
+        for r in range(self.nav.count()):             # icons are tinted per theme
+            it = self.nav.item(r)
+            i = it.data(Qt.ItemDataRole.UserRole)
+            if i is None:
+                it.setForeground(QBrush(THEME.color('muted')))
+            else:
+                it.setIcon(icons.icon(self.pages[i].icon, 16))
+        for p in self.pages:
             p.refresh()
 
     def show_wizard(self):
@@ -480,7 +588,7 @@ class MainWindow(QMainWindow):
         except RuntimeError as e:
             QMessageBox.warning(self, 'Probe', str(e))
             return
-        self.jobs_dock.raise_()
+        self.show_jobs()
         return job
 
     def tidy(self):

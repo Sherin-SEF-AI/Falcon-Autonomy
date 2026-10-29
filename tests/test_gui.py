@@ -66,12 +66,102 @@ def window(qapp, tmp_path, project):
 
 def test_pages_and_navigation(window, qapp):
     keys = [p.key for p in window.pages]
-    assert keys == ['loop', 'worlds', 'live', 'rigs', 'scenarios', 'data', 'rarecases', 'models', 'training',
-                    'stack', 'replay', 'hardware', 'reports', 'settings', 'help']
-    assert window.stack.currentWidget().key == 'loop'           # the home page
+    assert keys == ['home', 'worlds', 'rigs', 'scenarios', 'live', 'data', 'replay', 'loop', 'rarecases', 'training',
+                    'models', 'stack', 'hardware', 'reports', 'settings', 'help']
+    assert window.stack.currentWidget().key == 'home'           # the start page
     assert window.go('data') is window.stack.currentWidget()
     window.actions_['page_worlds'].trigger()
     assert window.stack.currentWidget().key == 'worlds'
+    # the navigator groups its pages under headers that are not pages and cannot be chosen
+    rows = [window.nav.item(r) for r in range(window.nav.count())]
+    heads = [it.text() for it in rows if it.data(Qt.ItemDataRole.UserRole) is None and it.text()]
+    assert heads == ['BUILD', 'DRIVE', 'IMPROVE', 'SHIP']
+    assert all(not (it.flags() & Qt.ItemFlag.ItemIsSelectable) for it in rows
+               if it.data(Qt.ItemDataRole.UserRole) is None)
+    assert [window.pages[it.data(Qt.ItemDataRole.UserRole)].title for it in rows
+            if it.data(Qt.ItemDataRole.UserRole) is not None] == [p.title for p in window.pages]
+    assert window.actions_['page_home'].shortcut().toString() == 'Ctrl+0'
+    assert window.actions_['page_worlds'].shortcut().toString() == 'Ctrl+1'
+    window.actions_['page_home'].trigger()
+    assert window.stack.currentWidget().key == 'home'
+
+
+def test_home_next_step_and_links(window, qapp, project):
+    from falcon_autonomy.ui.pages.home import next_step
+    assert next_step({'worlds': []}, 0, 0)[3] == 'worlds'
+    assert next_step({'worlds': [1], 'rigs': []}, 0, 0)[3] == 'rigs'
+    assert next_step({'worlds': [1], 'rigs': [1]}, 0, 0)[3] == 'data'
+    assert next_step({'worlds': [1], 'rigs': [1], 'models': []}, 2, 0)[3] == 'models'
+    assert next_step({'worlds': [1], 'rigs': [1], 'models': [1]}, 2, 0)[0] == 'Evaluate a model'
+    assert next_step({'worlds': [1], 'rigs': [1], 'models': [1]}, 2, 1)[3] == 'rarecases'
+    home = window.go('home')
+    home.refresh()
+    assert home.next_head.text() == 'Record a first dataset'           # the test project: a world and a rig, no runs
+    assert home.runs_empty.isVisibleTo(home) and not home.runs.isVisibleTo(home)
+    n = len(project.doc['worlds'])
+    assert home.count_btns['worlds'][0].text().startswith(f'{n} ')
+    home.next_btn.click()
+    assert window.stack.currentWidget().key == 'data'
+    window.go('home')
+    home.count_btns['rigs'][0].click()
+    assert window.stack.currentWidget().key == 'rigs'
+
+
+def test_jobs_panel_collapses_when_idle_and_opens_on_a_job(window, qapp, project):
+    assert not window.jobs_dock.isVisible() and not window.log_dock.isVisible()
+    assert window.status.jobs.text() == 'Jobs'
+    window.toggle_jobs()
+    assert window.jobs_dock.isVisible()
+    window.toggle_jobs()
+    assert not window.jobs_dock.isVisible()
+    data = window.go('data')
+    data.record.seconds.setValue(0.5)
+    data.record.record()
+    job = window.queue.jobs[-1]
+    assert window.jobs_dock.isVisible()                    # a job started: the panel shows it
+    assert pump(qapp, lambda: job.state in ('done', 'failed', 'cancelled'), 120), job.log
+    assert pump(qapp, lambda: window.status.jobs.text() == 'Jobs', 5)
+    window.go('home')
+    assert window.open_job(job.id) is window.page('data')  # a finished drive opens in Data ▸ Browse
+    assert window.page('data').browse.run_dir == job.spec.run_dir
+    it = window.jobs_dock.widget().items[job.id]
+    assert window.jobs_dock.widget().tree.itemWidget(it, 4).text() == 'Open'
+
+
+def test_empty_states_notes_and_disabled_reasons(window, qapp):
+    from falcon_autonomy.ui.widgets import EmptyState, Note, set_enabled, split_note
+    short, more = split_note('One sentence here. And a second one with the limits of the method, which must stay '
+                             'readable in place when asked for, never deleted from the page.', limit=40)
+    assert short == 'One sentence here.' and more
+    n = Note('First, the gist. Then everything else: the method, the numbers and the limits, at length, so that '
+             'the page opens with one line and nothing is lost when you read on.', limit=60)
+    assert 'more' in n.text() and 'limits' not in n.text()
+    n.toggle()
+    assert 'limits' in n.text() and 'less' in n.text()
+    e = EmptyState('Nothing yet.', 'Do it', lambda: None)
+    assert e.button.text() == 'Do it'
+    b = window.go('live').stop_btn
+    assert not b.isEnabled() and b.toolTip() == 'No session is running'
+    set_enabled(b, True)
+    assert b.isEnabled() and b.toolTip() != 'No session is running'
+    set_enabled(b, False, 'because')
+    assert b.toolTip() == 'because'
+    browse = window.go('data').browse
+    assert browse.body.currentIndex() == 0 and 'No recorded runs' in browse.empty.message.text()
+
+
+def test_hand_offs_between_pages(window, qapp, project):
+    worlds = window.go('worlds')
+    worlds.list.setCurrentRow(0)
+    wid = project.doc['worlds'][0]['id']
+    worlds.drive_btn.click()
+    live = window.page('live')
+    assert window.stack.currentWidget() is live and live.world.currentData() == wid
+    window.go('worlds')
+    worlds.record_btn.click()
+    data = window.page('data')
+    assert window.stack.currentWidget() is data and data.record.world.currentData() == wid
+    assert data.tabs.currentIndex() == 0
 
 
 def test_command_palette_filters_and_runs(window, qapp):
@@ -239,7 +329,7 @@ def test_import_a_place(window, qapp, tmp_path):
     dlg.convert()
     assert pump(qapp, lambda: dlg.job.state in ('done', 'failed', 'cancelled'), 60), dlg.job.log
     assert dlg.job.state == 'done', dlg.job.log
-    assert dlg.add_btn.isEnabled() and dlg.graph.lines
+    assert dlg.add_btn.isEnabled() and dlg.drive_btn.isEnabled() and dlg.graph.lines
     assert 'left-hand' in dlg.report.vals['Traffic'].text()
     assert 'agree' in dlg.report.vals['Lanes against OSM'].text()
     n = len(window.project.doc['worlds'])
@@ -250,7 +340,7 @@ def test_import_a_place(window, qapp, tmp_path):
     assert validate(window.project.doc) == []
     page = window.go('worlds')
     page.list.setCurrentRow(page.list.count() - 1)
-    assert page.place.isVisibleTo(page) and page.graph.lines and not page.town.isEnabled()
+    assert page.place.isVisibleTo(page) and page.graph.lines and not page.town.isVisibleTo(page)  # no town to choose
     assert 'not verified' in page.verify_kv.vals['Handedness'].text()
     page.verify()
     assert pump(qapp, lambda: page.verify_job.state in ('done', 'failed'), 120), page.verify_job.log

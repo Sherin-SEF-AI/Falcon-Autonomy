@@ -52,7 +52,7 @@ class AdversarySection(Section):
             f.row(text, w)
         self.add(f)
         b = QHBoxLayout()
-        b.addWidget(button('Train adversaries', self.train, tip='falcon adversary train (a job)'))
+        b.addWidget(button('Train adversaries', self.train, role='primary', tip='falcon adversary train (a job)'))
         b.addWidget(button('Evaluate', self.evaluate, tip='falcon adversary eval: learned vs random, idle and the '
                                                           'searched scripted scenarios (a job)'))
         b.addStretch(1)

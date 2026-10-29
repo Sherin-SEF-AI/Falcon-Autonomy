@@ -41,7 +41,7 @@ class HelpPage(Page):
         super().__init__(win)
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 12, 16, 12)
-        v.addWidget(label(self.title, title=True))
+        v.addWidget(label(self.title, page=True))
         self.search = QLineEdit()
         self.search.setPlaceholderText('Search the manual…')
         v.addWidget(self.search)

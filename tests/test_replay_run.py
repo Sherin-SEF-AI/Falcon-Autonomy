@@ -54,7 +54,7 @@ def drive(tmp_path_factory):
     return {'base': base, 'project': proj, 'run': str(base / 'drive'), 'bag': str(base / 'mcap' / 'drive')}
 
 
-def _replay(drive, name, log, changes=(), seed=0, driver='log', world='world-town10', **kw):
+def _replay(drive, name, log, changes=(), seed=0, driver='log', world='world-town10', env=None, **kw):
     base = drive['base']
     log_path = str(base / 'logs' / name / 'log.json')
     log.save(log_path)
@@ -64,7 +64,7 @@ def _replay(drive, name, log, changes=(), seed=0, driver='log', world='world-tow
     os.makedirs(base / name, exist_ok=True)
     (base / name / 'drive.json').write_text(json.dumps(cfg))
     r = subprocess.run([sys.executable, '-m', 'falcon_autonomy.workers', 'replay', str(base / name / 'drive.json')],
-                       capture_output=True, text=True, env=worker_env(), timeout=300)
+                       capture_output=True, text=True, env=worker_env(env), timeout=300)
     run = json.loads((base / name / 'run.json').read_text())
     return r, run, str(base / name)
 
@@ -120,6 +120,35 @@ def test_replay_rebuilds_the_drive_pose_for_pose(drive):
         assert rep[0]['type_id'] == orig[0]['type_id'] and rep[0]['role'] == 'falcon_replay'
     assert os.path.isfile(os.path.join(out, 'lanes.json')) and os.path.isfile(os.path.join(out, 'dataset.json'))
     assert any(k.endswith('/objects') for k in fb[40]['files'])            # labelled like any drive
+
+
+def test_moves_are_in_place_before_the_tick(drive):
+    """set_transform is asynchronous in CARLA's client and can reach the server after the next tick (measured on 0.9.16:
+    a log replay's ego a step behind in 22 of 1181 frames). The fake delivers every 3rd set_transform a tick late
+    here: a replay and a kinematic scenario drive must still show every pose in its own step."""
+    late = {'FAKE_CARLA_LATE_SET_TRANSFORM': '3'}
+    log = import_log('falcon', drive['run'])
+    r, run, out = _replay(drive, 'late', log, env=late)
+    assert r.returncode == P.OK, r.stderr[-3000:]
+    fa, fb = _rows(os.path.join(drive['run'], 'frames.jsonl')), _rows(os.path.join(out, 'frames.jsonl'))
+    assert len(fa) == len(fb) == 160
+    assert [b['ego']['x'] for b in fb] == pytest.approx([a['ego']['x'] for a in fa], abs=1e-4)
+    for ra, rb in zip(_rows(os.path.join(drive['run'], 'actors.jsonl')), _rows(os.path.join(out, 'actors.jsonl'))):
+        orig = [x for x in ra['actors'] if x['role'] != 'hero']
+        rep = [x for x in rb['actors'] if x['role'] != 'hero']
+        assert rep[0]['x'] == pytest.approx(orig[0]['x'], abs=1e-4)
+    base = drive['base']
+    cfg = json.loads(open(os.path.join(drive['run'], 'drive.json')).read())
+    cfg['out'] = str(base / 'late_drive')
+    os.makedirs(base / 'late_drive')
+    (base / 'late_drive' / 'drive.json').write_text(json.dumps(cfg))
+    r = subprocess.run([sys.executable, '-m', 'falcon_autonomy.workers', 'drive',
+                        str(base / 'late_drive' / 'drive.json')], capture_output=True, text=True,
+                       env=worker_env(late), timeout=300)
+    assert r.returncode == P.OK, r.stderr[-3000:]
+    assert _rows(str(base / 'late_drive' / 'actors.jsonl')) == _rows(os.path.join(drive['run'], 'actors.jsonl'))
+    assert [f['ego'] for f in _rows(str(base / 'late_drive' / 'frames.jsonl'))] == \
+        [f['ego'] for f in fa]
 
 
 def test_same_log_changes_and_seed_repeat_bit_for_bit(drive):

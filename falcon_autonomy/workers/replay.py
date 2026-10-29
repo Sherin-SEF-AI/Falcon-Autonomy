@@ -16,11 +16,12 @@ LogDirector (the drive's director interface, as workers.director's):
    (Map.generate_waypoints every 2 m) is measured (core.logreplay.mapmatch) and recorded; a 'matched' or 'geo' plan
    whose verdict is 'none' is refused with the numbers unless the plan allows it.
 2. Actors. Each log actor is spawned once (its own blueprint when the log names one the server has, else one of its
-   class, chosen with the seed), parked 3 km away while it is not observed, and otherwise placed with set_transform
-   at its planned pose with CARLA's physics off (kinematic: repeatable bit for bit). A plan's actor position is its
-   box's centre: the actor's origin is put at centre − R·(its blueprint's box centre), so the replayed box is centred
-   where the logged one was; its size is the blueprint's (CARLA cannot scale a mesh) — replay.json lists the size of
-   each against the log's. Heights: 'matched' plans keep the log's; others put each box on the map's ground under it
+   class, chosen with the seed), parked 3 km away while it is not observed, and otherwise placed at its planned pose
+   with CARLA's physics off (kinematic: repeatable bit for bit) — every actor and the ego in one synchronous batch
+   before each tick (workers.common.place_now: set_transform is asynchronous and could land a tick late). A plan's
+   actor position is its box's centre: the actor's origin is put at centre − R·(its blueprint's box centre), so the
+   replayed box is centred where the logged one was; its size is the blueprint's (CARLA cannot scale a mesh) —
+   replay.json lists the size of each against the log's. Heights: 'matched' plans keep the log's; others put each box on the map's ground under it
    (the nearest driving lane's height). Parked actors are left out of actors.jsonl.
 3. The ego. 'log': placed at its logged pose every step (its control is unknown: frames.jsonl control is null).
    'follower' (the built-in lane follower, plugins.lane_follower) or 'plugin' (a policy plug-in): driven along the
@@ -45,7 +46,7 @@ import os
 
 from ..core import protocol as P
 from ..core.provenance import read_json, write_json
-from .common import ROLE_PREFIX, Failed
+from .common import ROLE_PREFIX, Failed, place_now
 
 PARK_OFFSET_M = 3000.0
 CORRIDOR_M = 1.8
@@ -69,6 +70,7 @@ class LogDirector:
         self.w, self.world, self.lib, self.rng = w, world, lib, rng
         self.carla = w.carla
         self.cfg = cfg
+        self.moves: list = []                             # (actor, transform) to place before the next tick
         self.plan = cfg['replay']['plan']
         if self.plan.get('schema') != PLAN_SCHEMA:
             raise Failed(f'not a replay plan (schema {self.plan.get("schema")!r})')
@@ -237,7 +239,7 @@ class LogDirector:
             x = item['x'][k] if 0 <= k < len(item['x']) else None
             if x is None:
                 if st['active']:
-                    st['actor'].set_transform(st['park'])
+                    self.moves.append((st['actor'], st['park']))
                     st['active'], st['tf'], st['vel'] = False, None, None
                 continue
             y, yaw = item['y'][k], item['yaw'][k]
@@ -253,7 +255,7 @@ class LogDirector:
             off = carla_rotation(roll, pitch, yaw) @ np.array([bb.location.x, bb.location.y, bb.location.z])
             tf = carla.Transform(carla.Location(x=x - off[0], y=y - off[1], z=cz - off[2]),
                                  carla.Rotation(pitch=pitch, yaw=yaw, roll=roll))
-            st['actor'].set_transform(tf)
+            self.moves.append((st['actor'], tf))
             st['active'], st['tf'] = True, tf
             st['vel'] = carla.Vector3D(item['vx'][k] or 0.0, item['vy'][k] or 0.0, 0.0)
             st['centre'] = (x, y, yaw)
@@ -263,10 +265,12 @@ class LogDirector:
                                                                                         roll=roll))
             e = self.plan['ego']
             self.ego_v = (e['vx'][i] or 0.0, e['vy'][i] or 0.0)
-            self.ego.set_transform(self.ego_tf)
+            self.moves.append((self.ego, self.ego_tf))
             if i == 0:
                 self.ego_state = [x, y, z, yaw, math.hypot(*self.ego_v)]
                 self.path_k = 0
+        moves, self.moves = self.moves, []
+        place_now(self.w.client, carla, moves)            # applied before the tick (set_transform is asynchronous)
 
     def sync(self, frame, timeout=5.0):
         import time
@@ -331,7 +335,7 @@ class LogDirector:
         self.ego_state = [x, y, z, yaw, v]
         self.ego_tf = carla.Transform(carla.Location(x=x, y=y, z=z), carla.Rotation(yaw=yaw))
         self.ego_v = (v * math.cos(math.radians(yaw)), v * math.sin(math.radians(yaw)))
-        self.ego.set_transform(self.ego_tf)
+        self.moves.append((self.ego, self.ego_tf))       # placed with the actors in place()
 
     def lead(self, route, ex, ey, prev):
         """What the re-driven ego brakes for: the nearest replayed actor that is within CORRIDOR_M of the route ahead,

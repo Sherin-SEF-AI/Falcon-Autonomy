@@ -18,7 +18,7 @@ from ...core.jobs import FINAL, JobSpec
 from ...core.project import Edit
 from .. import icons, tasks
 from ..theme import STATUS, THEME
-from ..widgets import KeyValues, Page, Section, button, label, scroll
+from ..widgets import KeyValues, Note, Page, Section, button, label, scroll, set_enabled
 from .home import StatusPanel
 
 
@@ -196,8 +196,8 @@ class LoopPage(Page):
         v = QVBoxLayout(body)
         v.setContentsMargins(24, 18, 24, 18)
         v.setSpacing(10)
-        v.addWidget(label(self.title, title=True))
-        v.addWidget(label(self.about, muted=True, wrap=True))
+        v.addWidget(label(self.title, page=True))
+        v.addWidget(Note(self.about, limit=160))
 
         sec = Section('Model and ODD', 'The model each new iteration starts with (after a finished iteration, the '
                                        'model it retrained) and the operational design domain it is tested on.')
@@ -357,8 +357,8 @@ class LoopPage(Page):
     def _buttons(self):
         busy = self.job is not None and self.job.state not in FINAL
         for b in (self.run_next, self.run_to):
-            b.setEnabled(not busy)
-        self.cancel_b.setEnabled(busy)
+            set_enabled(b, not busy, 'A step is running: wait for it or cancel it')
+        set_enabled(self.cancel_b, busy, 'Nothing is running')
 
     def report(self):
         if self.it is None:

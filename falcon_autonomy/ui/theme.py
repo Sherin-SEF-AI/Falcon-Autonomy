@@ -70,7 +70,7 @@ QToolButton[text-button="true"] { padding: 0 6px; color: @ink2; }
 QLineEdit, QAbstractSpinBox, QComboBox { min-height: 20px; max-height: 22px; padding: 0 6px; background: @raised;
     border: 1px solid @strong; border-radius: 2px; selection-background-color: @sel; selection-color: @ink; }
 QLineEdit:hover, QAbstractSpinBox:hover, QComboBox:hover { border-color: @muted; }
-QAbstractSpinBox { font-family: "IBM Plex Mono"; qproperty-buttonSymbols: NoButtons; qproperty-alignment: "AlignRight|AlignVCenter"; }
+QAbstractSpinBox { qproperty-buttonSymbols: NoButtons; qproperty-alignment: "AlignLeft|AlignVCenter"; }
 QLineEdit:focus, QAbstractSpinBox:focus, QComboBox:focus { border-color: @ink; }
 QLineEdit:disabled, QAbstractSpinBox:disabled, QComboBox:disabled { color: @muted; border-color: @hair; }
 QLineEdit[readOnly="true"] { background: transparent; border-color: transparent; }
@@ -80,14 +80,16 @@ QComboBox { padding-right: 18px; }
 QComboBox::drop-down { border: none; width: 16px; }
 QComboBox::down-arrow { image: url(@icon_chevd); width: 10px; height: 10px; }
 QComboBox QAbstractItemView { background: @raised; border: 1px solid @strong; selection-background-color: @sel; outline: none; padding: 2px 0; }
-QPushButton { min-height: 20px; padding: 0 10px; border: 1px solid @strong; border-radius: 2px; background: transparent; }
+QPushButton { min-height: 22px; padding: 0 12px; border: 1px solid @strong; border-radius: 2px; background: transparent; }
 QPushButton:hover { background: @raised; }
 QPushButton:pressed { background: @sel; }
 QPushButton:focus { border-color: @ink; }
-QPushButton[role="primary"] { background: @ink; border-color: @ink; color: @panel; }
+QPushButton[role="primary"] { background: @ink; border-color: @ink; color: @panel; font-weight: 600; }
 QPushButton[role="primary"]:hover { background: @ink2; border-color: @ink2; }
 QPushButton[role="primary"]:pressed { background: @muted; border-color: @muted; }
 QPushButton[role="ghost"] { border-color: transparent; }
+QPushButton[role="link"] { border-color: transparent; text-align: left; padding: 0 4px; color: @ink2; }
+QPushButton[role="link"]:hover { color: @ink; }
 QPushButton[role="ghost"]:focus { border-color: @ink; }
 QPushButton[role="destructive"] { border-color: @crit; }
 QPushButton:disabled { color: @muted; border-color: @hair; }
@@ -130,10 +132,10 @@ QScrollBar::handle:horizontal { background: @strong; border-radius: 2px; min-wid
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QCheckBox, QRadioButton { spacing: 6px; }
-QCheckBox::indicator { width: 12px; height: 12px; border: 1px solid @strong; border-radius: 2px; background: @raised; }
-QCheckBox::indicator:hover { border-color: @muted; }
-QCheckBox::indicator:checked { background: @ink; border-color: @ink; image: url(@icon_checkinv); }
-QCheckBox::indicator:indeterminate { background: @ink; border-color: @ink; image: url(@icon_dashinv); }
+QCheckBox::indicator, QAbstractItemView::indicator { width: 12px; height: 12px; border: 1px solid @strong; border-radius: 2px; background: @raised; }
+QCheckBox::indicator:hover, QAbstractItemView::indicator:hover { border-color: @muted; }
+QCheckBox::indicator:checked, QAbstractItemView::indicator:checked { background: @ink; border-color: @ink; image: url(@icon_checkinv); }
+QCheckBox::indicator:indeterminate, QAbstractItemView::indicator:indeterminate { background: @ink; border-color: @ink; image: url(@icon_dashinv); }
 QCheckBox::indicator:disabled { background: transparent; border-color: @hair; }
 QCheckBox:disabled { color: @muted; }
 QRadioButton::indicator { width: 12px; height: 12px; border: 1px solid @strong; border-radius: 6px; background: @raised; }
@@ -149,7 +151,8 @@ QLabel[ink2="true"] { color: @ink2; }
 QLabel[mono="true"] { font-family: "IBM Plex Mono"; }
 QLabel[small="true"] { font-size: @fs11px; }
 QLabel[h="true"] { font-weight: 600; }
-QLabel[title="true"] { font-weight: 600; font-size: @fs13px; }
+QLabel[title="true"] { font-weight: 600; font-size: @fs14px; }
+QLabel[page="true"] { font-weight: 600; font-size: @fs18px; }
 QLabel[crit="true"] { color: @crit; }
 QFrame[hair="true"] { background: @hair; border: none; }
 QTextEdit, QPlainTextEdit { background: @panel; border: none; font-family: "IBM Plex Mono"; selection-background-color: @sel; }
@@ -162,6 +165,11 @@ QListWidget#nav { background: @panel; border: none; border-right: 1px solid @hai
 QListWidget#nav::item { min-height: 30px; padding-left: 10px; color: @ink2; border-left: 2px solid transparent; }
 QListWidget#nav::item:selected { background: @sel; color: @ink; border-left: 2px solid @ink; }
 QListWidget#nav::item:hover:!selected { background: @raised; }
+QToolButton#navFoot { color: @muted; font-size: @fs11px; min-height: 28px; padding: 0 12px; text-align: left; background: @panel; border: none; border-top: 1px solid @hair; border-right: 1px solid @hair; border-radius: 0; }
+QToolButton#navFoot:hover { color: @ink; }
+QToolButton#jobsBadge { padding: 0 6px; color: @ink2; }
+QToolButton#jobsBadge[busy="true"] { color: @ink; font-weight: 600; }
+QWidget#homeCard { background: @panel; border: 1px solid @hair; border-radius: 4px; }
 QLabel[stat="true"] { font-family: "IBM Plex Mono"; font-size: @fs13px; font-weight: 600; }
 QLineEdit#paletteInput { min-height: 30px; max-height: 32px; font-size: @fs13px; }
 '''
@@ -215,6 +223,8 @@ class ThemeManager(QObject):
         tok['fs12'] = str(self.px(12))
         tok['fs11'] = str(self.px(11))
         tok['fs13'] = str(self.px(13))
+        tok['fs14'] = str(self.px(14))
+        tok['fs18'] = str(self.px(18))
         tok['icon_chevr'] = icons.file_for('chev-r', self.tok['ink2'], 12)
         tok['icon_chevd'] = icons.file_for('chev-d', self.tok['ink2'], 12)
         tok['icon_caret'] = icons.file_for('caret', self.tok['ink2'], 8)

@@ -22,7 +22,7 @@ from ...core.paths import tilde
 from ...core.project import ProjectError
 from .. import tasks
 from ..theme import THEME
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
+from ..widgets import Form, KeyValues, Note, Page, Section, button, label, scroll, set_enabled
 
 SIZES = {'1280 × 720': (1280, 720), '960 × 540': (960, 540), '640 × 360': (640, 360), '320 × 180': (320, 180)}
 PLACE_SLOT = {'host': 0, 'cross': 1, 'device': 2}           # the validated categorical palette's first three slots
@@ -152,8 +152,8 @@ class HardwarePage(Page):
         panel = QWidget()
         pv = QVBoxLayout(panel)
         pv.setContentsMargins(12, 12, 12, 12)
-        pv.addWidget(label(self.title, title=True))
-        pv.addWidget(label(self.about, muted=True, wrap=True))
+        pv.addWidget(label(self.title, page=True))
+        pv.addWidget(Note(self.about, limit=160))
         pv.addWidget(self._device_section())
         pv.addWidget(self._session_section())
         pv.addStretch(1)
@@ -508,12 +508,14 @@ class HardwarePage(Page):
             return
         r = self.running
         remote = self.remote_rb.isChecked()
-        self.start_btn.setEnabled(not r)
-        self.stop_btn.setEnabled(r)
-        self.accept_btn.setEnabled(not r)
+        busy = 'A run is in progress: stop it first'
+        set_enabled(self.start_btn, not r, busy)
+        set_enabled(self.stop_btn, r, 'Nothing is running')
+        set_enabled(self.accept_btn, not r, busy)
         for w in (self.check_btn, self.start_agent_btn):
-            w.setEnabled(remote and not r)
-        self.stop_agent_btn.setEnabled(bool(self.agent_pid) and not r)
-        self.open_btn.setEnabled(bool(self.report) and os.path.isfile(self.report))
+            set_enabled(w, remote and not r, busy if r else 'Only for a remote device: choose it above')
+        set_enabled(self.stop_agent_btn, bool(self.agent_pid) and not r,
+                    busy if r else 'No agent started from here is running')
+        set_enabled(self.open_btn, bool(self.report) and os.path.isfile(self.report), 'No report written yet')
         for w in (self.world, self.rig, self.size, self.fps, self.seconds, self.camera, self.encoder, self.lidar):
-            w.setEnabled(not r)
+            set_enabled(w, not r, 'Fixed while a run is in progress')

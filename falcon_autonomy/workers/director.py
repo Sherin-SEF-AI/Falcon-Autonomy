@@ -20,8 +20,9 @@ CARLA's vehicle physics, two runs of the same scenario with the same seed — sy
 reloaded world, every state read from the snapshot of the frame just ticked — drift apart: the ego by 3 cm with no
 feedback controller and by up to 0.4 m with its lane follower within 12 s, whatever its blueprint, role or sensors.
 In "kinematic" motion the director integrates every scenario vehicle (the ego included) with a kinematic bicycle
-model driven by the same controllers, and walkers along their direction, and places them with set_transform with
-CARLA's physics off: the motion is computed here and repeats bit for bit; collisions are measured on the boxes
+model driven by the same controllers, and walkers along their direction, and places them with CARLA's physics off
+in one synchronous batch before each tick (workers.common.place_now: set_transform is asynchronous and could land a
+tick late): the motion is computed here and repeats bit for bit; collisions are measured on the boxes
 (core.criticality). Its limits: the wheels do not turn, and there are no tyre, suspension or collision dynamics.
 "physics" motion drives them through CARLA's physics (realistic dynamics, not bit-for-bit repeatable).
 
@@ -49,7 +50,7 @@ import math
 
 import numpy as np
 
-from .common import ROLE_PREFIX, Failed
+from .common import ROLE_PREFIX, Failed, place_now
 
 STRAIGHT_M, STRAIGHT_DEG = 150.0, 10.0
 STEP_M = 1.0
@@ -136,6 +137,7 @@ class Director:
         self.lht = str(cfg.get('handedness', 'RHT')).upper() == 'LHT'
         self.dt = 1.0 / float(cfg.get('fps', 20.0))
         self.actors = {}                 # id -> {'actor', 'kind', 'path', 's', 'lateral', 'speed', 'target', …}
+        self.moves = None                # inside step(): kinematic moves collected for one batch before the tick
         self.fired = []
         self.traj = {'ego': []}
         self.events = []
@@ -468,7 +470,16 @@ class Director:
             mid = math.radians((yaw + yaw2) / 2.0)
             x, y, yaw = x + math.cos(mid) * v * dt, y + math.sin(mid) * v * dt, yaw2
         self.kin[actor.id] = [x, y, z, yaw, v]
-        actor.set_transform(carla.Transform(carla.Location(x=x, y=y, z=z), carla.Rotation(yaw=yaw)))
+        self.move(actor, carla.Transform(carla.Location(x=x, y=y, z=z), carla.Rotation(yaw=yaw)))
+
+    def move(self, actor, tf):
+        """Place an actor before the next tick: collected during step() and applied in one synchronous batch at its
+        end; outside step() (a caller's own kin_step) at once. Never set_transform: it is asynchronous and can land a
+        tick late (workers.common.place_now)."""
+        if self.moves is not None:
+            self.moves.append((actor, tf))
+        else:
+            place_now(self.w.client, self.carla, [(actor, tf)])
 
     def prop_init(self):
         """Proxies (props: no physics) are always moved here, along their path, in either motion."""
@@ -490,8 +501,8 @@ class Director:
         st['s'] += st['speed'] * self.dt
         x, y, yaw = st['path'].at(st['s'], st['lateral'])
         k[0], k[1], k[3] = x, y, yaw
-        a.set_transform(carla.Transform(carla.Location(x=x, y=y, z=k[2]),
-                                        carla.Rotation(yaw=yaw + self.w.proxies[a.id]['yaw_offset'])))
+        self.move(a, carla.Transform(carla.Location(x=x, y=y, z=k[2]),
+                                     carla.Rotation(yaw=yaw + self.w.proxies[a.id]['yaw_offset'])))
 
     def k_tf(self, actor):
         k = self.kin.get(actor.id)
@@ -538,11 +549,16 @@ class Director:
         if not self.started:
             self.start()
         self.timeline(t)
-        for aid, st in self.actors.items():
-            if aid not in self.external:
-                self.drive_actor(st, t)
-        if self.driver in ('follower', 'none'):
-            self.drive_ego()
+        self.moves = []
+        try:
+            for aid, st in self.actors.items():
+                if aid not in self.external:
+                    self.drive_actor(st, t)
+            if self.driver in ('follower', 'none'):
+                self.drive_ego()
+        finally:
+            moves, self.moves = self.moves, None
+        place_now(self.w.client, self.carla, moves)
 
     def record(self, t):
         for aid, a in [('ego', self.ego)] + [(k, v['actor']) for k, v in self.actors.items()]:
