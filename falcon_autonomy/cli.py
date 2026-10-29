@@ -20,6 +20,8 @@
     falcon experiment mixed|list|best|results|export ...   the mixed sim/real experiment, run tracking, MLflow
     falcon translate train|apply|check|experiment|results ...   learned sim-to-real image translation, labels kept
     falcon policy bc|offline|ppo|rollout ...   driving policies: behaviour cloning, PPO, evaluation in the environment
+    falcon adversary train|eval|replay ...   learned adversarial traffic: multi-agent PPO, failures, replay
+    falcon worldmodel train|eval|imagine|collect|e2e ...   learned world model, imagination, end-to-end driving
     falcon sweep PROJECT --scenario S --name N [--grid K | --samples K]   a parameter sweep (resumable)
     falcon search PROJECT --scenario S --name N [--method bayes|bayes-pof|cmaes|adaptive|random] [--budget B]
                   [--objective criticality|perception|both --model ID --weather FIELD]   rare cases
@@ -29,6 +31,7 @@
     falcon report KIND SRC --out FILE          a self-contained HTML report (docs/reports.md)
     falcon replay import|match|run|compare ...   real logs (nuScenes, Waymo v2, ROS 2 bags) replayed with changes
     falcon recon train|eval|render|rerender|info ...   neural reconstruction of a drive (3D Gaussian Splatting)
+    falcon vlm list|verify|fetch|eval|finetune ...   vision-language driving explanations scored against ground truth
     falcon rules check RUN... [--set india|generic|FILE] | list | show SET   traffic rules as temporal logic
     falcon why case|evaluation|episode ...   root-cause attribution of a failure (docs/root-cause.md)
     falcon odd monitor RUN... --odd FILE [--reference REF] | calibrate --in RUN... --out FILE   runtime ODD monitoring
@@ -322,6 +325,11 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser('translate', help='learned sim-to-real image translation, labels kept: falcon translate '
                                      'train|apply|check|experiment|results (see docs/translation.md)')
     sub.add_parser('policy', help='driving policies: falcon policy bc|offline|ppo|rollout (see docs/policies.md)')
+    sub.add_parser('adversary', help='learned adversarial traffic: falcon adversary train|eval|replay (see '
+                                     'docs/adversarial-traffic.md)')
+    sub.add_parser('worldmodel', help='a learned world model, policies learnt in imagination, end-to-end driving: '
+                                      'falcon worldmodel train|eval|imagine|collect|e2e (see '
+                                      'docs/world-model-training.md)')
     sub.add_parser('sweep', help='a scenario parameter sweep (see docs/cli.md)')
     sub.add_parser('search', help='a rare-case search over a scenario\'s parameters (see docs/cli.md)')
     sub.add_parser('stack', help='stack testing: the ROS 2 bridge, scenario suites, the safety-case report (see '
@@ -334,6 +342,8 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser('replay', help='log replay: falcon replay import|match|run|compare (see docs/log-replay.md)')
     sub.add_parser('recon', help='neural reconstruction of a drive: falcon recon train|eval|render|rerender|info (see '
                                  'docs/reconstruction.md)')
+    sub.add_parser('vlm', help='vision-language explanations scored against ground truth: falcon vlm '
+                               'list|verify|fetch|eval|finetune (see docs/vlm.md)')
     sub.add_parser('rules', help='traffic rules as temporal logic: falcon rules check RUN... | list | show SET (see '
                                  'docs/traffic-rules.md)')
     sub.add_parser('why', help='why did it fail: falcon why case|evaluation|episode (see docs/root-cause.md)')
@@ -412,6 +422,12 @@ def main(argv=None) -> int:
     if argv[:1] == ['policy']:                    # driving policies: BC, PPO, rollouts (core.policy)
         from .core.policy import main_policy
         return main_policy(argv[1:])
+    if argv[:1] == ['adversary']:                 # learned adversarial traffic (core.adversary)
+        from .core.adversary import main_adversary
+        return main_adversary(argv[1:])
+    if argv[:1] == ['worldmodel']:                # learned world model, imagination, end to end (core.wmtrain)
+        from .core.wmtrain import main_worldmodel
+        return main_worldmodel(argv[1:])
     if argv[:1] == ['loop']:                      # the closed loop (core.loop)
         from .core.loop import main_loop
         return main_loop(argv[1:])
@@ -439,6 +455,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['recon']:                     # neural reconstruction of a drive (core.recon)
         from .core.recon.commands import main_recon
         return main_recon(argv[1:])
+    if argv[:1] == ['vlm']:                       # vision-language explanations scored against the truth (core.vlm)
+        from .core.vlm_eval import main_vlm
+        return main_vlm(argv[1:])
     if argv[:1] in (['sweep'], ['search']):       # scenario studies (sim.studio)
         from .sim.studio import main_study
         return main_study(argv)

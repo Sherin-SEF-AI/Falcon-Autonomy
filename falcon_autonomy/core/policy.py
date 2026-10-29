@@ -7,9 +7,11 @@ A policy folder:
                    "features": [names of core.drivefeatures.FEATURES the network reads, in its input order],
                    "normaliser": {"mean": [...], "std": [...], "clip": c}   x_in = clip((x − mean) / std, −c, c),
                    "bev": BEV spec | null      (a CNN also reads the "bev" observation, 8 × H × W in 0/1),
+                   "camera": {width, height, fov, pose} | null   (an end-to-end net, kind e2e, reads the "camera"
+                               observation, H × W × 3 RGB; the environment is opened with this camera),
                    "action": {"kind": "continuous", "keys": ["steer", "accel"]} | {"kind": "discrete", "n": 25},
-                   "net": {"kind": "mlp" | "cnn", "hidden": [...], "activation": "relu" | "tanh",
-                           "output": "tanh" | "linear" | "logits", "conv": [...]},
+                   "net": {"kind": "mlp" | "cnn" | "e2e", "hidden": [...], "activation": "relu" | "tanh",
+                           "output": "tanh" | "linear" | "logits", "conv": [...], e2e: "bev": bool, "bev_conv"},
                    "weights": "weights.pt", "weights_sha256", "drivefeatures": "falcon.drivefeatures/1",
                    "provenance": {...}}
     weights.pt    the network's state_dict (torch.save; loaded with weights_only=True)
@@ -98,13 +100,43 @@ def _classes() -> dict:
             y = self.body(torch.cat([state, self.conv(bev)], dim=1))
             return torch.tanh(y) if self.out == 'tanh' else y
 
-    _CLASSES.update(MLPNet=MLPNet, CNNNet=CNNNet, mlp=mlp)
+    class E2ENet(nn.Module):
+        """End to end (core.e2e): the camera (B, 3, H, W) in [0, 1] through PilotNet's convolutions (Bojarski et al.
+        2016: 5 × 5 stride 2 ×3, 3 × 3 ×2, no padding; the image at least 61 px each way) and a 2 × 4 average pool;
+        optionally the BEV through CNNNet's convolutions; concatenated with the state, then the MLP head."""
+
+        def __init__(self, spec, n_in, n_out):
+            super().__init__()
+            c, a = spec['conv'], spec['activation']
+            self.cam = nn.Sequential(nn.Conv2d(3, c[0], 5, 2), act(a), nn.Conv2d(c[0], c[1], 5, 2), act(a),
+                                     nn.Conv2d(c[1], c[2], 5, 2), act(a), nn.Conv2d(c[2], c[3], 3), act(a),
+                                     nn.Conv2d(c[3], c[4], 3), act(a), nn.AdaptiveAvgPool2d((2, 4)), nn.Flatten())
+            n = 8 * c[4]
+            self.bev_conv = None
+            if spec.get('bev'):
+                b1, b2, b3 = spec['bev_conv']
+                self.bev_conv = nn.Sequential(nn.Conv2d(8, b1, 5, stride=2, padding=2), act(a),
+                                              nn.Conv2d(b1, b2, 3, stride=2, padding=1), act(a),
+                                              nn.Conv2d(b2, b3, 3, stride=2, padding=1), act(a),
+                                              nn.AdaptiveAvgPool2d((4, 4)), nn.Flatten())
+                n += 16 * b3
+            self.body = mlp(n_in + n, spec['hidden'], n_out, a)
+            self.out = spec['output']
+
+        def forward(self, state, bev=None, camera=None):
+            parts = [state, self.cam(camera - 0.5)]
+            if self.bev_conv is not None:
+                parts.append(self.bev_conv(bev))
+            y = self.body(torch.cat(parts, dim=1))
+            return torch.tanh(y) if self.out == 'tanh' else y
+
+    _CLASSES.update(MLPNet=MLPNet, CNNNet=CNNNet, E2ENet=E2ENet, mlp=mlp)
     return _CLASSES
 
 
 def build_net(spec: dict, n_in: int, n_out: int):
     c = _classes()
-    return (c['CNNNet'] if spec['kind'] == 'cnn' else c['MLPNet'])(spec, n_in, n_out)
+    return c[{'cnn': 'CNNNet', 'e2e': 'E2ENet'}.get(spec['kind'], 'MLPNet')](spec, n_in, n_out)
 
 
 def feature_index(names, available=DF.FEATURE_NAMES) -> np.ndarray:
@@ -193,7 +225,8 @@ class Policy:
         self.net = build_net(self.doc['net'], len(self.features), n_out)
         self.net.load_state_dict(torch.load(wp, map_location='cpu', weights_only=True))
         self.net.to(device).eval()
-        self.uses_bev = self.doc['net']['kind'] == 'cnn'
+        self.uses_camera = self.doc['net']['kind'] == 'e2e'
+        self.uses_bev = self.doc['net']['kind'] == 'cnn' or (self.uses_camera and bool(self.doc['net'].get('bev')))
         self._idx = {}
 
     def index(self, names=DF.FEATURE_NAMES) -> np.ndarray:
@@ -202,8 +235,9 @@ class Policy:
             self._idx[key] = feature_index(self.features, names)
         return self._idx[key]
 
-    def act_batch(self, states, bevs=None, names=DF.FEATURE_NAMES) -> np.ndarray:
-        """Actions for a batch: states (B, len(names)) float; bevs (B, 8, H, W) for a CNN. (B, 2) or (B,)."""
+    def act_batch(self, states, bevs=None, names=DF.FEATURE_NAMES, cameras=None) -> np.ndarray:
+        """Actions for a batch: states (B, len(names)) float; bevs (B, 8, H, W) for a CNN; cameras (B, H, W, 3)
+        uint8 RGB for an end-to-end net. (B, 2) or (B,)."""
         import torch
         x = normalise(np.asarray(states)[:, self.index(names)], self.norm)
         with torch.no_grad():
@@ -212,14 +246,23 @@ class Policy:
                 if bevs is None:
                     raise ValueError('this policy reads the BEV: run the environment with bev on')
                 b = torch.as_tensor(np.asarray(bevs, np.float32), device=self.device)
-            y = self.net(torch.as_tensor(x, device=self.device), b).cpu().numpy()
+            xt = torch.as_tensor(x, device=self.device)
+            if self.uses_camera:
+                if cameras is None:
+                    raise ValueError('this policy reads the camera: run the environment with its camera')
+                cam = torch.as_tensor(np.asarray(cameras, np.uint8), device=self.device).permute(0, 3, 1, 2)
+                y = self.net(xt, b, cam.float() / 255.0).cpu().numpy()
+            else:
+                y = self.net(xt, b).cpu().numpy()
         if self.action['kind'] == 'discrete':
             return y.argmax(1)
         return np.clip(y, -1.0, 1.0).astype(np.float32)
 
     def act(self, obs: dict, names=DF.FEATURE_NAMES):
         """The action for one observation (the environment's dict)."""
-        y = self.act_batch(np.asarray(obs['state'])[None], None if not self.uses_bev else obs['bev'][None], names)
+        y = self.act_batch(np.asarray(obs['state'])[None], None if not self.uses_bev else obs['bev'][None], names,
+                           None if not self.uses_camera or obs.get('camera') is None else
+                           np.asarray(obs['camera'])[None])
         return int(y[0]) if self.action['kind'] == 'discrete' else y[0]
 
 
@@ -345,9 +388,9 @@ def env_args(ap):
     ap.add_argument('--fake-carla', default='')
 
 
-def open_env(a, out_dir, scenario=None, action='continuous', log_actions=True, bev=None):
+def open_env(a, out_dir, scenario=None, action='continuous', log_actions=True, bev=None, camera=None):
     """(service, env) for the CLI: Falcon's server and the environment worker, as every CARLA job. bev: a BEV spec
-    dict (a CNN policy's own), else --bev's default."""
+    dict (a CNN policy's own), else --bev's default; camera: an end-to-end policy's camera spec."""
     from .gymenv import FalconDriveEnv, gym_config, make_service
     from .project import Project
     proj = Project.load(a.project)
@@ -355,8 +398,8 @@ def open_env(a, out_dir, scenario=None, action='continuous', log_actions=True, b
     try:
         cfg = gym_config(proj, a.world or proj.doc['worlds'][0]['id'], out_dir, svc.port, svc.tm_port,
                          rig_id=a.rig or None, seed=a.seed, scenario=scenario, motion=a.motion, action=action,
-                         bev=bev or bool(a.bev), fps=a.fps, traffic_vehicles=a.traffic, log_actions=log_actions,
-                         workspace=proj.workspace)
+                         bev=bev or bool(a.bev), camera=camera, fps=a.fps, traffic_vehicles=a.traffic,
+                         log_actions=log_actions, workspace=proj.workspace)
         return svc, FalconDriveEnv(cfg, svc)
     except BaseException:
         if not a.keep_server:
@@ -386,7 +429,8 @@ def main_rollout(argv) -> int:
     svc = env = None
     try:
         svc, env = open_env(a, os.path.join(a.out, 'env'), a.scenario or None, pol.action['kind'],
-                            bev=pol.doc.get('bev') if pol.uses_bev else None)
+                            bev=pol.doc.get('bev') if pol.uses_bev else None,
+                            camera=pol.doc.get('camera') if pol.uses_camera else None)
         doc = rollout(pol, env, a.episodes, a.seed, out_dir=a.out,
                       progress=lambda k, s: print(f'episode {k}: return {s["return"]:.2f}, completion '
                                                   f'{s["route_completion"]:.2f}, {s["termination"]}', flush=True))

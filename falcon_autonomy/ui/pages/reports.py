@@ -18,7 +18,7 @@ from ..widgets import KeyValues, Page, Section, button, label
 
 KIND_TITLES = {'iteration': 'Loop iteration', 'evaluation': 'Model evaluation', 'dataset': 'Dataset coverage',
                'study': 'Rare-case study', 'leaderboard': 'Leaderboard result', 'rules': 'Traffic-rule check',
-               'rootcause': 'Root cause'}
+               'rootcause': 'Root cause', 'vlm': 'VLM explanations'}
 
 
 class ReportsPage(Page):

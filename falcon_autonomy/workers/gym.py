@@ -493,9 +493,18 @@ class Gym(Worker):
                 'target_speed_mps': round(target, 4), 'max_steps': self.ep['max_steps'],
                 'stale_actors': stale, 'background_actors': self.background_actors,
                 'ego': self.ego_pose(), 'traffic_lights_on_route': len(self.ep['route_lights'])}
+        info, arrays = self.reset_extras(info, arrays)
         self.send({'t': 'obs', 'id': cmd.get('id'), 'kind': 'reset', 'reward': 0.0, 'terminated': False,
                    'truncated': False, 'info': info}, [('state', state)] + arrays)
         self.emit.progress(0.0, f'episode {self.ep["n"]} (seed {seed})')
+
+    def reset_extras(self, info: dict, arrays: list):
+        """A subclass's additions to the first observation of an episode (workers/adversary.py); none here."""
+        return info, arrays
+
+    def summary_extras(self, summ: dict):
+        """A subclass's additions to an episode's summary line before it is written; none here."""
+        return summ
 
     def free_start(self, order, route_m, lane_path):
         """The first spawn point in seeded order outside junctions whose lane runs ≥ min(route_m, 30) m."""
@@ -514,9 +523,10 @@ class Gym(Worker):
         """Kinematic motion: every vehicle exactly at its planned start pose (not where physics let it settle)."""
         carla = self.carla
         t = ego_wp.transform
-        k = director.kin[ego.id]
-        k[0], k[1], k[3] = t.location.x, t.location.y, t.rotation.yaw
-        ego.set_transform(carla.Transform(carla.Location(x=k[0], y=k[1], z=k[2]), carla.Rotation(yaw=k[3])))
+        k = director.kin.get(ego.id)          # an ego on the traffic manager keeps CARLA's physics (not in kin)
+        if k is not None:
+            k[0], k[1], k[3] = t.location.x, t.location.y, t.rotation.yaw
+            ego.set_transform(carla.Transform(carla.Location(x=k[0], y=k[1], z=k[2]), carla.Rotation(yaw=k[3])))
         for st in director.actors.values():
             a = st['actor']
             if a.id not in director.kin:
@@ -607,10 +617,38 @@ class Gym(Worker):
         lateral offset + right, width, junction, same-direction lanes beside it by Waypoint.get_left_lane /
         get_right_lane, its markings), the lead and vulnerable-road-user gaps and the light ahead from the observation,
         and CARLA's speed limit for the ego (Vehicle.get_speed_limit; None where the API has none)."""
-        carla, FI = self.carla, DF.FI
+        FI = DF.FI
         r = lambda v, nd=3: None if v is None or not math.isfinite(float(v)) else round(float(v), nd)   # noqa: E731
-        wp = self.map.get_waypoint(carla.Location(x=pose['x'], y=pose['y'], z=pose['z']), project_to_road=False,
-                                   lane_type=carla.LaneType.Driving)
+        lane = self.lane_row(pose)
+        lead = r(state[FI['lead_gap_m']]) if state[FI['lead_present']] > 0.5 else None
+        vru = r(state[FI['vru_ahead_m']]) if state[FI['vru_present']] > 0.5 else None
+        known = state[FI['tl_known']] > 0.5
+        tl_red = (1 if state[FI['tl_red']] > 0.5 else 0) if known else None
+        tl_d = r(state[FI['tl_distance_m']]) if known and state[FI['tl_distance_m']] < DF.TL_RANGE_M else None
+        if known and tl_d is None:
+            tl_red = 0
+        return [r(sim_t, 4), r(pose['x']), r(pose['y']), r(pose['yaw']), r(pose['speed_mps'])] + lane + \
+            [lead, vru, tl_red, tl_d, self.speed_limit(self.ep['ego'])]
+
+    def speed_limit(self, actor):
+        """CARLA's speed limit for a vehicle (Vehicle.get_speed_limit, km/h), None where the API has none."""
+        get = getattr(actor, 'get_speed_limit', None)
+        if get is None:
+            return None
+        try:
+            v = float(get())
+        except Exception:            # noqa: BLE001 (an API without it: unknown)
+            return None
+        return round(v, 2) if math.isfinite(v) else None
+
+    def lane_row(self, pose) -> list:
+        """The lane part of a trace row (core.rules.TRACE_COLUMNS on_lane … right_marking) for a pose {'x', 'y',
+        'z', 'yaw'}: on a driving lane, junction, the lane's heading, the lateral offset (+ right), its width, the
+        same-direction lanes beside it, its markings."""
+        carla = self.carla
+        r = lambda v, nd=3: None if v is None or not math.isfinite(float(v)) else round(float(v), nd)   # noqa: E731
+        wp = self.map.get_waypoint(carla.Location(x=pose['x'], y=pose['y'], z=pose.get('z', 0.0)),
+                                   project_to_road=False, lane_type=carla.LaneType.Driving)
         lane = [0, None, None, None, None, None, None, None, None]
         if wp is not None:
             t = wp.transform
@@ -631,22 +669,7 @@ class Gym(Worker):
             lane = [1, int(bool(wp.is_junction)), r(t.rotation.yaw), r(lat), r(wp.lane_width),
                     count(lambda w: w.get_left_lane()), count(lambda w: w.get_right_lane()),
                     mk(getattr(wp, 'left_lane_marking', None)), mk(getattr(wp, 'right_lane_marking', None))]
-        lead = r(state[FI['lead_gap_m']]) if state[FI['lead_present']] > 0.5 else None
-        vru = r(state[FI['vru_ahead_m']]) if state[FI['vru_present']] > 0.5 else None
-        known = state[FI['tl_known']] > 0.5
-        tl_red = (1 if state[FI['tl_red']] > 0.5 else 0) if known else None
-        tl_d = r(state[FI['tl_distance_m']]) if known and state[FI['tl_distance_m']] < DF.TL_RANGE_M else None
-        if known and tl_d is None:
-            tl_red = 0
-        limit = None
-        get = getattr(self.ep['ego'], 'get_speed_limit', None)
-        if get is not None:
-            try:
-                limit = r(get(), 2)
-            except Exception:            # noqa: BLE001 (an API without it: unknown)
-                limit = None
-        return [r(sim_t, 4), r(pose['x']), r(pose['y']), r(pose['yaw']), r(pose['speed_mps'])] + lane + \
-            [lead, vru, tl_red, tl_d, limit]
+        return lane
 
     def contacts(self, pose, rows) -> list:
         """[(other id, kind, source)]: box overlaps with vehicles and walkers, and the collision sensor's new
@@ -787,6 +810,7 @@ class Gym(Worker):
             summ['trace'] = {'columns': list(TRACE_COLUMNS), 'rows': ep['trace'],
                              'ego': {'length': round(ep['len'], 3), 'width': round(ep['wid'], 3)},
                              'handedness': self.cfg.get('handedness'), 'town': self.cfg.get('town') or None}
+        summ = self.summary_extras(summ)
         self.ep_log.write(json.dumps(summ, separators=(',', ':')) + '\n')
         self.ep_log.flush()
         return {k2: v for k2, v in summ.items() if k2 not in ('actions', 'trace')}

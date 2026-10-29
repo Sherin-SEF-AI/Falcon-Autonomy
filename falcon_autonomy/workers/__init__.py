@@ -14,6 +14,7 @@ WORKERS = {
     'handedness': 'falcon_autonomy.workers.handedness',
     'osm_import': 'falcon_autonomy.workers.osm_import',
     'gym': 'falcon_autonomy.workers.gym',
+    'adversary': 'falcon_autonomy.workers.adversary',
     'replay': 'falcon_autonomy.workers.replay',
     'stack': 'falcon_autonomy.workers.stack',
     'hil': 'falcon_autonomy.workers.hil',

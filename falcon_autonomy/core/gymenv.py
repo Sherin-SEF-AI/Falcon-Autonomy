@@ -265,6 +265,7 @@ class FalconDriveEnv(_EnvBase):
 
     metadata = {'render_modes': []}
     render_mode = None
+    worker = 'gym'                         # the worker that serves it (core.adversary's env: 'adversary')
 
     def __init__(self, config: dict, service=None, *, settings=None, fake_carla: str = '',
                  start_timeout_s: float = 900.0, step_timeout_s: float = 120.0, close_timeout_s: float = 60.0,
@@ -318,7 +319,8 @@ class FalconDriveEnv(_EnvBase):
             run_dir = ensure_dir(self.cfg['out'])
             cfg_path = os.path.join(run_dir, 'gym.json')
             write_json(cfg_path, self.cfg)
-            spec = self.svc.worker_spec('gym', [cfg_path], title, 'gym', run_dir, meta={'config': cfg_path})
+            spec = self.svc.worker_spec(self.worker, [cfg_path], title, self.worker, run_dir,
+                                        meta={'config': cfg_path})
             self.job = self.svc.queue.submit(spec)
             t0 = time.monotonic()
             while True:

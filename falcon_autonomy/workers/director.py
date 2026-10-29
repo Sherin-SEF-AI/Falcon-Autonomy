@@ -145,6 +145,7 @@ class Director:
         self.kinematic = str(cfg.get('scenario', {}).get('motion', cfg.get('motion', 'kinematic'))) == 'kinematic'
         self.kin = {}                     # actor id -> [x, y, z, yaw_deg, v] when kinematic
         self.ego_control = None           # the control drive_ego applied for the coming tick (None: not driving it)
+        self.external = set()             # actor ids driven from outside (workers/adversary.py's learned traffic)
 
     # ------------------------------------------------------------------ lanes relative to the handedness
     def overtaking(self, wp):
@@ -538,7 +539,8 @@ class Director:
             self.start()
         self.timeline(t)
         for aid, st in self.actors.items():
-            self.drive_actor(st, t)
+            if aid not in self.external:
+                self.drive_actor(st, t)
         if self.driver in ('follower', 'none'):
             self.drive_ego()
 

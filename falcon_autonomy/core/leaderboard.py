@@ -326,8 +326,9 @@ def main_leaderboard(argv) -> int:
             pol = load_policy(a.policy, a.device)
             routes = route_set(a.scenario, a.seeds_per, a.free, a.seed)
             bev = pol.doc.get('bev') if pol.uses_bev else (True if a.bev else None)
+            cam = pol.doc.get('camera') if getattr(pol, 'uses_camera', False) else None
             doc = evaluate(pol, lambda scn: make_env(scn, os.path.join(a.out, 'env', scn or 'free'),
-                                                     pol.action['kind'], bev),
+                                                     pol.action['kind'], bev, cam),
                            routes, a.out, a.boot, lambda f, t: em.progress(f, t))
             m = doc['metrics']
             em.result('ok', summary={'routes': doc['routes'], 'failed': len(doc['failed']),

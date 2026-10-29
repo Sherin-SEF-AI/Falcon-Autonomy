@@ -29,10 +29,11 @@ datas = sources() + collect_data_files('pyqtgraph') + collect_data_files('jsonsc
 datas += [(os.path.join(ROOT, 'LICENSE'), '.'), (os.path.join(ROOT, 'README.md'), '.'),
           (os.path.join(ROOT, 'CHANGELOG.md'), '.'), (os.path.join(ROOT, 'docs'), 'docs')]
 
-# Packages the system Python has that Falcon does not use (torch's optional compilers, data-science and web stacks):
+# Packages the system Python has that Falcon does not use (torch's optional compilers, data-science and web stacks;
+# transformers, tokenizers and huggingface_hub stay: the vision-language runner needs them):
 # left out, or the bundle grows by gigabytes. torch's CUDA libraries (nvidia/*) stay: training on the GPU needs them.
 EXCLUDES = ['tkinter', 'matplotlib', 'IPython', 'pytest', 'notebook', 'tensorflow', 'jax', 'triton', 'polars',
-            '_polars_runtime_32', 'llvmlite', 'numba', 'transformers', 'tokenizers', 'hf_xet', 'huggingface_hub',
+            '_polars_runtime_32', 'llvmlite', 'numba',
             'pandas', 'curl_cffi', 'uvloop', 'aiohttp', 'yt_dlp', 'websockets', 'requests',
             'torch.utils.tensorboard', 'sklearn', 'skimage',
             'brotli', 'mutagen', 'secretstorage', 'Cryptodome', 'zmq', 'tornado', 'nbformat']

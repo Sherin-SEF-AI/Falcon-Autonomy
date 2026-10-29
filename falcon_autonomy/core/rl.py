@@ -204,6 +204,70 @@ def _logp_ent(dist, a, discrete):
     return dist.log_prob(a).sum(-1), dist.entropy().sum(-1)
 
 
+def gae(R, V, D, last_v: float, gamma: float, lam: float) -> np.ndarray:
+    """Generalised advantage estimates (Schulman et al. 2016) of one stream of n steps: rewards R, values V, D 1
+    where the step ended its episode, last_v the value after the last step (used when it did not)."""
+    n = len(R)
+    adv = np.zeros(n, np.float32)
+    g = 0.0
+    for t in reversed(range(n)):
+        nv = last_v if t == n - 1 else V[t + 1]
+        nonterm = 1.0 - D[t]
+        delta = R[t] + gamma * nv * nonterm - V[t]
+        g = delta + gamma * lam * nonterm * g
+        adv[t] = g
+    return adv
+
+
+def ppo_update(actor, critic, log_std, opt, params, X, A, LP, adv, ret, cfg: dict, rng, discrete: bool, dev,
+               B=None):
+    """The PPO update over one batch (module doc): n_epochs passes of shuffled minibatches (the permutation drawn
+    from rng), the clipped surrogate, the value loss, the entropy bonus, gradient-norm clipping, the optional early
+    stop on the approximate KL. B: packed BEV planes for a CNN, or None. Returns (stats lists, early-stopped)."""
+    import torch
+
+    def tens(x):
+        return torch.as_tensor(np.asarray(x), device=dev)
+    n = len(X)
+    Xt, At, LPt, ADVt, RETt = tens(X), tens(A), tens(LP), tens(adv), tens(ret)
+    stats = {'policy_loss': [], 'value_loss': [], 'entropy': [], 'approx_kl': [], 'clip_fraction': []}
+    stop = False
+    mb = int(cfg['minibatch'])
+    for _epoch in range(int(cfg['n_epochs'])):
+        perm = torch.as_tensor(rng.permutation(n), device=dev)
+        for k in range(0, n, mb):
+            sel = perm[k:k + mb]
+            bb = None
+            if B is not None:
+                bb = tens(DF.unpack_bev(B[sel.cpu().numpy()]).astype(np.float32))
+            d = _dist(actor, log_std, Xt[sel], bb, discrete)
+            lp, ent = _logp_ent(d, At[sel], discrete)
+            ratio = torch.exp(lp - LPt[sel])
+            a_mb = ADVt[sel]
+            a_mb = (a_mb - a_mb.mean()) / (a_mb.std() + 1e-8) if len(sel) > 1 else a_mb
+            pg = -torch.min(ratio * a_mb, torch.clamp(ratio, 1 - cfg['clip'], 1 + cfg['clip']) * a_mb).mean()
+            v = critic(Xt[sel], bb)[:, 0]
+            vl = 0.5 * ((RETt[sel] - v) ** 2).mean()
+            loss = pg + float(cfg['vf_coef']) * vl - float(cfg['ent_coef']) * ent.mean()
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(params, float(cfg['max_grad_norm']))
+            opt.step()
+            with torch.no_grad():
+                lr_ = lp - LPt[sel]
+                kl = float(((torch.exp(lr_) - 1) - lr_).mean())
+                cf = float(((ratio - 1).abs() > cfg['clip']).float().mean())
+            for key, val in (('policy_loss', pg.item()), ('value_loss', vl.item()),
+                             ('entropy', ent.mean().item()), ('approx_kl', kl), ('clip_fraction', cf)):
+                stats[key].append(val)
+            if cfg['target_kl'] is not None and kl > 1.5 * float(cfg['target_kl']):
+                stop = True
+                break
+        if stop:
+            break
+    return stats, stop
+
+
 def _write_jsonl(path, row):
     with open(path, 'a', encoding='utf-8') as fh:
         fh.write(json.dumps(row, separators=(',', ':')) + '\n')
@@ -388,52 +452,10 @@ def train_ppo(env, out_dir: str, config: dict | None = None, curriculum=None, re
             xl = norm_obs(obs['state'], False)
             bl = tens(obs['bev'][None].astype(np.float32)) if B is not None else None
             last_v = float(critic(tens(xl[None]), bl)[0, 0])
-        adv = np.zeros(n, np.float32)
-        gae = 0.0
-        for t in reversed(range(n)):
-            nv = last_v if t == n - 1 else V[t + 1]
-            nonterm = 1.0 - D[t]
-            delta = R[t] + float(cfg['gamma']) * nv * nonterm - V[t]
-            gae = delta + float(cfg['gamma']) * float(cfg['gae_lambda']) * nonterm * gae
-            adv[t] = gae
+        adv = gae(R, V, D, last_v, float(cfg['gamma']), float(cfg['gae_lambda']))
         ret = adv + V
         # ---- the update
-        Xt, At, LPt, ADVt, RETt = tens(X), tens(A), tens(LP), tens(adv), tens(ret)
-        stats = {'policy_loss': [], 'value_loss': [], 'entropy': [], 'approx_kl': [], 'clip_fraction': []}
-        stop = False
-        mb = int(cfg['minibatch'])
-        for _epoch in range(int(cfg['n_epochs'])):
-            perm = torch.as_tensor(rng.permutation(n), device=dev)
-            for k in range(0, n, mb):
-                sel = perm[k:k + mb]
-                bb = None
-                if B is not None:
-                    bb = tens(DF.unpack_bev(B[sel.cpu().numpy()]).astype(np.float32))
-                d = _dist(actor, log_std, Xt[sel], bb, discrete)
-                lp, ent = _logp_ent(d, At[sel], discrete)
-                ratio = torch.exp(lp - LPt[sel])
-                a_mb = ADVt[sel]
-                a_mb = (a_mb - a_mb.mean()) / (a_mb.std() + 1e-8) if len(sel) > 1 else a_mb
-                pg = -torch.min(ratio * a_mb, torch.clamp(ratio, 1 - cfg['clip'], 1 + cfg['clip']) * a_mb).mean()
-                v = critic(Xt[sel], bb)[:, 0]
-                vl = 0.5 * ((RETt[sel] - v) ** 2).mean()
-                loss = pg + float(cfg['vf_coef']) * vl - float(cfg['ent_coef']) * ent.mean()
-                opt.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(params, float(cfg['max_grad_norm']))
-                opt.step()
-                with torch.no_grad():
-                    lr_ = lp - LPt[sel]
-                    kl = float(((torch.exp(lr_) - 1) - lr_).mean())
-                    cf = float(((ratio - 1).abs() > cfg['clip']).float().mean())
-                for key, val in (('policy_loss', pg.item()), ('value_loss', vl.item()),
-                                 ('entropy', ent.mean().item()), ('approx_kl', kl), ('clip_fraction', cf)):
-                    stats[key].append(val)
-                if cfg['target_kl'] is not None and kl > 1.5 * float(cfg['target_kl']):
-                    stop = True
-                    break
-            if stop:
-                break
+        stats, stop = ppo_update(actor, critic, log_std, opt, params, X, A, LP, adv, ret, cfg, rng, discrete, dev, B)
         update += 1
         var_r = float(np.var(ret))
         ev = float(1.0 - np.var(ret - V) / var_r) if var_r > 1e-12 else None

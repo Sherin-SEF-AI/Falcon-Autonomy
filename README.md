@@ -5,10 +5,10 @@ One desktop application for the whole loop of building a self-driving AI on the
 generate perfectly labelled data where models are weak, train and evaluate, and test a full AV stack — with every
 number traceable to the run that produced it.
 
-**Status: 1.2 — the eight milestones of the plan, and milestones 9–11 of what follows.** What works is listed under *What works*; what comes next is in
+**Status: 1.2 — the eight milestones of the plan, and milestones 9–12 of what follows.** What works is listed under *What works*; what comes next is in
 the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
 
-## What works (1.3.0)
+## What works (1.4.0)
 
 - **The app shell** (PyQt6): a page navigator, Jobs and Log docks, undo and redo for every project edit, a command
   palette (Ctrl+K), dark and light themes, a status bar with the CARLA server, the GPU and memory.
@@ -64,6 +64,10 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
 - **Real to sim** (1.3): a geometry-preserving sim-to-real translator (CUT, trained here) whose translated runs keep
   their labels, checked per frame; neural reconstruction of recorded drives as 3D Gaussians (pure PyTorch) re-rendered
   from new viewpoints ([translation](docs/translation.md), [reconstruction](docs/reconstruction.md)).
+- **Learned worlds** (1.4): a latent world model scored honestly against baselines, policies learnt in imagination,
+  end-to-end camera policies; adversarial traffic that learns to make the ego fail within realism limits;
+  vision-language driving answers scored against the simulator's truth ([world-model training](docs/world-model-training.md),
+  [adversarial traffic](docs/adversarial-traffic.md), [vision-language](docs/vlm.md)).
 - **Stack testing**: a closed-loop ROS 2 bridge (Autoware, Ackermann or CARLA control), scenario suites with pass/fail
   and intervals, a SOTIF-style safety-case report; CARLA 0.9.16's native ROS 2 measured and documented
   ([stack testing](docs/stack-testing.md)).

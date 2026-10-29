@@ -3,7 +3,9 @@ improvement, or by the probability of failure), CMA-ES, adaptive sampling or ran
 cases ranked (each replayable), how the search went, and a map of the failure region over two parameters. The
 objective is the run's criticality, a registered model's perception failure on the run's labelled frames
 (core.milsearch: model-in-the-loop), or both; weather fields can be searched beside the scenario's parameters. "Why
-did this fail?" attributes a failing case to its factors by re-runs (core.rootcause) as a job and shows the table."""
+did this fail?" attributes a failing case to its factors by re-runs (core.rootcause) as a job and shows the table.
+Below the search, learned adversarial traffic (ui.adversary_panel, core.adversary): its training, its evaluation and
+the failures it found, as cases with their replay."""
 from __future__ import annotations
 
 import json
@@ -19,7 +21,7 @@ from ...core import scenarios as SC
 from ...core import search as S
 from ...core.jobs import FINAL, JobSpec
 from ..theme import SEQ, STATUS, THEME
-from ..widgets import Form, KeyValues, Page, Section, button, label
+from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
 
 METHODS = (('bayes', 'Bayesian optimisation'),
            ('bayes-pof', 'Bayesian optimisation, probability of failure (maps the region)'), ('cmaes', 'CMA-ES'),
@@ -206,8 +208,11 @@ class RareCasesPage(Page):
         self.state = KeyValues(('State',))
         sec.add(self.state)
         lv.addWidget(sec)
+        from ..adversary_panel import attach
+        self.adversary = attach(self)                 # learned adversarial traffic and its cases (core.adversary)
+        lv.addWidget(self.adversary)
         lv.addStretch(1)
-        split.addWidget(left)
+        split.addWidget(scroll(left))
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.addWidget(label('How the search went', h=True))
@@ -255,6 +260,8 @@ class RareCasesPage(Page):
         return out
 
     def refresh(self):
+        if hasattr(self, 'adversary'):
+            self.adversary.refresh()
         cur = self.scenario.currentData()
         self.scenario.blockSignals(True)
         self.scenario.clear()

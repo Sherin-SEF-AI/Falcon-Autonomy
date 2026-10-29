@@ -184,6 +184,13 @@ drives against real images and writes translated runs whose labels stay valid, w
 ([translation](translation.md)); the Replay page reconstructs a recorded drive as 3D Gaussians and re-renders it from
 new viewpoints ([reconstruction](reconstruction.md)).
 
+**Learned worlds**: the Training page's *World model* tab trains a latent dynamics model on drives and episodes and
+scores it per horizon against simple baselines, learns policies in its imagination and clones camera-to-control
+policies ([world-model training](world-model-training.md)); the Rare cases page trains **adversarial traffic** that
+tries to make the ego fail under realism constraints ([adversarial traffic](adversarial-traffic.md)); the Models
+page's *Language* tab scores vision-language models' driving answers against the simulator's truth
+([vision-language](vlm.md)).
+
 ### Stack testing
 Connect an external driving stack through ROS 2: Falcon's bridge publishes the rig's sensors and waits each step for
 the stack's control (Autoware Control, Ackermann or CARLA's own message), recording missed deadlines. Run scenario

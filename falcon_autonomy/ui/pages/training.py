@@ -2,7 +2,9 @@
 (core.experiments) and the active-learning experiment (core.activelearn: AP against training frames per acquisition
 strategy, with intervals), learn driving policies by behaviour cloning or PPO (core.imitation, core.rl), and score a
 policy in the style of the CARLA Leaderboard with a replay of any infraction and its traffic-rule violations beside
-the score (core.leaderboard, core.rules). Every action is a job; the heavy work runs in its own process."""
+the score (core.leaderboard, core.rules), and train a learned world model, learn a policy in its imagination and clone
+an end-to-end camera policy (the World model tab: ui/pages/worldmodel_tab.py). Every action is a job; the heavy work
+runs in its own process."""
 from __future__ import annotations
 
 import glob
@@ -27,6 +29,7 @@ from ...core.provenance import read_json
 from ..theme import STATUS, THEME
 from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
 from .translation import TranslationTab
+from .worldmodel_tab import WorldModelTab
 
 
 def _fmt(v, nd=3):
@@ -194,6 +197,8 @@ class TrainingPage(Page):
         self.tabs.addTab(self._leaderboard_tab(), 'Leaderboard')
         self.translation = TranslationTab(self)
         self.tabs.addTab(self.translation, 'Sim-to-real translation')
+        self.worldmodel = WorldModelTab(self)
+        self.tabs.addTab(self.worldmodel, 'World model')
         v.addWidget(self.tabs)
         self.state = KeyValues(('Job',))
         v.addWidget(self.state)
@@ -283,6 +288,7 @@ class TrainingPage(Page):
         self.load_policies()
         self.load_leaderboards()
         self.translation.refresh()
+        self.worldmodel.refresh()
 
     @staticmethod
     def _combo_dirs(combo, root, name):

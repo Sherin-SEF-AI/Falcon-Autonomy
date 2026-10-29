@@ -24,6 +24,8 @@ Kinds (KINDS) and their source:
                Data page's check, or a stack run's rules.json): the rule set and its formulas, per run each rule's
                robustness, violations and counts per km, a timeline of the violations and the unknown stretches, and
                the aggregate over runs with intervals
+- vlm          a vision-language evaluation's folder (scores.json; core.vlm_eval, `falcon vlm eval`): accuracy per
+               question type with intervals, grounding, hallucination, how it is scored, the runner and its licence
 
 Colours: before / first series blue (#2a78d6 light, #3987e5 dark), after / second orange (#eb6834, #d95926) — checked
 for colour-vision deficiency (ΔE ≥ 24 protan) — and the two also differ by mark shape (circle, square) and are named
@@ -40,7 +42,7 @@ from . import provenance as PV
 from .paths import tilde
 
 REPORT_SCHEMA = 'falcon.report/1'
-KINDS = ('iteration', 'evaluation', 'dataset', 'study', 'leaderboard', 'rules', 'rootcause')
+KINDS = ('iteration', 'evaluation', 'dataset', 'study', 'leaderboard', 'rules', 'rootcause', 'vlm')
 
 CSS = """
 :root{--bg:#fcfcfb;--panel:#f3f2ef;--ink:#0b0b0b;--ink2:#52514e;--muted:#6f6e69;--hair:#e1e0d9;--grid:#dcdad3;
@@ -676,11 +678,16 @@ def report_rules(src: str) -> Page:
 
 BUILDERS = {'iteration': report_iteration, 'evaluation': report_evaluation, 'dataset': report_dataset,
             'study': report_study, 'leaderboard': report_leaderboard, 'rules': report_rules,
-            'rootcause': lambda src: _rootcause(src)}
+            'rootcause': lambda src: _rootcause(src), 'vlm': lambda src: _vlm(src)}
 
 
 def _rootcause(src: str) -> Page:
     from .rootcause import report
+    return report(src)
+
+
+def _vlm(src: str) -> Page:
+    from .vlm_eval import report
     return report(src)
 
 
@@ -776,6 +783,9 @@ def sources(ws: str) -> dict:
     for d in sorted(_listdir(os.path.join(ws, 'rules')), reverse=True):            # the Data page's rule checks
         if os.path.isfile(os.path.join(ws, 'rules', d, 'rules.json')):
             out['rules'].append((d, os.path.join(ws, 'rules', d)))
+    for d in sorted(_listdir(os.path.join(ws, 'vlm', 'evaluations')), reverse=True):  # the Models page's Language tab
+        if os.path.isfile(os.path.join(ws, 'vlm', 'evaluations', d, 'scores.json')):
+            out['vlm'].append((d, os.path.join(ws, 'vlm', 'evaluations', d)))
     return out
 
 
@@ -807,7 +817,7 @@ def default_name(kind: str, src: str) -> str:
 
 def main_report(argv) -> int:
     """`falcon report KIND SRC --out FILE` (KIND: iteration, evaluation, dataset, study, leaderboard, rules,
-    rootcause): 0 ok, 2 failed."""
+    rootcause, vlm): 0 ok, 2 failed."""
     import argparse
     from . import protocol as P
     ap = argparse.ArgumentParser(prog='falcon report', description='a self-contained HTML report (docs/reports.md)')

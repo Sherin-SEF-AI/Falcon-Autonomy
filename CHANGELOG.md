@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.4.0 — milestone 12: learned worlds
+
+- **World-model training** (`falcon worldmodel`, Training ▸ World model): a DreamerV3-style RSSM on BEV, state, action
+  and reward sequences from drives and episodes, scored per horizon (1–20 steps) against copy-last-frame and
+  constant-velocity baselines. Measured honestly: it does **not** beat the baselines on the BEV (actors IoU 0.40 / 0.22
+  at 1 / 20 steps against constant velocity's 0.98 / 0.74), but it predicts reward better at every horizon. Policies
+  learnt in its imagination reach the highest Leaderboard score on the fake (0.59) by exploiting the model (speeding,
+  5–9 collisions in 20 routes); an end-to-end camera policy (PilotNet) drove best (14/20 successes, 1 collision) while
+  being no better offline than the mean action. Too little real data to say more (stated).
+- **Adversarial traffic** (`falcon adversary`, Rare cases): learned adversaries (parameter-shared independent PPO,
+  1→3 agents) that try to make a fixed ego fail, counted only when realistic — no collision they cause (geometric
+  fault attribution), on lanes, bounded acceleration and jerk, within their role's rule budget. Against a blind ego:
+  0.50 [0.38, 0.62] realistic failures on the fake and 0.40 [0.22, 0.61] on real Town10, against 0.05–0.10 for random
+  and scripted baselines; against the lane follower no method found a realistic failure; against a PPO ego the
+  learned adversaries were no better than random. Every failure replays exactly.
+- **Vision-language explanations** (`falcon vlm`, Models ▸ Language): VLM answers to grounded driving questions scored
+  against the simulator's truth — exact answers, numbers within stated tolerance bands, grounding to track ids,
+  hallucination (CHAIR-style), explanation faithfulness by rules against the brake facts — with intervals over drives.
+  Validated with an oracle (1.000 on every type) and a seeded noisy baseline (0.720, every answer scored as its
+  corruption predicts). Runners for local Hugging Face models (offline, pinned commit, publisher checksums, approved
+  download only), plug-ins; LoRA fine-tuning in plain torch. Seven Apache-2.0 candidates listed with verified licences;
+  non-commercial and remote-code models refused by default.
+- The bundle keeps transformers, tokenizers and huggingface_hub (the vision-language runner needs them).
+
 ## 1.3.0 — milestone 11: real to sim
 
 - **Sim-to-real translation** (`falcon translate`, Training ▸ Sim-to-real translation): Falcon's own CUT (Park et al.
