@@ -21,9 +21,9 @@ cost, and cycle consistency lets a generator hide the input in imperceptible sig
 path is not implemented: it needs a model download whose licence the user must accept.
 
 Data. Simulated frames: Falcon runs (one pinhole camera each, its rgb and semantic label; every= n-th frame). Real
-frames: any core.realgap set read in place (kitti_raw, kitti_object, nuscenes, bdd100k, coco, folder) — nothing is
-copied. Every image is resized to work_width (640 px, as the gap measures) and training takes random crops (crop,
-default 192 px, clamped to the smallest image) with a seeded horizontal flip.
+frames: any core.realgap set read in place (kitti_raw, kitti_object, nuscenes, bdd100k, coco, folder, dashcam) —
+nothing is copied. Every image is resized to work_width (640 px, as the gap measures) and training takes random crops
+(crop, default 192 px, clamped to the smallest image) with a seeded horizontal flip.
 
 Training. Adam (lr 2·10⁻⁴, β 0.5, 0.999) for G with the projection heads and for D; constant, then decaying linearly to
 0 from decay_from of the iterations; λ_GAN 1, λ_NCE 10 (the output's NCE and the identity NCE averaged, as CUT does;
@@ -81,7 +81,7 @@ RUN_SCHEMA = 'falcon.translation/1'
 CHECK_SCHEMA = 'falcon.translation_check/1'
 RESULTS_SCHEMA = 'falcon.translation_results/1'
 METHODS = ('cut',)
-REAL_KINDS = ('kitti_raw', 'kitti_object', 'nuscenes', 'bdd100k', 'coco', 'folder')
+REAL_KINDS = ('kitti_raw', 'kitti_object', 'nuscenes', 'bdd100k', 'coco', 'folder', 'dashcam')
 WORK_WIDTH = 640                      # = core.realgap.WORK_WIDTH
 EDGE_STRONG, EDGE_WEAK, EDGE_TOL_PX = 0.05, 0.15, 1.5
 MIN_BOX_PX = 16
@@ -97,6 +97,8 @@ DATA_TERMS = {
     'bdd100k': 'BDD100K: its own licence (research use; see bdd-data.berkeley.edu)',
     'coco': 'COCO: annotations CC BY 4.0; images under their Flickr licences',
     'folder': 'a folder of images: its terms are unknown to Falcon — check them',
+    'dashcam': 'your own dashcam footage (core.dashcam): your terms — it shows where and when you drove; keep the '
+               'model and its images private unless you mean to share that',
 }
 DEFAULTS = {
     'method': 'cut', 'sim': [], 'real': [], 'camera': None, 'every': 1, 'max_images': 2000,

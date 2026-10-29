@@ -51,7 +51,7 @@ falcon translate train --workspace W --id kitti-cut --sim RUN [--sim RUN…] --r
 
 - **Simulated**: Falcon runs, one pinhole camera each (`RUN?camera=C&every=N`), with the semantic label.
 - **Real**: any [gap](sim-to-real.md) set read in place — `kitti_raw`, `kitti_object`, `nuscenes`, `bdd100k`, `coco`,
-  `folder` (`KIND:PATH?limit=N`). Nothing is copied into the project or the translator's folder (`data.json` lists
+  `folder`, `dashcam` (your own footage, [dashcam](dashcam.md)) (`KIND:PATH?limit=N`). Nothing is copied into the project or the translator's folder (`data.json` lists
   the paths).
 - Every image is resized to 640 px wide (the gap's working width); training takes seeded random crops of 192 px
   (clamped to the smallest image: KITTI is 193 px tall at that width) with a seeded horizontal flip.

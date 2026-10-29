@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.1.0 — your own dashcam
+
+- **Dashcam ingest** (`falcon dashcam list|gps|extract|match`, [dashcam](docs/dashcam.md)): reads the GPS that
+  consumer dashcams embed in their MP4s (`freeGPS` blocks: position, UTC, speed over ground in knots, course; the
+  layout checked against the fixes' own motion and the burned-in overlay), decodes frames on NVDEC, extracts seeded
+  training and held-out sets filtered by speed, sun altitude and GPS, and places each clip against an imported world
+  (inside the box, distance, map match). Footage and frames stay in the workspace; nothing private is in the repo.
+- **Translation to your own roads**: `dashcam` is a real-set kind for the gap and for CUT translation (Training ▸
+  Sim-to-real translation ▸ Dashcam). Measured on the user's daytime footage (FD floor 31.2): Town10 151.2 → 148.0
+  and the imported Bengaluru 218.9 → 190.6 at 6000 iterations; the default training repaints vehicles (Town10) or
+  invents fields (Bengaluru) and the drift check refuses it.
+- **Reconstruction from a dashcam** (`falcon recon from-dashcam`, Replay ▸ From a dashcam): monocular visual odometry
+  (KLT, PnP, Falcon's own Levenberg–Marquardt bundle adjustment) held to scale by the GPS speed, aligned to the GPS,
+  focal length measured from a turn, then 3D Gaussians. On KITTI raw 0015 (363 m) 1.42 m RMS against OXTS; on three
+  20 s segments of the user's footage 3.5–11.3 m RMS odometry-only against the GPS, held-out 23–25 dB below the
+  horizon (26–28 dB whole frame, inflated by sky). 7–11 min per segment on an RTX 5080.
+- **Road-end guard**: an autopilot ego that leaves every driving lane at the edge of an imported area and falls is
+  put back on a road (a `teleport` in frames.jsonl) instead of crashing the live view.
+
 ## 2.0.0 — milestone 13: deployment
 
 - **TensorRT on the Jetson AGX Orin** (`falcon deploy`, Models ▸ Deploy): a device-side tool copied over SSH builds

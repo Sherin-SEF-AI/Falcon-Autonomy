@@ -31,7 +31,8 @@
     falcon loop PROJECT [status|next|run --until STEP|show N|new|set]   the closed loop (docs/loop.md)
     falcon report KIND SRC --out FILE          a self-contained HTML report (docs/reports.md)
     falcon replay import|match|run|compare ...   real logs (nuScenes, Waymo v2, ROS 2 bags) replayed with changes
-    falcon recon train|eval|render|rerender|info ...   neural reconstruction of a drive (3D Gaussian Splatting)
+    falcon recon train|from-dashcam|eval|render|rerender|info ...   neural reconstruction of a drive (3DGS)
+    falcon dashcam list|gps|extract|match ...   a dashcam's clips, GPS track and GPS-stamped frames (docs/dashcam.md)
     falcon vlm list|verify|fetch|eval|finetune ...   vision-language driving explanations scored against ground truth
     falcon rules check RUN... [--set india|generic|FILE] | list | show SET   traffic rules as temporal logic
     falcon why case|evaluation|episode ...   root-cause attribution of a failure (docs/root-cause.md)
@@ -345,8 +346,11 @@ def parser() -> argparse.ArgumentParser:
                                 'docs/loop.md)')
     sub.add_parser('report', help='an HTML report: falcon report KIND SRC --out FILE (see docs/reports.md)')
     sub.add_parser('replay', help='log replay: falcon replay import|match|run|compare (see docs/log-replay.md)')
-    sub.add_parser('recon', help='neural reconstruction of a drive: falcon recon train|eval|render|rerender|info (see '
+    sub.add_parser('recon', help='neural reconstruction of a drive: falcon recon train|from-dashcam|eval|render|'
+                                 'rerender|info (see '
                                  'docs/reconstruction.md)')
+    sub.add_parser('dashcam', help='a dashcam\'s clips, GPS track and frames: falcon dashcam list|gps|extract|match '
+                                   '(see docs/dashcam.md)')
     sub.add_parser('vlm', help='vision-language explanations scored against ground truth: falcon vlm '
                                'list|verify|fetch|eval|finetune (see docs/vlm.md)')
     sub.add_parser('rules', help='traffic rules as temporal logic: falcon rules check RUN... | list | show SET (see '
@@ -468,6 +472,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['recon']:                     # neural reconstruction of a drive (core.recon)
         from .core.recon.commands import main_recon
         return main_recon(argv[1:])
+    if argv[:1] == ['dashcam']:                   # a dashcam's clips, GPS track and frames (core.dashcam)
+        from .core.dashcam import main_dashcam
+        return main_dashcam(argv[1:])
     if argv[:1] == ['vlm']:                       # vision-language explanations scored against the truth (core.vlm)
         from .core.vlm_eval import main_vlm
         return main_vlm(argv[1:])

@@ -11,6 +11,8 @@ Real sets are read in place — nothing is copied into the project:
     bdd100k       an image folder and BDD100K's detection labels JSON (weather and time of day from its attributes)
     coco          an image folder and a COCO instances JSON (class names mapped through NAME_ALIASES)
     falcon        a Falcon run folder (falcon-raw): one camera's RGB and its objects
+    dashcam       an image set extracted from a dashcam by core.dashcam (frames.jsonl): no labels; each frame's GPS
+                  position, speed, clip and sun altitude as its conditions
 
 Measured, per image at a common working width (WORK_WIDTH px, so that resolution does not dominate):
 CIELAB mean and spread, saturation, clipped shares, a noise estimate (Immerkær 1996), sharpness (variance of the
@@ -41,7 +43,7 @@ import warnings
 import numpy as np
 
 SCHEMA = 'falcon.gap/1'
-KINDS = ('folder', 'kitti_object', 'kitti_raw', 'nuscenes', 'bdd100k', 'coco', 'falcon')
+KINDS = ('folder', 'kitti_object', 'kitti_raw', 'nuscenes', 'bdd100k', 'coco', 'falcon', 'dashcam')
 IMAGE_EXT = ('.png', '.jpg', '.jpeg')
 WORK_WIDTH = 640
 MIN_BOX_SHARE = 0.015          # objects lower than this share of the image height are left out on both sides
@@ -109,7 +111,7 @@ def read_set(kind: str, path: str, labels: str | None = None, camera: str | None
     if not os.path.exists(path):
         raise GapError(f'{path} does not exist')
     reader = {'folder': _folder, 'kitti_object': _kitti_object, 'kitti_raw': _kitti_raw, 'nuscenes': _nuscenes,
-              'bdd100k': _bdd, 'coco': _coco, 'falcon': _falcon}[kind]
+              'bdd100k': _bdd, 'coco': _coco, 'falcon': _falcon, 'dashcam': _dashcam}[kind]
     items, notes = reader(path, labels, camera)
     if not items:
         raise GapError(f'no images found in {path} as {kind}')
@@ -294,6 +296,22 @@ def _falcon(path, _labels, camera):
                     for o in objs if o.get('class') in THINGS and o.get('bbox')]
         items.append({'image': run.p(run.file(rec, cid, 'rgb')), 'objects': objs, 'conditions': cond})
     return items, [f'Falcon run {run.name}, camera {cid}']
+
+
+def _dashcam(path, _labels, _camera):
+    from .dashcam import DashcamError, read_set as read_dashcam
+    try:
+        st = read_dashcam(path)
+    except DashcamError as e:
+        raise GapError(str(e)) from None
+    items = []
+    for r in st['items']:
+        sun = r.get('sun_deg')
+        cond = {'night': None if sun is None else sun < 0, 'sun_deg': sun, 'lat': r.get('lat'), 'lon': r.get('lon'),
+                'speed_kmh': r.get('speed_kmh'), 'clip': r.get('clip'), 'utc': r.get('utc')}
+        items.append({'image': r['image'], 'objects': None, 'conditions': cond})
+    return items, [f'dashcam image set ({len(items)} frames of {len({i["conditions"]["clip"] for i in items})} '
+                   f'clips): no labels; GPS, speed and sun altitude per frame as conditions']
 
 
 # ================================================================================================ statistics

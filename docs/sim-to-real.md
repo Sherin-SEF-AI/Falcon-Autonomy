@@ -16,6 +16,7 @@ Read in place; nothing is copied into the project.
 | `bdd100k` | an image folder and BDD100K's detection labels JSON (weather, time of day and scene from its attributes) |
 | `coco` | an image folder and a COCO instances JSON (category names mapped to Falcon's classes; unmapped ones listed) |
 | `falcon` | another Falcon run |
+| `dashcam` | an image set extracted from your own dashcam (`falcon dashcam extract`, [dashcam](dashcam.md)): no labels; each frame's GPS position, speed, clip and sun altitude as its conditions |
 
 `--images N` takes a seeded random subset of each side.
 

@@ -1,7 +1,8 @@
 """The Replay page's reconstruction section: train a 3D Gaussian Splatting reconstruction from the imported log's own
 camera images (a job on the GPU queue), look at it from poses the log never took — any frame, the ego moved sideways
-with a slider — and read how it measured (core.recon; docs/reconstruction.md). torch is imported only when a
-reconstruction is opened, on a worker thread."""
+with a slider — and read how it measured (core.recon; docs/reconstruction.md). *From a dashcam* does the same for a
+time window of a dashcam clip: posed by visual odometry and its GPS (core.recon.fromdashcam), reconstructed, placed on
+an imported world. torch is imported only when a reconstruction is opened, on a worker thread."""
 from __future__ import annotations
 
 import os
@@ -9,7 +10,8 @@ import os
 import numpy as np
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QSlider, QSpinBox, QWidget
+from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QSlider,
+                             QSpinBox, QWidget)
 
 from ...core.jobs import DONE, FINAL
 from ..widgets import Form, KeyValues, Section, SliderField, button, label
@@ -40,7 +42,8 @@ class ReconPanel(QWidget):
         self.source = None
         self.rec_dir = ''
         self.rec = None
-        self.jobs = {}                         # 'train' | 'eval' | 'rerender' -> job
+        self.jobs = {}                         # 'train' | 'eval' | 'rerender' | 'dashcam' -> job
+        self.dash_dir = ''
         self.busy = False
         self.pending = False
         self.last = None                       # the last rendered result (tests read it)
@@ -77,7 +80,7 @@ class ReconPanel(QWidget):
                                'warped frames (Falcon runs)'))
         b.addStretch(1)
         sec.add(b)
-        self.info = KeyValues(('Source', 'Reconstruction', 'Held out', 'Novel views', 'Cost'))
+        self.info = KeyValues(('Source', 'Reconstruction', 'Poses', 'Held out', 'Novel views', 'Cost'))
         sec.add(self.info)
         self.view = QLabel()
         self.view.setMinimumHeight(200)
@@ -100,6 +103,103 @@ class ReconPanel(QWidget):
         self.note = label('', muted=True, wrap=True)
         sec.add(self.note)
         v.addWidget(sec)
+        v.addWidget(self._dashcam_section())
+
+    # ---------------------------------------------------------------- from a dashcam
+    def _dashcam_section(self) -> Section:
+        sec = Section('From a dashcam',
+                      'A time window of a dashcam clip with embedded GPS: its frames posed by monocular visual '
+                      'odometry (the GPS speed holds the scale, the GPS track places it), reconstructed with the '
+                      'settings above and placed on an imported world. The result opens in the view above. A '
+                      'consumer camera\'s footage — traffic, rolling shutter, exposure changes — reconstructs far '
+                      'worse than a simulator\'s; dashcam.json in the folder has every number.')
+        f = Form()
+        row = QHBoxLayout()
+        self.dash_clip = QLineEdit()
+        self.dash_clip.setPlaceholderText('a dashcam .MP4 with embedded GPS')
+        row.addWidget(self.dash_clip, 1)
+        row.addWidget(button('Choose…', self.choose_clip))
+        w = QWidget()
+        w.setLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.dash_start = QDoubleSpinBox()
+        self.dash_start.setRange(0.0, 3600.0)
+        self.dash_start.setSuffix(' s')
+        self.dash_seconds = QDoubleSpinBox()
+        self.dash_seconds.setRange(3.0, 120.0)
+        self.dash_seconds.setValue(20.0)
+        self.dash_seconds.setSuffix(' s')
+        self.dash_world = QComboBox()
+        for text, wd in (('Clip', w), ('From', self.dash_start), ('Length', self.dash_seconds),
+                         ('Place on the world', self.dash_world)):
+            f.row(text, wd)
+        sec.add(f)
+        b = QHBoxLayout()
+        self.dash_btn = button('Reconstruct the segment', self.from_dashcam, role='primary',
+                               tip='falcon recon from-dashcam: a GPU job; the poses alone take about a minute')
+        b.addWidget(self.dash_btn)
+        b.addStretch(1)
+        sec.add(b)
+        self.refresh_worlds()
+        return sec
+
+    def refresh_worlds(self):
+        self.dash_world.clear()
+        self.dash_world.addItem('None', None)
+        proj = getattr(self.win, 'project', None)
+        for wd in (proj.doc.get('worlds') or []) if proj is not None else []:
+            if wd.get('kind') == 'osm':
+                self.dash_world.addItem(wd.get('name') or wd['id'], wd['id'])
+        if self.dash_world.count() > 1:
+            self.dash_world.setCurrentIndex(1)
+
+    def choose_clip(self):
+        start = os.path.dirname(self.dash_clip.text()) or os.path.expanduser('~/Videos/dashcam-videos')
+        path, _ = QFileDialog.getOpenFileName(self, 'A dashcam clip', start, 'MP4 video (*.mp4 *.MP4)')
+        if path:
+            self.dash_clip.setText(path)
+
+    def dashcam_argv(self, out: str) -> list:
+        argv = ['from-dashcam', '--clip', self.dash_clip.text().strip(), '--start', f'{self.dash_start.value():g}',
+                '--seconds', f'{self.dash_seconds.value():g}', '--out', out, '--iterations', str(self.iters.value()),
+                '--width', str(self.width_px.value()), '--device', self.device.currentData(), '--seed',
+                str(self.page.seed.value())]
+        proj = getattr(self.win, 'project', None)
+        wid = self.dash_world.currentData()
+        if wid and proj is not None and proj.path:
+            argv += ['--project', proj.path, '--world', wid]
+        return argv
+
+    def from_dashcam(self):
+        clip = self.dash_clip.text().strip()
+        if not clip or not os.path.isfile(clip):
+            self.note.setText('choose a dashcam clip first')
+            return None
+        stem = os.path.splitext(os.path.basename(clip))[0]
+        out = os.path.join(self.win.workspace(), 'recon', f'dashcam-{stem}-{self.dash_start.value():g}s')
+        job = self._submit('dashcam', self.dashcam_argv(out), f'Dashcam {stem} from {self.dash_start.value():g} s')
+        if job:
+            self.dash_dir = out
+            self.info.set('Source', f'{clip} from {self.dash_start.value():g} s for {self.dash_seconds.value():g} s')
+            self.info.set('Reconstruction', f'posing and training: {out}')
+        return job
+
+    def show_poses(self):
+        from ...core.provenance import read_json
+        p = os.path.join(self.rec_dir, 'dashcam.json')
+        if not os.path.isfile(p):
+            self.info.set('Poses', '—')
+            return
+        d = read_json(p)
+        a, g = d.get('alignment_vo_only') or {}, d.get('alignment_gps_aided') or {}
+        m = d.get('map') or {}
+        where = (f'on {m.get("name")}: {m.get("street") or "a road of the import"}' if m.get('on_map') else
+                 f'{m.get("distance_from_centre_m")} m from the imported area\'s centre (outside it)'
+                 if m.get('distance_from_centre_m') is not None else 'not placed on a world')
+        self.info.set('Poses', f'odometry against the GPS: median {a.get("median_m")} m, RMS {a.get("rms_m")} m '
+                               f'(GPS-aided: median {g.get("median_m")} m); f = '
+                               f'{(d.get("intrinsics") or {}).get("native", {}).get("f")} px at 3840 wide; {where}',
+                      tip=p)
 
     # ---------------------------------------------------------------- the log and its reconstruction
     def set_log(self, log, path: str):
@@ -115,8 +215,9 @@ class ReconPanel(QWidget):
             self.open_recon()
         else:
             self.info.set('Reconstruction', 'none yet')
-            for k in ('Held out', 'Novel views', 'Cost'):
+            for k in ('Poses', 'Held out', 'Novel views', 'Cost'):
                 self.info.set(k, '—')
+        self.refresh_worlds()
 
     def _submit(self, which: str, argv: list, title: str):
         from ...core.recon.train import job_spec
@@ -164,7 +265,9 @@ class ReconPanel(QWidget):
         if which is None:
             return
         self.note.setText(f'{which}: {job.state}' + (f' — {job.summary()}' if job.state != DONE else ''))
-        if job.state == DONE and which in ('train', 'eval'):
+        if job.state == DONE and which == 'dashcam' and self.dash_dir:
+            self.rec_dir = self.dash_dir
+        if job.state == DONE and which in ('train', 'eval', 'dashcam'):
             self.open_recon()
 
     def open_recon(self):
@@ -189,6 +292,7 @@ class ReconPanel(QWidget):
                               f'{dv.get("name", "?")}' + (f', peak {dv["peak_gpu_memory_gib"]} GiB'
                                                           if dv.get('peak_gpu_memory_gib') else ''))
         self.show_metrics()
+        self.show_poses()
         self.frame.blockSignals(True)
         self.frame.setRange(0, len(rec.frames) - 1)
         self.frame.setValue(min(self.frame.value(), len(rec.frames) - 1))
@@ -211,6 +315,9 @@ class ReconPanel(QWidget):
         rows = [f'{s["lateral_m"]:+.1f} m: {s["psnr"]} dB' for s in nv.get('shifts') or [] if s.get('psnr')]
         if rows:
             self.info.set('Novel views', '; '.join(rows) + ' (against range-warped CARLA frames)')
+        elif os.path.isfile(os.path.join(self.rec_dir, 'dashcam.json')):
+            self.info.set('Novel views', f'rendered sideways and raised / lowered (no reference exists there): '
+                                         f'{os.path.join(self.rec_dir, "renders")}')
 
     # ---------------------------------------------------------------- the viewer
     def request_render(self):

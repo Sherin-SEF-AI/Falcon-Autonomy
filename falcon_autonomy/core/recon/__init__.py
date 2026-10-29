@@ -13,8 +13,10 @@ the static scene only. docs/reconstruction.md is the manual.
 Modules: raster (the differentiable rasteriser, pure PyTorch), gaussians (parameters, the .ply layout, density
 control, Adam), data (posed images from Falcon runs, KITTI raw, nuScenes; masks; initial points), metrics (PSNR,
 SSIM, depth), train, scene (a trained reconstruction and its render API), evaluate (held-out frames, other runs,
-depth-warped references), rerender (a falcon-raw run from a shifted ego path), commands (`falcon recon`).
+depth-warped references), rerender (a falcon-raw run from a shifted ego path), vo (monocular visual odometry, bundle
+adjustment, intrinsics and the GPS alignment for a dashcam), fromdashcam (a dashcam segment posed, reconstructed and
+placed on an imported world), commands (`falcon recon`).
 
-Importing this package imports nothing heavy; torch is imported by the modules that need it (all but data and
-commands), so the GUI imports them only inside the functions that use them.
+Importing this package imports nothing heavy; torch is imported by the modules that need it (all but data, vo,
+fromdashcam and commands), so the GUI imports them only inside the functions that use them.
 """

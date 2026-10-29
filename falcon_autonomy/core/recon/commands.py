@@ -1,6 +1,6 @@
-"""`falcon recon train|eval|render|rerender|info` (docs/reconstruction.md). Protocol lines on stdout (core.protocol);
-exit codes 0 ok, 2 failed, 3 cancelled. A command that uses CUDA takes Falcon's GPU lock (core.training.gpu_locks)
-unless the job queue holds it for it (FALCON_GPU_LOCK_HELD=1); --device cpu needs no lock.
+"""`falcon recon train|from-dashcam|eval|render|rerender|info` (docs/reconstruction.md). Protocol lines on stdout
+(core.protocol); exit codes 0 ok, 2 failed, 3 cancelled. A command that uses CUDA takes Falcon's GPU lock
+(core.training.gpu_locks) unless the job queue holds it for it (FALCON_GPU_LOCK_HELD=1); --device cpu needs no lock.
 """
 from __future__ import annotations
 
@@ -58,11 +58,28 @@ def main_recon(argv) -> int:
                    ('max-gaussians', int), ('every', int), ('voxel-m', float), ('sky-points', int),
                    ('gpu-memory-fraction', float)):
         t.add_argument(f'--{k}', type=typ)
-    t.add_argument('--init', choices=('auto', 'lidar', 'sfm', 'range', 'random'))
+    t.add_argument('--init', choices=('auto', 'lidar', 'points', 'sfm', 'range', 'random'))
     t.add_argument('--camera')
     t.add_argument('--device')
     t.add_argument('--no-masks', action='store_true', help='learn from every pixel (moving objects included)')
     t.add_argument('--no-semantic', action='store_true', help='do not vote semantic classes')
+    dc = sub.add_parser('from-dashcam', help='pose a dashcam segment (visual odometry + its GPS), reconstruct it and '
+                                             'place it on an imported world\'s map')
+    dc.add_argument('--clip', required=True, help='the dashcam MP4 (with its embedded GPS)')
+    dc.add_argument('--start', type=float, default=0.0, help='seconds into the clip')
+    dc.add_argument('--seconds', type=float, default=20.0, help='the segment\'s length (10–30 s is the intended use)')
+    dc.add_argument('--out', '-o', help='the reconstruction folder (default: '
+                                        '~/FalconWorkspace/recon/dashcam-<clip>-<start>s)')
+    dc.add_argument('--config', help='a JSON file of settings (core.recon.fromdashcam.DEFAULTS; the flags override it)')
+    dc.add_argument('--intrinsics', help="'auto' (plumb-line k1 and a focal search), a JSON file an earlier run wrote "
+                                         "(intrinsics.json) or 'f=PX,k1=…,k2=…' in the clip's native pixels")
+    dc.add_argument('--project', help='a Falcon project (.falcon.json) whose imported world to place the segment on')
+    dc.add_argument('--world', help='the imported world\'s id in that project')
+    for k, typ in (('iterations', int), ('width', int), ('seed', int), ('image-every', int), ('vo-width', int)):
+        dc.add_argument(f'--{k}', type=typ)
+    dc.add_argument('--device')
+    dc.add_argument('--no-train', action='store_true', help='pose and place the segment only')
+    dc.add_argument('--keep-raw', action='store_true', help='keep the decoded (distorted) frames')
     e = sub.add_parser('eval', help='measure a reconstruction: held-out frames, another run beside the path, '
                                     'lateral shifts against depth-warped CARLA references')
     e.add_argument('recon')
@@ -110,6 +127,7 @@ def main_recon(argv) -> int:
     locks = []
     from .data import DataError
     from .train import Cancelled, ReconError
+    from .vo import VOError
     try:
         if a.cmd == 'train':
             from ..provenance import read_json
@@ -127,6 +145,24 @@ def main_recon(argv) -> int:
             locks = _locks(s.get('device') or 'auto', em, flag)
             res = train(a.source, a.out, s, em, flag, argv=['recon'] + list(argv))
             em.result('ok', run_json=os.path.join(a.out, 'run.json'), summary=res)
+            return P.OK
+        if a.cmd == 'from-dashcam':
+            from ..provenance import read_json
+            from .fromdashcam import default_out, from_dashcam
+            s = read_json(a.config) if a.config else {}
+            over = {'iterations': a.iterations, 'width': a.width, 'seed': a.seed, 'image_every': a.image_every,
+                    'vo_width': a.vo_width, 'device': a.device, 'intrinsics': a.intrinsics, 'project': a.project,
+                    'world': a.world}
+            s.update({k: v for k, v in over.items() if v is not None})
+            if a.no_train:
+                s['train'] = False
+            if a.keep_raw:
+                s['keep_raw'] = True
+            out = a.out or default_out(a.clip, a.start)
+            if s.get('train', True):
+                locks = _locks(s.get('device') or 'auto', em, flag)
+            res = from_dashcam(a.clip, out, a.start, a.seconds, s, em, flag, argv=['recon'] + list(argv))
+            em.result('ok', report=os.path.join(out, 'dashcam.json'), summary=res)
             return P.OK
         locks = _locks(a.device, em, flag)
         if a.cmd == 'eval':
@@ -156,7 +192,7 @@ def main_recon(argv) -> int:
     except (Cancelled, TCancelled, KeyboardInterrupt):
         em.result('cancelled')
         return P.CANCELLED
-    except (DataError, ReconError, ValueError, OSError, KeyError) as ex:
+    except (DataError, ReconError, VOError, ValueError, OSError, KeyError) as ex:
         print(f'failed: {ex}', flush=True)
         em.result('failed', error=str(ex))
         return P.FAILED

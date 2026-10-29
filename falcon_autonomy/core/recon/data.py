@@ -29,6 +29,11 @@ Sources:
   same frame's image. **Not masked**: the raw drives' tracklets are a separate download (not read), so moving
   vehicles stay in the images and blur the reconstruction where they pass — said in every result. The velodyne sweeps
   are not motion-compensated (KITTI raw's own limit).
+* **posed** — a folder of posed images (posed.json, images/, masks/, points.npz) written by another step, today
+  core.recon.fromdashcam (a dashcam segment posed by visual odometry and aligned to its GPS): every frame's image,
+  pinhole K (pixel-edge), world → optical matrix, ego and mount as the folder states them, an optional mask per frame
+  and the points to start from (init 'points': the odometry's triangulated points). The folder's own world, notes
+  and limits are carried into the capture's meta.
 * **nuscenes** — one camera channel (CAM_FRONT by default) of a scene, its key frames (annotated, 2 Hz); the pose
   from the sample_data's ego_pose and the calibrated sensor; masks from the key frame's annotated boxes of Falcon's
   actor classes (core.logreplay.ros2.falcon_class), each 3D box projected (its edges clipped at the near plane) and
@@ -38,9 +43,10 @@ Sources:
 Initialisation (init): 'lidar' (the source's lidar, voxel-averaged), 'sfm' (structure from the known poses: SIFT
 features (Lowe 2004) matched between frames about baseline_m apart with Lowe's ratio test, triangulated with the
 known projection matrices and kept when both reprojection errors are below 1.5 px, the ray angle above 1° and the
-depth within 0.5–200 m — heuristic thresholds), 'range' (Falcon runs only: the ground-truth range image, sparsely
-sampled) or 'random'. 'auto' is lidar when the source has it, else sfm. Every initialisation adds a far shell of
-Gaussians (marked sky) around the cameras — 1.5 × the 99th percentile of the points' distance, at least 100 m — so the
+depth within 0.5–200 m — heuristic thresholds), 'points' (the points a posed folder brings: a dashcam's
+odometry), 'range' (Falcon runs only: the ground-truth range image, sparsely sampled) or 'random'. 'auto' is lidar
+when the source has it, else the source's own points when it brings them, else sfm. Every initialisation adds a far
+shell of Gaussians (marked sky) around the cameras — 1.5 × the 99th percentile of the points' distance, at least 100 m — so the
 sky and the far background have something to become (heuristic).
 """
 from __future__ import annotations
@@ -59,7 +65,8 @@ CARLA_TO_OPTICAL = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]
 DYNAMIC_CLASSES = (12, 13, 14, 15, 16, 17, 18, 19)      # CARLA tags: pedestrian, rider, car … bicycle
 EGO_CLASS = 29
 SKY_CLASS = 11
-INIT_KINDS = ('auto', 'lidar', 'sfm', 'range', 'random')
+INIT_KINDS = ('auto', 'lidar', 'points', 'sfm', 'range', 'random')
+POSED_SCHEMA = 'falcon.posed_images/1'
 
 
 class DataError(ValueError):
@@ -94,6 +101,7 @@ class Capture:
     frames: list
     lidar: object = None          # a callable () -> (xyz (N, 3), rgb (N, 3) in [0, 1]) or None
     meta: dict = field(default_factory=dict)
+    points: object = None         # a callable () -> (xyz, rgb): points the source brings (not a lidar), or None
 
     def summary(self) -> dict:
         c = np.array([f.centre for f in self.frames])
@@ -189,20 +197,22 @@ def parse_source(text: str) -> tuple:
     from urllib.parse import parse_qsl
     kind, path = None, text
     head, sep, rest = text.partition(':')
-    if sep and head in ('falcon', 'kitti_raw', 'nuscenes') and not (len(head) == 1 and rest.startswith('\\')):
+    if sep and head in ('falcon', 'kitti_raw', 'nuscenes', 'posed') and not (len(head) == 1 and rest.startswith('\\')):
         kind, path = head, rest
     path, _, q = path.partition('?')
     opts = dict(parse_qsl(q))
     path = os.path.abspath(os.path.expanduser(path))
+    if kind is None and os.path.isfile(os.path.join(path, 'posed.json')):
+        kind = 'posed'
     if kind is None:
         from ..logreplay import detect_kind
         kind = detect_kind(path)
         if kind == 'kitti_raw' and os.path.basename(path) == 'oxts':
             path = os.path.dirname(path)
-    if kind not in ('falcon', 'kitti_raw', 'nuscenes'):
-        raise DataError(f'{text}: a reconstruction reads posed images from a Falcon run, a KITTI raw drive or a '
-                        f'nuScenes release (found: {kind or "nothing it knows"}); ROS 2 bags and Waymo logs are read '
-                        f'for trajectories only')
+    if kind not in ('falcon', 'kitti_raw', 'nuscenes', 'posed'):
+        raise DataError(f'{text}: a reconstruction reads posed images from a Falcon run, a KITTI raw drive, a '
+                        f'nuScenes release or a posed-image folder (found: {kind or "nothing it knows"}); ROS 2 bags '
+                        f'and Waymo logs are read for trajectories only')
     return kind, path, opts
 
 
@@ -219,6 +229,8 @@ def open_capture(source, camera: str | None = None, **opts) -> Capture:
         return falcon_capture(path, camera, every=int(o.get('every', 1)))
     if kind == 'kitti_raw':
         return kitti_capture(path, camera or 'image_02', every=int(o.get('every', 1)))
+    if kind == 'posed':
+        return posed_capture(path, every=int(o.get('every', 1)))
     return nuscenes_capture(path, o.get('scene'), camera or 'CAM_FRONT')
 
 
@@ -445,6 +457,54 @@ def _kitti_lidar(vdir, cap, T_velo_imu, max_sweeps: int = 40, max_range: float =
         xs.append(w)
         cs.append(colour_points(w, nearest_frames(cap.frames, fr.t)))
     return np.concatenate(xs), np.concatenate(cs)
+
+
+# ------------------------------------------------------------------------------------------------ posed images
+def posed_capture(path: str, every: int = 1) -> Capture:
+    """A folder of posed images (posed.json; module doc)."""
+    path = os.path.abspath(path)
+    pj = os.path.join(path, 'posed.json')
+    if not os.path.isfile(pj):
+        raise DataError(f'{path}: no posed.json (a posed-image folder)')
+    with open(pj, encoding='utf-8') as fh:
+        doc = json.load(fh)
+    if doc.get('schema') != POSED_SCHEMA:
+        raise DataError(f'{pj}: schema {doc.get("schema")!r}, expected {POSED_SCHEMA}')
+    frames = []
+    for k, r in enumerate(doc['frames']):
+        if k % max(1, every):
+            continue
+        m = os.path.join(path, r['mask']) if r.get('mask') else None
+        frames.append(Frame(int(r['index']), float(r['t']), os.path.join(path, r['image']),
+                            tuple(float(v) for v in r['K']), tuple(int(v) for v in r['size']),
+                            np.asarray(r['viewmat'], float).reshape(4, 4), np.asarray(r['ego'], float).reshape(4, 4),
+                            np.asarray(r['mount'], float).reshape(4, 4), _png_mask(m) if m else None, None, None,
+                            r.get('name') or f'{doc.get("name", "posed")}/{r["index"]}'))
+    if not frames:
+        raise DataError(f'{path}: posed.json lists no frames')
+    meta = {k: doc.get(k) for k in ('world', 'geo', 'name', 'masks', 'notes', 'left_out', 'heuristic', 'source')}
+    meta.update(carla_exact=False, inputs={'posed.json': pj})
+    for k, v in (('notes', []), ('left_out', []), ('heuristic', []), ('masks', 'none')):
+        if meta.get(k) is None:
+            meta[k] = v
+    cap = Capture('posed', path, doc.get('camera') or 'camera', frames, None, meta)
+    pts = os.path.join(path, doc['points']) if doc.get('points') else None
+    if pts and os.path.isfile(pts):
+        def points():
+            with np.load(pts) as z:
+                return np.asarray(z['xyz'], float), np.asarray(z['rgb'], float)
+        cap.points = points
+    return cap
+
+
+def _png_mask(p):
+    def mk():
+        import cv2
+        m = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
+        if m is None:
+            raise DataError(f'cannot read the mask {p}')
+        return m > 127
+    return mk
 
 
 # ------------------------------------------------------------------------------------------------ nuScenes
@@ -780,7 +840,7 @@ def init_points(cap: Capture, init: str = 'auto', train_frames=None, voxel: floa
         raise DataError(f'init is one of {", ".join(INIT_KINDS)}')
     how = init
     if init == 'auto':
-        how = 'lidar' if cap.lidar is not None else 'sfm'
+        how = 'lidar' if cap.lidar is not None else ('points' if cap.points is not None else 'sfm')
     stats = {}
     if how == 'lidar':
         if cap.lidar is None:
@@ -788,6 +848,12 @@ def init_points(cap: Capture, init: str = 'auto', train_frames=None, voxel: floa
         xyz, rgb = cap.lidar()
         stats['raw_points'] = int(len(xyz))
         xyz, rgb = voxel_average(xyz, rgb, voxel, max_points, seed)
+    elif how == 'points':
+        if cap.points is None:
+            raise DataError(f'{cap.path}: the source brings no points for init=points')
+        xyz, rgb = cap.points()
+        stats['raw_points'] = int(len(xyz))
+        xyz, rgb = voxel_average(xyz, rgb, voxel / 3, max_points, seed)
     elif how == 'sfm':
         xyz, rgb, st = sfm_points(frames, width, seed=seed)
         stats.update(st)

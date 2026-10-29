@@ -10,6 +10,7 @@ keeps the log's own pixels — of the **static scene** only. The code is `core/r
 falcon recon train --source falcon:~/demo.falcon/runs/drive --out ~/demo.falcon/recon/drive
 falcon recon train --source kitti_raw:~/kitti/2011_09_26/2011_09_26_drive_0005_sync --out ~/demo.falcon/recon/k5
 falcon recon train --source 'nuscenes:~/data/nuscenes?scene=scene-0061' --out ~/demo.falcon/recon/s61
+falcon recon from-dashcam --clip ~/Videos/dashcam-videos/Movie_F/clip.MP4 --start 0 --seconds 20
 falcon recon eval ~/demo.falcon/recon/drive --warp-shift 0.5 --warp-shift 1.0 --warp-check 1.0 \
     --reference falcon:~/demo.falcon/runs/other-lane
 falcon recon render ~/demo.falcon/recon/drive --frame 40 --lateral 1.0 --out view.png --depth-out range.png
@@ -18,9 +19,9 @@ falcon recon info ~/demo.falcon/recon/drive
 ```
 
 `train` also takes `--iterations` (7000), `--width` (640: images are worked on at most this wide), `--init
-auto|lidar|sfm|range|random`, `--holdout` (8), `--seed`, `--sh-degree` (3), `--max-gaussians` (600 000), `--every`,
-`--camera`, `--device`, `--no-masks`, `--no-semantic`, `--config FILE`. `render` and `rerender` take `--lateral`
-(metres to the right), `--forward`, `--up`, `--yaw` (degrees, CARLA's sense: positive turns right), `--mount
+auto|lidar|points|sfm|range|random`, `--holdout` (8), `--seed`, `--sh-degree` (3), `--max-gaussians` (600 000),
+`--every`, `--camera`, `--device`, `--no-masks`, `--no-semantic`, `--config FILE`. `render` and `rerender` take
+`--lateral` (metres to the right), `--forward`, `--up`, `--yaw` (degrees, CARLA's sense: positive turns right), `--mount
 x,y,z,roll,pitch,yaw` (the camera's mount in CARLA's vehicle frame, as in a rig), `--fov` and `--size WxH`. Exit codes
 are the CLI's ([cli](cli.md#exit-codes)).
 
@@ -94,6 +95,7 @@ anyway; the tests write their own KITTI- and nuScenes-shaped folders with made-u
 |---|---|---|---|
 | `falcon:RUN` | a pinhole camera's `rgb/`; the ego pose of `frames.jsonl` and the camera's actual mount (its faults included); K from its field of view | every vehicle and walker (instance labels → objects with a CARLA actor id; without instance labels, the vehicle and person classes — parked map cars too) and the ego's body | every sweep's static returns (actor id 0, not the ego, not weather noise) through `lidar_pose` |
 | `kitti_raw:DRIVE` | `image_02/` (or `image_03/`), rectified; OXTS poses exactly as log replay reads them; the date folder's calibration, cam ← world = [I \| K⁻¹·P_rect's offset] · R_rect_00 · T_cam0←velo · T_velo←imu · T_imu←world (the devkit's chain) | **none**: the tracklets are a separate download and are not read, so moving vehicles stay in the images and blur the reconstruction where they pass | `velodyne_points/` (not motion-compensated: KITTI raw's own limit) |
+| `posed:DIR` | a posed-image folder (`posed.json`, `images/`, `masks/`, `points.npz`), today written by `from-dashcam` ([From a dashcam](#from-a-dashcam)): each image's pinhole K, world → camera matrix, ego and mount as the folder states them | the folder's per-image masks | none: its `points.npz` (`--init points`) |
 | `nuscenes:ROOT?scene=NAME` | one camera's key frames (`CAM_FRONT` by default), each with its own ego pose and calibrated sensor | the key frame's annotated boxes of Falcon's actor classes, projected (edges clipped at the near plane), filled and dilated 2 px | `LIDAR_TOP` key-frame sweeps, points inside annotated boxes left out |
 
 Checked: a Falcon run's lidar points against its own range labels (median |difference| 0.12 m for every sweep's
@@ -110,7 +112,8 @@ as log replay would write it. Cameras are OpenCV's optical frame; intrinsics are
 
 ## Starting points
 
-`--init auto` uses the source's lidar when it has one, else **structure from the known poses**: SIFT features (Lowe
+`--init auto` uses the source's lidar when it has one, else the points a `posed:` folder brings (`points`: a
+dashcam's odometry), else **structure from the known poses**: SIFT features (Lowe
 2004) matched between frames about 1 m apart (Lowe's ratio test, 0.75), triangulated with the known projection
 matrices, kept when both reprojection errors are below 1.5 px, the rays meet at over 1° and the depth is 0.5–200 m
 (heuristic thresholds), masked pixels never used. `range` (Falcon runs only) samples the ground-truth range labels — a
@@ -315,6 +318,169 @@ are shown. *Measure novel views* runs `falcon recon eval` with ±0.5 m and ±1 m
 check; *Re-render the log from the shifted path* runs `falcon recon rerender` at the slider's offset into the
 workspace's runs.
 
+## From a dashcam
+
+```sh
+falcon recon from-dashcam --clip ~/Videos/dashcam-videos/Movie_F/clip.MP4 --start 0 \
+    --seconds 20 --project ~/FalconWorkspace/Bengaluru.falcon.json --world w-blr
+    # → ~/FalconWorkspace/recon/dashcam-<clip>-<start>s
+falcon recon from-dashcam --clip … --start 34 --seconds 20 \
+    --intrinsics ~/FalconWorkspace/recon/dashcam-…/intrinsics.json
+```
+
+A consumer dashcam gives neither calibrated intrinsics nor poses: only its video and about one GPS fix a second
+(metres of error, no orientation). `from-dashcam` (`core/recon/fromdashcam.py`, `core/recon/vo.py`; OpenCV, numpy and
+scipy — COLMAP, OpenSfM and pycolmap are not used) poses a short segment (10–30 s of moving, daytime driving) itself and
+hands the posed images to the reconstruction above as a `posed:` source. The clip's frames and GPS come from the
+dashcam ingest (`core/dashcam.py`, [dashcam](dashcam.md)). Other flags: `--iterations`, `--width`, `--seed`,
+`--device`, `--image-every` (3: every third decoded frame is a posed image), `--vo-width` (960), `--no-train`,
+`--keep-raw`, `--config FILE` (every setting of `fromdashcam.DEFAULTS`). The page: *From a dashcam* in the
+*Reconstruction* section of *Replay* (a clip, a window, a world; the result opens in the section's view).
+
+### The method
+
+1. **Frames and GPS.** Every frame of the window (30 a second) is decoded through `core.dashcam` (NVDEC when it
+   works): grey copies at 960 × 540 for the odometry, every third frame kept at 1920 × 1080 for the images. The GPS
+   fixes in the window (±2 s) on the video's clock, with their speed over ground.
+2. **What not to track.** The bonnet and the camera's burnt-in text: pixels whose mean absolute difference between
+   frames 0.5 s apart stays under 3 grey levels, connected to the bottom edge — plus a fixed bottom band of 9 %,
+   because this camera's bonnet reflects the moving scene and so changes (heuristic, measured on the user's clips: the
+   bonnet's top is at 91 % of the height). The posed images are cropped above it. A corridor of the road ahead
+   (34–66 % of the width, the bottom 45 %) is left out of the odometry only (not of the images): the traffic the
+   camera follows sits there (heuristic; on the first segment it cut the odometry-only GPS residual from 16.3 m to
+   5.6 m RMS).
+3. **Intrinsics** (unknown). The overlay names the camera model (a consumer 4K dashcam); retailers state a 170° field for its
+   front camera, with no manufacturer's sheet found — a fisheye-style diagonal figure that says nothing about a
+   pinhole's focal length, so it is not used. Instead:
+   * **k1 by the plumb-line method** (Brown 1971): Canny edge chains that are straight for some k1 and lie off the
+     centre; the k1 that straightens them best, its spread by a bootstrap. It is used only when it differs from 0 by
+     more than twice that spread (the grid stops where a barrel term would fold the image back). The principal point
+     is assumed at the image centre and k2 = 0.
+   * **f by a focal search**: the odometry (below) run with horizontal fields of 90°–130° (`hfov_grid`). On a
+     segment that turns by 30° or more (GPS course) f is measured directly: a rotation moves the image by f × the
+     angle, so the camera's yaw change seen by an odometry run with a wrong f is scaled, and each candidate gives
+     f × (camera yaw change / course change); their median is used. Otherwise the candidate whose track fits the GPS
+     best (the median residual of the odometry-only alignment, step 6) is taken — a weak criterion, since f is barely
+     determined by forward driving: on KITTI raw drive 0015 (a calibrated, global-shutter camera; 363 m) the
+     odometry's error against OXTS changed by under 0.3 m with f off by −20 … +25 %, and the reprojection error not at
+     all. Self-calibration in the bundle adjustment (f and k1 free; `vo.self_calibrate`) recovers f to ±5 % on
+     synthetic streets with rotation (tests) but was unstable on the dashcam footage (f wandered between rounds and k1
+     ran off), so it is not used by default.
+   * `--intrinsics FILE` reuses a run's `intrinsics.json` (native 3840 × 2160 pixels) for other segments of the
+     same camera.
+4. **Visual odometry.** KLT tracks (Shi–Tomasi corners, forward–backward check, an essential-matrix RANSAC between
+   consecutive frames drops points leaving their epipolar lines), an essential-matrix start, keyframes by parallax,
+   PnP for every frame, triangulation at keyframes, a local bundle adjustment over 12 keyframes, a global one at the
+   end. The bundle adjustment is Levenberg–Marquardt with analytic derivatives, a Huber loss and the Schur complement
+   (`vo.bundle_adjust`): `scipy.optimize.least_squares` was tried first, and with a Huber loss its trust-region
+   solver stalled (58 → 40 px RMS in 100 evaluations on a synthetic 8-camera problem whose solution is 0.26 px).
+   **The GPS speed holds the scale**: the speed over ground integrated between two frames is the distance travelled
+   (σ = 3 % + 5 cm, heuristic: Doppler speed is good to ~0.1 m/s, its timing to ~0.5 s); the map is metric from the
+   first keyframe pair, every bundle adjustment holds consecutive keyframes to those distances, and each frame's pose
+   is first predicted at that distance, the map points more than 6 px from the prediction left out (and dropped after
+   three such frames). Without this the odometry was useless on the user's footage: points on a tanker the car was
+   overtaking — moving along their epipolar lines, so no epipolar test sees them — pulled the PnP towards standing
+   still and the scale fell about sixfold in five seconds. The GPS *positions* are not used by the odometry.
+5. **Up and the road.** "Up" is the cameras' mean up axis made perpendicular to the direction of travel; the road
+   plane is fitted (RANSAC, 12 cm) among the points 0.5–3 m below the cameras and within 8 m of their path; z = 0 is
+   that plane and the camera's height above it a check on the scale (a windscreen camera sits about 1.2–1.5 m up).
+6. **The GPS alignment** (`vo.align_to_gps`): a robust similarity (RANSAC, then Huber-reweighted Umeyama) from the
+   levelled odometry to the fixes in a local east-north-up frame (transverse Mercator about the first fix). **Its
+   residuals are the honest measure**: the odometry never saw the positions. The GPS latency against the video
+   (±0.5 s per the ingest) is searched over ±1 s but only believed when it improves the median residual by 25 % *and*
+   50 cm: on a straight road at constant speed (or an arc) a latency is indistinguishable from an offset along the
+   track, and on a synthetic straight drive the float32 quantisation of the coordinates alone moved the best lag to
+   0.6 s.
+7. **GPS-aided poses** (`vo.gps_aided_ba`): a final bundle adjustment of the metric, geolocated map with every keyframe
+   pulled towards its interpolated fix (σ 3 m east and north) and towards the camera height above z = 0 (σ 2 m: flat
+   roads assumed). These are the poses the reconstruction uses; their residuals against the fixes are reported too
+   but are **not independent** (the fixes are in the adjustment). The frames between keyframes are re-placed by PnP,
+   or interpolated between the keyframes when PnP strays from their path.
+8. **Posed images.** The kept frames undistorted to a pinhole and cropped to the valid area above the bonnet (960 px
+   wide), each with a mask of moving pixels: dense Farnebäck flow to the frame 0.1 s later more than 2 px off its
+   epipolar line, opened and dilated — catches crossing traffic, not traffic moving along the camera's line; a frame
+   whose mask covers more than 40 % (the test failed there) is left unmasked. The odometry's points, coloured from the
+   images, start the Gaussians (`--init points`, the default for this source).
+9. **Reconstruction and novel views**: `core.recon.train` with the settings above (7000 steps, 640 px); held-out every
+   8th image as always, also split at the horizon (pixels whose ray points below / above the horizontal — the sky is a
+   large, smooth part of a dashcam frame and flatters the whole-image numbers); then a few held-out frames rendered
+   with the ego 0.5 m and 1 m to either side and the camera 0.5 m up and down (`renders/novel-*`). Nothing was
+   recorded at those poses, so they are judged by eye.
+10. **On the map**: the geolocated track converted into the imported world's frame (`core.dashcam.to_world`), the share
+    inside the import box, the distance and bearing from its centre and, when the track passes within 50 m of the
+    imported lanes, the nearest imported road's name (graph.json), log replay's map match of the track
+    (`core.logreplay.mapmatch`: on a lane in its direction, lateral offset) and the share of the reconstruction's
+    road-plane points (within 15 cm of z = 0 and 25 m of the path) that fall within an imported driving lane's half
+    width + 0.25 m — a heuristic: kerbs, verges and parked cars on the plane count against it, unused lanes for it.
+
+### Measured on the user's dashcam
+
+On 2026-10-29, RTX 5080, defaults (seed 0). The clips (a consumer 4K dashcam, 3840 × 2160 HEVC at 30 frames
+a second, GPS at 1 Hz) are private: only numbers are given here. **No clip lies inside the imported 1 km² of central
+Bengaluru** (`w-blr`): every fix is several kilometres outside it, and the clips in the city were recorded after
+sunset. Three daytime segments of a highway drive well outside the imported area were taken, so no lane alignment can
+be measured for them (their placement in `w-blr`'s frame is in each run's `dashcam.json`).
+
+| segment | speed | GPS course change | traffic |
+|---|---|---|---|
+| A: one clip, 0–20 s | 40–74 km/h | 17° (a gentle curve) | a car and a tanker ahead, overtaking |
+| B: the same clip, 34–54 s | 87–101 km/h | 61° (a long curve) | light; a motorcycle |
+| C: another clip, 20–40 s | 87–94 km/h | 1° (straight) | a car ahead |
+
+**Intrinsics.** f was measured on B (the turn): the five candidates' turn estimates were 586, 561, 553, 530 and 541 px
+at 960 px wide (a separate calibration run on the same segment with candidates of 75–110° gave 556–586 px): **f = 553
+px at 960 wide, 2213 px at 3840 (a pinhole field of 81.9° horizontal), ±3 % (the spread of the estimates)**. A and C
+reuse it (`--intrinsics`). As an independent check, on A — which did not contribute to the estimate — the camera's yaw
+change came out −17.6° against a GPS course change of −17.35° (with the first guess of 100°, f = 403 px, it had been
+−24.8°). The plumb-line k1 was +0.04 ± 0.05 on A (not used: not different from 0) and at the edge of its grid on B
+(not used): **k1 = 0 assumed** — the frames show no visible barrel distortion (the camera likely corrects it itself);
+k2 and the principal point were not estimated.
+
+**Poses against the GPS** (metres; the odometry-only alignment is independent of the fixes, the GPS-aided one is not;
+the GPS has metres of error of its own):
+
+| segment | path (GPS) | odometry only: RMS / median / max | scale | GPS-aided: RMS / median / max | camera yaw vs course |
+|---|---|---|---|---|---|
+| A | 305 m | **3.5 / 2.8 / 6.7** | 1.061 | 4.4 / 3.6 / 11.6 | −17.6° / −17.35° |
+| B | 525 m | **8.1 / 4.0 / 27.6** | 1.049 | 7.3 / 3.8 / 26.0 | +64.9° / +61.3° |
+| C | 470 m | **11.3 / 3.0 / 28.6** | 0.958 | 4.0 / 3.5 / 8.5 | −10.3° / −0.3° |
+
+The scale (1 = the GPS speed's metres) stayed within 6 % thanks to the speed priors. The medians are at the GPS's own
+level; the maxima are not: on B and C the odometry's heading drifts (on C 10° on a straight road), and the summed
+frame-to-frame path is 2–26 % longer than the GPS's — the poses jitter. On B, f = 572 px (the 80° candidate of the
+calibration run) gave 4.3 m RMS where 553 px gave 8.1 m: the odometry on this footage is that sensitive. The
+reprojection error of the GPS-aided poses: median 0.53–0.71 px, 95–97 % of the observations within 4 px (960 px
+wide). The road plane was believed (1.94 m camera height, high for a car) on C only; A and B use the assumed 1.3 m.
+
+**Reconstructions** (640 × 323, 7000 steps; 175 training and 25 held-out images 0.1 s apart, i.e. 1.2–2.8 m):
+
+| segment | held out: PSNR / SSIM | below the horizon | above it (mostly sky) | Gaussians | training |
+|---|---|---|---|---|---|
+| A | 28.27 / 0.885 | **24.98 / 0.693** | 29.95 / 0.934 | 57 933 | 366 s (19.1 steps/s), peak 1.36 GiB |
+| B | 26.37 / 0.851 | **22.97 / 0.654** | 28.26 / 0.906 | 45 561 | 429 s (16.3 steps/s), peak 1.37 GiB |
+| C | 28.41 / 0.891 | **23.19 / 0.656** | 31.72 / 0.941 | 38 725 | 369 s (19.0 steps/s), peak 1.34 GiB |
+
+Below the horizon — about 23 % of each image here, because this camera looks up (the direction of travel is 17° below
+its optical axis) — the reconstructions reach 23–25 dB and SSIM 0.65–0.69, against 27–29 dB / 0.85–0.90 on CARLA
+drives above: the road and the verges are recognisable but soft, poles and wires are mostly lost, and the traffic the
+masks miss (cars driving ahead) leaves dark, smeared ghosts on the road. The renders 0.5 m and 1 m to the side and
+0.5 m up and down look like the same blurred scene from slightly elsewhere; nothing was recorded there, so no number
+can be given. Few Gaussians grew (39–58 k, against 270–600 k on CARLA): the odometry's 5–11 k points are a sparse
+start and the far shell takes the sky.
+
+**Costs** (per 20 s segment, 600 frames): decoding 3.9–4.2 s (NVDEC, 1920 × 1080); tracking 4.0–4.8 s; the
+odometry 8.8–10.1 ms a frame beside its local bundle adjustments, which took 0.12–0.14 s each (12 keyframes, one per
+keyframe, 120–172 of them); the global adjustment 13–24 s (two rounds, 30–43 k observations); the GPS-aided one
+6–17 s; the focal search 187 s (five candidates, B only); undistorting and writing the images 5–6 s; the
+reconstruction 6–7 minutes. The whole run took 7.0–7.5 minutes (A, C) and 11.2 minutes (B, with the search), 2.7 GB of
+memory at most.
+
+Output (`--out`): `dashcam.json` (every number of every step), `intrinsics.json`, `posed/` (`posed.json`, `images/`,
+`masks/`, `points.npz` — the `posed:` source), and the reconstruction's own files (`point_cloud.ply`, `views.json`,
+`evaluation.json`, `renders/`, `run.json`). **The footage is private**: nothing is copied anywhere but `--out`, and the
+tests use synthetic clips (a textured street rendered along a known track, encoded with ffmpeg, given a GPS index in
+the camera's layout).
+
 ## Limits
 
 - **Extrapolation degrades fast**: the measured numbers above fall with every metre off the recorded path, and areas
@@ -330,6 +496,13 @@ workspace's runs.
 - **LPIPS** is not reported; nuScenes and Waymo are not verified on real files (none on this machine); Waymo and ROS 2
   bags are not reconstructed.
 - Re-rendered runs have no objects labels; their range and semantic labels are estimates.
+- **From a dashcam**: monocular odometry with the GPS speed for scale; the poses are only as good as the measured
+  residuals (metres against the GPS, which has metres of error itself). Not modelled: rolling shutter, auto-exposure,
+  motion blur, the windscreen (rain drops, wipers). Traffic moving along the camera's line is neither masked nor
+  fully kept out of the odometry (the corridor and the speed gate are heuristics), and it leaves ghosts in the
+  reconstruction. The principal point is assumed central and k2 = 0; f is measured only on a turn. Flat roads are
+  assumed for "up" and the height prior; the GPS latency is taken as 0 unless the fit clearly says otherwise. A
+  segment far from an imported world cannot be checked against its lanes.
 
 ## Licences
 
