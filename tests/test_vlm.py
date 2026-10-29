@@ -2,9 +2,13 @@
 
 The scorer is calibrated against hand-written answers whose scores are known, on hand-made states (core.language's
 build_state) — counts, yes/no, lanes, sides, motion, tolerance bands, grounding, hallucination and the faithfulness of
-brake explanations. End to end on two drives the drive worker records against the fake carla: the resolver reproduces
-every phrase core.language grounded; the oracle scores 1.0 everywhere; the noisy baseline scores exactly what its
-corruption log predicts; a cancelled evaluation resumes to the same answers. The Hugging Face runner and LoRA run on a
+brake explanations. The visibility rule (the truth holds only what the camera shows) on hand-made objects lists: an
+actor behind the ego, an occluded one and one under the pixel limit are left out of counts and object questions, the
+lead and brake questions are skipped when their object is hidden, and a mention of a hidden actor is "not visible",
+not a hallucination; the all-actors truth keeps the old questions and scores. End to end on two drives the drive
+worker records against the fake carla: the resolver reproduces every phrase core.language grounded; the oracle scores
+1.0 everywhere under both truths; the noisy baseline scores exactly what its corruption log predicts; a cancelled
+evaluation resumes to the same answers. The Hugging Face runner and LoRA run on a
 tiny randomly initialised Idefics3 (SmolVLM's architecture) built here offline — no weights are downloaded, and
 fetch() is tested against a local file:// repository.
 """
@@ -58,6 +62,27 @@ def _danger():
     return rec, V.context_of(rec, MAN, 'd0')
 
 
+def _seen(*rows):
+    """An objects/<camera>/<n>.json "objects" list: (track id, pixels, occluded) per object."""
+    return [{'track_id': t, 'actor_id': t, 'class': 'car', 'pixels': p, 'occluded': o, 'truncated': 0.0}
+            for t, p, o in rows]
+
+
+def _hidden(visible=True):
+    """_calm's scene and two more cars: 13, 33 m ahead in the lane to the right, and 14, 40 m ahead in the oncoming
+    lane. The camera shows the lead (10, 900 pixels) and car 14 at the limits of the rule (20 pixels, 0.9 occluded);
+    the pedestrian (11) is 95 % occluded, car 13 shows 19 pixels and the oncoming car behind the ego (12) is not in the
+    image at all."""
+    lead = _row(10, 25.0, 0.0, vx=5.0)
+    ped = _row(11, 12.0, 3.0, ext=PED[1], cat=PED[0])
+    onc = _row(12, -15.0, -3.5, yaw=180.0, vx=-8.0)
+    far = _row(13, 33.0, 3.5, vx=10.0)
+    lim = _row(14, 40.0, -3.5, yaw=180.0, vx=-8.0)
+    rec = _record(L.build_state(5, 0.25, EGO, [lead, ped, onc, far, lim], _lanes(), frame=105))
+    objs = _seen((10, 900, 0.1), (11, 400, 0.95), (13, 19, 0.0), (14, 20, 0.9), ('level:3', 5000, 0.0))
+    return rec, V.context_of(rec, MAN, 'd0', visible=V.visible_ids(objs) if visible else None)
+
+
 def _q(qs, kind, target=None):
     return next(q for q in qs if q['type'] == kind and (target is None or q['target'] == target))
 
@@ -89,6 +114,175 @@ def test_the_template_answers_score_perfectly_and_ground_to_their_targets():
             s = V.score_answer(q, q['template'], ctx)
             assert s['correct'], (q, s)
             assert s['hallucinated'] == 0 and s['grounded'] in (True, None), (q, s)
+
+
+# --------------------------------------------------------------------------------------------------------- visibility
+def test_only_actors_the_camera_shows_are_counted_and_asked_about():
+    from falcon_autonomy.core.harness import MAX_OCCLUDED, MIN_PIXELS
+    assert (MIN_PIXELS, MAX_OCCLUDED) == (20, 0.9)
+    assert V.visible_ids(_seen((10, 900, 0.1), (11, 400, 0.95), (13, 19, 0.0), (14, 20, 0.9))) == {10, 14}
+    rec, ctx = _hidden()
+    _, every = _hidden(visible=False)
+    assert ctx['truth'] == 'visible' and every['truth'] == 'all-actors'
+    qs, old = V.questions(rec, ctx, {'max_objects': 4}), V.questions(rec, every, {'max_objects': 4})
+    cv, cp = _q(qs, 'count_vehicles'), _q(qs, 'count_pedestrians')
+    assert cv['text'] == 'How many vehicles can you see within 50 m?' and cv['truth'] == {'value': 2, 'ids': [10, 14]}
+    assert cp['truth']['value'] == 0 and cp['template'] == 'None within 50 m.'
+    assert _q(old, 'count_vehicles')['text'] == 'How many vehicles are within 50 m of you?'
+    assert _q(old, 'count_vehicles')['truth']['value'] == 4 and _q(old, 'count_pedestrians')['truth']['value'] == 1
+    per = ('distance', 'relative_position', 'motion', 'speed', 'lane')
+    assert {q['target'] for q in qs if q['type'] in per} == {10, 14}             # not behind, occluded or too small
+    assert {q['target'] for q in old if q['type'] in per} == {10, 11, 12, 13}
+    assert V.skipped(rec, ctx, {'max_objects': 4}) == {t: 2 for t in per}   # two objects fewer, nothing else
+    assert V.skipped(rec, every, {'max_objects': 4}) == {}
+    # phrases are core.language's, among the visible actors: with car 13 hidden, car 14 is the second-nearest ahead
+    assert L._def_by_direction(every['by_id'][14], every['agents']) == 'the third-nearest car ahead'
+    assert 'the second-nearest car ahead' in _q(qs, 'distance', 14)['text']
+    assert _q(qs, 'speed', 14)['template'].startswith('The second-nearest car ahead moves')
+    lead = _q(qs, 'lead')
+    assert lead['text'] == 'Can you see a vehicle ahead of you in your lane within 50 m?' and lead['target'] == 10
+    for q in qs:                                                            # the oracle stays perfect
+        s = V.score_answer(q, q['template'], ctx)
+        assert s['correct'] and s['hallucinated'] == 0 and s['not_visible'] == 0, (q, s)
+        assert s['grounded'] in (True, None), (q, s)
+
+
+def test_lead_and_brake_questions_are_skipped_when_their_object_is_hidden():
+    rec, _ = _danger()                                    # the lead car 20 (TTC 1.6 s) and the pedestrian 21 in path
+    ctx = V.context_of(rec, MAN, 'd0', visible=V.visible_ids(_seen((21, 300, 0.2))))
+    qs = V.questions(rec, ctx)
+    kinds = [q['type'] for q in qs]
+    assert 'lead' not in kinds and 'ttc' not in kinds
+    assert all(20 not in (q['target'] if isinstance(q['target'], list) else [q['target']]) for q in qs)
+    brake, why = _q(qs, 'brake'), _q(qs, 'brake_reason')
+    assert brake['truth'] == {'value': True} and brake['target'] == [21]
+    assert [r['id'] for r in why['truth']['reasons']] == [21] and 'pedestrian' in brake['template']
+    assert 'car' not in brake['template'] and 'car' not in why['template']
+    for q in qs:
+        s = V.score_answer(q, q['template'], ctx)
+        assert s['correct'] and s['hallucinated'] == 0 and s['not_visible'] == 0, (q, s)
+    sk = V.skipped(rec, ctx)
+    assert sk['lead'] == 1 and sk['ttc'] == 1 and 'brake' not in sk and 'brake_reason' not in sk
+    blind = V.context_of(rec, MAN, 'd0', visible=set())                    # nothing in the image
+    kinds = [q['type'] for q in V.questions(rec, blind)]
+    assert kinds == ['count_vehicles', 'count_pedestrians', 'count_cyclists']
+    sk = V.skipped(rec, blind)
+    assert sk['brake'] == 1 and sk['brake_reason'] == 1 and sk['lead'] == 1
+    # the all-actors truth asks them all, as before
+    old = V.questions(rec, V.context_of(rec, MAN, 'd0'))
+    assert {'lead', 'ttc', 'brake', 'brake_reason'} <= {q['type'] for q in old}
+
+
+HIDDEN = [  # (type, target, answer, correct, grounded, hallucinated, not visible) — visible truth of _hidden()
+    ('motion', 10, 'The car behind you is getting closer.', True, False, 0, 1),     # car 12: there, not in the image
+    ('motion', 10, 'The cyclist on your left is getting closer.', True, False, 1, 0),   # no cyclist at all
+    ('distance', 10, 'The pedestrian ahead is 21 m away.', True, False, 0, 1),        # 95 % occluded
+    ('count_pedestrians', None, 'There is one pedestrian.', False, None, 0, 1),
+    ('count_pedestrians', None, 'None.', True, None, 0, 0),
+    ('count_vehicles', None, 'I can see 2 vehicles.', True, None, 0, 0),
+    ('lead', 10, 'Yes, the car with track id 12.', True, False, 0, 1),
+    ('lead', 10, 'Yes, the car with track id 99.', True, False, 1, 0),
+]
+
+
+@pytest.mark.parametrize('case', HIDDEN)
+def test_a_hidden_actor_is_not_visible_not_a_hallucination(case):
+    rec, ctx = _hidden()
+    kind, target, answer, correct, grounded, halluc, hidden = case
+    s = V.score_answer(_q(V.questions(rec, ctx), kind, target), answer, ctx)
+    assert (s['correct'], s['grounded'], s['hallucinated'], s['not_visible']) == (correct, grounded, halluc, hidden), s
+
+
+def test_the_hallucination_split_in_the_aggregate_and_the_all_actors_truth():
+    rec, ctx = _hidden()
+    _, every = _hidden(visible=False)
+    rows = []
+    for kind, target, answer, *_ in HIDDEN:
+        s = V.score_answer(_q(V.questions(rec, ctx), kind, target), answer, ctx)
+        rows.append(dict(s, drive='d0', sim_t=0.25))
+    agg = V.aggregate(rows, n_boot=50, seed=0)
+    nm = sum(r['n_mentions'] for r in rows)
+    assert agg['mentions'] == {'mentions': nm, 'hallucinated': 2, 'not_visible': 4, 'absence_claims': 0,
+                               'false_absence': 0, 'ego': 0}
+    assert agg['metrics']['hallucination_rate']['value'] == pytest.approx(2 / nm)
+    assert agg['metrics']['not_visible_rate']['value'] == pytest.approx(4 / nm)
+    # all-actors: the hidden car behind is simply there
+    s = V.score_answer(_q(V.questions(rec, every), 'motion', 10), 'The car behind you is getting closer.', every)
+    assert s['hallucinated'] == 0 and s['not_visible'] == 0 and s['mentions'][0]['resolved'] == 12
+    # the noisy baseline's planted object is absent from every actor, so it stays a hallucination
+    assert V.absent_object_phrase(ctx) == 'the cyclist on your left'
+    m = V.ground(V.hallucinate('The car ahead is closing.', ctx), ctx)
+    assert m[0]['status'] == 'hallucinated'
+
+
+def _empty_road():
+    """Only a pedestrian 20 m behind the ego, which the camera does not show: no lead, nothing visible."""
+    ped = _row(31, -20.0, 3.0, ext=PED[1], cat=PED[0])
+    rec = _record(L.build_state(9, 0.45, EGO, [ped], _lanes(), frame=109))
+    return rec, V.context_of(rec, MAN, 'd0', visible=set())
+
+
+NEGATED = [  # (scene, type, target, answer, correct, hallucinated, absence claims, wrong absence claims, mentions)
+    # the patterns of Qwen2-VL-2B's 22 negated mentions on Town10 (no lead, nothing to count)
+    ('empty', 'lead', None, 'No, you cannot see a vehicle ahead of you in your lane within 50 m.', True, 0, 1, 0, 0),
+    ('empty', 'lead', None, 'No, I cannot see a vehicle ahead of you in your lane within 50 m.', True, 0, 1, 0, 0),
+    ('empty', 'lead', None, 'No, I cannot see a vehicle ahead of you in my lane within 50 m.', True, 0, 1, 0, 0),
+    ('empty', 'lead', None, 'No, I cannot see a vehicle ahead of me in my lane within 50 m.', True, 0, 1, 0, 0),
+    ('empty', 'lead', None, 'No, I cannot see a vehicle ahead of you within 50 m.', True, 0, 1, 0, 0),
+    ('empty', 'count_cyclists', None, 'There are no cyclists within 50 meters of the ego vehicle.', True, 0, 0, 0, 0),
+    ('empty', 'count_pedestrians', None, 'There are no pedestrians within 50 meters of the ego vehicle.', True, 0, 0, 0,
+     0),
+    # hand-made: an absence claim is checked against the truth
+    ('hidden', 'lead', 10, 'No, I cannot see a vehicle ahead of you in your lane.', False, 0, 1, 1, 0),  # it is there
+    ('hidden', 'count_pedestrians', None, 'There is not a single pedestrian.', True, 0, 1, 0, 0),   # 11 is hidden
+    ('every', 'count_pedestrians', None, 'There is not a single pedestrian.', False, 0, 1, 1, 0),   # 11 is in range
+    ('hidden', 'count_cyclists', None, 'I cannot see any cyclists.', True, 0, 0, 0, 0),
+    ('hidden', 'count_vehicles', None, "I don't see a pedestrian; the cyclist on your left is parked.", False, 1, 1, 0,
+     1),
+    ('hidden', 'motion', 10, 'No, the car ahead is getting closer.', True, 0, 0, 0, 1),     # "No," is the answer word
+    ('hidden', 'motion', 10, 'There is not a cyclist, but the car ahead is getting closer.', True, 0, 1, 0, 1),
+    ('hidden', 'motion', 10, 'There is not a bus, but the car ahead is getting closer.', True, 0, 1, 1, 1),  # group
+]                                                                       # level: a bus is a vehicle, and cars are there
+
+
+@pytest.mark.parametrize('case', NEGATED)
+def test_a_negated_mention_is_a_claim_of_absence_not_a_reference(case):
+    scene, kind, target, answer, correct, halluc, absent, wrong, n = case
+    rec, ctx = {'empty': _empty_road, 'hidden': _hidden, 'every': lambda: _hidden(visible=False)}[scene]()
+    s = V.score_answer(_q(V.questions(rec, ctx), kind, target), answer, ctx)
+    assert (s['correct'], s['hallucinated'], s['not_visible'], s['absent'], s['absent_wrong'], s['n_mentions']) == \
+        (correct, halluc, 0, absent, wrong, n), s
+    if kind in ('lead', 'motion') and n == 0:
+        assert s['grounded'] is None                                      # an absence claim names no object
+
+
+def test_mentions_of_the_ego_are_the_ego():
+    for t in ('The ego vehicle is behind the car ahead.', 'Your car is 3 m from the car ahead.',
+              'The ego is closing on the car ahead.', 'My car is behind the car ahead.'):
+        assert [m['ego'] for m in V.mentions(t)] == [True, False], t
+    rec, ctx = _hidden()
+    s = V.score_answer(_q(V.questions(rec, ctx), 'lead', 10), 'Yes: the ego vehicle is behind the car ahead.', ctx)
+    assert s['ego'] == 1 and s['n_mentions'] == 1 and s['hallucinated'] == 0 and s['grounded'] is True
+    assert s['mentions'][0]['resolved'] == 'ego'
+    rec, ctx = _empty_road()                     # no vehicle anywhere: the ego is still no hallucination
+    for kind in ('count_vehicles', 'lead', 'brake_reason'):
+        s = V.score_answer(_q(V.questions(rec, ctx), kind), 'No, nothing is near the ego vehicle or your car.', ctx)
+        assert (s['ego'], s['hallucinated'], s['not_visible'], s['n_mentions']) == (2, 0, 0, 0), s
+    s = V.score_answer(_q(V.questions(rec, ctx), 'brake_reason'), 'No need to brake: the ego vehicle is alone.', ctx)
+    assert s['faithful'] and s['precision'] == 1.0                    # the ego is no hazard claim
+    agg = V.aggregate([dict(s, drive='d0', sim_t=0.0)], n_boot=20)
+    assert agg['mentions']['ego'] == 1 and agg['mentions']['mentions'] == 0
+
+
+def test_the_all_actors_truth_keeps_the_settings_key_of_evaluations_made_before_it():
+    from falcon_autonomy.core.provenance import sha256_json
+    s = E.normalise({'runner': 'oracle', 'lang': ['/x'], 'truth': 'all-actors'})
+    before = {k: v for k, v in s.items() if k not in E.VOLATILE and k != 'truth'}     # the settings before the mode
+    assert E.settings_key(s) == sha256_json(before)
+    assert E.settings_key(dict(s, truth='visible')) != E.settings_key(s)
+    assert E.normalise({})['truth'] == 'visible'
+    with pytest.raises(E.EvalError, match='truth'):
+        E.normalise({'truth': 'everything'})
 
 
 # --------------------------------------------------------------------------------------------------------- calibration
@@ -268,9 +462,10 @@ def test_the_resolver_reproduces_every_grounded_phrase(drives):
     assert n > 50
 
 
-def test_oracle_end_to_end_through_the_command(drives, tmp_path):
+@pytest.mark.parametrize('truth', ['visible', 'all-actors'])
+def test_oracle_end_to_end_through_the_command(drives, tmp_path, truth):
     out = str(tmp_path / 'oracle')
-    argv = ['eval', '--runner', 'oracle', '--out', out, '--every', '3', '--boot', '200']
+    argv = ['eval', '--runner', 'oracle', '--out', out, '--every', '3', '--boot', '200', '--truth', truth]
     for r in drives['runs']:
         argv += ['--run', r]
     assert E.main_vlm(argv) == P.OK
@@ -279,9 +474,18 @@ def test_oracle_end_to_end_through_the_command(drives, tmp_path):
     accs = {k: v['value'] for k, v in m.items() if k.endswith('.accuracy')}
     assert accs and all(v == 1.0 for v in accs.values()), accs
     assert m['hallucination_rate']['value'] == 0.0 and m['grounding']['value'] == 1.0
+    assert m['not_visible_rate']['value'] == 0.0
+    assert sc['truth']['mode'] == truth == sc['method']['truth']['mode']
+    if truth == 'visible':
+        assert sc['truth']['min_pixels'] == 20 and sc['truth']['cameras'] and 'skipped' in sc['truth']
+        assert any(r['type'] == 'count_vehicles' and 'can you see' in r['question']
+                   for r in map(json.loads, open(os.path.join(out, 'answers.jsonl'))))
+    else:
+        assert sc['truth']['skipped'] == {} and sc['truth']['cameras'] is None
     assert sc['not_a_model'] and sc['runner']['licence'].startswith('GPL') and not sc['scores']['reliable']
     run = json.load(open(os.path.join(out, 'run.json')))
     assert run['status'] == 'ok' and run['runner']['name'] == 'oracle' and 'answers.jsonl' in run['outputs']
+    assert run['summary']['truth'] == truth
     assert any(k.startswith('lang:') for k in run['provenance']['inputs'])
     rows = [json.loads(x) for x in open(os.path.join(out, 'answers.jsonl'))]
     assert len(rows) == sc['n_questions'] and all(os.path.isfile(r['images'][-1]) for r in rows)
@@ -291,8 +495,9 @@ def test_oracle_end_to_end_through_the_command(drives, tmp_path):
     assert 'NOT A MODEL' in html and meta['kind'] == 'vlm'
 
 
-def test_noisy_baseline_scores_exactly_what_its_corruption_predicts(drives, tmp_path):
-    s = {'runner': 'noisy:p=0.4,h=0.15,seed=2', 'lang': drives['langs'], 'every': 2, 'n_boot': 100}
+@pytest.mark.parametrize('truth', ['visible', 'all-actors'])
+def test_noisy_baseline_scores_exactly_what_its_corruption_predicts(drives, tmp_path, truth):
+    s = {'runner': 'noisy:p=0.4,h=0.15,seed=2', 'lang': drives['langs'], 'every': 2, 'n_boot': 100, 'truth': truth}
     E.evaluate(s, str(tmp_path / 'a'))
     rows = [json.loads(x) for x in open(tmp_path / 'a' / 'answers.jsonl')]
     corrupted = hall = 0
@@ -303,6 +508,7 @@ def test_noisy_baseline_scores_exactly_what_its_corruption_predicts(drives, tmp_
         if 'hallucinated' in note:
             assert r['score']['hallucinated'] >= 1
             hall += 1
+        assert r['score']['not_visible'] == 0
         corrupted += 'corrupted' in note
     assert 0.25 < corrupted / len(rows) < 0.55 and hall > 0
     sc = json.load(open(tmp_path / 'a' / 'scores.json'))
@@ -311,6 +517,43 @@ def test_noisy_baseline_scores_exactly_what_its_corruption_predicts(drives, tmp_
     assert acc == pytest.approx(1 - sum('corrupted' in (r['note'] or []) for r in cv) / len(cv))
     E.evaluate(s, str(tmp_path / 'b'))                                        # seeded: the same answers
     assert [json.loads(x)['answer'] for x in open(tmp_path / 'b' / 'answers.jsonl')] == [r['answer'] for r in rows]
+    assert sc['scorer'] == V.SCORER == 2 and all(r['scorer'] == 2 for r in rows)
+
+
+def test_saved_answers_are_scored_again_without_the_model(drives, tmp_path, monkeypatch):
+    s = {'runner': 'noisy:p=0.4,h=0.15,seed=2', 'lang': drives['langs'], 'every': 3, 'n_boot': 100}
+    a, b = str(tmp_path / 'a'), str(tmp_path / 'b')
+    E.evaluate(s, a)
+    want = json.load(open(os.path.join(a, 'scores.json')))
+    E.rescore(a, b)                                                           # into another folder, no model
+    got = json.load(open(os.path.join(b, 'scores.json')))
+    assert got['scores']['metrics'] == want['scores']['metrics'] and got['scorer'] == 2
+    assert got['runner']['replayed_from'] == os.path.abspath(a) and got['runner']['name'] == want['runner']['name']
+    run = json.load(open(os.path.join(b, 'run.json')))
+    assert 'replayed_answers' in run['provenance']['inputs']
+    with pytest.raises(E.EvalError, match='run the model again'):           # other wording: refused, nothing written
+        E.rescore(a, str(tmp_path / 'c'), truth='all-actors')
+    assert not os.path.exists(os.path.join(tmp_path, 'c', 'answers.jsonl'))
+    with pytest.raises(E.EvalError, match='another folder'):
+        E.rescore(a, a)
+    # a folder of scorer 1 (rows and scores.json without the field) is scored again when the command runs again,
+    # without making the runner
+    rows = [json.loads(x) for x in open(os.path.join(a, 'answers.jsonl'))]
+    with open(os.path.join(a, 'answers.jsonl'), 'w') as fh:
+        for r in rows:
+            r.pop('scorer')
+            r['score'] = {**r['score'], 'correct': not r['score']['correct']}       # what an old scorer said
+            fh.write(json.dumps(r) + '\n')
+    old = json.load(open(os.path.join(a, 'scores.json')))
+    old.pop('scorer')
+    json.dump(old, open(os.path.join(a, 'scores.json'), 'w'))
+    assert 'before scorer 2' in E.report(a).render()[0]
+    monkeypatch.setattr(VM, 'make_runner', lambda *k, **kw: (_ for _ in ()).throw(AssertionError('no runner')))
+    E.evaluate(s, a)
+    again = json.load(open(os.path.join(a, 'scores.json')))
+    assert again['scorer'] == 2 and again['scores']['metrics'] == want['scores']['metrics']
+    assert all(json.loads(x)['scorer'] == 2 for x in open(os.path.join(a, 'answers.jsonl')))
+    assert E.main_vlm(['rescore', a, '--out', str(tmp_path / 'd'), '--boot', '100']) == P.OK
 
 
 def test_a_cancelled_evaluation_resumes_to_the_same_answers(drives, tmp_path):
@@ -556,6 +799,7 @@ def test_lora_starts_at_the_base_model_trains_only_itself_and_merges_exactly(tmp
 def test_finetune_splits_by_drive_and_resumes_to_the_same_adapter(tiny_vlm, drives, tmp_path):
     import torch
     from falcon_autonomy.core import vlm_lora as LO
+    from falcon_autonomy.core.provenance import sha256_json
     from falcon_autonomy.core.training import Cancelled
     s = {'model': tiny_vlm, 'lang': drives['langs'], 'epochs': 2, 'every': 6, 'max_examples': 16, 'device': 'cpu',
          'val_generate': 3, 'max_new_tokens': 4, 'max_side': 64, 'accumulate': 4, 'lr': 5e-3, 'seed': 1}
@@ -566,9 +810,17 @@ def test_finetune_splits_by_drive_and_resumes_to_the_same_adapter(tiny_vlm, driv
     rows = [json.loads(x) for x in open(tmp_path / 'whole' / 'metrics.jsonl')]
     assert len(rows) == 2 and all(np.isfinite(r['val_loss']) for r in rows) and rows[0]['val_generated'] == 3
     cfg = json.load(open(tmp_path / 'whole' / 'adapter' / 'adapter.json'))
-    assert cfg['licence'] == 'Apache-2.0' and cfg['scope'] == 'text'
+    assert cfg['licence'] == 'Apache-2.0' and cfg['scope'] == 'text' and cfg['truth'] == 'visible'
+    vis = LO.examples(drives['langs'][:1], dict(LO.DEFAULTS, every=6))
+    old = LO.examples(drives['langs'][:1], dict(LO.DEFAULTS, every=6, truth='all-actors'))
+    cv = [e['prompt'] for d in vis.values() for e in d if e['question']['type'] == 'count_vehicles']
+    assert cv and all('can you see' in p for p in cv)
+    assert all('are within' in e['prompt'] for d in old.values() for e in d
+               if e['question']['type'] == 'count_vehicles')
+    assert LO.settings_key(dict(LO.DEFAULTS, truth='all-actors')) == \
+        sha256_json({k: v for k, v in LO.DEFAULTS.items() if k not in LO.VOLATILE and k != 'truth'})
     run = json.load(open(tmp_path / 'whole' / 'run.json'))
-    assert run['status'] == 'ok' and run['model']['licence'] == 'Apache-2.0'
+    assert run['status'] == 'ok' and run['model']['licence'] == 'Apache-2.0' and run['truth'] == 'visible'
     calls = {'n': 0}
 
     def cancel():

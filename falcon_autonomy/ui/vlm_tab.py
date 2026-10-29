@@ -301,6 +301,13 @@ class LanguageTab(QWidget):
         self.info.set('Interval', f'{agg["n_boot"]} resamples of {agg["unit"]}s ({agg["n_units"]})')
         notes = (['NOT A MODEL: this runner reads the ground truth'] if sc.get('not_a_model') else []) + \
             ([agg['note']] if agg.get('note') else [])
+        notes.append(f'scorer {sc.get("scorer", 1)}')
+        tr = sc.get('truth') or {}
+        if tr.get('mode') == 'visible':
+            notes.append(f'truth: visible actors only ({tr.get("n_skipped", 0)} questions skipped: nothing relevant '
+                         'visible)')
+        elif tr:
+            notes.append('truth: every actor within the radius, visible or not')
         self.info.set('Note', ' · '.join(notes) or '—')
         for row in sc['table']:
             ci = '—' if row['ci_low'] is None else f'{_fmt(row["ci_low"])} – {_fmt(row["ci_high"])}'

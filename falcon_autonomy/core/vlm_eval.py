@@ -2,7 +2,8 @@
 (standard library and numpy at import; a runner's torch only inside it).
 
     evaluate(settings, out_dir, ...) -> summary     answers.jsonl, scores.json, run.json in out_dir (resumable)
-    main_vlm(argv)                                  falcon vlm list | verify | fetch | eval | finetune
+    rescore(src, out_dir, truth) -> summary         a saved evaluation's answers scored again (no model)
+    main_vlm(argv)                                  falcon vlm list | verify | fetch | eval | rescore | finetune
     job_spec(argv, needs_gpu)                       the JobSpec the GUI submits
     report(src) -> core.reports.Page                the HTML report of an evaluation (falcon report vlm DIR)
 
@@ -11,12 +12,19 @@ run with --run into OUT/language/<drive>/). Each folder is one drive; its manife
 gives the camera image of each step (the first "<camera>/rgb" unless a camera is chosen). Every n-th record (every,
 default 5) up to max_frames per drive is asked core.vlm.questions(); each question goes to the runner with its images
 (clip = how many frames, oldest first, clip_step steps apart, ending at the frame) and the prompt (question +
-core.vlm.PROMPT_SUFFIX). Each answer is scored (core.vlm.score_answer) and written to answers.jsonl as it comes, so a
-cancelled evaluation resumes where it stopped (same settings; another settings hash in the same folder is refused).
+core.vlm.PROMPT_SUFFIX). The truth (truth, default 'visible') is about what the camera shows: an actor counts only when
+its track id is in the frame's objects/<camera>/<n>.json of the camera whose image the model gets (a clip: its last
+frame, the frame asked about) with pixels >= core.harness.MIN_PIXELS and occluded <= core.harness.MAX_OCCLUDED
+(core.vlm.visible_ids; a frame without that file is refused); questions about nothing visible are skipped and counted
+per type (scores.json "truth" → "skipped"). 'all-actors' is the truth before the rule: every actor within the radius.
+Each answer is scored (core.vlm.score_answer) and written to answers.jsonl as it comes, so a cancelled evaluation
+resumes where it stopped (same settings; another settings hash in the same folder is refused).
 scores.json holds core.vlm.aggregate() — per question type, accuracy with 95 % bootstrap intervals over drives (2 s
-blocks under five drives, said so), grounding, the hallucination rate, the explanation's precision and recall — with
-core.vlm.method() and the runner's description including its licence. run.json is the provenance: the language
-files' and model files' hashes, settings, seed, versions, timings.
+blocks under five drives, said so), grounding, the hallucination rate, the explanation's precision and recall, the
+scorer's version (core.vlm.SCORER; every answer row carries it, and saved answers of another version are scored again
+from their text when the evaluation runs again, without the model) — with core.vlm.method() and the runner's
+description including its licence. run.json is the provenance: the language files' and model files' hashes,
+settings, seed, versions, timings.
 
 An optional judge for the explanations: a client the user writes and approves — an object with .complete(prompt) or
 a callable, named as module:Class with judge_approved true (--judge M:C --approve-judge). Falcon opens no connection
@@ -36,7 +44,7 @@ import time
 SCHEMA = 'falcon.vlm.evaluation/1'
 DEFAULTS = {'runner': 'oracle', 'lang': [], 'runs': [], 'workspace': '', 'every': 5, 'max_frames': 0, 'types': None,
             'max_objects': 2, 'clip': 1, 'clip_step': 5, 'camera': None, 'n_boot': 1000, 'seed': 0, 'tolerance': None,
-            'judge': None, 'judge_approved': False, 'name': ''}
+            'judge': None, 'judge_approved': False, 'name': '', 'truth': 'visible'}
 VOLATILE = ('n_boot', 'workspace', 'name')
 JUDGE_PROMPT = ('You check whether a driving explanation is faithful to the facts. Facts of the scene, from the '
                 'simulator (distances in metres, CARLA track ids in brackets): {facts}. Ground-truth reasons to brake: '
@@ -72,6 +80,28 @@ def load_language(folder: str) -> dict:
     name = os.path.basename(os.path.normpath(run)) if run else os.path.basename(os.path.normpath(folder))
     return {'folder': os.path.abspath(folder), 'manifest': man, 'records': recs, 'name': name, 'run': run,
             'frames': frames}
+
+
+def camera_of(L: dict, step: int, camera=None):
+    """The camera whose image a frame's question shows: the chosen one, else the frame's first "<camera>/rgb"."""
+    if camera:
+        return camera
+    files = (L['frames'].get(int(step)) or {}).get('files') or {}
+    key = next((k for k in files if k.endswith('/rgb')), None)
+    return key[:-len('/rgb')] if key else None
+
+
+def visible_at(L: dict, step: int, camera=None):
+    """The track ids the camera shows at step (core.vlm.visible_ids of its objects JSON), or None without that file."""
+    from .vlm import visible_ids
+    cam = camera_of(L, step, camera)
+    rel = ((L['frames'].get(int(step)) or {}).get('files') or {}).get(f'{cam}/objects') if cam else None
+    p = os.path.join(L['run'], rel) if rel else ''
+    if not p or not os.path.isfile(p):
+        return None
+    with open(p, encoding='utf-8') as fh:
+        doc = json.load(fh)
+    return visible_ids(doc.get('objects', []) if isinstance(doc, dict) else doc)
 
 
 def images_for(L: dict, step: int, camera=None, clip: int = 1, clip_step: int = 5) -> list:
@@ -123,6 +153,8 @@ def normalise(settings: dict) -> dict:
         raise EvalError(f'unknown settings: {", ".join(unknown)}')
     s['lang'] = [os.path.abspath(d) for d in s['lang']]
     s['runs'] = [os.path.abspath(d) for d in s['runs']]
+    if s['truth'] not in ('visible', 'all-actors'):
+        raise EvalError(f'truth is visible or all-actors, not {s["truth"]!r}')
     if s['judge'] and not s['judge_approved']:
         raise EvalError('a judge runs only when you approve it (--approve-judge): it sends the facts and answers to '
                         'whatever client the judge class talks to')
@@ -130,8 +162,11 @@ def normalise(settings: dict) -> dict:
 
 
 def settings_key(s: dict) -> str:
+    """The hash of the settings an evaluation folder holds. The all-actors truth leaves 'truth' out, so a folder made
+    before the visibility rule (all-actors by construction) keeps its key."""
     from .provenance import sha256_json
-    return sha256_json({k: v for k, v in s.items() if k not in VOLATILE})
+    return sha256_json({k: v for k, v in s.items() if k not in VOLATILE and
+                        not (k == 'truth' and v == 'all-actors')})
 
 
 def _derive(runs: list, out_dir: str) -> list:
@@ -145,10 +180,88 @@ def _derive(runs: list, out_dir: str) -> list:
     return out
 
 
+class ReplayRunner:
+    """Answers from a saved evaluation (its answers.jsonl), so the answers can be scored again without the model
+    (rescore). It refuses before anything is written when a planned question is not among the saved ones with the
+    same wording."""
+    kind = 'replay'
+
+    def __init__(self, src: str):
+        from .provenance import read_json
+        self.src = os.path.abspath(src)
+        self.rows = {}
+        with open(os.path.join(src, 'answers.jsonl'), encoding='utf-8') as fh:
+            for x in fh:
+                if x.strip():
+                    r = json.loads(x)
+                    self.rows[r['qid']] = r
+        self._info = dict(read_json(os.path.join(src, 'scores.json'))['runner'])
+
+    def check(self, qs: list):
+        bad = [q for q in qs if q['qid'] not in self.rows or self.rows[q['qid']]['question'] != q['text']]
+        if bad:
+            raise EvalError(f'{len(bad)} of {len(qs)} questions are not among the saved answers of {self.src} with '
+                            f'the same wording (first: {bad[0]["qid"]} {bad[0]["text"]!r}); the truth or the wording '
+                            'differs — run the model again')
+
+    def answer(self, images, prompt, meta):
+        return self.rows[meta['question']['qid']]['answer']
+
+    def latency_of(self, qid):
+        return self.rows[qid].get('latency_ms')
+
+    def note(self, qid):
+        return self.rows[qid].get('note')
+
+    def info(self):
+        return dict(self._info, replayed_from=self.src)
+
+    def close(self):
+        pass
+
+
+def _plan(s: dict, drives: list, opts: dict, tol) -> tuple:
+    """(plan [(language, record, context, images, question)], skipped {type: n}, cameras) of an evaluation."""
+    from . import vlm as V
+    plan, skipped, cams = [], {}, set()
+    for L in drives:
+        recs = [r for k, r in enumerate(L['records']) if k % max(int(s['every']), 1) == 0]
+        if s['max_frames']:
+            recs = recs[:int(s['max_frames'])]
+        for rec in recs:
+            vis = None
+            if s['truth'] == 'visible':
+                vis = visible_at(L, rec['step'], s['camera'])
+                if vis is None:
+                    cam = camera_of(L, rec['step'], s['camera'])
+                    raise EvalError(f'{L["name"]} step {rec["step"]}: no objects/{cam} labels for the camera — the '
+                                    'visible truth needs them (record the camera with labels), or use --truth '
+                                    'all-actors')
+                cams.add(camera_of(L, rec['step'], s['camera']))
+            ctx = V.context_of(rec, L['manifest'], L['name'], visible=vis)
+            if tol:
+                ctx['tolerance'] = dict(V.TOLERANCE, **tol)
+            imgs = images_for(L, rec['step'], s['camera'], s['clip'], s['clip_step'])
+            for q in V.questions(rec, ctx, opts):
+                plan.append((L, rec, ctx, imgs, q))
+            for t, n in V.skipped(rec, ctx, opts).items():
+                skipped[t] = skipped.get(t, 0) + n
+    return plan, skipped, cams
+
+
+def _row(L, rec, imgs, q, answer, score, latency, note) -> dict:
+    from .vlm import SCORER
+    return {'qid': q['qid'], 'drive': L['name'], 'step': rec['step'], 'frame': rec.get('frame'),
+            'sim_t': rec.get('sim_t'), 'type': q['type'], 'question': q['text'], 'answer': answer,
+            'truth': q['truth'], 'target': q['target'], 'template': q['template'], 'images': imgs,
+            'latency_ms': latency, 'score': score, 'note': note, 'scorer': SCORER}
+
+
 def evaluate(settings: dict, out_dir: str, runner=None, emitter=None, cancel=None, argv=None) -> dict:
     """Ask the runner every question of the chosen drives and score the answers (module doc). runner: a core.vlm_models
-    Runner (else made from settings['runner']). Returns the summary (also in run.json). Raises training.Cancelled
-    after keeping what was answered."""
+    Runner (else made from settings['runner'], only when a question is unanswered). Saved answers scored by another
+    scorer version (core.vlm.SCORER) are scored again from their text. Returns the summary (also in run.json). Raises
+    training.Cancelled after keeping what was answered."""
     from . import provenance as PV
     from . import vlm as V
     from .training import Cancelled, _Quiet
@@ -159,11 +272,15 @@ def evaluate(settings: dict, out_dir: str, runner=None, emitter=None, cancel=Non
     os.makedirs(out_dir, exist_ok=True)
     key = settings_key(s)
     run_p = os.path.join(out_dir, 'run.json')
+    sc_p = os.path.join(out_dir, 'scores.json')
     prev = PV.read_json(run_p) if os.path.isfile(run_p) else None
     if prev is not None and prev.get('settings_key') != key:
         raise EvalError(f'{out_dir} holds an evaluation with other settings; use another folder')
-    if prev is not None and prev.get('status') == 'ok' and os.path.isfile(os.path.join(out_dir, 'scores.json')):
-        return prev['summary']
+    if prev is not None and prev.get('status') == 'ok' and os.path.isfile(sc_p):
+        was = PV.read_json(sc_p).get('scorer', 1)
+        if was == V.SCORER:
+            return prev['summary']
+        em.log(f'scored by scorer {was}: scoring the saved answers again with scorer {V.SCORER}')
     langs = list(s['lang']) + _derive(s['runs'], out_dir)
     if not langs:
         raise EvalError('no drives: give language folders (--lang) or runs (--run)')
@@ -171,7 +288,6 @@ def evaluate(settings: dict, out_dir: str, runner=None, emitter=None, cancel=Non
     names = [L['name'] for L in drives]
     if len(set(names)) != len(names):
         raise EvalError(f'two folders are the same drive: {names}')
-    runner = runner or make_runner(s['runner'], s['workspace'])
     judge = make_judge(s['judge']) if s['judge'] else None
     opts = {'max_objects': s['max_objects']}
     if s['types']:
@@ -182,25 +298,9 @@ def evaluate(settings: dict, out_dir: str, runner=None, emitter=None, cancel=Non
     if s['tolerance']:
         opts['tolerance'] = s['tolerance']
     tol = {k: tuple(v) for k, v in (s['tolerance'] or {}).items()} or None
-    # the plan: every question of every chosen frame
-    plan = []
-    for L in drives:
-        recs = [r for k, r in enumerate(L['records']) if k % max(int(s['every']), 1) == 0]
-        if s['max_frames']:
-            recs = recs[:int(s['max_frames'])]
-        for rec in recs:
-            ctx = V.context_of(rec, L['manifest'], L['name'])
-            if tol:
-                ctx['tolerance'] = dict(V.TOLERANCE, **tol)
-            imgs = images_for(L, rec['step'], s['camera'], s['clip'], s['clip_step'])
-            for q in V.questions(rec, ctx, opts):
-                plan.append((L, rec, ctx, imgs, q))
+    plan, skipped, cams = _plan(s, drives, opts, tol)
     if not plan:
         raise EvalError('no questions: the drives have no records at this stride')
-    if runner.kind == 'hf' and not all(p[3] for p in plan):
-        missing = sorted({p[0]['name'] for p in plan if not p[3]})
-        raise EvalError(f'no camera images for {", ".join(missing)} (its run folder or frames are missing): a VLM '
-                        'needs them')
     ans_p = os.path.join(out_dir, 'answers.jsonl')
     done = {}
     if prev is not None and os.path.isfile(ans_p):
@@ -209,19 +309,46 @@ def evaluate(settings: dict, out_dir: str, runner=None, emitter=None, cancel=Non
                 if x.strip():
                     r = json.loads(x)
                     done[r['qid']] = r
+    todo = [p for p in plan if p[4]['qid'] not in done]
+    if todo or runner is not None:
+        runner = runner or make_runner(s['runner'], s['workspace'])
+        if runner.kind == 'hf' and not all(p[3] for p in todo):
+            missing = sorted({p[0]['name'] for p in todo if not p[3]})
+            raise EvalError(f'no camera images for {", ".join(missing)} (its run folder or frames are missing): a '
+                            'VLM needs them')
+        if hasattr(runner, 'check'):
+            runner.check([p[4] for p in todo])
+        info = runner.info()
+    else:                                      # every answer saved: no model needed to score them again
+        info = prev['runner']
     ins = {f'lang:{L["name"]}': os.path.join(L['folder'], 'language.jsonl') for L in drives}
     ins.update({f'lang_manifest:{L["name"]}': os.path.join(L['folder'], 'language.json') for L in drives})
-    info = runner.info()
     folder = info.get('folder')
     if folder and os.path.isfile(os.path.join(folder, 'pins.json')):
         ins['model_pins'] = os.path.join(folder, 'pins.json')
     if info.get('adapter'):
         ins['adapter'] = os.path.join(info['adapter'], 'adapter.pt')
+    if info.get('replayed_from'):
+        ins['replayed_answers'] = os.path.join(info['replayed_from'], 'answers.jsonl')
     run = PV.new_run('vlm-eval', argv or [], s['seed'], s, ins)
-    run.update(settings_key=key, runner=info, schema=SCHEMA)
+    run.update(settings_key=key, runner=info, schema=SCHEMA, scorer=V.SCORER)
     PV.write_json(run_p, run)
     t0 = time.time()
     lat = []
+    stale = False
+    for L, rec, ctx, imgs, q in plan:              # saved answers of another scorer: scored again from their text
+        r = done.get(q['qid'])
+        if r is not None and r.get('scorer', 1) != V.SCORER:
+            done[q['qid']] = dict(_row(L, rec, imgs, q, r['answer'], V.score_answer(q, r['answer'], ctx),
+                                       r.get('latency_ms'), r.get('note')),
+                                  **({'judge': r['judge']} if r.get('judge') else {}))
+            stale = True
+    if stale:
+        with open(ans_p, 'w', encoding='utf-8') as fh:
+            for p in plan:
+                if p[4]['qid'] in done:
+                    fh.write(json.dumps(done[p[4]['qid']], separators=(',', ':'), ensure_ascii=False,
+                                        default=str) + '\n')
     mode = 'a' if done else 'w'
     with open(ans_p, mode, encoding='utf-8') as fh:
         for k, (L, rec, ctx, imgs, q) in enumerate(plan):
@@ -237,12 +364,12 @@ def evaluate(settings: dict, out_dir: str, runner=None, emitter=None, cancel=Non
             t1 = time.perf_counter()
             a = runner.answer(imgs, prompt, meta)
             ms = (time.perf_counter() - t1) * 1000.0
-            lat.append(ms)
-            sc = V.score_answer(q, a, ctx)
-            row = {'qid': q['qid'], 'drive': L['name'], 'step': rec['step'], 'frame': rec.get('frame'),
-                   'sim_t': rec.get('sim_t'), 'type': q['type'], 'question': q['text'], 'answer': a,
-                   'truth': q['truth'], 'target': q['target'], 'template': q['template'], 'images': imgs,
-                   'latency_ms': round(ms, 3), 'score': sc, 'note': runner.note(q['qid'])}
+            if hasattr(runner, 'latency_of'):         # a replay keeps the model's own latency
+                ms = runner.latency_of(q['qid'])
+            if ms is not None:
+                lat.append(ms)
+            row = _row(L, rec, imgs, q, a, V.score_answer(q, a, ctx), None if ms is None else round(ms, 3),
+                       runner.note(q['qid']))
             if judge is not None and q['type'] == 'brake_reason':
                 v, raw = ask_judge(judge, q, a, ctx)
                 row['judge'] = {'faithful': v, 'text': raw}
@@ -262,14 +389,20 @@ def evaluate(settings: dict, out_dir: str, runner=None, emitter=None, cancel=Non
                      'agreement_with_rules': sum(r['judge']['faithful'] == r['score']['faithful'] for r in ok) /
                      len(ok) if ok else None, 'note': 'a second opinion; the rule-based faithfulness is the score'}
     tab = table(agg)
-    scores = {'schema': V.SCHEMA_SCORES, 'runner': info, 'not_a_model': info.get('reads_truth', False),
-              'drives': names, 'n_questions': len(rows), 'scores': agg, 'table': tab, 'method': V.method(opts),
-              'judge': judge_doc, 'latency_ms': _lat(lat or [r['latency_ms'] for r in rows]),
+    truth = dict(V.truth_doc(s['truth']), cameras=sorted(cams) or None,
+                 skipped={t: skipped[t] for t in V.QTYPES if skipped.get(t)}, n_skipped=sum(skipped.values()))
+    scores = {'schema': V.SCHEMA_SCORES, 'scorer': V.SCORER, 'runner': info,
+              'not_a_model': info.get('reads_truth', False), 'drives': names, 'n_questions': len(rows),
+              'truth': truth, 'scores': agg, 'table': tab, 'method': V.method(dict(opts, truth=s['truth'])),
+              'judge': judge_doc,
+              'latency_ms': _lat(lat or [r['latency_ms'] for r in rows if r.get('latency_ms') is not None]),
               'settings': {k: v for k, v in s.items()},
               'provenance': PV.block(ins, s['seed'], {k: v for k, v in s.items()})}
-    PV.write_json(os.path.join(out_dir, 'scores.json'), scores)
+    PV.write_json(sc_p, scores)
     summary = {'macro_accuracy': agg['metrics'].get('macro_accuracy', {}).get('value'),
                'hallucination_rate': agg['metrics'].get('hallucination_rate', {}).get('value'),
+               'not_visible_rate': agg['metrics'].get('not_visible_rate', {}).get('value'), 'truth': s['truth'],
+               'skipped': truth['n_skipped'], 'scorer': V.SCORER,
                'grounding': agg['metrics'].get('grounding', {}).get('value'), 'questions': len(rows),
                'drives': len(names), 'reliable_intervals': agg['reliable'], 'runner': info['name'],
                'licence': info.get('licence')}
@@ -277,8 +410,29 @@ def evaluate(settings: dict, out_dir: str, runner=None, emitter=None, cancel=Non
                timings={'total_s': time.time() - t0, 'answer_s': sum(lat) / 1000.0, 'answers_this_run': len(lat)},
                outputs=PV.hash_tree(out_dir, skip=('run.json',)))
     PV.write_json(run_p, run)
-    runner.close()
+    if runner is not None:
+        runner.close()
     return summary
+
+
+def rescore(src: str, out_dir: str, truth: str | None = None, n_boot: int | None = None, argv=None) -> dict:
+    """Score a saved evaluation's answers again with this scorer into out_dir, without the model: the same settings
+    (a folder from before the visibility rule is the all-actors truth), or another truth when its questions are
+    worded the same (else refused: run the model again). An approved judge is not asked again."""
+    from .provenance import read_json
+    if os.path.abspath(out_dir) == os.path.abspath(src):
+        raise EvalError('re-score into another folder (the saved answers stay as they are)')
+    sc = read_json(os.path.join(src, 'scores.json'))
+    s = {k: v for k, v in sc['settings'].items() if k in DEFAULTS}
+    s.setdefault('truth', 'all-actors')
+    if truth:
+        s['truth'] = truth
+    if n_boot:
+        s['n_boot'] = int(n_boot)
+    s['lang'] = list(s.get('lang') or []) + [os.path.join(src, 'language', os.path.basename(os.path.normpath(r)))
+                                             for r in s.get('runs') or []]
+    s.update(runs=[], judge=None, judge_approved=False)
+    return evaluate(s, out_dir, runner=ReplayRunner(src), argv=argv)
 
 
 def _lat(v: list) -> dict:
@@ -303,7 +457,8 @@ def table(agg: dict) -> list:
             if r is not None and r.get('value') is not None:
                 rows.append({'type': t, 'metric': k, 'value': r['value'], 'ci_low': r['ci_low'],
                              'ci_high': r['ci_high'], 'n': n})
-    for k in ('macro_accuracy', 'grounding', 'hallucination_rate', 'answers_with_hallucination'):
+    for k in ('macro_accuracy', 'grounding', 'hallucination_rate', 'answers_with_hallucination', 'not_visible_rate',
+              'false_absence_rate'):
         r = m.get(k)
         if r is not None and r.get('value') is not None:
             rows.append({'type': 'all', 'metric': k, 'value': r['value'], 'ci_low': r['ci_low'],
@@ -357,7 +512,13 @@ def report(src: str):
     r = sc['runner']
     agg = sc['scores']
     pg.title = f'VLM explanations: {r.get("name")}'
+    tr = sc.get('truth') or {'mode': 'all-actors (made before the visibility rule)'}
     pg.add(R.kv([('runner', R.esc(f'{r.get("name")} ({r.get("kind")})')), ('licence', R.esc(r.get('licence'))),
+                 ('scorer', R.esc(f'{sc.get("scorer", 1)}' + ('' if sc.get('scorer', 1) >= 2 else
+                                  ' (before scorer 2: negated mentions counted as hallucinations, the ego vehicle as '
+                                  'another vehicle)'))),
+                 ('truth', R.esc(f'{tr["mode"]}' + (f': {tr["rule"]}' if tr.get('rule') else ''))),
+                 ('skipped', R.esc(', '.join(f'{t} {n}' for t, n in (tr.get('skipped') or {}).items()) or 'none')),
                  ('drives', R.esc(', '.join(sc.get('drives') or []))), ('questions', R.esc(sc.get('n_questions'))),
                  ('interval', R.esc(f'95 % bootstrap over {agg["unit"]}s ({agg["n_units"]}), {agg["n_boot"]} '
                                     f'resamples, seed {agg["seed"]}')),
@@ -402,7 +563,7 @@ def _confirm(text: str, yes: bool) -> bool:
 
 
 def main_vlm(argv) -> int:
-    """`falcon vlm list|verify|fetch|eval|finetune …` (docs/vlm.md): protocol lines on stdout; 0 ok, 2 failed,
+    """`falcon vlm list|verify|fetch|eval|rescore|finetune …` (docs/vlm.md): protocol lines on stdout; 0 ok, 2 failed,
     3 cancelled, 6 refused (a download not confirmed)."""
     import argparse
     from . import protocol as P
@@ -432,11 +593,19 @@ def main_vlm(argv) -> int:
         ev.add_argument(f'--{k}', type=t)
     ev.add_argument('--types', help='comma-separated question types (default all)')
     ev.add_argument('--camera')
+    ev.add_argument('--truth', choices=('visible', 'all-actors'),
+                    help='what the truth is about: visible = the actors the camera shows (default; objects labels '
+                         'needed), all-actors = every actor within the radius, as before the visibility rule')
     ev.add_argument('--tolerance', action='append', default=[], metavar='TYPE=ABS,REL',
                     help='a tolerance band: distance, speed or ttc = absolute, relative (default distance=2,0.15 '
                          'speed=1,0.15 ttc=0.5,0.2)')
     ev.add_argument('--judge', help='module:Class of an explanation judge YOU configure (never by default)')
     ev.add_argument('--approve-judge', action='store_true', help='approve sending facts and answers to the judge')
+    rs = sub.add_parser('rescore', help='score a saved evaluation\'s answers again with this scorer (no model)')
+    rs.add_argument('src', help='the evaluation folder whose answers.jsonl is scored again')
+    rs.add_argument('--out', '-o', required=True)
+    rs.add_argument('--truth', choices=('visible', 'all-actors'), help='default: the saved evaluation\'s')
+    rs.add_argument('--boot', type=int)
     ft = sub.add_parser('finetune', help='LoRA fine-tuning on the grounded QA (needs downloaded weights)')
     ft.add_argument('--model', required=True, help='a downloaded candidate or a model folder')
     ft.add_argument('--lang', action='append', default=[], required=True)
@@ -447,6 +616,8 @@ def main_vlm(argv) -> int:
         ft.add_argument(f'--{k}', type=t)
     ft.add_argument('--targets', help='comma-separated module names (default q_proj,k_proj,v_proj,o_proj)')
     ft.add_argument('--scope', choices=('text', 'all'))
+    ft.add_argument('--truth', choices=('visible', 'all-actors'),
+                    help='the questions\' truth, as in eval: visible (default) or all-actors (as before the rule)')
     ft.add_argument('--device')
     try:
         a = ap.parse_args(argv)
@@ -498,7 +669,7 @@ def main_vlm(argv) -> int:
                  'judge': a.judge, 'judge_approved': a.approve_judge}
             for k, v in (('every', a.every), ('max_frames', a.max_frames), ('max_objects', a.max_objects),
                          ('clip', a.clip), ('clip_step', a.clip_step), ('n_boot', a.boot), ('seed', a.seed),
-                         ('camera', a.camera)):
+                         ('camera', a.camera), ('truth', a.truth)):
                 if v is not None:
                     s[k] = v
             if a.types:
@@ -517,11 +688,16 @@ def main_vlm(argv) -> int:
             res = evaluate(s, a.out, emitter=em, cancel=flag, argv=['vlm'] + list(argv))
             em.result('ok', run_json=os.path.join(a.out, 'run.json'), summary=res)
             return P.OK
+        if a.action == 'rescore':
+            res = rescore(a.src, a.out, a.truth, a.boot, argv=['vlm'] + list(argv))
+            em.result('ok', run_json=os.path.join(a.out, 'run.json'), summary=res)
+            return P.OK
         from .vlm_lora import finetune
         s = {'model': a.model, 'lang': [os.path.abspath(x) for x in a.lang], 'workspace': a.workspace}
         for k, v in (('epochs', a.epochs), ('lr', a.lr), ('r', a.r), ('alpha', a.alpha), ('accumulate', a.accumulate),
                      ('every', a.every), ('seed', a.seed), ('val_share', a.val_share), ('val_generate', a.val_generate),
-                     ('max_examples', a.max_examples), ('scope', a.scope), ('device', a.device)):
+                     ('max_examples', a.max_examples), ('scope', a.scope), ('device', a.device),
+                     ('truth', a.truth)):
             if v is not None:
                 s[k] = v
         if a.targets:

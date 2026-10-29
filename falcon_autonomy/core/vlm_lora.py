@@ -17,8 +17,10 @@ modules whose qualified name holds "vision" are left alone, so the image encoder
 adapts the vision encoder too, and targets may add the MLP projections (gate_proj, up_proj, down_proj).
 
 Fine-tuning (finetune). Examples are (the frame's images, a question, core.language's template answer) from language
-folders (core.language): every n-th record, core.vlm.questions(). TRAIN AND VALIDATION ARE SPLIT BY DRIVE (frames of
-one drive are not independent): the drives are put in a seeded order and the last ⌈val_share · n⌉ (at least one)
+folders (core.language): every n-th record, core.vlm.questions() under the same truth as the evaluation (truth,
+default 'visible': only the actors the camera shows, core.vlm_eval.visible_at; 'all-actors': every actor within the
+radius, as before the visibility rule), recorded in adapter.json and run.json. TRAIN AND VALIDATION ARE SPLIT BY
+DRIVE (frames of one drive are not independent): the drives are put in a seeded order and the last ⌈val_share · n⌉ (at least one)
 validate; fewer than two drives is refused. The loss is the language model's cross-entropy on the answer's tokens
 only (the prompt's labels are -100). AdamW (weight decay 0) on the LoRA parameters, a linear warm-up then cosine,
 gradient accumulation, clipping at a global norm of 1. After every epoch: the validation loss, and (val_generate > 0)
@@ -42,7 +44,7 @@ DEFAULTS = {'model': '', 'lang': [], 'workspace': '', 'r': 8, 'alpha': 16.0, 'dr
             'targets': list(DEFAULT_TARGETS), 'scope': 'text', 'epochs': 2, 'lr': 2e-4, 'warmup_steps': 10,
             'accumulate': 8, 'clip_norm': 1.0, 'val_share': 0.25, 'every': 5, 'max_objects': 2, 'types': None,
             'clip': 1, 'clip_step': 5, 'camera': None, 'seed': 0, 'device': 'auto', 'max_side': 768,
-            'val_generate': 32, 'max_new_tokens': 48, 'max_examples': 0}
+            'val_generate': 32, 'max_new_tokens': 48, 'max_examples': 0, 'truth': 'visible'}
 VOLATILE = ('val_generate', 'max_new_tokens', 'device', 'workspace')
 
 
@@ -218,7 +220,7 @@ def split_drives(drives: list, val_share: float, seed: int) -> tuple:
 def examples(lang_dirs: list, s: dict) -> dict:
     """{drive: [example]}: (images, prompt, answer = core.language's template, question, context) per question."""
     from . import vlm as V
-    from .vlm_eval import load_language, images_for
+    from .vlm_eval import camera_of, images_for, load_language, visible_at
     out = {}
     for d in lang_dirs:
         L = load_language(d)
@@ -226,7 +228,14 @@ def examples(lang_dirs: list, s: dict) -> dict:
         for k, rec in enumerate(L['records']):
             if k % max(int(s['every']), 1):
                 continue
-            ctx = V.context_of(rec, L['manifest'], L['name'])
+            vis = None
+            if s.get('truth', 'visible') == 'visible':
+                vis = visible_at(L, rec['step'], s['camera'])
+                if vis is None:
+                    raise LoRAError(f'{L["name"]} step {rec["step"]}: no objects/'
+                                    f'{camera_of(L, rec["step"], s["camera"])} labels for the camera — the visible '
+                                    'truth needs them, or use truth all-actors')
+            ctx = V.context_of(rec, L['manifest'], L['name'], visible=vis)
             imgs = images_for(L, rec['step'], s['camera'], s['clip'], s['clip_step'])
             if not imgs:
                 continue
@@ -284,8 +293,11 @@ def _versions() -> dict:
 
 
 def settings_key(s: dict) -> str:
+    """The settings' hash; the all-actors truth leaves 'truth' out, so a run from before the visibility rule keeps
+    its key."""
     from .provenance import sha256_json
-    return sha256_json({k: v for k, v in s.items() if k not in VOLATILE})
+    return sha256_json({k: v for k, v in s.items() if k not in VOLATILE and
+                        not (k == 'truth' and v == 'all-actors')})
 
 
 def finetune(settings: dict, out_dir: str, emitter=None, cancel=None, argv=None, runner=None) -> dict:
@@ -301,6 +313,8 @@ def finetune(settings: dict, out_dir: str, emitter=None, cancel=None, argv=None,
     unknown = sorted(set(s) - set(DEFAULTS))
     if unknown:
         raise LoRAError(f'unknown settings: {", ".join(unknown)}')
+    if s['truth'] not in ('visible', 'all-actors'):
+        raise LoRAError(f'truth is visible or all-actors, not {s["truth"]!r}')
     em = emitter or _Quiet()
     cancel = cancel or (lambda: False)
     os.makedirs(out_dir, exist_ok=True)
@@ -357,7 +371,7 @@ def finetune(settings: dict, out_dir: str, emitter=None, cancel=None, argv=None,
                                         'licence': lic, 'name': runner.name},
                lora={'targets': s['targets'], 'scope': s['scope'], 'r': s['r'], 'alpha': s['alpha'],
                      'modules': len(names), 'trainable_parameters': n_train_params, 'parameters': n_params},
-               versions=_versions(), device=str(dev))
+               versions=_versions(), device=str(dev), truth=s['truth'], scorer=V.SCORER)
 
     def lr_at(step):
         if step < s['warmup_steps']:
@@ -425,7 +439,7 @@ def finetune(settings: dict, out_dir: str, emitter=None, cancel=None, argv=None,
                 best = dict(row)
                 save_adapter(model, os.path.join(out_dir, 'adapter'), {
                     'base': s['model'] or getattr(runner, 'folder', ''), 'licence': lic, 'targets': list(s['targets']),
-                    'scope': s['scope'], 'epoch': epoch + 1, 'val_loss': row['val_loss'],
+                    'scope': s['scope'], 'epoch': epoch + 1, 'val_loss': row['val_loss'], 'truth': s['truth'],
                     'note': 'a derivative of its base model, under the base model\'s licence'})
             save_ck(epoch + 1, 0)
             with open(os.path.join(out_dir, 'metrics.jsonl'), 'w', encoding='utf-8') as fh:

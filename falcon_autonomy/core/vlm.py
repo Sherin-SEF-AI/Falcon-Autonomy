@@ -10,10 +10,26 @@ record, score_answer() scores one answer, aggregate() makes the per-type numbers
     score_answer(question, answer, context) -> s   one answer's score (the rules below)
     aggregate(scored, n_boot, seed) -> scores      per question type, with intervals over drives
 
+The truth is about what the model can see (TRUTH_MODES; core.vlm_eval's default 'visible'). An actor is VISIBLE in
+a frame when its track id is among the frame's camera objects (objects/<camera>/<n>.json of the camera whose image
+the model gets; a clip: its last frame) with at least core.harness.MIN_PIXELS visible pixels and at most
+core.harness.MAX_OCCLUDED of its box hidden — the harness's rule for what a detector can be asked to find
+(visible_ids()). context_of(..., visible=ids) then keeps only the visible actors as the frame's objects: counts count
+the visible actors of the group within the radius ("How many vehicles can you see within 50 m?"); objects are asked
+about only when visible, named by core.language's definite phrases recomputed among the visible actors (so "the
+nearest car ahead" means the nearest visible one); the lead question ("Can you see a vehicle ahead of you in your
+lane within 50 m?") and the lead's ttc and lane questions are SKIPPED when the lead exists but is not visible; brake
+and brake_reason are SKIPPED when there is a reason to brake but none of the reasons' actors is visible (a recorded
+red or yellow light always counts as seen), and otherwise their truth holds only the visible reasons. skipped() counts
+the questions dropped per type. A mention that resolves to no visible actor but to a non-visible one is NOT_VISIBLE,
+reported apart from a HALLUCINATION (a mention that resolves to no actor at all). Without visible ids (the
+'all-actors' truth) every actor within the radius counts, as before the rule: the old wording and numbers exactly.
+
 Question types (QTYPES) and how an answer is scored. The answer is free text; parsing rules are deterministic and
 documented here, so a score can be checked by hand. Before a number, class or side is read, the spans of the
 answer's object mentions (below) are blanked out, so "the car 12 m away is 14.4 m away" reads 14.4.
-* count_vehicles, count_pedestrians, count_cyclists — "How many pedestrians are within 50 m of you?": EXACT. The
+* count_vehicles, count_pedestrians, count_cyclists — "How many pedestrians can you see within 50 m?" (all-actors:
+  "… are within 50 m of you?"): EXACT. The
   first integer or number word (zero … twenty; "no", "none" → 0; "a", "an", "one" → 1). Groups as
   core.worldmodel's BEV classes (a motorcyclist is a cyclist).
 * lead — "Is there a vehicle ahead of you in your lane?": EXACT yes/no (the first word yes/no; otherwise a negation
@@ -71,14 +87,28 @@ behind on your left, behind, or free left, right, in front, behind —, lanes "i
    distances are gaps); an ordinal resolves to the k-th nearest; otherwise the nearest candidate (flagged ambiguous
    when there were several).
 A mention that resolves to nothing is a HALLUCINATION — unless its stated distance lies beyond the radius (beyond the
-truth: not scored). A count mention ("2 pedestrians") is a group claim: hallucinated only when no actor of the group
-is present. GROUNDING of an answer to a question about an object (lead, lane, distance, speed, motion,
-relative_position, ttc, and brake / brake_reason when the truth is to brake): its first mention resolves to the
-target (or one of the reason actors). An answer naming no object is not scored for grounding. Note that an answer
-repeating the question's own phrase is grounded by construction; grounding is informative for lead, brake and
-brake_reason, where the answer has to name the object itself.
+truth: not scored), or, in the visible truth, the same rules over every actor in range resolve it (NOT_VISIBLE: the
+object exists but is not in the image's visible set; counted apart, not a hallucination). A count mention
+("2 pedestrians") is a group claim: hallucinated only when no actor of the group is present (visible truth: none at
+all; not_visible when only hidden ones are). GROUNDING of an answer to a question about an object (lead, lane,
+distance, speed, motion, relative_position, ttc, and brake / brake_reason when the truth is to brake): its first
+mention resolves to the target (or one of the reason actors). An answer naming no object is not scored for
+grounding. Note that an answer repeating the question's own phrase is grounded by construction; grounding is
+informative for lead, brake and brake_reason, where the answer has to name the object itself.
+
+Negated mentions and the ego (scorer 2). A mention is NEGATED when a negation word (no, not, nothing, none, nobody,
+no one, never, without, cannot, n't — NEGATION without "clear") stands before it in its clause (the faithfulness
+splitter: . ; : ! ? and, but, because, since, so, as, while) with no comma in between: "No, I cannot see a vehicle
+ahead of you in your lane" — not "No, the car ahead is far away", whose "No," is the answer word. A negated mention
+is a CLAIM OF ABSENCE, not a reference: it is resolved as if present only to check the claim (absence_correct when it
+would name no actor of the truth — in the visible truth a hidden actor is truly not seen; false_absence_rate = wrong
+absence claims / absence claims), and it is never a hallucination, never grounded and outside the mention counts. A
+count answer reads 0 for "not a" / "not … any". A mention of the EGO — the ego vehicle, the ego car, the ego, your /
+my / our car — names the ego: never another actor, never a hallucination or not_visible, outside the mention counts.
+SCORER (in scores.json and every answer row) is 2 since these two rules; folders without it were scored by 1.
 
 Hallucination rate: hallucinated mentions / mentions (micro, over all answers), and the share of answers with one.
+The not-visible rate: not_visible mentions / mentions (0 in the all-actors truth).
 
 Intervals (aggregate): every number is a mean of per-answer scores with a 95 % percentile bootstrap interval
 (core.metrics.bootstrap, Efron & Tibshirani 1993) over whole DRIVES (a cluster bootstrap: frames of one drive are not
@@ -86,11 +116,12 @@ independent). With fewer than MIN_DRIVES drives the unit becomes a BLOCK_S-secon
 drive, and the scores say the interval is optimistic (blocks of one drive are still correlated) — the same caution
 as the model harness (core.harness), which flags drive intervals under five drives.
 
-Limits (also in docs/vlm.md): only actors are objects — CARLA's parked cars in Town10 are map meshes, not actors, so a
-VLM that names one is counted as hallucinating; the brake rule and lane relations are core.language's heuristics;
-the parsing rules are English-only and keyword-based, so a correct answer phrased unusually can be scored wrong
-(unparsed answers are counted and shown); a class noun is checked at group level only (a "truck" that is a car still
-grounds).
+Limits (also in docs/vlm.md): visibility is the labels' pixel count and occlusion share, not whether a model could
+recognise the object (a 25-pixel car 48 m away counts as visible); only actors are objects — CARLA's parked cars in
+Town10 are map meshes, not actors, so a VLM that names one is counted as hallucinating; the brake rule and lane
+relations are core.language's heuristics; the parsing rules are English-only and keyword-based, so a correct answer
+phrased unusually can be scored wrong (unparsed answers are counted and shown); a class noun is checked at group level
+only (a "truck" that is a car still grounds).
 """
 from __future__ import annotations
 
@@ -102,6 +133,8 @@ import re
 from . import language as L
 
 SCHEMA_SCORES = 'falcon.vlm.scores/1'
+SCORER = 2      # the scoring rules' version, in scores.json and every answer row: 1 until negated mentions became
+                # absence claims and mentions of the ego the ego (folders without the field were scored by 1)
 QTYPES = ('count_vehicles', 'count_pedestrians', 'count_cyclists', 'lead', 'brake', 'lane', 'relative_position',
           'motion', 'distance', 'speed', 'ttc', 'brake_reason')
 KIND_OF = {'count_vehicles': 'count', 'count_pedestrians': 'count', 'count_cyclists': 'count', 'lead': 'yesno',
@@ -114,6 +147,10 @@ MIN_DRIVES = 5
 BLOCK_S = 2.0
 PROMPT_SUFFIX = ('Answer in one short sentence. Give distances in metres, speeds in m/s and times in seconds. "You" '
                  'are the ego vehicle whose camera took the image.')
+TRUTH_MODES = ('visible', 'all-actors')
+VISIBILITY_RULE = ('an actor is visible when its track id is in the frame\'s objects/<camera>/<n>.json (the camera '
+                   'whose image the model gets; a clip: its last frame) with pixels >= {min_pixels} and occluded <= '
+                   '{max_occluded} (core.harness\'s ignore rule)')
 DEFAULTS = {'max_objects': 2, 'types': list(QTYPES), 'tolerance': {k: list(v) for k, v in TOLERANCE.items()}}
 
 # ================================================================================================ nouns and words
@@ -128,12 +165,14 @@ NOUNS = {
     'pedestrian': ('pedestrian', 'pedestrians', 'person', 'people', 'persons', 'man', 'men', 'woman', 'women',
                    'child', 'children', 'kid', 'kids', 'boy', 'girl', 'walker', 'walkers', 'jogger', 'police officer',
                    'construction worker'),
+    'ego': ('ego vehicle', 'ego car', 'ego-vehicle', 'ego'),
     'other': ('traffic cone', 'traffic cones', 'cone', 'cones', 'barrier', 'barriers', 'animal', 'animals', 'dog',
               'dogs', 'cow', 'cows', 'cattle', 'deer', 'horse'),
 }
 NOUN_GROUP = {n: g for g, ns in NOUNS.items() for n in ns}
 GROUP_FITS = {'vehicle': ('vehicle',), 'any_vehicle': ('vehicle', 'cyclist'), 'cyclist': ('cyclist',),
-              'pedestrian': ('pedestrian',), 'other': ()}
+              'pedestrian': ('pedestrian',), 'other': (), 'ego': ()}
+EGO_DETS = ('your', 'my', 'our')
 PLURAL_GROUP = {'count_vehicles': 'vehicle', 'count_pedestrians': 'pedestrian', 'count_cyclists': 'cyclist'}
 NUMBER_WORDS = {w: i for i, w in enumerate(('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
                                             'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen',
@@ -141,7 +180,7 @@ NUMBER_WORDS = {w: i for i, w in enumerate(('zero', 'one', 'two', 'three', 'four
 _ORD = {o: k for k, o in enumerate(L.ORDINALS)}
 _ORD.update({'closest': 0, 'second-closest': 1, 'second closest': 1, 'second nearest': 1, 'first': 0})
 _noun_alt = '|'.join(sorted((re.escape(n) for n in NOUN_GROUP), key=len, reverse=True))
-_det = r'(?:the|a|an|that|this|one|\d+|' + '|'.join(NUMBER_WORDS) + ')'
+_det = r'(?:the|a|an|that|this|one|your|my|our|\d+|' + '|'.join(NUMBER_WORDS) + ')'
 _ord_alt = '|'.join(sorted((re.escape(o) for o in _ORD), key=len, reverse=True))
 MENTION = re.compile(r'\b(?P<det>' + _det + r')\s+(?:(?P<ord>' + _ord_alt + r')\s+)?(?P<adj>(?:[a-z-]+\s+){0,2}?)'
                      r'(?P<noun>' + _noun_alt + r')\b(?P<tail>(?:[^.,;:!?()]|(?<=\d)[.,](?=\d))*)', re.I)
@@ -161,7 +200,9 @@ FALCON_DIRS = ('ahead on your left', 'ahead on your right', 'behind on your left
 _SECTORS = {'ahead': (-15.0, 15.0), 'ahead on your right': (15.0, 60.0), 'on your right': (60.0, 120.0),
             'behind on your right': (120.0, 165.0), 'behind': (165.0, 195.0), 'behind on your left': (-165.0, -120.0),
             'on your left': (-120.0, -60.0), 'ahead on your left': (-60.0, -15.0)}
-NEGATION = re.compile(r"\b(?:no|not|nothing|none|nobody|no one|never|without|clear)\b|n't\b", re.I)
+NEGATION = re.compile(r"\b(?:no|not|nothing|none|nobody|no one|never|without|cannot|clear)\b|n't\b", re.I)
+MENTION_NEGATION = re.compile(r"\b(?:no|not|nothing|none|nobody|no one|never|without|cannot)\b|n't\b", re.I)
+_COMMA = re.compile(r'(?<!\d),|,(?!\d)')
 
 
 # ================================================================================================ the facts
@@ -217,16 +258,40 @@ def brake_reasons(record: dict, agents: list, th: dict) -> list:
     return out
 
 
-def context_of(record: dict, manifest: dict | None, drive: str = '', lanes: bool | None = None) -> dict:
-    """What scoring a record's answers needs: thresholds, the actors in range, the lead, the brake reasons."""
+def visible_ids(objects) -> set:
+    """The track ids a camera frame shows (module doc): its objects (objects/<camera>/<n>.json "objects") with at least
+    core.harness.MIN_PIXELS pixels and at most core.harness.MAX_OCCLUDED of the box hidden."""
+    from .harness import MAX_OCCLUDED, MIN_PIXELS
+    return {o['track_id'] for o in objects or () if o.get('track_id') is not None and
+            (o.get('pixels') or 0) >= MIN_PIXELS and (o.get('occluded') or 0.0) <= MAX_OCCLUDED}
+
+
+def context_of(record: dict, manifest: dict | None, drive: str = '', lanes: bool | None = None,
+               visible=None) -> dict:
+    """What scoring a record's answers needs: thresholds, the actors in range, the lead, the brake reasons. visible:
+    the track ids the model's camera shows (visible_ids()) — the visible truth: 'agents' and 'by_id' are then the
+    visible actors only, 'all_agents' and 'all_by_id' every actor in range; None: the all-actors truth."""
     th = thresholds_of(manifest)
-    ag = agents_of(record, th['radius_m'])
+    every = agents_of(record, th['radius_m'])
     if lanes is None:
         lanes = str((manifest or {}).get('lanes', '')).startswith('lanes.json')
-    return {'drive': drive, 'step': record.get('step'), 'frame': record.get('frame'), 'sim_t': record.get('sim_t'),
-            'th': th, 'agents': ag, 'by_id': {g['id']: g for g in ag},
-            'lead_id': (record.get('facts') or {}).get('lead_id'), 'lanes': bool(lanes),
-            'reasons': brake_reasons(record, ag, th)}
+    ag = every if visible is None else [a for a in every if a['id'] in set(visible)]
+    ctx = {'drive': drive, 'step': record.get('step'), 'frame': record.get('frame'), 'sim_t': record.get('sim_t'),
+           'th': th, 'agents': ag, 'by_id': {g['id']: g for g in ag},
+           'lead_id': (record.get('facts') or {}).get('lead_id'), 'lanes': bool(lanes),
+           'reasons': brake_reasons(record, every, th), 'truth': 'all-actors' if visible is None else 'visible'}
+    if visible is not None:
+        ctx.update(all_agents=every, all_by_id={g['id']: g for g in every})
+    return ctx
+
+
+def all_actors_view(ctx: dict) -> dict:
+    """The all-actors truth of a context (itself when it is one)."""
+    if ctx.get('all_agents') is None:
+        return ctx
+    out = {k: v for k, v in ctx.items() if k not in ('all_agents', 'all_by_id')}
+    out.update(agents=ctx['all_agents'], by_id=ctx['all_by_id'], truth='all-actors')
+    return out
 
 
 # ================================================================================================ questions
@@ -237,11 +302,14 @@ def _qid(drive, step, k):
 def questions(record: dict, ctx: dict, options: dict | None = None) -> list:
     """Falcon's grounded questions about one frame, each {'qid', 'type', 'text', 'truth', 'target', 'template'}.
     Objects asked about (max_objects) are the lead first, then the nearest described objects, named by core.language's
-    own definite phrases (the record's qa). template is core.language's answer."""
+    own definite phrases (the record's qa). template is core.language's answer. In the visible truth (ctx from
+    context_of(..., visible=…)) only visible actors are counted and asked about, their phrases recomputed among the
+    visible actors, and the lead and brake questions are skipped when their object is not visible (module doc)."""
     o = dict(DEFAULTS, **(options or {}))
     want = set(o['types'])
     th, R = ctx['th'], f'{ctx["th"]["radius_m"]:g}'
     by_id, lead_id = ctx['by_id'], ctx['lead_id']
+    vis = ctx.get('all_agents') is not None
     qa = record.get('qa') or []
     out = []
 
@@ -254,12 +322,18 @@ def questions(record: dict, ctx: dict, options: dict | None = None) -> list:
     for kind, (grp, one, many) in zip(('count_vehicles', 'count_pedestrians', 'count_cyclists'), L.GROUPS):
         ids = counts[grp]
         tmpl = f'{len(ids)} {one if len(ids) == 1 else many}.' if ids else f'None within {R} m.'
-        add(kind, f'How many {many} are within {R} m of you?', {'value': len(ids), 'ids': ids}, None, tmpl)
+        text = f'How many {many} can you see within {R} m?' if vis else f'How many {many} are within {R} m of you?'
+        add(kind, text, {'value': len(ids), 'ids': ids}, None, tmpl)
     lead = by_id.get(lead_id)
+    lead_hidden = vis and lead is None and lead_id in ctx['all_by_id']        # there is one, not in the image
     lead_q = next((q for q in qa if q['type'] == 'lead'), None)
-    add('lead', lead_q['question']['text'] if lead_q else 'Is there a vehicle ahead of you in your lane?',
-        {'value': lead is not None}, lead_id if lead is not None else None,
-        lead_q['answer']['text'] if lead_q else ('Yes.' if lead else 'No.'))
+    if not lead_hidden:
+        if vis:
+            text = f'Can you see a vehicle ahead of you in your {"lane" if ctx["lanes"] else "path"} within {R} m?'
+        else:
+            text = lead_q['question']['text'] if lead_q else 'Is there a vehicle ahead of you in your lane?'
+        add('lead', text, {'value': lead is not None}, lead_id if lead is not None else None,
+            lead_q['answer']['text'] if lead_q else ('Yes.' if lead else 'No.'))
     if lead is not None:
         tq = next((q for q in qa if q['type'] == 'risk_ttc'), None)
         if tq is not None:
@@ -279,30 +353,84 @@ def questions(record: dict, ctx: dict, options: dict | None = None) -> list:
     for aid in seen[:int(o['max_objects'])]:
         g = by_id[aid]
         mine = [q for q in qa if q['ids'] == [aid]]
+        # the visible truth names the object among the visible actors (core.language's rules): by direction for the
+        # distance, motion and speed questions, by distance for the side question
+        dph = L._def_by_direction(g, ctx['agents']) if vis else None
+        nph = L._def_by_distance(g, ctx['agents']) if vis else None
         for q in mine:
             t = q['type']
+            qt, at = q['question']['text'], q['answer']['text']
+            if vis and t in ('distance', 'relative_position', 'motion', 'speed'):
+                ph = nph if t == 'relative_position' else dph
+                qt, at = _with_phrase(q['question'], aid, ph), _with_phrase(q['answer'], aid, ph)
             if t == 'distance':
-                add('distance', q['question']['text'], {'value': g['distance_m']}, aid, q['answer']['text'])
-                phrase = q['question']['refs'][0]['phrase']
+                add('distance', qt, {'value': g['distance_m']}, aid, at)
+                phrase = dph if vis else q['question']['refs'][0]['phrase']
                 if ctx['lanes'] and g.get('lane_rel') and aid != lead_id:
                     lp = L.lane_phrase(g['lane_rel'], g.get('lanes_over'))
                     add('lane', f'Which lane is {phrase} in?', {'value': g['lane_rel'], 'n': g.get('lanes_over')},
                         aid, f'{phrase[:1].upper()}{phrase[1:]} is {lp}.')
             elif t == 'relative_position':
-                add('relative_position', q['question']['text'], {'value': q['value']}, aid, q['answer']['text'])
+                add('relative_position', qt, {'value': q['value']}, aid, at)
             elif t == 'motion':
-                add('motion', q['question']['text'], {'value': motion_class(g, th)}, aid, q['answer']['text'])
+                add('motion', qt, {'value': motion_class(g, th)}, aid, at)
             elif t == 'speed':
-                add('speed', q['question']['text'], {'value': g['speed_mps']}, aid, q['answer']['text'])
+                add('speed', qt, {'value': g['speed_mps']}, aid, at)
     bq = next((q for q in qa if q['type'] == 'risk_brake'), None)
     reasons = ctx['reasons']
+    brake_t = bq['answer']['text'] if bq else ('Yes.' if reasons else 'No.')
+    caps = [c for c in record.get('captions') or () if c.get('kind') == 'brake']
+    if vis:
+        shown = [r for r in reasons if r['id'] is None or r['id'] in by_id]
+        if reasons and not shown:             # a reason to brake, none of it in the image: not asked
+            return out
+        if shown and shown[0] is not reasons[0]:
+            brake_t = _brake_answer(shown[0], ctx)
+        reasons = shown
+        caps = [c for c in caps if all(i in by_id for i in c.get('ids') or ())]
     targets = [r['id'] for r in reasons if r['id'] is not None]
     add('brake', bq['question']['text'] if bq else 'Should you brake now?', {'value': bool(reasons)},
-        targets or None, bq['answer']['text'] if bq else ('Yes.' if reasons else 'No.'))
-    why = ' '.join(c['text'] for c in record.get('captions') or () if c.get('kind') == 'brake')
+        targets or None, brake_t)
     add('brake_reason', 'Should you brake now? Say why.', {'value': bool(reasons), 'reasons': reasons},
-        targets or None, why)
+        targets or None, ' '.join(c['text'] for c in caps))
     return out
+
+
+def _with_phrase(s: dict, aid, phrase: str) -> str:
+    """A core.language sentence ({'text', 'refs'}) with each phrase referring to aid alone replaced by phrase (its
+    capital kept at a sentence start)."""
+    text, out, pos = s['text'], '', 0
+    for r in sorted(s['refs'], key=lambda r: r['span'][0]):
+        if r['ids'] != [aid]:
+            continue
+        a, b = r['span']
+        out += text[pos:a] + (phrase[:1].upper() + phrase[1:] if text[a:a + 1].isupper() else phrase)
+        pos = b
+    return out + text[pos:]
+
+
+def _brake_answer(r: dict, ctx: dict) -> str:
+    """core.language's answer to "Should you brake now?" for one reason (its risk_brake templates)."""
+    if r['kind'] == 'light':
+        return f'Yes: the traffic light ahead is {r["state"]}.'
+    g = ctx['by_id'][r['id']]
+    if r['kind'] == 'ttc':
+        return f'Yes: {L._indef(g)} is {g["ttc_s"]:.1f} s from a collision.'
+    return f'Yes: {L._indef(g)} is {r["how"]} your path.'
+
+
+def skipped(record: dict, ctx: dict, options: dict | None = None) -> dict:
+    """{type: n} — how many fewer questions of each type the visible truth asks about this frame than the all-actors
+    truth would, because their object or reason is not in the image (a hidden object's slot goes to the next visible
+    described object when there is one, so this is the net drop); {} in the all-actors truth."""
+    if ctx.get('all_agents') is None:
+        return {}
+    n = {}
+    for q in questions(record, all_actors_view(ctx), options):
+        n[q['type']] = n.get(q['type'], 0) + 1
+    for q in questions(record, ctx, options):
+        n[q['type']] = n.get(q['type'], 0) - 1
+    return {t: k for t, k in n.items() if k > 0}
 
 
 def template_answer(q: dict) -> str:
@@ -312,7 +440,8 @@ def template_answer(q: dict) -> str:
 # ================================================================================================ mentions
 def mentions(text: str) -> list:
     """The object mentions of a text (module doc): [{'span', 'phrase', 'det', 'ord', 'noun', 'group', 'count',
-    'distance', 'direction', 'dir_kind', 'lane', 'track', 'ahead_of_you'}]."""
+    'distance', 'direction', 'dir_kind', 'lane', 'track', 'ahead_of_you', 'ego', 'negated'}]. ego: the mention names
+    the ego (the ego vehicle, the ego, your / my / our car); negated: it stands in a negated clause (negated())."""
     out = []
     pos = 0
     while True:
@@ -338,14 +467,32 @@ def mentions(text: str) -> list:
         d = _DIST.search(tail)
         tr = _TRACK.search(tail)
         direction, kind = _direction(tail.lower())
+        ego = NOUN_GROUP[noun] == 'ego' or det in EGO_DETS or 'ego' in adj.split()
         out.append({'span': [m.start(), end], 'phrase': phrase, 'det': det, 'ord': (m.group('ord') or '').lower()
-                    or None, 'noun': noun, 'group': NOUN_GROUP[noun], 'count': count,
+                    or None, 'noun': noun, 'group': 'ego' if ego else NOUN_GROUP[noun], 'count': count,
+                    'ego': ego, 'negated': not ego and negated(text, m.start()),
                     'distance': float(d.group(1)) if d else None, 'direction': direction, 'dir_kind': kind,
                     'lane': parse_lane(low) if 'lane' in low or 'oncoming' in low or 'off the road' in low else None,
                     'track': int(tr.group(1)) if tr else None,
                     'ahead_of_you': bool(re.search(r'\b(?:ahead of (?:you|me|us)|in front of (?:you|me|us)|ahead in '
                                                    r'(?:your|my) lane)\b', low)) or tail.strip().lower() == 'ahead'})
     return out
+
+
+def negated(text: str, start: int) -> bool:
+    """Whether the mention starting at start stands in a negated clause: a negation word (MENTION_NEGATION:
+    NEGATION's words without "clear") before it in its clause (the faithfulness splitter, _CLAUSES), with no comma in
+    between. "No, I cannot see a car ahead" and "There is not a pedestrian" negate the mention; "No, the car ahead is
+    far away" (an answer word, then a comma) and "The lane is not free: a car is ahead" do not."""
+    head = text[:start]
+    cut = 0
+    for c in _CLAUSES.finditer(head):
+        cut = c.end()
+    seg = head[cut:]
+    commas = list(_COMMA.finditer(seg))
+    if commas:
+        seg = seg[commas[-1].end():]
+    return bool(MENTION_NEGATION.search(seg))
 
 
 def _qualifiers(tail: str) -> str:
@@ -415,7 +562,29 @@ def tolerance(kind: str, truth: float, tol: dict | None = None) -> float:
 
 def candidates(m: dict, ctx: dict, prefer=()) -> dict:
     """{'ids': candidates after the filters, 'resolved': id or None, 'status': 'resolved' | 'hallucinated' |
-    'out_of_range' | 'group', 'ambiguous', 'why'} of a mention (module doc's resolution rule)."""
+    'not_visible' | 'out_of_range' | 'group' | 'absent' | 'ego', 'ambiguous', 'why'} of a mention (module doc's
+    resolution rule). In the visible truth a mention that resolves to no visible actor but to a non-visible one is
+    'not_visible' ('hidden': the actor or group it resolves to then). A mention of the ego is 'ego'. A negated
+    mention is 'absent', a claim of absence: 'absence_correct' when, resolved as if present, it would name no actor
+    of the truth (in the visible truth a hidden actor is truly not seen)."""
+    if m.get('ego'):
+        return {'ids': [], 'resolved': 'ego', 'status': 'ego', 'ambiguous': False, 'why': 'the ego vehicle'}
+    if m.get('negated'):                      # a claim of absence: right when it denies nothing the truth holds
+        r = candidates(dict(m, negated=False), ctx, prefer)
+        seen = r['status'] == 'resolved' or (r['status'] == 'group' and m['count'] != 0 and bool(r['ids']))
+        return dict(r, status='absent', absence_correct=not seen, denies=r['status'],
+                    why=f'negated (a claim of absence): {r["why"]}')
+    r = _resolve(m, ctx, prefer)
+    if r['status'] == 'hallucinated' and ctx.get('all_agents') is not None:
+        h = _resolve(m, all_actors_view(ctx), prefer)
+        if h['status'] in ('resolved', 'group'):
+            r = dict(r, status='not_visible', hidden=h['resolved'] if h['resolved'] is not None else h['ids'],
+                     why=f'{r["why"]}; not visible: {h["why"]}')
+    return r
+
+
+def _resolve(m: dict, ctx: dict, prefer=()) -> dict:
+    """candidates() over the context's actors."""
     agents, th = ctx['agents'], ctx['th']
     tol = None                                 # resolution always uses the default distance band, not the scoring's
     if m['track'] is not None:
@@ -516,17 +685,22 @@ def parse_yesno(text: str):
 
 
 def parse_count(text: str):
+    """The first integer or number word (no / none → 0; a / an → 1). A negated existence claim counts 0: an "a" or
+    "an" after a negation in its clause ("there is not a single cyclist"), or no number at all and a negation before
+    "any" in the first clause ("I cannot see any cyclists")."""
     t = text.lower()
     m = re.search(r'\b(\d+|' + '|'.join(NUMBER_WORDS) + r'|no|none|a|an)\b', t)
     if not m:
-        return None
+        first = _CLAUSES.split(t, maxsplit=1)[0]
+        neg = MENTION_NEGATION.search(first)
+        return 0 if neg and re.search(r'\bany\b', first[neg.end():]) else None
     w = m.group(1)
     if w.isdigit():
         return int(w)
     if w in ('no', 'none'):
         return 0
     if w in ('a', 'an'):
-        return 1
+        return 0 if negated(t, m.start()) else 1
     return NUMBER_WORDS[w]
 
 
@@ -644,6 +818,8 @@ def claims(text: str, ctx: dict) -> list:
         ms = ground(clause, ctx)
         cues = []                         # (position, kind)
         for m in ms:
+            if m['group'] == 'ego':
+                continue
             k = {'vehicle': 'ttc', 'any_vehicle': 'ttc', 'pedestrian': 'path', 'cyclist': 'path',
                  'other': 'other'}[m['group']]
             cues.append((m['span'][0], k))
@@ -691,14 +867,15 @@ def score_explanation(answer: str, truth: dict, ctx: dict) -> dict:
                         (c['colour'] is None or c['colour'] == r['state'])]
             elif k in ('ttc', 'path'):
                 groups = {'ttc': ('vehicle', 'any_vehicle'), 'path': ('pedestrian', 'cyclist')}[k]
-                ms = [m for m in c['mentions'] if m['group'] in groups and m['count'] is None]
+                ms = [m for m in c['mentions'] if m['group'] in groups and m['count'] is None and
+                      m['status'] != 'absent']
                 hits = []
                 for i, r in enumerate(reasons):
                     if r['kind'] != k:
                         continue
                     if not ms or any(r['id'] in m['ids'] for m in ms):
                         hits.append(i)
-                if ms and all(m['status'] == 'hallucinated' for m in ms):
+                if ms and all(m['status'] in ('hallucinated', 'not_visible') for m in ms):
                     hits = []
             else:
                 hits = []
@@ -768,11 +945,18 @@ def score_answer(q: dict, answer: str, ctx: dict) -> dict:
     else:
         out.update(score_explanation(answer, truth, ctx))
         out['pred'] = out.get('decision')
-    out['mentions'] = [{'phrase': m['phrase'], 'status': m['status'], 'resolved': m['resolved'],
-                        'candidates': m['ids'], 'why': m['why']} for m in ms]
-    out['n_mentions'] = sum(m['status'] in ('resolved', 'hallucinated', 'group') for m in ms)
+    out['mentions'] = [dict({'phrase': m['phrase'], 'status': m['status'], 'resolved': m['resolved'],
+                             'candidates': m['ids'], 'why': m['why']},
+                            **({'absence_correct': m['absence_correct']} if m['status'] == 'absent' else {}))
+                       for m in ms]
+    out['n_mentions'] = sum(m['status'] in ('resolved', 'hallucinated', 'group', 'not_visible') for m in ms)
     out['hallucinated'] = sum(m['status'] == 'hallucinated' for m in ms)
-    single = [m for m in ms if m['count'] is None and m['status'] in ('resolved', 'hallucinated')]
+    out['not_visible'] = sum(m['status'] == 'not_visible' for m in ms)
+    out['absent'] = sum(m['status'] == 'absent' for m in ms)
+    out['absent_wrong'] = sum(m['status'] == 'absent' and not m['absence_correct'] for m in ms)
+    out['ego'] = sum(m['status'] == 'ego' for m in ms)
+    out['scorer'] = SCORER
+    single = [m for m in ms if m['count'] is None and m['status'] in ('resolved', 'hallucinated', 'not_visible')]
     if t in GROUNDED_TYPES and targets and single:
         out['grounded'] = single[0]['resolved'] in targets
     else:
@@ -787,9 +971,9 @@ def _rng(*parts) -> random.Random:
 
 
 def absent_object_phrase(ctx: dict) -> str:
-    """A definite phrase naming an object that is not there: a group with no actor in range, else a traffic cone
-    (actors are only vehicles and walkers)."""
-    present = {a['group'] for a in ctx['agents']}
+    """A definite phrase naming an object that is not there: a group with no actor in range (visible or not), else a
+    traffic cone (actors are only vehicles and walkers)."""
+    present = {a['group'] for a in all_actors_view(ctx)['agents']}
     for grp, noun in (('cyclist', 'cyclist'), ('pedestrian', 'pedestrian'), ('vehicle', 'truck')):
         if grp not in present:
             return f'the {noun} on your left'
@@ -834,7 +1018,7 @@ def hallucinate(answer: str, ctx: dict) -> str:
     """The answer with its first object phrase replaced by one naming an absent object — or, when it names none or
     its first is a count ("1 pedestrian", whose number is the answer), with a sentence naming one added. In an
     explanation the added object is a claim the facts do not support, so a faithful explanation becomes unfaithful."""
-    ms = mentions(answer)
+    ms = [m for m in mentions(answer) if not (m['ego'] or m['negated'])]
     ph = absent_object_phrase(ctx)
     if ms and ms[0]['count'] is None:
         a, b = ms[0]['span']
@@ -881,6 +1065,9 @@ def _metrics(rows: list) -> dict:
     nm = sum(r['n_mentions'] for r in rows)
     out['hallucination_rate'] = sum(r['hallucinated'] for r in rows) / nm if nm else 0.0
     out['answers_with_hallucination'] = sum(r['hallucinated'] > 0 for r in rows) / len(rows) if rows else None
+    out['not_visible_rate'] = sum(r.get('not_visible', 0) for r in rows) / nm if nm else 0.0
+    na = sum(r.get('absent', 0) for r in rows)
+    out['false_absence_rate'] = sum(r.get('absent_wrong', 0) for r in rows) / na if na else None
     g = [float(r['grounded']) for r in rows if r.get('grounded') is not None]
     out['grounding'] = sum(g) / len(g) if g else None
     return out
@@ -902,24 +1089,52 @@ def aggregate(rows: list, n_boot: int = 1000, seed: int = 0) -> dict:
         c = counts.setdefault(r['type'], {'n': 0, 'unparsed': 0})
         c['n'] += 1
         c['unparsed'] += not r['parsed']
+    mentions_n = {'mentions': sum(r['n_mentions'] for r in rows), 'hallucinated': sum(r['hallucinated'] for r in rows),
+                  'not_visible': sum(r.get('not_visible', 0) for r in rows),
+                  'absence_claims': sum(r.get('absent', 0) for r in rows),
+                  'false_absence': sum(r.get('absent_wrong', 0) for r in rows),
+                  'ego': sum(r.get('ego', 0) for r in rows)}
     note = None
     if mode == 'block':
         note = (f'{len(drives)} drive(s), fewer than {MIN_DRIVES}: the intervals are over {BLOCK_S:g} s blocks of '
                 'consecutive frames, which are correlated within a drive — they are too narrow; record more drives '
                 'for intervals over drives')
-    return {'metrics': b['metrics'], 'counts': counts, 'unit': 'drive' if mode == 'drive' else f'{BLOCK_S:g} s block',
+    return {'metrics': b['metrics'], 'counts': counts, 'mentions': mentions_n,
+            'unit': 'drive' if mode == 'drive' else f'{BLOCK_S:g} s block',
             'n_units': b['n_units'], 'n_answers': len(rows), 'drives': drives, 'n_boot': n_boot, 'seed': seed,
             'ci': 0.95, 'reliable': mode == 'drive', 'note': note}
 
 
+def truth_doc(mode: str) -> dict:
+    """What the truth of an evaluation is about (scores.json 'truth')."""
+    from .harness import MAX_OCCLUDED, MIN_PIXELS
+    if mode == 'all-actors':
+        return {'mode': mode, 'rule': 'every actor within the radius (behind the ego and hidden ones too), whether or '
+                                      'not the camera shows it'}
+    return {'mode': mode, 'rule': VISIBILITY_RULE.format(min_pixels=MIN_PIXELS, max_occluded=MAX_OCCLUDED),
+            'min_pixels': MIN_PIXELS, 'max_occluded': MAX_OCCLUDED,
+            'applied': 'counts count visible actors; objects asked about only when visible (phrases among the visible '
+                       'actors); lead, ttc and lead lane skipped when the lead is not visible; brake and brake_reason '
+                       'skipped when no reason\'s actor is visible, else scored on the visible reasons; a mention of a '
+                       'non-visible actor is not_visible, not a hallucination'}
+
+
 def method(options: dict | None = None) -> dict:
-    """The scoring rules as numbers and words, for scores.json."""
+    """The scoring rules as numbers and words, for scores.json (options' 'truth': the truth mode)."""
     tol = dict(TOLERANCE, **{k: tuple(v) for k, v in ((options or {}).get('tolerance') or {}).items()})
-    return {'schema': SCHEMA_SCORES, 'question_types': {t: KIND_OF[t] for t in QTYPES},
+    truth = (options or {}).get('truth') or 'all-actors'
+    return {'schema': SCHEMA_SCORES, 'scorer': SCORER, 'truth': truth_doc(truth),
+            'question_types': {t: KIND_OF[t] for t in QTYPES},
             'tolerance': {k: {'absolute': a, 'relative': r, 'rule': f'|answer - truth| <= max({a:g}, {r:g} x truth)'}
                           for k, (a, r) in tol.items()},
             'grounding': 'first object mention resolved to the target track id (module doc of core.vlm)',
             'hallucination': 'mentions resolving to no actor in range / mentions',
+            'not_visible': 'mentions resolving to no visible actor but to a non-visible one / mentions (visible truth)',
+            'negated': 'a mention after a negation word in its clause (no comma between) is a claim of absence, not a '
+                       'reference: never a hallucination, outside the mention counts; false_absence_rate = absence '
+                       'claims denying an actor of the truth / absence claims',
+            'ego': 'the ego vehicle, the ego, your / my / our car name the ego: never resolved to another actor, '
+                   'outside the mention counts',
             'explanation': 'rule-based faithfulness: every claim supported by the facts and at least one true reason '
                            'stated (no LLM judge unless one was configured and approved)',
             'sector_margin_deg': SECTOR_MARGIN_DEG, 'interval': f'95 % percentile bootstrap over drives; blocks of '
