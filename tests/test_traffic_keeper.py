@@ -71,13 +71,14 @@ def _run(w, keeper, seconds, every=None):
 def test_a_vehicle_heading_for_the_road_end_out_of_view_is_moved_before_it(fake):
     w, keeper = _setup(fake)
     _car(fake, w, -120.0, role='hero', kmh=0.0)                 # the ego, far behind and still
-    a = _car(fake, w, 110.0)                                     # 10 m/s towards the end at x = 150
+    a = _car(fake, w, 90.0)                                      # 10 m/s towards the end at x = 150
     keeper.add(a, {'distance_to_leading_m': 2.0}, -5.0)
     xs = []
     evs = _run(w, keeper, 8.0, lambda: xs.append(a.get_transform().location.x))
     assert max(xs) < 150.0                                       # never past the end
     ev = next(e for e in evs if e['kind'] == 'dead_end')
-    assert 150.0 - keeper.LOOK_S * 10.0 - 2 * keeper.STEP_M < ev['from']['x'] < 150.0   # 10 m/s: 2 s ahead
+    reach = min(max(keeper.LOOK_S * 10.0, keeper.LOOK_MIN_M), keeper.LOOK_MAX_M)
+    assert 150.0 - reach - 2 * keeper.STEP_M < ev['from']['x'] < 150.0 - reach + 2 * keeper.STEP_M   # as it comes in reach
     to = (ev['to']['x'], ev['to']['y'])
     assert math.hypot(to[0] - ev['from']['x'], to[1] - ev['from']['y']) > keeper.AWAY_M
     assert any(abs(sp.location.x - to[0]) < 0.05 and abs(sp.location.y - to[1]) < 0.05 for sp in keeper.spawns)

@@ -44,9 +44,12 @@ from .common import ROLE_HERO, place_now, role
 
 class TrafficKeeper:
     EVERY_S = 0.25
-    LOOK_S = 2.0
-    LOOK_MIN_M = 12.0
-    LOOK_MAX_M = 60.0
+    # the traffic manager removes a vehicle well before a dead end: measured on central Bengaluru (CARLA 0.9.16), the
+    # ego removed 26–30 m before one at city speed and 48 m before one at 16.5 m/s; its planned path is not readable
+    # (get_all_actions: the next action only, 0.5–5 m ahead), so the look-ahead is longer than those
+    LOOK_S = 3.0
+    LOOK_MIN_M = 40.0
+    LOOK_MAX_M = 75.0
     STEP_M = 2.0
     PROBE_M = 4.0
     FALL_M = 1.0
@@ -151,9 +154,9 @@ class TrafficKeeper:
         return None
 
     def dead_end_ahead(self, a, wp, loc, speed: float):
-        """The distance (m) to a dead end of the map on the vehicle's way within its look-ahead, else None: along the
-        traffic manager's planned path (TrafficManager.get_all_actions — its last action's waypoint) and from there
-        the lane straight on; without it, along the lane from where the vehicle is."""
+        """The distance (m) to a dead end of the map on the vehicle's way within its look-ahead, else None: to the
+        traffic manager's next action (TrafficManager.get_all_actions — its last action's waypoint, a few metres
+        ahead) and from there the lane straight on; without it, along the lane from where the vehicle is."""
         reach = min(max(speed * self.LOOK_S, self.LOOK_MIN_M), self.LOOK_MAX_M)
         tm = getattr(self.w, 'tm', None)
         start, d0 = wp, 0.0

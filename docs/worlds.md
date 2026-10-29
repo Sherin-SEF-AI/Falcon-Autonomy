@@ -270,14 +270,27 @@ logs it ("the road ended at …"); a recorded drive marks the step in frames.jso
 since the pose jumps there. Scenario runs are not guarded (the director places its ego on the scenario's road).
 CARLA's own towns are closed and never trigger the guard.
 
+The traffic manager removes an ego on the autopilot too, the way it removes traffic (below): well before it reaches a
+dead end. So on a lane the guard also looks ahead with the traffic keeper's dead-end check (below) and puts the ego
+back the same way before it gets there, at a spawn point with no dead end within 40 m ahead, its autopilot restarted
+(`"teleport"` with `"cause": "dead_end_ahead"`; a fall is `"fell"`). Measured on the demo copy of the re-imported
+central Bengaluru with the city, the default rig and Indian mixed traffic, 60 s drives: with the original look-ahead
+(2 s of travel, at least 12 m) the ego was removed in 2 of 8 drives, at 26–30 m before a dead end at city speed and
+48 m before one at 16.5 m/s; with the current one (3 s, at least 40 m) in none of 12 (one put back ahead of a dead
+end, two after a fall). Should the server destroy the ego all the same, the run fails saying so and where it was last
+seen (a failed run keeps only its run.json).
+
 **Traffic** is lost at an imported area's edges too. Measured on a scratch copy of the re-imported central Bengaluru
 (Indian mixed traffic, 60 vehicles, CARLA 0.9.16), two things take it:
 
 - **The traffic manager removes it.** Its OSM mode — on by default in 0.9.16 — destroys a vehicle as soon as the path
-  it plans meets a dead end of its road graph (54 vehicles, 30 s: 41 left with the mode on, 54 with it off). That
-  graph has many more dead ends than the map's own 14 lane ends without a successor: 41 of 64 vehicles removed in
-  180 s were last seen on a lane more than 40 m from any of them. With the mode off the vehicles are not removed but
-  drive on past the end of their path, off the road mesh, and fall (39 of 54 in 150 s).
+  it plans meets a dead end of its road graph (54 vehicles, 30 s: 41 left with the mode on, 54 with it off) — well
+  before the vehicle gets there: the ego was removed 26–30 m before a dead end at city speed and 48 m before one at
+  16.5 m/s (its planned path cannot be read: `get_all_actions` gives the next action only, a few metres ahead). That
+  also explains most of an earlier count, 41 of 64 vehicles removed in 180 s last seen more than 40 m from a lane end
+  without a successor; whether the traffic manager's graph has dead ends the map lacks as well is not settled. With
+  the mode off the vehicles are not removed but drive on past the end of their path, off the road mesh, and fall
+  (39 of 54 in 150 s).
 - **Holes in the road mesh**, where a junction's connecting road does not meet its lanes (150 of 1136 lane links more
   than 0.5 m apart, see above): a vehicle sinks through the road where the map still has a lane.
 
@@ -287,8 +300,8 @@ Without help, 60 vehicles became 14–17 after 150 s. Falcon's **traffic keeper*
 - **removed** (by the traffic manager or the server): a vehicle of the same blueprint is spawned in its place and set
   up as the traffic profile set the first (behaviour, speed difference, class, road speed);
 - **falling** (1 m below its lane, or faster than 3 m/s) or **off the road network** for 2 s: moved at once;
-- **heading for a dead end of the map** within 2 s of travel (12–60 m), along the traffic manager's planned path and
-  then the lane straight on — a lane end with no successor and no driving lane 6 m beyond it (a lane that merely ends
+- **heading for a dead end of the map** within 3 s of travel (40–75 m: longer than the traffic manager's reach
+  above), to the traffic manager's next action and then the lane straight on — a lane end with no successor and no driving lane 6 m beyond it (a lane that merely ends
   beside a road going on is not one): moved, unless the ego might see it go (within 50 m, or within 120 m and 60° of
   its heading — a heuristic for the rig's cameras); then it comes off the autopilot, stops with full brakes like a car
   at a closed road, and is moved once out of view.
@@ -297,6 +310,9 @@ A move or a replacement takes a spawn point in a seeded order, at least 60 m fro
 ego's view, with no vehicle within 10 m and no dead end within 40 m ahead; the vehicle is placed before the next tick
 and its autopilot restarted there. Every move is in frames.jsonl (`"traffic_respawns"`) and run.json
 (`traffic.keeper`: counts, the longest hold, the first 200 events). A world can opt out with `keep_traffic: false`.
+Measured with the 40 m look-ahead (the 12 drives above, 60 vehicles, 60 s): 60 alive at the end of every drive;
+per drive 16 caught before a dead end (mean), 12 caught falling, 7 removed by the traffic manager and replaced (4–13),
+against 18–27 removed and 0–1 caught before a dead end with the old 12 m look-ahead.
 
 | 180 s, 60 vehicles, seed 7 | alive at 30 / 60 / 90 / 120 / 150 s (min–max) | at the end | moves |
 |---|---|---|---|

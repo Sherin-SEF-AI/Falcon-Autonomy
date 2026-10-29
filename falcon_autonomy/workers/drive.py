@@ -191,7 +191,7 @@ class Drive(Worker):
                 if guard is not None:
                     why = guard.lost(rec['sim_t'])
                     if why:
-                        raise Failed(why + '; the frames recorded up to there are kept')
+                        raise Failed(why)
                     ev = guard.step(rec['sim_t'])
                     if ev is not None:               # the frame's pose jumps: say so where every tool reads it
                         rec['teleport'] = ev

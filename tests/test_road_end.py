@@ -110,3 +110,54 @@ def test_a_destroyed_ego_is_reported_with_where_it_was_last_seen():
     g.step(1.0)
     ego.is_alive = False
     assert 'kill depth' in g.lost(1.05)
+
+
+class _Look:
+    """A road look-ahead (TrafficKeeper.dead_end_ahead) that reports a dead end ahead when told to."""
+    SPAWN_CLEAR_M = 40.0
+
+    def __init__(self, ahead=None, blocked_x=()):
+        self.ahead, self.blocked_x, self.asked = ahead, set(blocked_x), 0
+
+    def dead_end_ahead(self, a, wp, loc, speed):
+        self.asked += 1
+        return self.ahead
+
+    def _walk(self, wp, d0, reach):                   # a dead end ahead of the spawn points at these x
+        return 5.0 if round(wp.transform.location.x) in self.blocked_x else None
+
+
+class _Tm:
+    def __init__(self):
+        self.on = []
+
+    def get_port(self):
+        return 8350
+
+
+def test_a_dead_end_ahead_on_the_planned_path_puts_the_ego_back_before_it_is_removed():
+    ego = _Ego(100.0, -1.75, 0.0)
+    ego.autopilot = []
+    ego.set_autopilot = lambda on, port: ego.autopilot.append((on, port))
+    w = _W()
+    w.tm = _Tm()
+    w.road_look = _Look(ahead=None)
+    from falcon_autonomy.workers.scene import RoadEndGuard
+    spawns = [carla.Transform(carla.Location(-140.0 + 30.0 * k, -1.75, 0.5), carla.Rotation()) for k in range(10)]
+    world = types.SimpleNamespace(get_map=lambda: carla.Map('Town10HD_Opt'))
+    g = RoadEndGuard(w, world, ego, spawns)
+    assert g.step(0.0) is None and ego.moved_to is None             # the road goes on
+    w.road_look.ahead = 18.0
+    assert g.step(0.1) is None and w.road_look.asked == 1           # looked at most every LOOK_EVERY_S
+    w.road_look.blocked_x = {-20, 10}                                # the nearest spawn points face dead ends too
+    ev = g.step(0.3)
+    assert ev['cause'] == 'dead_end_ahead' and '18 m ahead' in ev['detail']
+    to = ego.moved_to.location
+    assert math.hypot(to.x - 100.0, to.y + 1.75) > g.AWAY_M and round(to.x) not in (-20, 10)
+    assert ego.autopilot == [(True, 8350)] and g.events == [ev]
+
+
+def test_a_town_has_no_look_ahead_and_is_only_guarded_against_falling():
+    ego = _Ego(100.0, -1.75, 0.0)
+    g, _ = _guard(ego)
+    assert g.look is None and g.step(0.0) is None and g.step(1.0) is None

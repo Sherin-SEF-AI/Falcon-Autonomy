@@ -28,6 +28,7 @@ def load_map(w, cfg: dict):
     load_s = float(cfg.get('load_timeout_s', 180.0))
     w.speed_control = None
     w.traffic_keeper = None
+    w.road_look = None
     if cfg.get('xodr'):
         with open(cfg['xodr'], encoding='utf-8') as fh:
             text = fh.read()
@@ -53,9 +54,11 @@ def load_map(w, cfg: dict):
         w.world = world
         w.alive()
         speed_control_for(w, cfg, text)
+        from .trafficguard import TrafficKeeper
         if cfg.get('keep_traffic', True):       # traffic kept in the world at roads that end (workers.trafficguard)
-            from .trafficguard import TrafficKeeper
             w.traffic_keeper = TrafficKeeper(w, world, int(cfg.get('seed', 0)))
+        # the road ahead of a vehicle (dead ends on its planned path): RoadEndGuard looks with it for the ego
+        w.road_look = w.traffic_keeper or TrafficKeeper(w, world, int(cfg.get('seed', 0)))
         if cfg.get('city'):                     # buildings, trees, lamps and ground around the roads (core.cityprops)
             from ..core.cityprops import populate
             populate(w, world, cfg)
@@ -133,10 +136,19 @@ class RoadEndGuard:
     more than FALL_M below the last height it had on a lane, or falling faster than FALL_MPS — it is put back on the
     road at the spawn point nearest the spawn points' centroid that lies more than AWAY_M from where it left (so the
     autopilot does not drive straight back to the same dead end), stopped, and the event is returned and kept
-    (events). Kinematic, director-driven egos are not guarded (the director places them itself)."""
+    (events). Kinematic, director-driven egos are not guarded (the director places them itself).
+
+    In an imported world the traffic manager's OSM mode also destroys a vehicle on the autopilot, the ego included,
+    as soon as its planned path meets a dead end of its road graph (workers.trafficguard). So on a lane, every
+    LOOK_EVERY_S, the guard looks along the ego's planned path with the world's road look-ahead (w.road_look,
+    TrafficKeeper.dead_end_ahead): a dead end within it puts the ego back the same way before it gets there (at a
+    spawn point with no dead end within SPAWN_CLEAR_M ahead), on the autopilot again so the traffic manager plans
+    afresh. The traffic manager's graph has dead ends the map does not (trafficguard), which this cannot see: lost()
+    then says what happened."""
     FALL_M = 1.0
     FALL_MPS = 3.0
     AWAY_M = 60.0
+    LOOK_EVERY_S = 0.25
 
     def __init__(self, w, world, ego, spawns):
         self.carla = w.carla
@@ -151,6 +163,8 @@ class RoadEndGuard:
             self.spawns = []
         self.last_road_z = None
         self.last_seen = None            # (x, y, on a driving lane) at the last step
+        self.look = getattr(w, 'road_look', None)        # an imported world's dead ends ahead (None: a town)
+        self.looked = -1e9
         self.events: list = []
 
     def lost(self, sim_t: float):
@@ -174,29 +188,56 @@ class RoadEndGuard:
         carla = self.carla
         t = self.ego.get_transform()
         loc = t.location
-        on_lane = self.cmap.get_waypoint(loc, project_to_road=False, lane_type=carla.LaneType.Driving) is not None
-        self.last_seen = (loc.x, loc.y, on_lane)
-        if on_lane:
+        wp = self.cmap.get_waypoint(loc, project_to_road=False, lane_type=carla.LaneType.Driving)
+        self.last_seen = (loc.x, loc.y, wp is not None)
+        if wp is not None:
             self.last_road_z = loc.z
-            return None
+            if self.look is None or sim_t - self.looked < self.LOOK_EVERY_S:
+                return None
+            self.looked = sim_t
+            v = self.ego.get_velocity()
+            d = self.look.dead_end_ahead(self.ego, wp, loc, math.hypot(v.x, v.y))
+            if d is None:
+                return None
+            return self.put_back(loc, sim_t, 'dead_end_ahead',
+                                 f'a road ends {d:.0f} m ahead on the ego\'s planned path (e.g. at the edge of an '
+                                 'imported area), where the traffic manager would remove it: put back on the road')
         vz = self.ego.get_velocity().z
         sinking = (self.last_road_z is not None and loc.z < self.last_road_z - self.FALL_M) or vz < -self.FALL_MPS
         if not sinking:
             return None
-        target = next((sp for sp in self.spawns
-                       if math.hypot(sp.location.x - loc.x, sp.location.y - loc.y) > self.AWAY_M), None)
+        return self.put_back(loc, sim_t, 'fell', 'the ego left the road network (a road ends there, e.g. at the edge '
+                                                 'of an imported area) and was falling: put back on the road')
+
+    def clear_ahead(self, sp) -> bool:
+        if self.look is None:
+            return True
+        wp = self.cmap.get_waypoint(sp.location, project_to_road=True, lane_type=self.carla.LaneType.Driving)
+        return wp is not None and self.look._walk(wp, 0.0, self.look.SPAWN_CLEAR_M) is None
+
+    def put_back(self, loc, sim_t: float, cause: str, detail: str):
+        far = [sp for sp in self.spawns if math.hypot(sp.location.x - loc.x, sp.location.y - loc.y) > self.AWAY_M]
+        target = next((sp for sp in far if self.clear_ahead(sp)), None) or (far[0] if far else None)
         if target is None:
             return None
+        carla = self.carla
         self.ego.set_target_velocity(carla.Vector3D(0.0, 0.0, 0.0))
         self.ego.set_target_angular_velocity(carla.Vector3D(0.0, 0.0, 0.0))
         place_now(self.w.client, carla, [(self.ego, target)])     # applied before the next tick
+        if cause == 'dead_end_ahead':                              # the autopilot plans afresh from there
+            tm = getattr(self.w, 'tm', None)
+            if tm is not None:
+                self.ego.set_autopilot(True, tm.get_port())
+            sc = getattr(self.w, 'speed_control', None)
+            if sc is not None and self.ego.id in sc.rows:
+                sc.rows[self.ego.id][3] = None                     # the desired speed is sent again
+                sc.update(self.ego.id)
         self.last_road_z = target.location.z
-        ev = {'sim_t': round(float(sim_t), 3), 'kind': 'road_end',
+        ev = {'sim_t': round(float(sim_t), 3), 'kind': 'road_end', 'cause': cause,
               'from': {'x': round(loc.x, 2), 'y': round(loc.y, 2), 'z': round(loc.z, 2)},
               'to': {'x': round(target.location.x, 2), 'y': round(target.location.y, 2),
                      'z': round(target.location.z, 2)},
-              'detail': 'the ego left the road network (a road ends there, e.g. at the edge of an imported area) and '
-                        'was falling: put back on the road'}
+              'detail': detail}
         self.events.append(ev)
         return ev
 
