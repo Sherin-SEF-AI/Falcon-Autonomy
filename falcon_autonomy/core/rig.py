@@ -67,6 +67,12 @@ def new_sensor(stype: str, ident: str, name: str, pose: dict | None = None) -> d
     return s
 
 
+def with_defaults(s: dict) -> dict:
+    """A copy of a rig sensor with the settings it leaves out taken from its type's DEFAULTS (the schema lets a
+    hand-written rig omit them; the workers read every one)."""
+    return dict(copy.deepcopy(DEFAULTS.get(s.get('type'), {})), **copy.deepcopy(s))
+
+
 def validate_rig(rig: dict) -> list:
     """Problems beyond the schema: duplicate ids, poses far from the car, sizes, lens and lidar settings."""
     out = []

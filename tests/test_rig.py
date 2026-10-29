@@ -86,3 +86,13 @@ def test_costs():
     assert R.sensor_cost(s)['mpx'] == pytest.approx(1280 * 720 * 3 / 1e6)          # image + instance + depth
     assert R.sensor_cost(R.new_sensor('lidar', 'l', 'l'))['mpx'] == 0.0
     assert '60 k points' in R.sensor_cost(R.new_sensor('lidar', 'l', 'l'))['note']
+
+
+def test_with_defaults_fills_what_a_hand_written_sensor_leaves_out():
+    # a rig lidar without rotation_frequency passes the schema; the drive and HIL workers read every setting
+    s = {'id': 'l', 'name': 'L', 'type': 'lidar', 'pose': dict(R.POSE0), 'channels': 64}
+    d = R.with_defaults(s)
+    assert d['channels'] == 64 and d['rotation_frequency'] == R.DEFAULTS['lidar']['rotation_frequency']
+    assert 'rotation_frequency' not in s                     # the rig itself is not changed
+    d['labels'].append('x')
+    assert 'x' not in R.DEFAULTS['lidar']['labels']

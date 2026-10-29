@@ -38,6 +38,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from ..core.labels import VEHICLE_TAGS
+from ..core.rig import with_defaults
 from .live import transform_matrix
 
 DIR_TOL_DEG = 0.01
@@ -125,6 +126,7 @@ class LidarRecorder:
     """One rig lidar: its two sensors, the sweep being collected, the proof statistics and the checks."""
 
     def __init__(self, w, world, lib, ego, s: dict, cameras, role, raster=None):
+        s = with_defaults(s)
         self.w, self.s, self.ego = w, s, ego
         from .scene import camera_transform
         tf = camera_transform(w.carla, s['pose'])

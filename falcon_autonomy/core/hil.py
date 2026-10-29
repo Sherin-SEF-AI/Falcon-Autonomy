@@ -37,6 +37,8 @@ import copy
 import math
 import os
 
+from .rig import with_defaults
+
 HIL_SCHEMA = 'falcon.hil_config/1'
 WINDOW_S = 2.0
 TRUST_NS = 1_000_000                       # one-way stages are trusted when the offset's uncertainty is below 1 ms
@@ -136,7 +138,7 @@ def hil_config(project, world_id: str, rig_id: str, out_dir: str, port: int, tm_
     if lid is None:
         lid = copy.deepcopy(DEFAULT_LIDAR)
         notes.append('the rig has no lidar: the session adds a 32-channel roof lidar (core.hil.DEFAULT_LIDAR)')
-    lid = dict(copy.deepcopy(lid), **(lidar_overrides or {}))
+    lid = dict(with_defaults(lid), **(lidar_overrides or {}))
     traffic = dict(d['traffic'])
     if traffic_vehicles is not None:
         traffic['vehicles'] = int(traffic_vehicles)

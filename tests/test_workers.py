@@ -320,6 +320,18 @@ def test_lidar_labels_proven_and_checked(project, tmp_path):
     assert (out / 'gnss' / 'gnss.jsonl').read_text().count('lat') >= 9
 
 
+def test_lidar_without_every_setting_drives(project, tmp_path):
+    # a hand-written rig lidar may leave settings out (the schema allows it): the run takes the type's defaults
+    rig = project.doc['rigs'][0]
+    rig['sensors'][0].update(width=192, height=108)
+    rig['sensors'].append({'id': 'lid', 'name': 'top', 'type': 'lidar', 'channels': 16, 'points_per_second': 40000,
+                           'pose': {'x': 0.0, 'y': 0.0, 'z': 1.9, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0}})
+    code, _, err = _run(_cfg(project, tmp_path / 'run', seconds=0.5, seed=1))
+    assert code == P.OK, err
+    run = json.loads((tmp_path / 'run' / 'run.json').read_text())
+    assert run['lidar_checks'][0]['sweeps'] == 5                # 10 steps at 20 Hz, the default 10 Hz rotation
+
+
 def test_faults_in_a_drive(project, tmp_path):
     cam = project.doc['rigs'][0]['sensors'][0]
     cam['faults'] = [{'kind': 'mount_rotation', 'deg': [0, 0, 5.0]}, {'kind': 'drop', 'rate': 0.3},
