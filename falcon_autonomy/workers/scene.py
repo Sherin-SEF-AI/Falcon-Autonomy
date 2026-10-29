@@ -150,13 +150,33 @@ class RoadEndGuard:
         else:
             self.spawns = []
         self.last_road_z = None
+        self.last_seen = None            # (x, y, on a driving lane) at the last step
         self.events: list = []
+
+    def lost(self, sim_t: float):
+        """None while the ego exists; else why it is gone, for the run's error (the server destroyed it: it cannot be
+        driven or recorded any further)."""
+        try:
+            if self.ego.is_alive:
+                return None
+        except RuntimeError:
+            pass
+        where = ''
+        if self.last_seen is not None:
+            x, y, on_lane = self.last_seen
+            where = (f' last seen on a driving lane at ({x:.0f}, {y:.0f}): the traffic manager removes a vehicle on '
+                     'the autopilot whose planned path meets a dead end of its road graph (an imported world\'s '
+                     'edge, docs/worlds.md)') if on_lane else \
+                f' last seen off the road network at ({x:.0f}, {y:.0f}): it left the world below its kill depth'
+        return f'the ego was destroyed by the simulator at {sim_t:.1f} s;{where}'.rstrip(';')
 
     def step(self, sim_t: float):
         carla = self.carla
         t = self.ego.get_transform()
         loc = t.location
-        if self.cmap.get_waypoint(loc, project_to_road=False, lane_type=carla.LaneType.Driving) is not None:
+        on_lane = self.cmap.get_waypoint(loc, project_to_road=False, lane_type=carla.LaneType.Driving) is not None
+        self.last_seen = (loc.x, loc.y, on_lane)
+        if on_lane:
             self.last_road_z = loc.z
             return None
         vz = self.ego.get_velocity().z

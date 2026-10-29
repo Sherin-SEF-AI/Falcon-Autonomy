@@ -189,6 +189,9 @@ class Drive(Worker):
                                   'the road (frames.jsonl "traffic_respawns", run.json traffic.keeper); see '
                                   'docs/worlds.md')
                 if guard is not None:
+                    why = guard.lost(rec['sim_t'])
+                    if why:
+                        raise Failed(why + '; the frames recorded up to there are kept')
                     ev = guard.step(rec['sim_t'])
                     if ev is not None:               # the frame's pose jumps: say so where every tool reads it
                         rec['teleport'] = ev

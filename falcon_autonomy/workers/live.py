@@ -165,8 +165,9 @@ class Live(Worker):
             sim_t = snap.timestamp.elapsed_seconds
             sim_t0 = sim_t if sim_t0 is None else sim_t0
             st = sim_t - sim_t0
-            if not self.ego.is_alive:
-                raise Failed('the ego was destroyed by the simulator (it left the world below its kill depth)')
+            why = self.guard.lost(st)
+            if why:
+                raise Failed(why)
             scene.speeds_step(self, st)       # class / road limits; traffic kept at roads that end (run.json traffic)
             ev = self.guard.step(st)
             if ev is not None:

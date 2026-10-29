@@ -93,3 +93,20 @@ def test_beside_the_road_and_not_sinking_is_left_alone():
     g.step(0.0)
     ego.t = carla.Transform(carla.Location(0.0, 12.0, 0.1), carla.Rotation())   # on the sidewalk, level
     assert g.step(0.5) is None and ego.moved_to is None
+
+
+def test_a_destroyed_ego_is_reported_with_where_it_was_last_seen():
+    ego = _Ego(0.0, -1.75, 0.0)
+    ego.is_alive = True
+    g, _ = _guard(ego)
+    assert g.lost(0.0) is None
+    g.step(0.5)
+    ego.is_alive = False                         # the traffic manager removed it at a dead end of its graph
+    why = g.lost(0.55)
+    assert why.startswith('the ego was destroyed by the simulator at 0.6 s') and 'driving lane at (0, -2)' in why
+    assert 'traffic manager' in why
+    ego.is_alive = True
+    ego.t = carla.Transform(carla.Location(170.0, -1.75, -3.0), carla.Rotation())   # past the end, falling
+    g.step(1.0)
+    ego.is_alive = False
+    assert 'kill depth' in g.lost(1.05)
