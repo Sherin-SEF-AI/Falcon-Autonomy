@@ -5,10 +5,10 @@ One desktop application for the whole loop of building a self-driving AI on the
 generate perfectly labelled data where models are weak, train and evaluate, and test a full AV stack — with every
 number traceable to the run that produced it.
 
-**Status: 1.2 — the eight milestones of the plan, and milestones 9–12 of what follows.** What works is listed under *What works*; what comes next is in
+**Status: 2.0 — the eight milestones of the plan and the five that followed (9–13).** What works is listed under *What works*; what comes next is in
 the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
 
-## What works (1.4.0)
+## What works (2.0.0)
 
 - **The app shell** (PyQt6): a page navigator, Jobs and Log docks, undo and redo for every project edit, a command
   palette (Ctrl+K), dark and light themes, a status bar with the CARLA server, the GPU and memory.
@@ -68,6 +68,9 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
   end-to-end camera policies; adversarial traffic that learns to make the ego fail within realism limits;
   vision-language driving answers scored against the simulator's truth ([world-model training](docs/world-model-training.md),
   [adversarial traffic](docs/adversarial-traffic.md), [vision-language](docs/vlm.md)).
+- **Deployment** (2.0): TensorRT engines built, profiled (latency, power, energy) and accuracy-checked on the Jetson
+  AGX Orin with a release gate; CI mode with gates, JUnit/Markdown/HTML outputs and a GitHub Actions template
+  ([deploy](docs/deploy.md), [CI](docs/ci.md)).
 - **Stack testing**: a closed-loop ROS 2 bridge (Autoware, Ackermann or CARLA control), scenario suites with pass/fail
   and intervals, a SOTIF-style safety-case report; CARLA 0.9.16's native ROS 2 measured and documented
   ([stack testing](docs/stack-testing.md)).
@@ -123,7 +126,7 @@ FALCON_REAL_CARLA=1 python3 -m pytest -m real_server     # also against a real C
 [CARLA lessons](docs/carla-lessons.md) · [models](docs/models.md) · [sim-to-real](docs/sim-to-real.md) ·
 [world model](docs/world-model.md) · [training](docs/training.md) · [policies](docs/policies.md) · [loop](docs/loop.md) · [reports](docs/reports.md) ·
 [stack testing](docs/stack-testing.md) · [log replay](docs/log-replay.md) · [hardware](docs/hardware.md) ·
-[packaging](docs/packaging.md) · [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
+[packaging](docs/packaging.md) · [deploy](docs/deploy.md) · [CI](docs/ci.md) · [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
 
 ## Licence
 

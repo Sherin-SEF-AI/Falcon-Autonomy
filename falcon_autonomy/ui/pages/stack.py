@@ -125,6 +125,32 @@ class StackPage(Page):
         self.state = KeyValues(('State',))
         sec.add(self.state)
         lv.addWidget(sec)
+
+        sec = Section('CI', 'CI mode runs a suite headless on every commit of a stack and gates it (pass rate with '
+                            'Wilson\'s interval, regressions by a paired bootstrap, rule violations per km, latency): '
+                            '`falcon ci run CONFIG --out <workspace>/ci/NAME`. Its results in this workspace are '
+                            'listed here. Posting to GitHub is a command-line step only (`falcon ci post … --post`), '
+                            'never from this page.')
+        self.ci_runs = QTreeWidget()
+        self.ci_runs.setHeaderLabels(['Started', 'Name', 'Verdict', 'Commit', 'Gates not passed'])
+        self.ci_runs.setRootIsDecorated(False)
+        self.ci_runs.setMinimumHeight(110)
+        sec.add(self.ci_runs)
+        row = QHBoxLayout()
+        row.addWidget(button('Refresh', self.load_ci))
+        row.addWidget(button('Open its report', self.open_ci_report))
+        row.addStretch(1)
+        sec.add(row)
+        row = QHBoxLayout()
+        row.addWidget(button('Write a CI config…', lambda: self.write_ci(False),
+                             tip='falcon-ci.yml and falcon-suite.json into a repository you choose (files that '
+                                 'exist are kept)'))
+        row.addWidget(button('Write the GitHub workflow…', lambda: self.write_ci(True),
+                             tip='also .github/workflows/falcon.yml: a fake-carla smoke job and a self-hosted CARLA '
+                                 'job (docs/ci.md)'))
+        row.addStretch(1)
+        sec.add(row)
+        lv.addWidget(sec)
         lv.addStretch(1)
         split.addWidget(scroll(left))
 
@@ -207,6 +233,7 @@ class StackPage(Page):
                 self.odd.setText(p)
         self.show_topics()
         self.load()
+        self.load_ci()
 
     def checked_scenarios(self) -> list:
         return [self.scn_list.item(i).data(256) for i in range(self.scn_list.count())
@@ -462,6 +489,59 @@ class StackPage(Page):
             QDesktopServices.openUrl(QUrl.fromLocalFile(p))
         else:
             self.state.set('State', 'no report yet: build it first')
+
+    # ------------------------------------------------------------------ CI mode (core.ci; no posting from here)
+    def ci_results(self) -> list:
+        """The CI runs in <workspace>/ci/*/ci-results.json, newest first: [(folder, results)]."""
+        if not self.win.workspace():
+            return []
+        base = os.path.join(self.win.workspace(), 'ci')
+        out = []
+        for d in (sorted(os.listdir(base)) if os.path.isdir(base) else ()):
+            p = os.path.join(base, d, 'ci-results.json')
+            try:
+                out.append((os.path.join(base, d), read_json(p)))
+            except (OSError, ValueError):
+                continue
+        return sorted(out, key=lambda x: x[1].get('started') or '', reverse=True)
+
+    def load_ci(self):
+        self.ci_runs.clear()
+        for d, r in self.ci_results():
+            sha = (r.get('commit') or {}).get('sha') or ''
+            bad = [g['name'] for g in r.get('gates') or () if g.get('status') in ('failed', 'error')]
+            it = QTreeWidgetItem([r.get('started') or '', r.get('name') or os.path.basename(d),
+                                  r.get('verdict') or '?', sha[:10], '; '.join(bad) or (r.get('error') or '')[:80]])
+            it.setData(0, 256, d)
+            it.setToolTip(4, '\n'.join(bad) or (r.get('error') or ''))
+            self.ci_runs.addTopLevelItem(it)
+
+    def open_ci_report(self):
+        it = self.ci_runs.currentItem() or self.ci_runs.topLevelItem(0)
+        if it is None:
+            self.state.set('State', f'no CI results in {tilde(os.path.join(self.win.workspace() or "", "ci"))}')
+            return
+        p = os.path.join(it.data(0, 256), 'report.html')
+        if os.path.isfile(p):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+        else:
+            self.state.set('State', f'{tilde(p)} was not written')
+
+    def write_ci(self, github: bool, target: str = '') -> list:
+        """A CI config and suite (and with github the workflow) into a repository folder the user chooses."""
+        from ...core.ci import CIError
+        from ...core.ci_github import init
+        target = target or QFileDialog.getExistingDirectory(self, 'The repository to write the CI files into')
+        if not target:
+            return []
+        try:
+            written = init(target, 'stack', github)
+        except (CIError, OSError, ValueError) as e:
+            QMessageBox.warning(self, 'CI', str(e))
+            return []
+        self.state.set('State', ('wrote ' + ', '.join(tilde(w) for w in written)) if written else
+                       'nothing written: the files exist (edit them, or use `falcon ci init --force`)')
+        return written
 
     def summary_json(self) -> str:
         """The current suite's results.json (for tests and the log)."""

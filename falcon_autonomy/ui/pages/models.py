@@ -3,7 +3,8 @@ score it on recorded drives (core.harness: AP with drive-level CIs, a condition 
 two evaluations (paired bootstrap: regressions), and measure the sim-to-real gap of the drives' images against a real
 dataset (core.realgap). From the failure gallery, "Why did this fail?" attributes a missed object to its factors by
 re-runs of a scenario drive (core.rootcause, a job), and "Correlates of misses" relates the whole evaluation's misses
-to the objects' and frames' attributes (correlational, with intervals)."""
+to the objects' and frames' attributes (correlational, with intervals). The Deploy tab (ui/deploy_tab.py) builds an
+ONNX detector as TensorRT engines on the Jetson (or the labelled simulated device), profiles, scores and gates them."""
 from __future__ import annotations
 
 import json
@@ -333,6 +334,9 @@ class ModelsPage(Page):
         from ..vlm_tab import LanguageTab           # vision-language explanations scored against the truth (core.vlm)
         self.language = LanguageTab(self)
         self.tabs.addTab(self.language, 'Language')
+        from ..deploy_tab import DeployTab          # TensorRT engines on the Jetson, profiled and gated (core.deploy)
+        self.deploy = DeployTab(self)
+        self.tabs.addTab(self.deploy, 'Deploy')
         split.addWidget(self.tabs)
         split.setSizes([440, 860])
         self.timer = QTimer(self)

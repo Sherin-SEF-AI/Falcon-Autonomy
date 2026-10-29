@@ -24,6 +24,7 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon worldmodel train\|eval\|imagine\|collect\|e2e\|e2e-offline\|show …` | a learned world model (RSSM) on drives and episodes, scored against copy-last and constant-velocity baselines per horizon; policies learnt in its imagination; end-to-end camera policies ([world-model training](world-model-training.md)) |
 | `falcon adversary train\|eval\|replay …` | learned adversarial traffic under realism constraints against a fixed ego; failure rates against random and scripted baselines; replays ([adversarial traffic](adversarial-traffic.md)) |
 | `falcon vlm list\|fetch\|verify\|eval\|finetune …` | vision-language models scored against the simulator's truth (accuracy, grounding, hallucination, faithfulness); approved downloads only ([vision-language](vlm.md)) |
+| `falcon deploy check\|calibrate\|build\|profile\|accuracy\|gate\|report\|all …` | TensorRT engines (FP32/FP16/INT8, GPU or DLA) built and profiled on the Jetson AGX Orin — latency, power and energy from its rails, accuracy against the host's ONNX model with paired intervals — and a release gate; a labelled simulated device (onnxruntime on this host) for the pipeline only ([deploy](deploy.md)) |
 | `falcon why case PROJECT --run RUN --out DIR [--failure F] [--model ID] [--actor A \| --track N] [--step S]` | why a scenario run failed: counterfactual re-runs, one factor at a time ([root cause](root-cause.md)) |
 | `falcon why evaluation EVAL --out DIR` | the correlates of an evaluation's misses, with intervals |
 | `falcon why episode PROJECT --episodes FILE --episode N --policy P --out DIR` | a Leaderboard infraction by the policy's inputs |
@@ -58,6 +59,8 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon stack suite run PROJECT SUITE.json [--dir DIR]` | runs a suite (resumable): results.jsonl, results.json with Wilson intervals, results.csv, run.json |
 | `falcon stack replay RUN [--into DIR]` | re-runs a stack run with the controls it recorded and compares the trajectories |
 | `falcon stack odd new --out FILE` · `falcon stack report SUITE_DIR --odd ODD.json --out DIR [--study DIR]...` | an example ODD; the safety-case report (HTML + JSON) of a suite against it |
+| `falcon ci run CONFIG [--out DIR] [--mode falcon\|fake] [--fake-carla DIR] [--baseline DIR \| --no-baseline] [--force]` | CI mode: a stack's suite (or a policy's routes, or a model's evaluation) headless, judged by gates; JUnit XML, a Markdown summary, an HTML report, results JSON; exit 0 passed, 1 a gate failed, 2 error, 3 cancelled ([CI mode](ci.md)) |
+| `falcon ci validate\|schema\|summary\|lint …` · `falcon ci init [TARGET] [--kind K] [--github]` · `falcon ci post RESULTS [--as comment\|check\|status] [--post]` | check a CI config, print its JSON Schema or a summary, check a workflow; write a config, a suite and a GitHub Actions workflow into a repository; post the summary to GitHub (a dry run unless `--post`) |
 
 Commands that need CARLA start Falcon's own server when none is running and stop it at the end (`--keep-server`
 leaves it running). Ctrl+C cancels the job politely — the worker tidies the server — and a second Ctrl+C kills it.
@@ -66,7 +69,9 @@ leaves it running). Ctrl+C cancels the job politely — the worker tidies the se
 
 `0` ok. Otherwise the worker's code — `1` crashed, `2` failed, `3` cancelled, `4` server lost, `5` no server, `6`
 refused, `7` no carla (see [the protocol](protocol.md#exit-codes)) — or `2` for a usage error or a project that does
-not validate. `falcon reproduce` exits `2` when the re-run does not agree within the tolerance.
+not validate. `falcon reproduce` exits `2` when the re-run does not agree within the tolerance. `falcon ci run` follows
+a test runner's convention instead: `0` every gate passed, `1` a gate failed, `2` an error (no verdict), `3` cancelled
+([CI mode](ci.md#exit-codes)).
 
 ## In CI
 

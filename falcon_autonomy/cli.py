@@ -27,6 +27,7 @@
                   [--objective criticality|perception|both --model ID --weather FIELD]   rare cases
     falcon stack topics|image|bridge|run|suite|replay|odd|report ...   stack testing: ROS 2 bridge, suites, safety case
     falcon hil device|deploy|session|report|acceptance ...   hardware in the loop: a Jetson (or a simulated device)
+    falcon deploy check|build|profile|accuracy|gate|report|all ...   TensorRT engines on the Jetson, profiled and gated
     falcon loop PROJECT [status|next|run --until STEP|show N|new|set]   the closed loop (docs/loop.md)
     falcon report KIND SRC --out FILE          a self-contained HTML report (docs/reports.md)
     falcon replay import|match|run|compare ...   real logs (nuScenes, Waymo v2, ROS 2 bags) replayed with changes
@@ -36,6 +37,7 @@
     falcon why case|evaluation|episode ...   root-cause attribution of a failure (docs/root-cause.md)
     falcon odd monitor RUN... --odd FILE [--reference REF] | calibrate --in RUN... --out FILE   runtime ODD monitoring
     falcon assets inventory|list|show ID|verify   Indian road assets within the packaged CARLA (docs/indian-assets.md)
+    falcon ci run CONFIG [--out DIR] | validate | init [TARGET] [--github] | post | lint   CI mode (docs/ci.md)
     falcon schema                              print the project schema's path
 
 Exit codes: 0 ok; otherwise the worker's code (falcon_autonomy.core.protocol: 2 failed, 3 cancelled, 4 server lost,
@@ -336,6 +338,9 @@ def parser() -> argparse.ArgumentParser:
                                  'docs/stack-testing.md)')
     sub.add_parser('hil', help='hardware in the loop: falcon hil device|deploy|session|report|acceptance (see '
                                'docs/hardware.md)')
+    sub.add_parser('deploy', help='TensorRT engines on the Jetson AGX Orin (or the simulated device), profiled and '
+                                  'gated: falcon deploy check|build|profile|accuracy|gate|report|all (see '
+                                  'docs/deploy.md)')
     sub.add_parser('loop', help='the closed loop: falcon loop PROJECT [status|next|run|show N|new|set] (see '
                                 'docs/loop.md)')
     sub.add_parser('report', help='an HTML report: falcon report KIND SRC --out FILE (see docs/reports.md)')
@@ -347,6 +352,8 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser('rules', help='traffic rules as temporal logic: falcon rules check RUN... | list | show SET (see '
                                  'docs/traffic-rules.md)')
     sub.add_parser('why', help='why did it fail: falcon why case|evaluation|episode (see docs/root-cause.md)')
+    sub.add_parser('ci', help='CI mode: a suite headless with gates, JUnit, Markdown and HTML: falcon ci '
+                              'run|validate|init|summary|post|lint (see docs/ci.md)')
     sub.add_parser('assets', help='Indian road assets: falcon assets inventory|list|show ID|verify (see '
                                   'docs/indian-assets.md)')
     return ap
@@ -440,9 +447,15 @@ def main(argv=None) -> int:
     if argv[:1] == ['hil']:                       # hardware in the loop (falcon_autonomy.hil)
         from .hil.cli import main_hil
         return main_hil(argv[1:])
+    if argv[:1] == ['deploy']:                    # TensorRT engines on the Jetson, profiled and gated (core.deploy)
+        from .core.deploy import main_deploy
+        return main_deploy(argv[1:])
     if argv[:1] == ['rules']:                     # traffic rules as temporal logic (core.rules)
         from .core.rules import main_rules
         return main_rules(argv[1:])
+    if argv[:1] == ['ci']:                        # CI mode: suites headless, gates, JUnit and Markdown (core.ci)
+        from .core.ci import main_ci
+        return main_ci(argv[1:])
     if argv[:1] == ['assets']:                    # Indian road assets within the packaged CARLA (core.assets)
         from .core.assets import main_assets
         return main_assets(argv[1:])

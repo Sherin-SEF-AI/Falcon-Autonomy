@@ -16,6 +16,7 @@ file it read, beside the source's own provenance block (the app version, the see
 | `dataset` | a dataset spec's folder (`workspace/datasets/SPEC`, with `plan.json`) or a version file (`versions/vNNN.json`) | objects against the targets per class, per range bin and per cell; a version's splits and hash |
 | `study` | a scenario study's folder (`workspace/studies/NAME`) | the scenario, world, weather and seed; each search's curve (best criticality so far) and failing cases; the runs ranked |
 | `leaderboard` | a Leaderboard-style evaluation's folder (`leaderboard.json`) | driving score, route completion and infraction penalty with intervals over routes, by scenario, infractions per km, routes that could not run; what is not scored and why the numbers are not the Leaderboard's |
+| `ci` | a CI run's output folder (`ci-results.json`; `falcon ci run`, [CI mode](ci.md)) | the verdict and exit code, the commit under test, every gate with what it measured, its limit and the rule that judged it, pass rates by scenario with Wilson intervals, the paired comparison with the baseline, the runs, the latency, the limits |
 | `rootcause` | a root-cause attribution's folder (`rootcause.json`; `workspace/rootcause/…`, `falcon why`) | a failing case's factors — in the case, how each was removed, whether removing it alone fixes the failure and whether it alone still fails, the verdicts — with every re-run, the control and the honest wording; or an evaluation's correlates of misses (Spearman ρ with intervals, miss rate per bin); or a policy failure by its input groups ([root cause](root-cause.md)) |
 
 ## Charts
@@ -58,3 +59,5 @@ file read). `core.reports.read_meta(path)` reads it back; the page lists a folde
 - No images: the frames of the worst-case gallery are listed, not embedded (they would make the file large).
 - A report is a snapshot: it is not updated when its source changes (make it again; the hashes say which files it read).
 - Charts are static (tooltips only): no zoom or filtering.
+
+- **deploy**: a model's engines per precision on the device — latency, power, energy, accuracy against the reference with intervals, and the release gate's verdict with its evidence ([deploy](deploy.md)).

@@ -28,6 +28,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8"]
 package = ["pyinstaller>=6"]
+ci = ["PyYAML>=6"]
 
 [project.scripts]
 falcon = "falcon_autonomy.cli:main"

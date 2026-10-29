@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.0.0 — milestone 13: deployment
+
+- **TensorRT on the Jetson AGX Orin** (`falcon deploy`, Models ▸ Deploy): a device-side tool copied over SSH builds
+  FP32, FP16 and INT8 engines with trtexec (INT8 with TensorRT's entropy calibrator on Falcon frames, cached by a
+  SHA-256 key; DLA with GPU fallback, fallback layers reported), profiles latency and throughput, samples power from
+  the INA3221 rails (energy per frame = mean power × median latency, labelled estimated), runs the engine on
+  evaluation frames and scores it against the host's ONNX model with a paired drive-level bootstrap; a release gate
+  (`falcon.deploy-gate/1`: relative AP by the interval's lower bound, p95 latency, energy, power mode) gives pass,
+  fail or incomplete with evidence. Built against TensorRT 10's documented API and trtexec's flags and exercised end
+  to end only on a **simulated device** (onnxruntime on this host, labelled everywhere): it has not run on an Orin —
+  that needs the device's address and key. `models.nms` now sorts stably (numpy 1.21 ordered ties differently).
+- **CI mode** (`falcon ci`): a `falcon.ci/1` config tests a ROS 2 stack, a policy or a model against gates — pass rate
+  by Wilson's interval, metric bounds, no regressions by paired bootstrap against a stored baseline, rule violations
+  per km, latency, missed deadlines — with JUnit XML, a Markdown summary (also to GitHub's job summary), an HTML report
+  and the commit under test; exit 0 pass, 1 gate failed, 2 error, 3 cancelled. `falcon ci init --github` writes a
+  workflow (a fake-carla smoke job on GitHub's runners, a real job on a self-hosted GPU runner); validated against
+  GitHub's workflow schema, not yet run on GitHub. Posting is a dry run without `--post`.
+- **Vision-language scorer 2**: truth limited to what the camera sees, absence claims scored as such, the ego never a
+  hallucination; Qwen2-VL-2B (downloaded on approval) scores 0.299 [0.243, 0.350] on two real Town10 drives — no
+  better than a constant answer on any question type.
+
 ## 1.4.0 — milestone 12: learned worlds
 
 - **World-model training** (`falcon worldmodel`, Training ▸ World model): a DreamerV3-style RSSM on BEV, state, action

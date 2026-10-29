@@ -208,6 +208,13 @@ Stream a camera (H.264 over RTP, or raw) and a lidar to a device — the Jetson 
 machine — take its control back, and measure latency stage by stage with a waterfall; the device's address and key
 live only in your settings ([hardware](hardware.md)).
 
+### Deployment
+The Models page's *Deploy* tab builds TensorRT engines for a model on the Jetson AGX Orin, profiles latency, power and
+energy, checks accuracy against the host's ONNX model with paired intervals and applies a release gate
+([deploy](deploy.md)). **CI mode** (`falcon ci`) runs a stack's, policy's or model's suite headless on every commit with
+gates, JUnit and Markdown outputs, and a GitHub Actions template; posting to GitHub needs an explicit flag
+([CI](ci.md)).
+
 ### Reports
 Self-contained HTML reports ([reports](reports.md)) of a loop iteration, a model evaluation, a dataset's coverage, a
 rare-case study or a Leaderboard result: inline CSS and SVG (nothing fetched from the network), light and dark, every

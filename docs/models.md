@@ -60,7 +60,7 @@ rare-case search a model whose weakness is known. Every evaluation made with it 
    by re-runs of its drive (a repeatable scenario run), and *Correlates of misses* relates the evaluation's misses to
    the objects' and frames' attributes, with intervals ([root cause](root-cause.md)).
 7. **Latency** is measured here, per frame (pre-processing, inference, decoding), with the runtime's providers (for
-   example `CUDAExecutionProvider`). It is this machine's latency, not a target device's (Jetson: milestone 7).
+   example `CUDAExecutionProvider`). It is this machine's latency, not a target device's (the Jetson AGX Orin: [deploy](deploy.md)).
 
 An ONNX or TorchScript evaluation takes the GPU lock (it never runs while CARLA holds the GPU); a plug-in does not.
 

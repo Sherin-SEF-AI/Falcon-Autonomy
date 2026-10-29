@@ -21,4 +21,6 @@ Each milestone ends with its tests passing, its docs and a demo. Pages appear in
 | 10 | Realism | weather and sensor physics CARLA lacks (lidar and radar in rain and fog, lens droplets, glare), Indian road assets within the packaged CARLA, runtime ODD monitoring | **done (1.2.0)** |
 | 11 | Real to sim | learned sim-to-real image translation (labels kept), neural reconstruction of real logs | **done (1.3.0)** |
 | 12 | Learned worlds | world-model / end-to-end training, adversarial multi-agent traffic, vision-language driving explanations scored against ground truth | **done (1.4.0)** |
-| 13 | Deployment | TensorRT export and profiling on the Jetson AGX Orin, CI mode for stacks on GitHub, release 2.0 | next |
+| 13 | Deployment | TensorRT export and profiling on the Jetson AGX Orin, CI mode for stacks on GitHub, release 2.0 | **done (2.0.0)** |
+
+Pending on the user's hardware: the Jetson AGX Orin acceptance runs (`falcon hil acceptance`, `falcon deploy all --device orin`) need the device's address and an SSH key in Settings.
