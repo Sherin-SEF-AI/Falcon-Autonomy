@@ -86,6 +86,8 @@ minimising the score, in closed form); a moving proxy may not be scaled (above).
 limit-relative target, so Falcon applies the road's limit itself, re-read every second of simulation:
 desired = min(limit × (1 − the vehicle's percentage difference), top speed). *Measured* on Town10HD (30 km/h roads):
 a Microlino capped at 20 km/h ran at p95 19.3 km/h (max 19.5) while an uncapped one ran at p95 28.5 km/h, over 35 s.
+On an imported world the limit is the lane's own from the OpenDRIVE file, with the look-ahead for lower limits and
+speed breakers ([worlds: speed limits](worlds.md#speed-limits-and-speed-breakers)), re-read every 0.25 s.
 
 **Acceleration** through CARLA's physics (the traffic manager drives through it): the stand-in's engine torque curve is
 scaled. *Measured* at full throttle from rest on a flat generated road:

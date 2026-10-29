@@ -63,11 +63,26 @@ def drive_config(project: Project, world_id: str, rig_id: str, out_dir: str, por
         'out': os.path.abspath(out_dir), 'project': {'name': project.doc['name'], 'world': world_id, 'rig': rig_id,
                                                      'traffic_profile': tp_id},
     }
+    if xodr:                            # traffic at each road's limit from the file (workers.speedcontrol), or CARLA's own
+        cfg['speed_limits'] = world.get('speed_limits', 'map')
+        cfg['keep_traffic'] = bool(world.get('keep_traffic', True))   # traffic kept in it at roads that end
     if (world.get('sensor_physics') or {}).get('enabled'):      # the world's weather physics (docs/sensor-physics.md);
         cfg['sensor_physics'] = copy.deepcopy(world['sensor_physics'])      # absent otherwise: cache keys unchanged
+    if xodr and (world.get('city') or {}).get('enabled'):      # buildings, trees and ground around the roads
+        from .cityprops import attach as city_attach            # (core.cityprops); absent otherwise
+        city_attach(cfg, world, workspace or getattr(project, 'workspace', '') or '')
     from .oddmonitor import attach                              # the workspace's ODD, monitored by the worker
     attach(cfg, workspace or getattr(project, 'workspace', '') or '', project)
     return cfg
+
+
+WORLD_KEYS = ('speed_limits', 'keep_traffic', 'city', 'vehicle_lights')
+
+
+def world_keys(d: dict) -> dict:
+    """The world's own settings of a drive config that a worker's scene setup reads (scene.load_map, workers.lights):
+    for configs built from a drive config's fields (gym, HIL), so they load the world as a drive does."""
+    return {k: copy.deepcopy(d[k]) for k in WORLD_KEYS if k in d}
 
 
 def smoke_config(project: Project, out_dir: str, port: int, tm_port: int, seed: int = 0) -> dict:

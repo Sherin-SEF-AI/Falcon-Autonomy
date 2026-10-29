@@ -56,14 +56,18 @@ def wants_gt(s: dict) -> bool:
 
 class LaneRaster:
     """The map's lanes rasterised top-down (CARLA world x, y), to name ground points: 1 road (driving lanes and their
-    junctions), 2 sidewalk, 25 ground (other lane types: shoulders, parking, borders)."""
+    junctions), 2 sidewalk, 25 ground (other lane types: shoulders, parking, borders). The non-driving lanes are found
+    beside the driving lanes (beside()): Map.generate_waypoints yields driving lanes only."""
     CELL = 0.25
 
     def __init__(self, carla, cmap, step=1.0):
         wps = cmap.generate_waypoints(step)
-        pts, tags = [], []
         LT = carla.LaneType
-        for wp in wps:
+        drive = [wp for wp in wps if wp.lane_type == LT.Driving]
+        pts, tags = [], []
+        for wp in list(wps) + self.beside(drive, LT):
+            if wp is None:
+                continue
             t = wp.transform
             yaw = math.radians(t.rotation.yaw)
             rx, ry = -math.sin(yaw), math.cos(yaw)
@@ -81,6 +85,34 @@ class LaneRaster:
         self.grid = np.zeros((self.h, self.w), np.uint8)
         order = np.argsort(-np.asarray(tags))           # roads painted last: a road wins where lanes overlap
         self.grid[ij[order, 1], ij[order, 0]] = np.asarray(tags, np.uint8)[order]
+
+    @staticmethod
+    def beside(drive: list, LT) -> list:
+        """The other lanes of the driving lanes' sections at the same points: Map.generate_waypoints gives driving
+        lanes only (measured on 0.9.16: 14 836 waypoints on the re-imported central Bengaluru, all Driving, though its
+        file has 343 sidewalk lanes), so a road's sidewalks and shoulders are reached from its driving lanes by
+        Waypoint.get_right_lane and get_left_lane — both: which side is "right" depends on the lane's direction and the
+        road's handedness (measured there: the sidewalks were found by get_left_lane) — each walk ending at the edge of
+        the section or at a lane already passed."""
+        out, seen = [], set()
+        for wp in drive:
+            for side in ('get_right_lane', 'get_left_lane'):
+                cur, passed = wp, {wp.lane_id}
+                for _ in range(6):
+                    try:
+                        cur = getattr(cur, side)()
+                    except RuntimeError:
+                        cur = None
+                    if cur is None or cur.lane_id in passed:
+                        break
+                    passed.add(cur.lane_id)
+                    if cur.lane_type == LT.Driving:
+                        continue
+                    key = (cur.road_id, cur.section_id, cur.lane_id, round(cur.s, 1))
+                    if key not in seen:
+                        seen.add(key)
+                        out.append(cur)
+        return out
 
     def lookup(self, xy) -> np.ndarray:
         ij = np.floor((np.asarray(xy) - (self.x0, self.y0)) / self.CELL).astype(int)
@@ -182,7 +214,7 @@ class CameraRecorder:
         sem = GT.CLASS_OF_TAG[tags]
         rng = cg.range_from_packed(atl['depth'], atl['instance'])
         if raster is not None:
-            sem, rng = self.relabel_ground(sem, tags, rng, boxes['T_ego'], raster)
+            sem, rng = self.relabel_ground(sem, tags, rng, boxes['T_ego'], raster, raw)
         found, sem = GT.objects_in_frame(sem, raw, rng, cg.rays, self.pose, self.plan['lens'], boxes['known'],
                                          boxes['level'], boxes['ego_id'], self.assoc, parts=boxes['parts'])
         h, w = sem.shape
@@ -214,10 +246,15 @@ class CameraRecorder:
         files['objects'] = rel
         return files
 
-    def relabel_ground(self, sem, tags, rng, T_ego, raster):
+    def relabel_ground(self, sem, tags, rng, T_ego, raster, raw=None):
         """Pixels tagged sky whose ray meets the map's ground plane (within GROUND_MAX_M): their range is that point's
-        and their class the map's lanes' there. Returns (semantic, range)."""
+        and their class the map's lanes' there. Returns (semantic, range). The ground mesh a city plan lays under the
+        roads (core.cityprops; its actor ids in the worker's city_ground_ids) is seen by the label cameras where the
+        road mesh is not, so its pixels are named the same way."""
         m = tags == 11
+        ground_ids = getattr(self.w, 'city_ground_ids', None)
+        if ground_ids and raw is not None:
+            m = m | np.isin(raw, list(ground_ids))
         idx = np.flatnonzero(m.ravel())
         self.relabelled = 0
         if not len(idx):

@@ -387,6 +387,47 @@ def place_on_map(project: str | None, world_id: str | None, lat, lon, course, gr
     return out
 
 
+def place_existing(rec_dir: str, project: str, world_id: str) -> dict:
+    """Place an already posed segment (rec_dir/posed) on an imported world after the fact — e.g. once the world that
+    covers the footage has been imported. The same measures as step 9, from the saved poses and points; dashcam.json's
+    'map' (and its summary) is replaced and the earlier placement kept under 'map_before'."""
+    from ..osm import local_projection
+    from ..provenance import read_json, write_json
+    posed = os.path.join(rec_dir, 'posed')
+    with open(os.path.join(posed, 'posed.json'), encoding='utf-8') as fh:
+        doc = json.load(fh)
+    geo = doc['geo']
+    proj = local_projection(float(geo['lat0']), float(geo['lon0']))
+    cams = [np.linalg.inv(np.asarray(f['viewmat'], float).reshape(4, 4)) for f in doc['frames']]
+    cw = np.array([c[:3, 3] for c in cams])
+    egos = [np.asarray(f['ego'], float).reshape(4, 4) for f in doc['frames']]
+    head = [(90.0 - math.degrees(math.atan2(e[1, 0], e[0, 0]))) % 360.0 for e in egos]
+    lat_c, lon_c = proj.to_geo(cw[:, 0], cw[:, 1])
+    glat = glon = np.zeros(0)
+    pp = os.path.join(posed, doc.get('points') or 'points.npz')
+    if os.path.isfile(pp):
+        from scipy.spatial import cKDTree
+        X = np.load(pp)['xyz'].astype(float)
+        if len(X):
+            dmin, _ = cKDTree(cw).query(X)
+            near = (np.abs(X[:, 2]) < 0.15) & (dmin < 25.0)
+            if near.any():
+                glat, glon = proj.to_geo(X[near, 0], X[near, 1])
+    m = place_on_map(project, world_id, lat_c, lon_c, head, (glat, glon))
+    m['placed_after'] = {'how': 'falcon recon place: the saved poses (posed.json) and points (points.npz)',
+                         'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+    rp = os.path.join(rec_dir, 'dashcam.json')
+    rep = read_json(rp) if os.path.isfile(rp) else {}
+    if rep.get('map'):
+        rep['map_before'] = rep['map']
+    rep['map'] = m
+    if isinstance(rep.get('summary'), dict):
+        rep['summary']['map'] = {k: m.get(k) for k in ('on_map', 'distance_from_centre_m', 'bearing_from_centre_deg',
+                                                        'box_distance_m', 'street', 'note')}
+    write_json(rp, rep)
+    return m
+
+
 def _polyline_distance(xs, ys, x: float, y: float) -> float:
     """The distance from (x, y) to a polyline's segments."""
     if not len(xs):
@@ -486,8 +527,20 @@ def pose_segment(tr: V.Tracks, intr: V.Intrinsics, times, fixes: list, s: dict, 
     t0 = time.perf_counter()
     vo = V.run_vo(tr, intr, s['vo'], emitter, cancel, times=times, distance=dist)
     t_vo = time.perf_counter() - t0
-    gb = V.global_ba(vo, tr, intr, (), s['vo'])
     placed = sorted(vo.poses)
+    span = float(times[placed[-1]] - times[placed[0]]) if placed else 0.0
+    if len(placed) < 30 or span < 3.0:       # too short to align with ~1 Hz fixes: say why rather than fail later
+        moving = spd[(gt >= times[0]) & (gt <= times[-1])]
+        raise V.VOError(
+            f'the odometry posed only {len(placed)} of {len(times)} frames ({span:.1f} s'
+            + (f': it started at frame {placed[0]}' if placed else '')
+            + (f' and lost its track at frame {vo.lost_at}' if vo.lost_at is not None else '')
+            + f') — too little to align with the GPS. It tracked {tr.stats.get("mean_tracked", 0):.0f} points a frame '
+              f'on average'
+            + (f' at a median GPS speed of {3.6 * float(np.median(moving)):.0f} km/h' if len(moving) else '')
+            + '; rain and wipers on the windscreen, darkness and slow or stopped traffic (too little parallax to '
+              'start) all defeat it. Choose a drier or faster stretch.')
+    gb = V.global_ba(vo, tr, intr, (), s['vo'])
     C = vo.centres(placed)
     up = up_vector(vo, placed)
     lat0, lon0 = fixes[0]['lat'], fixes[0]['lon']
@@ -820,6 +873,16 @@ def from_dashcam(clip: str, out_dir: str, start: float, seconds: float, settings
                'camera_height_m': ps['camera_height_m'],
                'map': {k: rep['map'].get(k) for k in ('on_map', 'distance_from_centre_m', 'bearing_from_centre_deg',
                                                        'box_distance_m', 'street', 'note')}}
+    lost = ps['vo_only'].get('lost_at_frame')
+    if lost is not None:                     # the odometry stopped early: the segment is shorter than asked
+        at = round(float(times[lost]) + start, 2) if 0 <= lost < len(times) else None
+        summary['lost'] = {'at_frame': int(lost), 'at_video_s': at, 'frames_decoded': len(times),
+                           'note': 'the odometry lost its track (too few points it could place: rain, a wiper '
+                                   'it could not bridge, a close vehicle filling the view, a stop); only the frames before it are posed and '
+                                   'reconstructed' + (f' — the rest can be its own segment (--start {at:g})'
+                                                      if at is not None else '')}
+        em.progress(0.35, f'the odometry lost its track at frame {lost} of {len(times)}: only the frames before it are '
+                          f'used', force=True)
     rep['summary'] = summary
     PV.write_json(rp, rep)
     # 8. training and novel views

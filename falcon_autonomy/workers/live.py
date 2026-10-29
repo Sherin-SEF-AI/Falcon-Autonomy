@@ -132,6 +132,8 @@ class Live(Worker):
         self.guard = scene.RoadEndGuard(self, world, self.ego, spawns)      # roads that end: never fall out
         scene.spawn_traffic(self, world, self.lib, spawns, order, self.rng, cfg.get('traffic') or {})
         scene.spawn_walkers(self, world, self.lib, self.rng, cfg.get('traffic') or {})
+        self.weather_now = dict(cfg.get('weather') or {})
+        scene.light_vehicles(self, cfg)                 # headlights at night (workers.lights vehicle_lights)
         if cfg.get('policy'):
             from ..plugins import load
             self.policy = load(cfg['policy'], **(cfg.get('policy_params') or {}))
@@ -145,6 +147,9 @@ class Live(Worker):
             self.check()
             self.cameras.drain(world.tick())
             self.alive()
+        from . import lights
+        self.run['lights'] = lights.report(world, [a for a in self.spawned if a.type_id.startswith('vehicle.')],
+                                           self.lights_applied)
         t_start = time.monotonic()
         next_t = t_start
         hist = []                         # (wall, sim_t) for the real-time factor
@@ -162,6 +167,7 @@ class Live(Worker):
             st = sim_t - sim_t0
             if not self.ego.is_alive:
                 raise Failed('the ego was destroyed by the simulator (it left the world below its kill depth)')
+            scene.speeds_step(self, st)       # class / road limits; traffic kept at roads that end (run.json traffic)
             ev = self.guard.step(st)
             if ev is not None:
                 self.events.append((st, 'road_end', ev))
@@ -191,6 +197,7 @@ class Live(Worker):
                 next_t = time.monotonic()        # behind: pace from now on, never catch up by bursting
         if self.rec is not None:
             self.stop_recording()
+        scene.speeds_report(self)
         wall = time.monotonic() - t_start
         perf = {'steps': steps, 'wall_s': round(wall, 3), 'sim_s': round(steps * self.dt, 3),
                 'realtime_factor': round(steps * self.dt / max(wall, 1e-6), 3),
@@ -383,10 +390,13 @@ class Live(Worker):
             elif kind == 'weather':
                 fields = c.get('fields') or {}
                 world.set_weather(scene.weather_params(self.carla, fields))
+                self.weather_now.update(fields)
+                lit = scene.light_vehicles(self, self.cfg, self.weather_now)   # night falls: headlights on (and off)
                 if self.physics is not None:
                     from ..core.weather import resolve
                     self.physics.set_weather(resolve(fields))
-                self.log_event('weather', {k: fields[k] for k in sorted(fields)[:6]})
+                self.log_event('weather', dict({k: fields[k] for k in sorted(fields)[:6]},
+                                               vehicle_lights=lit['resolved']))
             elif kind == 'sensor_fail':
                 sid = c.get('sensor', 'view')
                 until = world.get_snapshot().timestamp.elapsed_seconds + float(c.get('seconds', 3.0))
@@ -443,6 +453,7 @@ class Live(Worker):
             raise Failed('no room for the cutting-in car')
         self.own(car)
         car.set_autopilot(True, self.tm.get_port())
+        scene.light_vehicles(self, self.cfg, self.weather_now, [car])
         v = self.ego.get_velocity()
         self.tm.set_desired_speed(car, 3.6 * math.sqrt(v.x ** 2 + v.y ** 2) + 15.0)
         self.tm.auto_lane_change(car, False)

@@ -26,9 +26,9 @@ from .theme import STATUS, THEME
 from .widgets import Form, KeyValues, Note, Section, button, label, scroll, set_enabled
 
 LIMITS = ('What CARLA 0.9.16 does with an edit (measured, docs/worlds.md): lanes, direction, road type and removed '
-          'roads are geometry, built by the converter and driven as built. A speed limit is written as the road\'s '
-          'speed record, which CARLA\'s traffic manager does not read (it drives to the vehicle\'s limit, which stays '
-          '30 km/h: a generated world has no speed-limit signs). Traffic signals become traffic lights that control '
+          'roads are geometry, built by the converter and driven as built. A speed limit is written as the lanes\' '
+          'speed records; CARLA\'s traffic manager ignores them (30 km/h: a generated world has no speed-limit signs), '
+          'so Falcon gives each vehicle its road\'s limit itself. Traffic signals become traffic lights that control '
           'their lanes. Speed breakers are elevation profiles the vehicle physics drives over. Applying '
           'also converts the area with the current converter.')
 TYPES = O.CARLA_HIGHWAYS

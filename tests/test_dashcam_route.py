@@ -305,6 +305,7 @@ def test_route_dialog_plans_imports_drives_and_pairs(window, qapp, footage):
     assert pump(qapp, lambda: dlg.win_doc is not None, 30)
     assert '2 clip(s)' in dlg.plan_kv.vals['Route'].text()
     assert os.path.isfile(os.path.join(dlg.route_dir, 'window.json'))
+    assert dlg.route_dir.startswith(window.workspace())                        # never the real ~/FalconWorkspace
     dlg.source.setText(footage['osm'])
     dlg.lht.setChecked(False)
     dlg.import_roads()

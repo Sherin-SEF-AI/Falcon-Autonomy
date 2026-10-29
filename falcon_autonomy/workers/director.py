@@ -407,6 +407,8 @@ class Director:
                                                                        + e.normal_impulse.z ** 2)))))
         if self.driver == 'autopilot':
             ego.set_autopilot(True, self.w.tm.get_port())
+            if getattr(self.w, 'speed_control', None) is not None:     # an imported world's road limits
+                self.w.speed_control.add(ego, role='ego')
 
     # ------------------------------------------------------------------ frame-consistent state
     def sync(self, frame, timeout=5.0):

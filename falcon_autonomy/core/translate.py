@@ -44,7 +44,12 @@ Label preservation (measured, not assumed). Per translated frame, at the work wi
   alone does not move edges;
 - objects: per labelled object (THINGS, at least MIN_BOX_PX tall at the work width) its box's mean structure; the
   frame keeps the worst;
-- drift = 1 − min(structure, edge recall, edge precision, worst object's structure).
+- lights (night frames only: the input's median gray below NIGHT_GRAY): the input's light sources (blobs of at least
+  LIGHT_MIN_PX at gray ≥ LIGHT_HI) found in the output (gray ≥ LIGHT_LO within LIGHT_TOL_PX) — light recall, lights
+  removed — and the output's light sources found in the input — light precision, lights invented. Measured: at night
+  the structure and edge terms see neither (every light removed: drift 0.27; twelve lamps painted into the dark: 0.04
+  on the user's night dashcam frames), because the dark areas' local contrast sits under SSIM's constant C3;
+- drift = 1 − min(structure, edge recall, edge precision, worst object's structure[, light recall, light precision]).
 A frame whose drift exceeds DRIFT_THRESHOLD is flagged; by default its translation is refused and the raw frame kept
 (on_drift "raw"), or kept and listed (on_drift "flag"). The threshold is a heuristic, calibrated on known transforms
 of real CARLA frames (docs/translation.md): JPEG at quality 75 gives drift 0.04, Falcon's appearance matching 0.06,
@@ -87,6 +92,8 @@ EDGE_STRONG, EDGE_WEAK, EDGE_TOL_PX = 0.05, 0.15, 1.5
 MIN_BOX_PX = 16
 DRIFT_THRESHOLD = 0.35                # heuristic: between a 1-px (0.25) and a 2-px (0.52) shift of a whole frame
 C3 = (0.03 * 255) ** 2 / 2
+NIGHT_GRAY = 60                       # a frame whose median gray is below this is a night frame (the light terms apply)
+LIGHT_HI, LIGHT_LO, LIGHT_TOL_PX, LIGHT_MIN_PX = 200, 100, 4, 4    # LO: a light may dim or brighten by 1 EV
 GROUPS = (('road', (1, 24, 27)), ('sidewalk', (2, 25)), ('structure', (3, 4, 5, 26, 28)), ('pole_sign', (6, 7, 8)),
           ('vegetation', (9,)), ('terrain', (10,)), ('sky', (11,)), ('person', (12, 13)),
           ('vehicle', (14, 15, 16, 17, 18, 19)), ('other', (0, 20, 21, 22, 23, 29)))
@@ -161,6 +168,24 @@ def structure_map(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return (sxy + C3) / (np.sqrt(sxx * syy) + C3)
 
 
+def light_match(ga: np.ndarray, gb: np.ndarray) -> tuple:
+    """(recall, precision) of light sources between two grayscale frames: the share of a's blobs (≥ LIGHT_MIN_PX
+    pixels at ≥ LIGHT_HI) that touch b's pixels at ≥ LIGHT_LO dilated by LIGHT_TOL_PX, and the reverse. 1.0 when a
+    side has no blob."""
+    import cv2
+    k = np.ones((2 * LIGHT_TOL_PX + 1, 2 * LIGHT_TOL_PX + 1), np.uint8)
+
+    def found(g_from, g_in):
+        n, lab, st, _ = cv2.connectedComponentsWithStats((g_from >= LIGHT_HI).astype(np.uint8), connectivity=8)
+        keep = np.nonzero(st[1:, cv2.CC_STAT_AREA] >= LIGHT_MIN_PX)[0] + 1
+        if not len(keep):
+            return 1.0
+        near = cv2.dilate((g_in >= LIGHT_LO).astype(np.uint8), k) > 0
+        hit = np.unique(lab[near & (lab > 0)])
+        return float(np.isin(keep, hit).mean())
+    return found(ga, gb), found(gb, ga)
+
+
 def frame_drift(src: np.ndarray, out: np.ndarray, objects=None, scale: float = 1.0) -> dict:
     """How far a translated frame moved from its input (both RGB uint8 at the same size, the work width): structure,
     edge recall and precision, each labelled object's box structure (objects' boxes × scale), the drift."""
@@ -186,8 +211,13 @@ def frame_drift(src: np.ndarray, out: np.ndarray, objects=None, scale: float = 1
         boxes.append({'id': o.get('id'), 'class': o['class'], 'structure': float(s[y0:y1, x0:x1].mean())})
     worst = min((b['structure'] for b in boxes), default=None)
     st = float(s.mean())
-    drift = 1.0 - min(st, recall, precision, worst if worst is not None else 1.0)
+    l_rec = l_prec = None
+    if float(np.median(ga)) < NIGHT_GRAY:                            # a night frame: its lights count too
+        l_rec, l_prec = light_match(ga, gb)
+    drift = 1.0 - min(st, recall, precision, worst if worst is not None else 1.0,
+                      *(v for v in (l_rec, l_prec) if v is not None))
     return {'structure': st, 'edge_recall': recall, 'edge_precision': precision, 'worst_box': worst,
+            'light_recall': l_rec, 'light_precision': l_prec,
             'n_boxes': len(boxes), 'boxes': boxes, 'drift': max(drift, 0.0)}
 
 
@@ -195,7 +225,7 @@ def drift_summary(rows: list, threshold: float = DRIFT_THRESHOLD) -> dict:
     """Median, 90th percentile and maximum of each measure over frames, and the frames over the threshold."""
     out = {'frames': len(rows), 'threshold': threshold,
            'flagged': sum(1 for r in rows if r.get('drift') is not None and r['drift'] > threshold)}
-    for k in ('drift', 'structure', 'edge_recall', 'edge_precision', 'worst_box'):
+    for k in ('drift', 'structure', 'edge_recall', 'edge_precision', 'worst_box', 'light_recall', 'light_precision'):
         v = np.asarray([r[k] for r in rows if r.get(k) is not None], float)
         out[k] = ({'median': float(np.median(v)), 'p10': float(np.percentile(v, 10)),
                    'p90': float(np.percentile(v, 90)), 'min': float(v.min()), 'max': float(v.max()), 'n': len(v)}
@@ -841,7 +871,7 @@ def translate_run(model_dir: str, src_dir: str, out_dir: str, cameras=None, thre
                 _write_image(os.path.join(out_dir, rel), out)
             rows.append({'camera': c, 'step': rec['step'], 'file': rel, 'flagged': flagged, 'used': used,
                          **{kk: m[kk] for kk in ('drift', 'structure', 'edge_recall', 'edge_precision',
-                                                 'worst_box', 'n_boxes')}})
+                                                 'light_recall', 'light_precision', 'worst_box', 'n_boxes')}})
             em.progress((k + 1) / n, f'{k + 1}/{n} frames')
         with open(os.path.join(out_dir, 'translation.jsonl'), 'w', encoding='utf-8') as fh:
             for r in rows:
@@ -943,7 +973,7 @@ def check_runs(translated: list, real: str | None = None, features: bool = False
                 m = frame_drift(aw, bw, objs, WORK_WIDTH / (w or a.shape[1]))
                 rows.append({'run': rt.name, 'camera': c, 'step': rec['step'], 'used': used.get(rel),
                              **{kk: m[kk] for kk in ('drift', 'structure', 'edge_recall', 'edge_precision',
-                                                     'worst_box')}})
+                                                     'light_recall', 'light_precision', 'worst_box')}})
                 if seg is not None and k % max(1, len(recs) // 20) == 0:
                     srel = rs.own(rec, c, 'semantic')
                     lab = load_label(rs.p(srel)) if srel else None
@@ -955,7 +985,8 @@ def check_runs(translated: list, real: str | None = None, features: bool = False
     thr = PV.read_json(os.path.join(runs[0], 'run.json'))['translation']['settings']['threshold']
     doc = {'schema': CHECK_SCHEMA, 'runs': runs, 'sources': sources, 'drift': drift_summary(rows, thr),
            'kept_raw': sum(1 for r in rows if r['used'] == 'raw'), 'segmenter': None, 'gap': None,
-           'method': {'drift': '1 − min(structure, edge recall, edge precision, worst object box structure), at '
+           'method': {'drift': '1 − min(structure, edge recall, edge precision, worst object box structure; on a '
+                               f'night frame (median gray < {NIGHT_GRAY}) also light recall and precision), at '
                                f'{WORK_WIDTH} px width (core.translate)', 'threshold': f'{thr} (heuristic)'}}
     if seg is not None:
         def mean(k):
@@ -987,10 +1018,23 @@ def check_runs(translated: list, real: str | None = None, features: bool = False
                                       'translated_median': rows_a[k]['sim_median'],
                                       'translated_shift': rows_a[k]['shift']}
                                      for k in rows_b if k in rows_a],
+                      'night': _night_rows(before, after),
                       'features_raw': before['features'], 'features_translated': after['features'],
                       'objects': (before['gap'].get('objects') or {}).get('class_share_tvd')}
     em.progress(1.0, 'done', force=True)
     return doc
+
+
+def _night_rows(before: dict, after: dict) -> list | None:
+    """The night statistics' gaps (core.realgap.NIGHT_STATS) before and after translation, when both studies have
+    them (a night real set)."""
+    b, a = before['gap'].get('night'), after['gap'].get('night')
+    if not b or not a:
+        return None
+    rb, ra = {r['stat']: r for r in b}, {r['stat']: r for r in a}
+    return [{'stat': k, 'real_median': rb[k]['real_median'], 'raw_median': rb[k]['sim_median'],
+             'raw_shift': rb[k]['shift'], 'translated_median': ra[k]['sim_median'], 'translated_shift': ra[k]['shift']}
+            for k in rb if k in ra]
 
 
 # ================================================================================================ the experiment
@@ -1474,6 +1518,12 @@ def check_text(doc: dict) -> str:
             lines.append(f'  {r["stat"]:15s} real {r["real_median"]:8.3f}  raw {r["raw_median"]:8.3f} (shift '
                          f'{_f(r["raw_shift"])})  translated {r["translated_median"]:8.3f} (shift '
                          f'{_f(r["translated_shift"])})')
+        if g.get('night'):
+            lines.append('  night statistics:')
+            for r in sorted(g['night'], key=lambda r: -(r['raw_shift'] or 0)):
+                lines.append(f'  {r["stat"]:15s} real {r["real_median"]:8.3f}  raw {r["raw_median"]:8.3f} (shift '
+                             f'{_f(r["raw_shift"])})  translated {r["translated_median"]:8.3f} (shift '
+                             f'{_f(r["translated_shift"])})')
         fr, ft = g.get('features_raw'), g.get('features_translated')
         if fr and ft:
             lines.append(f'  FD raw {fr["fd"]:.1f} → translated {ft["fd"]:.1f} (real-vs-real floor {fr["fd_floor"]:.1f}'

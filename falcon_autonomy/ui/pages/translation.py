@@ -162,7 +162,11 @@ class TrackMap(_Canvas):
 
 class DashcamSource(QWidget):
     """The user's dashcam as the real images: read the clips' GPS, see it beside the imported areas, extract a
-    daytime, moving image set (a job), use it."""
+    daytime, night or twilight image set of moving frames (a job), use it."""
+    WHEN = (('Daytime (sun ≥ 5°)', 'day', ['--day', '--min-sun', '5']),
+            ('Night (sun below −6°: after civil twilight)', 'night', ['--night']),
+            ('Twilight (sun between −6° and 0°)', 'twilight', ['--twilight']),
+            ('Any time', 'any', []))
 
     def __init__(self, tab):
         super().__init__()
@@ -176,14 +180,19 @@ class DashcamSource(QWidget):
         self.max_frames = QSpinBox()
         self.max_frames.setRange(10, 100000)
         self.max_frames.setValue(4000)
-        self.day = QCheckBox('Daytime and moving frames only (sun ≥ 5°, ≥ 2 km/h)')
-        self.day.setChecked(True)
+        self.when = QComboBox()
+        for text, key, _a in self.WHEN:
+            self.when.addItem(text, key)
+        self.when.currentIndexChanged.connect(self._when_changed)
+        self.moving = QCheckBox('Moving frames only (≥ 2 km/h)')
+        self.moving.setChecked(True)
         self.crop = QCheckBox('Cut the camera\'s burned-in text line (bottom 6 %)')
         self.crop.setChecked(True)
         f.row('Clips', self.root)
         f.row('Image set', self.name)
         f.row('Frames', self.max_frames)
-        f.row('', self.day)
+        f.row('When', self.when)
+        f.row('', self.moving)
         f.row('', self.crop)
         v.addLayout(f)
         self.map = TrackMap()
@@ -195,6 +204,11 @@ class DashcamSource(QWidget):
         b.addWidget(button('Extract frames', self.extract))
         b.addStretch(1)
         v.addLayout(b)
+
+    def _when_changed(self, _i):
+        """The set's default name follows the time of day until the user names it."""
+        if self.name.text().strip() in {f'dashcam-{k}' for _t, k, _a in self.WHEN}:
+            self.name.setText(f'dashcam-{self.when.currentData()}')
 
     def worlds(self) -> list:
         proj = self.tab.page.win.project
@@ -235,9 +249,8 @@ class DashcamSource(QWidget):
         out = DC.default_set_dir(self.name.text().strip() or time.strftime('%Y%m%d-%H%M%S-dashcam'))
         root = os.path.expanduser(self.root.text().strip())
         argv = ['dashcam', 'extract', '--root', root, '--out', out, '--max-frames', str(self.max_frames.value())]
-        if self.day.isChecked():
-            argv += ['--day', '--min-sun', '5']
-        else:
+        argv += next(a for _t, k, a in self.WHEN if k == self.when.currentData())
+        if not self.moving.isChecked():
             argv += ['--min-speed', '-1']
         if self.crop.isChecked():
             argv += ['--crop-bottom', '0.06']

@@ -326,6 +326,8 @@ falcon recon from-dashcam --clip ~/Videos/dashcam-videos/Movie_F/clip.MP4 --star
     # → ~/FalconWorkspace/recon/dashcam-<clip>-<start>s
 falcon recon from-dashcam --clip … --start 34 --seconds 20 \
     --intrinsics ~/FalconWorkspace/recon/dashcam-…/intrinsics.json
+falcon recon place ~/FalconWorkspace/recon/dashcam-… --project P.falcon.json --world W
+    # place a posed segment on a world imported later (e.g. by `falcon dashcam route import`)
 ```
 
 A consumer dashcam gives neither calibrated intrinsics nor poses: only its video and about one GPS fix a second
@@ -381,6 +383,16 @@ dashcam ingest (`core/dashcam.py`, [dashcam](dashcam.md)). Other flags: `--itera
    three such frames). Without this the odometry was useless on the user's footage: points on a tanker the car was
    overtaking — moving along their epipolar lines, so no epipolar test sees them — pulled the PnP towards standing
    still and the scale fell about sixfold in five seconds. The GPS *positions* are not used by the odometry.
+   **Wipers.** A wiper's sweep wipes out most tracks in one or two frames (on the user's footage in drizzle a sweep
+   every ~3.4 s, each 3–5 frames with more than half the tracks lost and a jump in the mean grey difference to 20–28
+   levels against a median of 3.3). Such a step (more than `bridge_below` = half the tracks lost at once) holds the
+   tracks of the frame before and follows them straight into each next frame, each point started where its image
+   velocity before the sweep puts it, until `bridge_accept` = 30 % come through the forward–backward and epipolar
+   checks (at most `bridge_frames` = 10 frames); the frames in between keep no tracks and the odometry skips them
+   (at most `max_skip` = 10 frames after the last placed one, also when PnP fails), so the map carries on across the
+   sweep. All four are heuristic. When the odometry still stops early, the summary says where (`lost`) and the rest
+   can be its own segment; when it places too little to align (under 30 frames or 3 s), the error says how much it
+   placed, the points it tracked a frame and the speed.
 5. **Up and the road.** "Up" is the cameras' mean up axis made perpendicular to the direction of travel; the road
    plane is fitted (RANSAC, 12 cm) among the points 0.5–3 m below the cameras and within 8 m of their path; z = 0 is
    that plane and the camera's height above it a check on the scale (a windscreen camera sits about 1.2–1.5 m up).
@@ -468,6 +480,40 @@ masks miss (cars driving ahead) leaves dark, smeared ghosts on the road. The ren
 can be given. Few Gaussians grew (39–58 k, against 270–600 k on CARLA): the odometry's 5–11 k points are a sparse
 start and the far shell takes the sky.
 
+**More segments, placed on the route's world** (2026-10-29, the same intrinsics, f = 2212.88 px given). Five 20 s
+segments along a 10-minute stretch of the user's footage (dry highway into rain), placed with `falcon recon place` on
+the world `falcon dashcam route import` built for that stretch ([dashcam](dashcam.md#driving-your-route-in-simulation)),
+so the lane check that could not run before now runs:
+
+| segment | posed frames | odometry only: RMS / median / max (m) | GPS-aided | held out: whole | below the horizon | above | cameras on a lane in their direction, lateral median |
+|---|---|---|---|---|---|---|---|
+| dry highway, trucks | 597 / 600 | 7.1 / 2.2 / 15.7 | 5.1 / 2.6 / 16.0 | 28.31 / 0.876 | **24.10 / 0.699** | 30.34 / 0.916 | 91.5 %, 0.99 m |
+| dry highway, cars | 298 / 600 (lost) | 1.6 / 1.0 / 2.5 | 7.1 / 5.7 / 13.7 | 28.60 / 0.893 | **24.48 / 0.712** | 31.21 / 0.937 | 100 %, 0.62 m |
+| dry into drizzle | 589 / 600 | 4.8 / 2.6 / 11.2 | 9.7 / 4.5 / 23.6 | 27.75 / 0.890 | **22.86 / 0.665** | 31.30 / 0.944 | 55.9 %, 1.26 m |
+| drizzle, wipers¹ | 439 / 600 (lost) | 3.3 / 2.2 / 6.6 | 4.0 / 3.1 / 9.6 | 30.33 / 0.911 | **26.16 / 0.749** | 32.58 / 0.948 | 2.3 %, 3.00 m |
+| rain, wipers | 494 / 600 (lost) | 2.6 / 2.3 / 4.3 | 3.2 / 2.6 / 5.4 | 29.88 / 0.912 | **26.63 / 0.749** | 31.55 / 0.949 | 100 %, 0.90 m |
+
+¹ Posed by the first version of the bridge (tracks held at 50 %, no velocity prediction); the settings described
+in step 4 place 146 frames of it. "Lost" on the dry segment with cars: no frame there was disrupted (no sweep); the cause was not
+established (a car passing close is likely).
+
+- **The lane check**: the reconstructions' camera paths lie on a lane in their direction for 56–100 % of their
+  positions, a median 0.6–1.3 m from its centre, on four of five segments; one (drizzle) sits a median 3.0 m off,
+  in the neighbouring lane — the GPS-aided poses carry the GPS's offsets (the raw GPS on this stretch: 59.9 % on a
+  lane in direction, median 1.39 m). The first segment of the earlier table, placed the same way on a world of its
+  own clip: 76.7 %, 1.05 m. The road-plane points tell little: 32–318 points within 0.15 m of the plane a segment,
+  6–53 % of them on a lane (heuristic; the plane was believed on one segment of five, the others use the assumed
+  1.3 m camera height).
+- **Rain**: the wet segments score higher held out (26 dB below the horizon) because a wet, grey scene has less
+  detail to get wrong, not because they are better reconstructions. The wipers are bridged (step 4): 68–106 swept
+  frames skipped a segment. The odometry still lost its track on three segments (the rest of a segment can be its
+  own), and **of five more wet segments further on — heavy rain, a town, slow and stopped traffic — none could be
+  posed** (8–50 frames placed before the track was lost: too little to align). Before the bridge, every segment
+  with a wiper failed within 0.6 s. The bridge's settings are fragile: with `bridge_accept` 0.4 or 0.5 instead of
+  0.3 one wet segment lost its track at once and another went from 146 to 105 or 480 frames.
+- **Costs**: 6.8–12.0 minutes a segment (training 380–648 s, some of it waiting for the GPU lock while CARLA ran), peak
+  memory 2.7 GB.
+
 **Costs** (per 20 s segment, 600 frames): decoding 3.9–4.2 s (NVDEC, 1920 × 1080); tracking 4.0–4.8 s; the
 odometry 8.8–10.1 ms a frame beside its local bundle adjustments, which took 0.12–0.14 s each (12 keyframes, one per
 keyframe, 120–172 of them); the global adjustment 13–24 s (two rounds, 30–43 k observations); the GPS-aided one
@@ -498,7 +544,8 @@ the camera's layout).
 - Re-rendered runs have no objects labels; their range and semantic labels are estimates.
 - **From a dashcam**: monocular odometry with the GPS speed for scale; the poses are only as good as the measured
   residuals (metres against the GPS, which has metres of error itself). Not modelled: rolling shutter, auto-exposure,
-  motion blur, the windscreen (rain drops, wipers). Traffic moving along the camera's line is neither masked nor
+  motion blur, rain drops on the windscreen; wipers are bridged (step 4) but rain defeats the odometry more often than
+  not (measured below), and a frame with part of a blade in view still trains the reconstruction. Traffic moving along the camera's line is neither masked nor
   fully kept out of the odometry (the corridor and the speed gate are heuristics), and it leaves ghosts in the
   reconstruction. The principal point is assumed central and k2 = 0; f is measured only on a turn. Flat roads are
   assumed for "up" and the height prior; the GPS latency is taken as 0 unless the fit clearly says otherwise. A

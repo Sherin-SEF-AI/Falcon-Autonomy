@@ -1,5 +1,55 @@
 # Changelog
 
+## 2.3.0 — a living Bengaluru: city, speed limits, traffic kept, night, longer dashcam routes
+
+- **Longer dashcam routes and rain**: a 10-minute, 8.8 km stretch of the user's daylight footage imported (from a
+  local PBF), snapped (99.9 %, lateral median 0.007 m) and driven (follower: ≤ 0.36 m across, speed within 0.29 m/s
+  mean); five more reconstructions placed on that world (`falcon recon place`), four a median 0.6–1.3 m from a lane
+  centre. The tracker bridges wiper sweeps (fragile; heavy rain still cannot be posed) and a lost odometry says where
+  and why.
+- **Fix: a shared server stopped under another process's job.** A process stops its own server only while holding
+  the CARLA lock, so a job of another Falcon process using it is never cut off; a server left running that way is
+  stopped by the next Falcon process to shut down (`server.stop_orphan`).
+- **Traffic kept in imported worlds** (`workers/trafficguard.py`, `keep_traffic`): CARLA 0.9.16's traffic manager
+  destroys a vehicle whose planned path meets a dead end of its road graph (its OSM mode, on by default), and vehicles
+  sink through holes in the generated road mesh — 60 vehicles in central Bengaluru became 14–17 after 150 s. The
+  keeper replaces removed vehicles out of the ego's view, catches falling ones at once (also through a hole on a
+  lane), and moves — or, in view, stops and later moves — vehicles heading for a dead end of the map: 58–60 alive
+  throughout 180 s, none of 95 moves within the front camera's view. frames.jsonl `traffic_respawns`, run.json
+  `traffic.keeper`.
+- **Sidewalks labelled in imported worlds**: `Map.generate_waypoints` returns driving lanes only, so the ground
+  relabelling never produced the sidewalk class; sidewalks are now found beside the driving lanes (both sides — which
+  one is "right" depends on the handedness). Central Bengaluru: 4.1 % of the pixels moved from ground to sidewalk.
+  The fake carla's road has sidewalk lanes.
+- **The world's settings in every worker**: the learning environment, adversarial traffic and hardware-in-the-loop
+  configs now carry the city, `speed_limits`, `keep_traffic` and `vehicle_lights` (`core.drive.world_keys`); vehicle
+  lights are switched in Live (and again when its weather changes), stack testing, the learning environment and HIL,
+  not only in drives. Measured: the city's lamp meshes and `static.prop.gardenlamp` emit no light, and 0.9.16 offers no
+  way to add one — an imported world stays dark at night apart from the vehicles' own lamps.
+- **A city around imported roads** (`core/cityprops.py`, Worlds ▸ City around the roads): an imported world's OSM
+  buildings, trees, street lamps, bus stops and street furniture placed at load time as the package's own cooked
+  meshes (`static.prop.mesh`; measured: 485 of 488 paths spawn, labelled building 3, vegetation 9, pole 6) — each
+  footprint the size-nearest town building, turned and scaled to it and kept off every lane, a stand-in, not the real
+  building. Read from the import's source or another file (a regional `.osm.pbf`; `core.osm.read_osm(city=True)`).
+  Central Bengaluru from a regional extract: 858 buildings, 2026 trees, 329 lamps, 3341 actors spawned in 0.1–1.2 s;
+  9.2 against 10.7 steps/s; building 11 % and vegetation 16 % of pixels where sky was 56 %. No plausible ground mesh
+  exists in the package, so none is laid. Plans are seeded; the plan's hash is in run.json and the cache key.
+- **Traffic at each road's speed limit on imported worlds** (`workers/speedcontrol.py`, `core/speedlimits.py`): CARLA's
+  traffic manager ignores an OpenDRIVE file's speed records and drove everything at about 30 km/h on an imported place.
+  Every autopilot vehicle (traffic, an autopilot ego, stand-ins) now gets its lane's limit from the file, less the
+  profile's per-vehicle difference, and slows ahead of a lower limit or a speed breaker (a 2 m/s² profile to the
+  breaker's crossing speed, heuristic). Measured on a synthetic ring: medians 19.3 / 48.3 / 63.8 km/h (p85 78.2) on
+  20 / 50 / 80 km/h sectors against 29 km/h everywhere before; humps crossed at 24.0–24.6 km/h (29 before). On the
+  re-imported Bengaluru, p85 79 and 90 km/h on 80 and 100 km/h lanes (38 and 35 before). A world's
+  `speed_limits: "carla"` keeps the old behaviour; run.json `traffic.speed_source` says which was used. Drives of
+  imported worlds get a new cache key (their config names the mode).
+- **Night** (your city footage is all after dark): `falcon dashcam extract --night` (sun below −6°) and `--twilight`
+  (−6° to 0°), every frame's exposure recorded; the Training page's dashcam source picks day, night, twilight or any.
+  Night drives switch every vehicle's position lights and low beams on (`vehicle_lights`, run.json `lights`; CARLA
+  leaves them off). The gap adds night statistics for a night real set (shadow shares, light sources, the glow round
+  them, noise in the shadows). The translator's drift adds light recall and precision on night frames: removing every
+  light read 0.03–0.27 and painting lamps into the dark 0.01–0.04 before — now refused on simulated frames.
+
 ## 2.2.0 — milestone 14: workbench
 
 - **Map editor** (Worlds ▸ Edit the map…): an imported world's lanes under its OpenStreetMap ways, pan and zoom,

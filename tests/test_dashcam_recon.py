@@ -217,6 +217,32 @@ def test_vo_recovers_the_trajectory_up_to_scale(street_seq):
     assert V.reprojection_rms(vo, tr, intr) < 1.0
 
 
+
+def test_a_wiper_sweep_is_bridged(street_seq):
+    """A wiper sweeping across the view for three frames kills almost every track at once. The tracker holds the
+    tracks of the frame before and follows them straight into the next clear frame; the odometry skips the swept
+    frames and goes on in the same map. Without the bridge the odometry is lost at the sweep."""
+    s = street_seq
+    intr = s['intr']
+    imgs = [im.copy() for im in s['imgs']]
+    H, W = imgs[0].shape[:2]
+    for k, i in enumerate((20, 21, 22)):                  # a dark blade covering most of the image, moving across
+        x0 = int(W * (0.1 + 0.15 * k))
+        imgs[i][:, x0:x0 + int(0.7 * W)] = 15
+    tr = V.track(imgs, None, intr)
+    assert tr.stats['disrupted'] >= 3 and tr.stats['bridged'] >= 1
+    assert all(len(tr.ids[i]) == 0 for i in (20, 21, 22))
+    vo = V.run_vo(tr, intr)
+    assert vo.lost_at is None and vo.stats['skipped'] >= 3
+    assert not {20, 21, 22} & set(vo.poses) and max(vo.poses) == len(imgs) - 1
+    fr = sorted(vo.poses)
+    est, true = vo_centres(vo, fr), s['pos'][fr]
+    sim = V.umeyama(est, true)
+    err = np.linalg.norm(sim[0] * est @ sim[1].T + sim[2] - true, axis=1)
+    assert err.max() < 0.03 * np.sum(np.linalg.norm(np.diff(true, axis=0), axis=1))   # one map across the sweep
+    off = {'bridge_frames': 0, 'max_skip': 0}
+    assert V.run_vo(V.track(imgs, None, intr, off), intr, off).lost_at is not None
+
 def test_self_calibration_recovers_focal_and_distortion(street_seq):
     """With rotation in the sequence (a gentle weave) f and k1 are observable: from a start 15 % off and no
     distortion, VO + a global BA with f and k1 free, repeated, lands within 5 % of f and 0.03 of k1."""
@@ -482,6 +508,46 @@ def test_cli_from_dashcam_no_train(dash_clip, tmp_path, capsys):
     assert not os.path.isfile(os.path.join(out, 'point_cloud.ply'))
     assert main_recon(['from-dashcam', '--clip', str(tmp_path / 'nope.mp4'), '--out', out]) == 2
 
+
+
+def test_a_track_lost_early_is_explained(monkeypatch):
+    """Rain, wipers or stopped traffic: the odometry places a handful of frames. The error says so (frames, where it
+    started and stopped, points tracked, speed) instead of a GPS-overlap failure further on."""
+    from types import SimpleNamespace
+    from falcon_autonomy.core.recon import fromdashcam as F
+    monkeypatch.setattr(V, 'run_vo', lambda *a, **k: SimpleNamespace(poses={i: None for i in range(326, 343)},
+                                                                     lost_at=343))
+    tr = SimpleNamespace(stats={'mean_tracked': 558.9})
+    times = np.arange(600) / 30.0
+    fixes = [{'t': float(t), 'speed_kmh': 18.0, 'lat': LAT0, 'lon': LON0} for t in range(21)]
+    with pytest.raises(V.VOError) as ex:
+        F.pose_segment(tr, V.Intrinsics(960, 540, 553.0), times, fixes, F.normalise({}))
+    msg = str(ex.value)
+    assert 'posed only 17 of 600 frames' in msg and 'started at frame 326' in msg and 'frame 343' in msg
+    assert '559 points a frame' in msg and '18 km/h' in msg and 'GPS fixes do not overlap' not in msg
+
+def test_cli_place_after_the_fact(dash_clip, test_world, tmp_path, capsys):
+    """A segment posed with no world to place it on, placed later (`falcon recon place`) once a world covers it."""
+    from falcon_autonomy.core.recon import fromdashcam as F
+    from falcon_autonomy.core.recon.commands import main_recon
+    clip, _, intr = dash_clip
+    nat = intr.scaled(*F.NATIVE)
+    cfg = tmp_path / 'cfg.json'
+    cfg.write_text(json.dumps({'image_size': [480, 270], 'vo_width': 480, 'out_width': 320}))
+    out = str(tmp_path / 'later')
+    assert main_recon(['from-dashcam', '--clip', clip, '--start', '0', '--seconds', '6', '--out', out, '--config',
+                       str(cfg), '--no-train', '--image-every', '3', '--intrinsics', f'f={nat.f},k1={nat.k1}']) == 0
+    rep = json.load(open(os.path.join(out, 'dashcam.json'), encoding='utf-8'))
+    assert not rep['map'].get('on_map')
+    capsys.readouterr()
+    assert main_recon(['place', out, '--project', test_world, '--world', 'w-test']) == 0
+    rep = json.load(open(os.path.join(out, 'dashcam.json'), encoding='utf-8'))
+    m = rep['map']
+    assert m['on_map'] and m['street'] == 'Test Road' and m['inside_box_share'] == 1.0
+    assert m['match']['share_on_lane'] > 0.8 and 'placed_after' in m
+    assert rep['map_before']['note'] == 'no project / world given' and rep['summary']['map']['on_map']
+    assert main_recon(['place', out, '--project', test_world, '--world', 'w-nope']) == 0      # says why, no crash
+    assert 'cannot read the world' in json.load(open(os.path.join(out, 'dashcam.json')))['map']['note']
 
 # ================================================================================================ the Replay page
 from test_gui import pump, qapp, slot_exceptions, window  # noqa: E402,F401

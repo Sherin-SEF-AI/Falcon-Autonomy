@@ -211,6 +211,7 @@ class Hil(Worker):
         order = list(rng.permutation(len(spawns)))
         ego = scene.spawn_ego(self, world, lib, spawns, order, cfg['vehicle'], autopilot=False)
         scene.spawn_traffic(self, world, lib, spawns, order, rng, cfg.get('traffic') or {})
+        scene.light_vehicles(self, cfg)                 # headlights at night (workers.lights vehicle_lights)
         cam = self.cameras.spawn(world, lib, 'sensor.camera.rgb', cam_s['width'], cam_s['height'], cam_s['fov'],
                                  scene.camera_transform(carla, cam_s['pose']), ego)
         lidar = self.spawn_lidar(world, lib, lid_s, ego)
@@ -226,6 +227,9 @@ class Hil(Worker):
             self.check()
             self.cameras.drain(world.tick())
             self.alive()
+        from . import lights
+        self.run['lights'] = lights.report(world, [a for a in self.spawned if a.type_id.startswith('vehicle.')],
+                                           self.lights_applied)
         steps = int(round(float(cfg.get('seconds', 0.0)) * fps))
         self.load0 = os.getloadavg()                           # the machine's load: it shows in every number
         t_start = time.monotonic()
@@ -279,6 +283,7 @@ class Hil(Worker):
                                        status='on_time' if int(frame) == applied_rec['frame'] + 1 else 'late')
             snap = world.get_snapshot()
             sim_t = snap.timestamp.elapsed_seconds
+            scene.speeds_step(self, sim_t)
             img = self.cameras.get(cam.id, frame)
             lm = self.cameras.get(lidar.id, frame)
             t_ready = now()
@@ -417,6 +422,7 @@ class Hil(Worker):
     def finish_session(self, n: int, wall: float, period: int) -> dict:
         from ..core.hil import summarise_run
         self.write_records()
+        scene.speeds_report(self)
         perf = {'steps': n, 'wall_s': round(wall, 3), 'sim_s': round(n * self.dt, 3),
                 'realtime_factor': round(n * self.dt / max(wall, 1e-6), 3), 'source': 'measured'}
         write_json(os.path.join(self.out_dir, 'session.json'),

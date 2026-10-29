@@ -97,6 +97,8 @@ GPS_LAYOUT = {
 }
 DEFAULT_ROOT = os.path.expanduser('~/Videos/dashcam-videos')
 DEFAULT_SETS = os.path.expanduser('~/FalconWorkspace/realsets')
+NIGHT_SUN_DEG = -6.0                  # civil twilight ends: the sun 6° below the horizon (`--night`: lower than this)
+DARK_LUMA, CLIPPED_LUMA = 16, 250     # exposure stats: crushed shadows and clipped highlights, Rec. 601 luma levels
 
 
 class DashcamError(Exception):
@@ -564,13 +566,14 @@ def iter_frames(path: str, rate: float | None = 2.0, size: tuple = (640, 360), s
 
 # ================================================================================================ image sets
 def plan(clips: list, rate: float = 2.0, min_speed_kmh: float | None = 2.0, min_sun_deg: float | None = None,
-         require_gps: bool = False, max_frames: int | None = None, seed: int = 0, tracks: dict | None = None) -> dict:
+         require_gps: bool = False, max_frames: int | None = None, seed: int = 0, tracks: dict | None = None,
+         max_sun_deg: float | None = None) -> dict:
     """Which frames to extract: {'items': [{'clip', 'path', 'frame', 't', position…}], 'counts': {…}}. Frames are on
     the rate's cadence; left out: no position (require_gps), slower than min_speed_kmh (frames with no position
-    are kept unless require_gps), sun lower than min_sun_deg (at the frame's position or, without one, at the
-    clip's first fix / Bengaluru with the name's time); then max_frames are taken evenly across the whole set (seeded
-    jitter)."""
-    counts = {'clips': 0, 'candidates': 0, 'no_gps': 0, 'static': 0, 'dark': 0, 'kept': 0}
+    are kept unless require_gps), sun lower than min_sun_deg or higher than max_sun_deg (at the frame's position
+    or, without one, at the clip's first fix / Bengaluru with the name's time; a frame whose sun altitude is unknown
+    is left out by either bound); then max_frames are taken evenly across the whole set (seeded jitter)."""
+    counts = {'clips': 0, 'candidates': 0, 'no_gps': 0, 'static': 0, 'dark': 0, 'bright': 0, 'kept': 0}
     items = []
     for c in clips:
         try:
@@ -603,6 +606,9 @@ def plan(clips: list, rate: float = 2.0, min_speed_kmh: float | None = 2.0, min_
             if min_sun_deg is not None and (sun is None or sun < min_sun_deg):
                 counts['dark'] += 1
                 continue
+            if max_sun_deg is not None and (sun is None or sun > max_sun_deg):
+                counts['bright'] += 1
+                continue
             it = {'clip': c['name'], 'path': c['path'], 'frame': fr, 't': round(t, 4),
                   'sun_deg': None if sun is None else round(sun, 2)}
             if pos:
@@ -622,11 +628,14 @@ def plan(clips: list, rate: float = 2.0, min_speed_kmh: float | None = 2.0, min_
 def extract(clips: list, out: str, rate: float = 2.0, size: tuple = (640, 360), min_speed_kmh: float | None = 2.0,
             min_sun_deg: float | None = None, require_gps: bool = False, max_frames: int | None = None,
             seed: int = 0, image_format: str = 'jpg', quality: int = 95, hwaccel: str = 'auto',
-            crop_bottom: float = 0.0, progress=None, cancelled=None, argv: list | None = None) -> dict:
+            crop_bottom: float = 0.0, progress=None, cancelled=None, argv: list | None = None,
+            max_sun_deg: float | None = None) -> dict:
     """Write an image set: out/frames/*.jpg|png, out/frames.jsonl, out/run.json. Returns the run.json document.
     `progress(done, total, message)`; `cancelled()` stops between clips (the set written so far is kept and
     marked). crop_bottom (a share of the height, e.g. 0.06 for the burned-in text line of the camera verified in
-    docs/dashcam.md) is cut before scaling: the images are then size[0] × round(size[1] · (1 − crop_bottom))."""
+    docs/dashcam.md) is cut before scaling: the images are then size[0] × round(size[1] · (1 − crop_bottom)).
+    min_sun_deg / max_sun_deg bound the sun's altitude (a day set: min 5; a night set: max NIGHT_SUN_DEG). Every
+    frame's exposure (exposure()) is recorded in frames.jsonl, and its medians in run.json."""
     from . import provenance as PV
     from .paths import tilde
     import cv2
@@ -638,7 +647,7 @@ def extract(clips: list, out: str, rate: float = 2.0, size: tuple = (640, 360), 
     if os.path.exists(os.path.join(out, 'frames.jsonl')):
         raise DashcamError(f'{out} already holds an image set (frames.jsonl); choose a new folder')
     settings = {'rate': rate, 'size': list(size), 'min_speed_kmh': min_speed_kmh, 'min_sun_deg': min_sun_deg,
-                'require_gps': require_gps, 'max_frames': max_frames, 'image_format': image_format,
+                'max_sun_deg': max_sun_deg, 'require_gps': require_gps, 'max_frames': max_frames, 'image_format': image_format,
                 'quality': quality, 'hwaccel': hwaccel, 'crop_bottom': crop_bottom, 'tz_offset_h': TZ_OFFSET_H,
                 'max_gap_s': MAX_GAP_S}
     if not 0.0 <= float(crop_bottom) < 0.5:
@@ -649,13 +658,14 @@ def extract(clips: list, out: str, rate: float = 2.0, size: tuple = (640, 360), 
     run['schema_set'] = SET_SCHEMA
     t_start = time.time()
     tracks = {c['path']: track(c['path']) for c in clips}
-    pl = plan(clips, rate, min_speed_kmh, min_sun_deg, require_gps, max_frames, seed, tracks)
+    pl = plan(clips, rate, min_speed_kmh, min_sun_deg, require_gps, max_frames, seed, tracks, max_sun_deg)
     by = {}
     for it in pl['items']:
         by.setdefault(it['path'], []).append(it)
     run['provenance']['inputs'] = {}
     run['clips'] = []
     n_done, decode_s, video_s, used = 0, 0.0, 0.0, {}
+    expo = []
     status = 'ok'
     with open(os.path.join(out, 'frames.jsonl'), 'w', encoding='utf-8') as fj:
         for ci, c in enumerate(clips):
@@ -692,6 +702,8 @@ def extract(clips: list, out: str, rate: float = 2.0, size: tuple = (640, 360), 
                                                    'sun_deg')})
                 if c.get('start_local') is not None:
                     rec['local'] = (c['start_local'] + _dt.timedelta(seconds=t)).isoformat(timespec='milliseconds')
+                rec['exposure'] = exposure(rgb)
+                expo.append(rec['exposure'])
                 fj.write(json.dumps(rec) + '\n')
                 n_done += 1
             decode_s += time.time() - t0
@@ -710,10 +722,28 @@ def extract(clips: list, out: str, rate: float = 2.0, size: tuple = (640, 360), 
                       'frames_per_s': round(n_done / decode_s, 2) if decode_s else None,
                       'video_s': round(video_s, 1), 'video_s_per_s': round(video_s / decode_s, 1) if decode_s else None}
     run['decoder'] = {k: sorted(v) for k, v in used.items()}
+    run['exposure'] = {'median': {k: round(float(np.median([e[k] for e in expo])), 5) for k in expo[0]},
+                       'p10': {k: round(float(np.percentile([e[k] for e in expo], 10)), 5) for k in expo[0]},
+                       'p90': {k: round(float(np.percentile([e[k] for e in expo], 90)), 5) for k in expo[0]},
+                       'method': EXPOSURE_METHOD} if expo else None
     run['notes'].append('clips fingerprinted by size, mtime and the SHA-256 of their first MiB (not the whole file)')
     run['outputs'] = {'frames.jsonl': PV.sha256_file(os.path.join(out, 'frames.jsonl')), 'frames': n_done}
     PV.write_json(os.path.join(out, 'run.json'), run)
     return run
+
+
+EXPOSURE_METHOD = (f'Rec. 601 luma of the written frame (after the crop and the scaling): mean, 1st/50th/99th '
+                   f'percentiles, the share at or below {DARK_LUMA} (crushed shadows) and at or above {CLIPPED_LUMA} '
+                   '(clipped highlights)')
+
+
+def exposure(rgb: np.ndarray) -> dict:
+    """One frame's exposure: luma mean, percentiles and the crushed and clipped shares (EXPOSURE_METHOD)."""
+    y = rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114
+    p1, p50, p99 = np.percentile(y, [1, 50, 99])
+    return {'luma_mean': round(float(y.mean()), 3), 'luma_p01': round(float(p1), 2), 'luma_p50': round(float(p50), 2),
+            'luma_p99': round(float(p99), 2), 'dark_share': round(float((y <= DARK_LUMA).mean()), 5),
+            'clipped_share': round(float((y >= CLIPPED_LUMA).mean()), 5)}
 
 
 def read_set(folder: str) -> dict:
@@ -944,8 +974,14 @@ def main_dashcam(argv) -> int:
     ex.add_argument('--rate', type=float, default=2.0, help='frames per second of video (0: every frame)')
     ex.add_argument('--size', default='640x360')
     ex.add_argument('--min-speed', type=float, default=2.0, help='km/h; slower frames are left out (-1: keep all)')
-    ex.add_argument('--day', action='store_true', help='daytime only: the sun at least --min-sun degrees high')
+    tod = ex.add_mutually_exclusive_group()
+    tod.add_argument('--day', action='store_true', help='daytime only: the sun at least --min-sun degrees high')
+    tod.add_argument('--night', action='store_true', help=f'night only: the sun lower than --max-sun degrees '
+                                                          f'(default {NIGHT_SUN_DEG:g}: civil twilight excluded)')
+    tod.add_argument('--twilight', action='store_true', help=f'civil twilight only: the sun between '
+                                                             f'{NIGHT_SUN_DEG:g}° and 0°')
     ex.add_argument('--min-sun', type=float, default=0.0)
+    ex.add_argument('--max-sun', type=float, default=NIGHT_SUN_DEG)
     ex.add_argument('--require-gps', action='store_true')
     ex.add_argument('--max-frames', type=int)
     ex.add_argument('--seed', type=int, default=0)
@@ -1010,13 +1046,15 @@ def main_dashcam(argv) -> int:
             em.log(f'{len(clips)} clips → {tilde(out)}')
             doc = extract(clips, out, rate=a.rate or None, size=(w, h),
                           min_speed_kmh=None if a.min_speed < 0 else a.min_speed,
-                          min_sun_deg=a.min_sun if a.day else None, require_gps=a.require_gps,
+                          min_sun_deg=a.min_sun if a.day else NIGHT_SUN_DEG if a.twilight else None,
+                          max_sun_deg=a.max_sun if a.night else 0.0 if a.twilight else None,
+                          require_gps=a.require_gps,
                           max_frames=a.max_frames, seed=a.seed, image_format='png' if a.png else 'jpg',
                           hwaccel=a.hwaccel, crop_bottom=a.crop_bottom, progress=lambda i, n, m: em.progress(i / n, m),
                           argv=['dashcam'] + list(argv))
             c, t = doc['counts'], doc['timings']
             print(f'{tilde(out)}: {c["written"]} frames from {c["clips"]} clips ({c["candidates"]} candidates; left '
-                  f'out {c["static"]} static, {c["dark"]} dark, {c["no_gps"]} without a fix'
+                  f'out {c["static"]} static, {c["dark"]} dark, {c["bright"]} too bright, {c["no_gps"]} without a fix'
                   f'{" (kept)" if not a.require_gps else ""}); {t["frames_per_s"]} frames/s decoding, '
                   f'{t["total_s"]} s in all; decoder {doc["decoder"]}', flush=True)
             em.result('ok', set=out, frames=c['written'])

@@ -128,7 +128,8 @@ Per translated frame, at 640 px wide, on grayscale:
 | edge recall ("lost structure") | the input's strong edges (Canny, thresholds at its own top 5 % of gradient magnitude) found within 1.5 px among the output's edges (top 15 %) |
 | edge precision ("added structure") | the output's strong edges found within 1.5 px among the input's |
 | worst object box | each labelled object (car … pedestrian, at least 16 px tall at this width): its box's mean structure; the frame keeps the worst |
-| **drift** | 1 − min(structure, edge recall, edge precision, worst object box) |
+| light recall, light precision | night frames only (median grey < 60): the input's light sources found in the output, and the output's in the input ([at night](#at-night)) |
+| **drift** | 1 − min(structure, edge recall, edge precision, worst object box[, light recall, light precision]) |
 
 Thresholds come from each image's own gradients, so a tone change alone does not move the edges.
 
@@ -152,6 +153,45 @@ image is kept in the translated run (`--on-drift raw`) — or kept and listed (`
 also falls when texture is replaced inside an object (a GAN's hallucination), which is what the worst-box measure is
 for. It does not tell a "realistic" texture change from a wrong one: a drift under the threshold is not proof that a
 human would label the frame the same.
+
+### At night
+
+Dark frames hide changes from the structure term: where a frame's local contrast is a few grey levels, SSIM's
+constant C3 (29 in squared 8-bit levels) dominates and the term reads ≈ 1 whatever happens there, and the edge maps
+follow each frame's own strongest gradients — the lights. Measured on ten frames of each set (640 × 360, as
+rendered or extracted), the same transforms as above:
+
+| transform | night dashcam | night Town10HD | night Bengaluru (imported) | day Town10HD, 640 px rendered |
+|---|---|---|---|---|
+| JPEG quality 75 | 0.02 | 0.08 | 0.10 | 0.03 |
+| Gaussian noise σ 4 | 0.08 | 0.09 | 0.11 | 0.07 |
+| gamma 0.6 | 0.00 | 0.01 | 0.12 | 0.00 |
+| brightness × 2 | 0.11 | 0.00 | 0.01 | 0.52 |
+| Gaussian blur σ 1.5 px | 0.08 | 0.09 | 0.25 | 0.09 |
+| whole image shifted 1 px | 0.07 | 0.25 | 0.28 | 0.12 |
+| whole image shifted 2 px | 0.16 | 0.34 | 0.28 | 0.26 |
+| smooth warp, 2 px amplitude | 0.05 | 0.13 | 0.12 | 0.08 |
+| twelve lamps painted into the dark areas | **0.21** (0.04 without the light terms) | **0.59** (0.03) | **1.00** (0.01) | 0.01 |
+| every light source removed (pixels > 200 and a 4 px ring set to the median) | **0.90** (0.27) | **0.86** (0.03) | — (no light > 200) | 0.77 |
+
+Geometry registers about as by day (on the real frames a 2 px shift reads 0.16 at night, 0.17 by day; frames
+rendered at 640 px are softer than the 1280 px frames of the table above, so their shifts read lower there too).
+**Lights did not**: removing every light from a night frame read 0.03–0.27 and painting twelve lamps into the dark
+0.01–0.04 — both under the threshold, so a translator could add or remove light sources (headlights included)
+unseen. On a **night frame** (its median grey below 60) the drift therefore adds two terms:
+
+- **light recall**: the input's light sources (blobs of at least 4 px at grey ≥ 200) found in the output (grey ≥ 100
+  within 4 px) — lights removed;
+- **light precision**: the output's light sources found in the input, the same way — lights invented.
+
+Grey ≥ 100 lets a light dim or brighten by a stop: with 150 instead, doubling a night Town10 frame's brightness read
+0.81 (its lit walls crossed 200 and counted as invented lights); with 100, 0.00. Daytime frames are measured as before
+(no light terms). The threshold stays 0.35: on the night dashcam frames twelve invented lamps (0.21) still pass —
+they are a small share of the dozens of lights those frames hold — while on the simulated frames, where lights are
+few, they are refused. The terms are heuristics with fixed grey levels, checked on these four sets only.
+Translating Town10HD at night towards the user's night footage, the light terms refused 31 of 600 frames (28 invented
+lights, 3 removed); the frames they keep can still carry glare spread over road the source already lit
+([dashcam, at night](dashcam.md#at-night-1)).
 
 `falcon translate check RUN… [--real KIND:PATH [--features --workspace W]] [--segmenter MODEL.json] [--out DIR]`
 recomputes every frame's drift against its source (refused if the source's run.json changed), and with `--real`

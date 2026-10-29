@@ -162,6 +162,8 @@ def hil_config(project, world_id: str, rig_id: str, out_dir: str, port: int, tm_
         'notes': notes,
         'project': dict(d['project']),
     }
+    from .drive import world_keys
+    cfg.update(world_keys(d))                             # road limits, traffic kept, the city, vehicle lights
     from .oddmonitor import CFG_KEYS
     cfg.update({k: d[k] for k in CFG_KEYS if k in d})     # the workspace's ODD, monitored in the session
     return cfg

@@ -31,7 +31,7 @@
     falcon loop PROJECT [status|next|run --until STEP|show N|new|set]   the closed loop (docs/loop.md)
     falcon report KIND SRC --out FILE          a self-contained HTML report (docs/reports.md)
     falcon replay import|match|run|compare ...   real logs (nuScenes, Waymo v2, ROS 2 bags) replayed with changes
-    falcon recon train|from-dashcam|eval|render|rerender|info ...   neural reconstruction of a drive (3DGS)
+    falcon recon train|from-dashcam|place|eval|render|rerender|info ...   neural reconstruction of a drive (3DGS)
     falcon dashcam list|gps|extract|match ...   a dashcam's clips, GPS track and GPS-stamped frames (docs/dashcam.md)
     falcon dashcam route plan|import|match|drive|pairs ...   drive your dashcam's route in simulation on its streets
     falcon runs search PROJECT|WORKSPACE [QUERY...] [--sort KEY] [--json]   search the runs (docs/runs.md)
@@ -349,7 +349,7 @@ def parser() -> argparse.ArgumentParser:
                                 'docs/loop.md)')
     sub.add_parser('report', help='an HTML report: falcon report KIND SRC --out FILE (see docs/reports.md)')
     sub.add_parser('replay', help='log replay: falcon replay import|match|run|compare (see docs/log-replay.md)')
-    sub.add_parser('recon', help='neural reconstruction of a drive: falcon recon train|from-dashcam|eval|render|'
+    sub.add_parser('recon', help='neural reconstruction of a drive: falcon recon train|from-dashcam|place|eval|render|'
                                  'rerender|info (see '
                                  'docs/reconstruction.md)')
     sub.add_parser('dashcam', help='a dashcam\'s clips, GPS track and frames: falcon dashcam list|gps|extract|match|'

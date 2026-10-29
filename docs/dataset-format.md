@@ -6,7 +6,12 @@ Waymo-style, BDD lanes and ROS 2 MCAP are made from it (Data ▸ Export, `falcon
 ```
 run/
   drive.json          the input: world, weather, rig, traffic, seed, step, …   (live: live.json)
-  run.json            what ran: versions, seed, hashes, timings, measured performance, lidar checks, faults applied
+  run.json            what ran: versions, seed, hashes, timings, measured performance, lidar checks, faults applied;
+                      traffic: the vehicles placed, and on an imported world speed_source — the traffic's speeds
+                      from the file's limits ("map") or CARLA's own ("carla"), see worlds.md, and keeper — the
+                      traffic moved away from roads that end (counts, events); lights: vehicle lights set and read
+                      back (drives, live, stack, gym, HIL); city: an imported
+                      world's buildings, trees and lamps placed (the plan's SHA-256, spawned, failed, seconds)
   dataset.json        sensors (K, lens, views, planned pose, streams), label encodings and classes, provenance
   frames.jsonl        one line per simulation step (below)
   lanes.json          the map's driving lanes and lane graph (labelled drives)
@@ -28,7 +33,7 @@ run/
 
 ## Frames
 `frames.jsonl`: `step`, `frame` (CARLA's), `sim_t` (s from the first recorded step), `ego` (pose in CARLA's world),
-`speed_mps`, `control`, `recorded` (false on steps `record_every` skips), `teleport` (on the step the road-end guard put the ego back on the road: from, to, why — the pose jumps there; see [worlds](worlds.md#roads-that-end-the-edge-of-an-imported-area)), `files` (`"<sensor>/<kind>": path`), and
+`speed_mps`, `control`, `recorded` (false on steps `record_every` skips), `teleport` (on the step the road-end guard put the ego back on the road: from, to, why — the pose jumps there; see [worlds](worlds.md#roads-that-end-the-edge-of-an-imported-area)), `traffic_respawns` (on a step the traffic keeper moved traffic away from a road that ends: per vehicle kind — `dead_end`, `fell`, `lost`, `replaced` — actor, from, to and, after a stop in view, `held_s`; those actors' poses jump there), `files` (`"<sensor>/<kind>": path`), and
 when used `stamps` (per sensor, with its clock-offset fault), `faults` (per sensor: `drop` or `freeze`), `lidar_pose`
 (per lidar: the 3 × 4 world matrix of the sweep's end, row-major), `physics` (per sensor: the weather effects that
 touched the frame — [sensor physics](sensor-physics.md)) and `odd` (`in`, `why`, `road`, … — [ODD

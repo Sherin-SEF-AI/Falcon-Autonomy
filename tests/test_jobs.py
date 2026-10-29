@@ -152,6 +152,62 @@ def test_external_server_is_never_started_or_stopped(settings, monkeypatch):
     assert srv.proc is None
 
 
+def _fake_server(S, port, owner_pid):
+    """A stand-in server process (its own session, as Server.start makes it), registered on the port."""
+    p = subprocess.Popen(['sleep', '60'], start_new_session=True)
+    os.makedirs(os.path.dirname(S.registry_path(port)), exist_ok=True)
+    with open(S.registry_path(port), 'w', encoding='utf-8') as fh:
+        json.dump({'pid': p.pid, 'owner_pid': owner_pid, 'port': port, 'started': 0}, fh)
+    return p
+
+
+def test_a_server_is_not_stopped_under_another_process_job(settings, tmp_path, monkeypatch):
+    """Owner A stops its server only while holding the CARLA lock: a job of process B that took the lock (and uses
+    A's server as shared) is never cut off. Measured before the fix: a 10-minute drive failed with "no CARLA server
+    answered" when another process stopped the server it had found running."""
+    from falcon_autonomy.core.jobs import JobQueue, SubprocessLauncher
+    from falcon_autonomy.sim import server as S
+    from falcon_autonomy.sim.service import CarlaService
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'cfg'))
+    locks = str(tmp_path / 'locks')
+    svc = CarlaService(settings, JobQueue(SubprocessLauncher(), locks), str(tmp_path / 'ws'))
+    srv = svc.ensure_server_object()
+    srv.proc = _fake_server(S, srv.port, os.getpid())
+    os.makedirs(locks, exist_ok=True)
+    holder = subprocess.Popen([sys.executable, '-c', 'import fcntl, os, sys, time\n'
+                               'fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT)\n'
+                               'fcntl.flock(fd, fcntl.LOCK_EX)\nprint("held", flush=True)\ntime.sleep(60)',
+                               os.path.join(locks, 'carla-gpu0.lock')], stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == 'held'
+        assert svc.stop_server(wait_s=0.5) is False and srv.running and 'not stopped' in svc.server_error
+        holder.kill()
+        holder.wait()
+        assert svc.stop_server(wait_s=5) is True and not srv.running
+        assert S.registered(srv.port) is None and svc.queue.carla_lock.fd is None
+    finally:
+        holder.kill()
+        if srv.proc is not None:
+            srv.proc.kill()
+
+
+def test_an_orphaned_server_is_stopped_by_the_next_process(tmp_path, monkeypatch):
+    from falcon_autonomy.sim import server as S
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'cfg'))
+    dead = subprocess.Popen(['true'])
+    dead.wait()
+    live = _fake_server(S, 2390, os.getpid())
+    assert S.stop_orphan(2390) is False and live.poll() is None          # its owner is alive
+    live.kill()
+    live.wait()
+    orphan = _fake_server(S, 2390, dead.pid)
+    try:
+        assert S.stop_orphan(2390, timeout=5) is True
+        assert orphan.wait(5) is not None and S.registered(2390) is None
+    finally:
+        orphan.kill()
+
+
 def _cli(*args, cwd=ROOT):
     env = {k: v for k, v in os.environ.items() if not k.startswith('PYTHONPATH')}
     return subprocess.run([sys.executable, '-m', 'falcon_autonomy', *args], capture_output=True, text=True,

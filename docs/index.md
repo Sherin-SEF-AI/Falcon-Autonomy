@@ -109,7 +109,9 @@ Each world can switch on **sensor weather physics** — what CARLA's sensors lea
 clutter in rain and fog, lens droplets, glare and bloom — modelled from cited sources, labelled, recorded in every run
 ([sensor physics](sensor-physics.md)). **Road features** write speed breakers into an imported world's road surface
 (from OpenStreetMap or every N metres), and Indian traffic gets measured stand-ins and proxies within what the packaged
-CARLA can spawn ([Indian road assets](indian-assets.md)).
+CARLA can spawn ([Indian road assets](indian-assets.md)). **City around the roads** places CARLA's own buildings,
+trees, lamps and street furniture where OpenStreetMap has them — size-matched stand-ins kept off the lanes, labelled
+correctly ([worlds](worlds.md#a-city-around-the-roads)).
 
 ### Live
 Drive a world in real time. **Start** opens a session (a job like any other: the Jobs dock shows it and Stop ends it).
@@ -233,8 +235,8 @@ or its images leave it ([ODD monitoring](odd-monitoring.md)).
 **Real to sim**: the Training page's *Sim-to-real translation* tab trains a geometry-preserving translator (CUT) on
 drives against real images and writes translated runs whose labels stay valid, with a drift check per frame
 ([translation](translation.md)); the Replay page reconstructs a recorded drive as 3D Gaussians and re-renders it from
-new viewpoints ([reconstruction](reconstruction.md)). Your own dashcam footage — its GPS, frames, translation
-targets and reconstructions — is read in place ([dashcam](dashcam.md)).
+new viewpoints ([reconstruction](reconstruction.md)). Your own dashcam footage — its GPS, frames (by day, at night
+or at twilight), translation targets and reconstructions — is read in place ([dashcam](dashcam.md)).
 
 **Learned worlds**: the Training page's *World model* tab trains a latent dynamics model on drives and episodes and
 scores it per horizon against simple baselines, learns policies in its imagination and clones camera-to-control

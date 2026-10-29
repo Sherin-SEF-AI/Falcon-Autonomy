@@ -65,7 +65,9 @@ Progress = Callable[[float, str], None] | None
 @dataclass
 class OsmData:
     """Roads and buildings from an OSM file. nodes {id: (lat, lon)}; ways [{'id', 'nodes', 'tags', 'kind'}] with
-    kind 'highway' or 'building'; bounds (south, west, north, east); node_tags {id: {k: v}} for tagged nodes only."""
+    kind 'highway' or 'building' (and 'area' — parks, grass, woods, water — when read with city=True); bounds (south,
+    west, north, east); node_tags {id: {k: v}} for tagged nodes only; points [{'id', 'lat', 'lon', 'tags'}] the
+    stand-alone point features (trees, street lamps, bus stops, benches…) inside the bounds when read with city=True."""
     nodes: dict = field(default_factory=dict)
     ways: list = field(default_factory=list)
     bounds: tuple | None = None
@@ -73,6 +75,7 @@ class OsmData:
     node_tags: dict = field(default_factory=dict)
     counts: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
+    points: list = field(default_factory=list)
 
     @property
     def highways(self) -> list:
@@ -83,11 +86,29 @@ class OsmData:
         return [w for w in self.ways if w['kind'] == 'building']
 
 
-def _kind(tags: dict) -> str | None:
+# what city=True keeps besides roads and buildings (core.cityprops dresses a world with them)
+CITY_AREAS = {'landuse': {'grass', 'recreation_ground', 'village_green', 'forest', 'meadow', 'orchard', 'cemetery',
+                          'flowerbed'},
+              'leisure': {'park', 'garden', 'pitch', 'playground', 'common'},
+              'natural': {'wood', 'scrub', 'grassland', 'heath', 'water', 'tree_row'}}
+CITY_POINTS = {'natural': {'tree'},
+               'highway': {'street_lamp', 'bus_stop'},
+               'amenity': {'bench', 'waste_basket', 'waste_disposal', 'recycling', 'telephone', 'atm', 'post_box',
+                           'drinking_water', 'bicycle_parking', 'vending_machine'},
+               'shop': {'kiosk'}}
+
+
+def _city_match(tags: dict, table: dict) -> bool:
+    return any(tags.get(k) in vals for k, vals in table.items())
+
+
+def _kind(tags: dict, city: bool = False) -> str | None:
     if 'highway' in tags:
         return 'highway'
     if 'building' in tags:
         return 'building'
+    if city and _city_match(tags, CITY_AREAS):
+        return 'area'
     return None
 
 
@@ -105,8 +126,10 @@ def _report(progress: Progress, frac: float, text: str):
         progress(max(0.0, min(1.0, frac)), text)
 
 
-def _finish(nodes: dict, node_tags: dict, ways: list, bounds, bbox, source: str, counts: dict, notes: list) -> OsmData:
-    """Drop missing node references, apply the crop rule, keep only referenced nodes."""
+def _finish(nodes: dict, node_tags: dict, ways: list, bounds, bbox, source: str, counts: dict, notes: list,
+            points=None) -> OsmData:
+    """Drop missing node references, apply the crop rule, keep only referenced nodes (and the point features inside
+    the box)."""
     missing = 0
     kept = []
     for w in ways:
@@ -130,23 +153,28 @@ def _finish(nodes: dict, node_tags: dict, ways: list, bounds, bbox, source: str,
         bounds = (min(lat), min(lon), max(lat), max(lon))
     counts = dict(counts)
     counts['missing_node_refs'] = counts.get('missing_node_refs', 0) + missing
-    d = OsmData(out_nodes, kept, bounds, source, out_tags, counts, list(notes))
+    pts = [p for p in points or () if bbox is None or (bbox[0] <= p['lat'] <= bbox[2] and bbox[1] <= p['lon'] <= bbox[3])]
+    d = OsmData(out_nodes, kept, bounds, source, out_tags, counts, list(notes), sorted(pts, key=lambda p: p['id']))
     d.counts.update(_counts(d))
     return d
 
 
 def _counts(d: OsmData) -> dict:
-    return {'nodes': len(d.nodes), 'ways': len(d.ways), 'highways': sum(w['kind'] == 'highway' for w in d.ways),
-            'buildings': sum(w['kind'] == 'building' for w in d.ways)}
+    out = {'nodes': len(d.nodes), 'ways': len(d.ways), 'highways': sum(w['kind'] == 'highway' for w in d.ways),
+           'buildings': sum(w['kind'] == 'building' for w in d.ways)}
+    if d.points or any(w['kind'] == 'area' for w in d.ways):
+        out['areas'] = sum(w['kind'] == 'area' for w in d.ways)
+        out['points'] = len(d.points)
+    return out
 
 
 RELATIONS_NOTE = 'relations were skipped (turn restrictions and multipolygon buildings are not kept)'
 
 
 # ------------------------------------------------------------------------------------------------ XML
-def _read_xml(path: str, bbox, progress: Progress) -> OsmData:
+def _read_xml(path: str, bbox, progress: Progress, city: bool = False) -> OsmData:
     size = max(os.path.getsize(path), 1)
-    nodes, node_tags, ways = {}, {}, []
+    nodes, node_tags, ways, points = {}, {}, [], []
     bounds, relations, n = None, 0, 0
     with open(path, 'rb') as raw:
         fh = gzip.GzipFile(fileobj=raw) if path.endswith('.gz') else bz2.BZ2File(raw) if path.endswith('.bz2') else raw
@@ -164,9 +192,11 @@ def _read_xml(path: str, bbox, progress: Progress) -> OsmData:
                     t = {c.get('k'): c.get('v') for c in el if c.tag == 'tag'}
                     if t:
                         node_tags[nid] = t
+                        if city and _city_match(t, CITY_POINTS):
+                            points.append({'id': nid, 'lat': nodes[nid][0], 'lon': nodes[nid][1], 'tags': t})
             elif tag == 'way':
                 t = {c.get('k'): c.get('v') for c in el if c.tag == 'tag'}
-                k = _kind(t)
+                k = _kind(t, city)
                 if k:
                     ways.append({'id': int(el.get('id')), 'nodes': [int(c.get('ref')) for c in el if c.tag == 'nd'],
                                  'tags': t, 'kind': k})
@@ -184,7 +214,7 @@ def _read_xml(path: str, bbox, progress: Progress) -> OsmData:
     if root is None or root.tag != 'osm':
         raise ValueError(f'{path}: not an OSM XML file')
     notes = [RELATIONS_NOTE] if relations else []
-    d = _finish(nodes, node_tags, ways, bounds, bbox, path, {'relations_skipped': relations}, notes)
+    d = _finish(nodes, node_tags, ways, bounds, bbox, path, {'relations_skipped': relations}, notes, points)
     _report(progress, 1.0, f'Read {d.counts["highways"]:,} roads, {d.counts["buildings"]:,} buildings')
     return d
 
@@ -483,10 +513,22 @@ def _member(ids: np.ndarray, sorted_set: np.ndarray) -> np.ndarray:
     return sorted_set[i] == ids
 
 
-def _read_pbf(path: str, bbox, progress: Progress) -> OsmData:
+def _read_pbf(path: str, bbox, progress: Progress, city: bool = False) -> OsmData:
     size = max(os.path.getsize(path), 1)
     npass = 3 if bbox is not None else 2
     bounds, relations = None, 0
+    points = []
+
+    def city_points(ids, lat, lon, tags, idx):
+        """The point features among nodes idx of a group (city=True only)."""
+        if not city or not tags:
+            return
+        for i in idx:
+            if i in tags:
+                t = dict(tags[i])
+                if _city_match(t, CITY_POINTS):
+                    points.append({'id': int(ids[i]), 'lat': round(float(lat[i]), 9), 'lon': round(float(lon[i]), 9),
+                                   'tags': t})
     kinds: dict[int, set] = {}
 
     def scan(k: int, want: str):
@@ -512,7 +554,7 @@ def _read_pbf(path: str, bbox, progress: Progress) -> OsmData:
             if k == 0:
                 relations += b.relations()
             for wid, tags, refs in b.ways():
-                kind = _kind(tags)
+                kind = _kind(tags, city)
                 if not kind:
                     continue
                 ids = np.cumsum(unzigzag(refs), dtype=np.int64)
@@ -525,6 +567,8 @@ def _read_pbf(path: str, bbox, progress: Progress) -> OsmData:
         nodes, node_tags = {}, {}
         for b in scan(k, 'nodes'):
             for ids, lat, lon, tags in b.nodes():
+                if bbox is None and city:
+                    city_points(ids, lat, lon, tags, list(tags) if tags else ())
                 hit = np.flatnonzero(_member(ids, needed))
                 for i, nid, la, lo in zip(hit.tolist(), ids[hit].tolist(), lat[hit].tolist(), lon[hit].tolist()):
                     nodes[nid] = (round(la, 9), round(lo, 9))
@@ -537,10 +581,11 @@ def _read_pbf(path: str, bbox, progress: Progress) -> OsmData:
         inside = []
         for b in scan(0, 'nodes'):
             relations += b.relations()
-            for ids, lat, lon, _ in b.nodes():
+            for ids, lat, lon, tags in b.nodes():
                 m = (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e)
                 if m.any():
                     inside.append(ids[m])
+                    city_points(ids, lat, lon, tags, np.flatnonzero(m).tolist())
         inside = np.unique(np.concatenate(inside)) if inside else np.zeros(0, np.int64)
         ways = collect_ways(1, inside)
         k_nodes = 2
@@ -552,26 +597,28 @@ def _read_pbf(path: str, bbox, progress: Progress) -> OsmData:
     for wy in ways:
         wy['nodes'] = wy['nodes'].tolist()
     notes = [RELATIONS_NOTE] if relations else []
-    d = _finish(nodes, node_tags, ways, bounds, bbox, path, {'relations_skipped': relations}, notes)
+    d = _finish(nodes, node_tags, ways, bounds, bbox, path, {'relations_skipped': relations}, notes, points)
     _report(progress, 1.0, f'Read {d.counts["highways"]:,} roads, {d.counts["buildings"]:,} buildings')
     return d
 
 
 # ------------------------------------------------------------------------------------------------ public API
-def read_osm(path: str, bbox=None, progress: Progress = None) -> OsmData:
+def read_osm(path: str, bbox=None, progress: Progress = None, city: bool = False) -> OsmData:
     """Roads and buildings from an .osm (XML, optionally .gz/.bz2) or .osm.pbf file, optionally cropped to bbox
-    (south, west, north, east) with the module's crop rule. progress(fraction, text) is called while reading."""
+    (south, west, north, east) with the module's crop rule. progress(fraction, text) is called while reading.
+    city=True also keeps parks, grass, woods and water (ways of kind 'area') and the point features of CITY_POINTS
+    (OsmData.points): what core.cityprops dresses a world with."""
     bbox = _check_bbox(bbox) if bbox is not None else None
     if path.endswith('.pbf'):
-        return _read_pbf(path, bbox, progress)
-    return _read_xml(path, bbox, progress)
+        return _read_pbf(path, bbox, progress, city)
+    return _read_xml(path, bbox, progress, city)
 
 
 def crop(data: OsmData, bbox) -> OsmData:
     """The ways with at least one node inside bbox, each with all its nodes (the module's crop rule)."""
     bbox = _check_bbox(bbox)
     counts = {k: v for k, v in data.counts.items() if k in ('relations_skipped', 'missing_node_refs')}
-    return _finish(data.nodes, data.node_tags, data.ways, None, bbox, data.source, counts, data.notes)
+    return _finish(data.nodes, data.node_tags, data.ways, None, bbox, data.source, counts, data.notes, data.points)
 
 
 def subset(data: OsmData, ways: list, bounds=None, notes=()) -> OsmData:

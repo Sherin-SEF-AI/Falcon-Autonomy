@@ -34,6 +34,9 @@ Ids match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` and are unique within their list.
 | `osm` | the import's source and converter settings (`kind: osm`); `mesh` (the generation parameters: a world with road features at a 0.25 m vertex distance), `road_features` (the Worlds page's choices: OSM tags, what `bump` becomes, a spacing) |
 | `weather` | `{"preset": "ClearNoon", …overrides}`: any of CARLA's `WeatherParameters` fields override the preset |
 | `traffic_profile` | the id of a traffic profile |
+| `speed_limits` | an imported world's traffic speeds: `map` (absent: the default) each lane's limit from the OpenDRIVE file, slowed ahead of lower limits and speed breakers; `carla` the traffic manager's own (30 km/h without speed signs) ([worlds](worlds.md#speed-limits-and-speed-breakers)) |
+| `keep_traffic` | an imported world's traffic kept in it where roads end (absent: true): moved to a free spawn point out of the ego's view before it would drive off a dead end; `false` leaves it to CARLA (it drives off and the server removes it) ([worlds](worlds.md#roads-that-end-the-edge-of-an-imported-area)) |
+| `city` | an imported world's city around the roads ([worlds](worlds.md#a-city-around-the-roads)): `enabled` (placed in every run), `plan` (`city/plan.json` in the world's folder) and `plan_sha256`, `source` (the OSM file: path, size, mtime), `seed`, `options`, `summary` (placed by kind and source, skipped and why, size closeness), `features` (counts), `timings`; absent: the roads alone |
 
 ## traffic profile
 

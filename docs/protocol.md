@@ -92,6 +92,8 @@ Every worker that has an output folder writes `run.json` (schema `falcon.run/1`)
 | `weather` | every CARLA weather field (resolved from the world's preset and overrides) |
 | `rig` | the rig (vehicle blueprint, sensors with poses, sizes, fields of view, label kinds) |
 | `traffic` | the traffic profile: vehicle count, fleet shares by CARLA base type, behaviour |
+| `vehicle_lights` | optional: `auto` (the default: position lights and low beams on every vehicle when the sun is below the horizon), `on`, `tm` (the traffic manager's own rule by weather and time of day) or `off`; run.json `lights` says what was set, how many vehicles' lights read back as on, and the map's own lights (CARLA's towns switch theirs on at night; an imported world has none). Set the same way in drives, live sessions (and again when Live's weather changes: on at nightfall, off at day), stack testing, the learning environment and hardware-in-the-loop |
+| `xodr`, `speed_limits`, `keep_traffic`, `city` | an imported world: its OpenDRIVE file; traffic at each road's limit (`map`) or CARLA's own (`carla`); traffic moved away from roads that end (default true); the city plan placed around the roads ([worlds](worlds.md)) |
 | `fps`, `steps`, `warmup_steps` | the fixed step (1 / fps), recorded steps, unrecorded warm-up steps |
 | `max_wall_s` | stop after this much wall clock (the smoke drive); 0: run all steps |
 | `seed` | spawn choices, the traffic manager, the pedestrians |

@@ -115,14 +115,144 @@ features*); such a world's mesh is generated at a 0.25 m vertex distance. Puddle
 drawn on an imported world ([Indian road assets](indian-assets.md)). The traffic manager keeps vehicles in lanes, so lane-splitting by
 two-wheelers is not reproduced by the profile.
 
+## Speed limits and speed breakers
+
+CARLA 0.9.16's traffic manager drives every autopilot vehicle at `Vehicle.get_speed_limit()`: the limit of the last
+speed sign it passed, else 30 km/h. A generated OpenDRIVE world has **no speed signs**, and the traffic manager reads
+neither the file's `<speed>` records nor its speed-limit signals (measured above) — so before 2.3 every vehicle drove
+about 30 km/h on every road of an imported place, a 20 km/h lane and a 100 km/h highway alike.
+
+On an imported world Falcon now gives each autopilot vehicle — the traffic, an autopilot ego, the
+[stand-ins](indian-assets.md) — its desired speed itself, with `TrafficManager.set_desired_speed`, re-read every
+0.25 s of simulated time (`workers/speedcontrol.py`, `core/speedlimits.py`):
+
+1. **The lane's limit** from the file: the lane's `<speed>` record at its `s` (what CARLA's converter writes from OSM
+   `maxspeed` or the road type's default, in m/s), else the road's `<type><speed>`, else CARLA's own
+   `get_speed_limit()` (counted in run.json as `carla`).
+2. **The vehicle's difference**: the traffic profile's *Speed below the limit* with its per-vehicle spread (the Indian
+   profile: 10 % faster ± 25 %), as the traffic manager would apply it; a stand-in is capped at its class's top speed.
+3. **What lies ahead** along its lane (waypoints every 5 m, as far as slowing to 10 km/h at 2 m/s² needs, at most
+   150 m; at a branch the one that keeps the road, else the straightest): a lane with a lower limit, or a **speed
+   breaker** (the import's `features.json`, crossed at its crossing speed — 25 km/h for an IRC:99 hump), lowers the
+   target to the speed from which a steady 2 m/s² reaches the slower speed there (√(v² + 2·a·d), less one update's
+   travel and 5 m). Drivers slow before the sign, not after it; a breaker's speed is held until 3 m past it.
+   *Heuristic*: 2 m/s² is a comfortable deceleration (AASHTO's stopping sight distance assumes 3.4 m/s²); the traffic
+   manager picks its own route at junctions, so the look-ahead's branch is a guess.
+
+A world entry's `speed_limits: "carla"` (project file) turns it off — the traffic manager's own 30 km/h. CARLA's towns
+have speed signs and are left to the traffic manager. run.json `traffic.speed_source` records the mode, the limits in
+the file, how many vehicles of each role were held, the samples by limit source, the breaker approaches and the
+updates slowed by a limit or a breaker ahead.
+
+**Measured** (CARLA 0.9.16, Falcon's own server, 2026-10-29; speeds of moving vehicles, junction roads and breaker
+approaches left out; drives of 90 s and 120 s at 20 Hz, the first 10 s left out):
+
+*A synthetic right-hand ring* (radius 250 m, three sectors tagged `maxspeed` 20, 50 and 80, two IRC humps on the 80
+sector, 5 cars and the ego; few spawn points on a ring):
+
+| sector | CARLA's own (median, max) | Falcon's limits (median, p85, max) |
+|---|---|---|
+| 20 km/h | 29.0, 29.3 | 19.3, 19.4, 22.5 |
+| 50 km/h | 29.0, 29.1 | 48.3, 48.5, 48.5 |
+| 80 km/h | 28.9, 29.1 | 63.8, 78.2, 78.4 (much of the sector is spent slowing for its humps and the 20 sector after it) |
+
+Without the look-ahead a car entered the 20 km/h sector at 78 km/h and slowed only after it (the 20 sector's maximum
+was 78.2). Approaching a hump on the 80 sector (three passes, the ego's among them): 47–49 km/h 40 m before it, 37
+at 20 m, 25–29 at 10 m, **24.0–24.6 km/h on it**; with CARLA's own speeds they crossed at 29 km/h.
+
+*The re-imported central Bengaluru* (left-hand, the Indian profile, 60 vehicles and the ego, all held by the speed
+control; limits in the file from 12 to 100 km/h, the slow ones SUMO's junction connections). In both modes alike
+vehicles leave the 1 km box at its dead ends and are removed (61 → 26 alive after 120 s with Falcon's limits, 61 → 19
+with CARLA's own), so the later samples come from fewer vehicles:
+
+| lane limit | CARLA's own (median, p85, max) | Falcon's limits (median, p85, max) |
+|---|---|---|
+| 20 km/h | 32.0, 36.5, 55.0 | 21.4, 24.5, 26.6 |
+| 25 km/h | 30.1, 36.3, 95.3 | 24.9, 29.3, 33.0 |
+| 50 km/h | 28.3, 36.6, 110.8 | 31.2, 45.0, 65.6 |
+| 80 km/h | 30.4, 38.3, 39.4 | 38.3, 79.1, 102.4 |
+| 100 km/h | 28.6, 35.2, 38.4 | 45.7, 89.6, 111.5 |
+
+Above the limit is by design: the Indian profile drives 10 % faster ± 25 %. Medians stay below the limits of the fast
+roads: they are short in a 1 km box, with signals, queues and slower junctions ahead (3029 updates were lowered for a
+lower limit ahead). The two breakers of the area saw one traffic pass (28.7 → 23.8 km/h on it) and the ego's (24 km/h,
+already on a 25 km/h lane). The cost: 23.3 s for 2400 steps against 22.6 s without (27 vehicles held).
+
+**Limits**: the traffic manager accelerates and brakes by its own controller, so a target is reached with its lag;
+two-wheelers and bicycles are held like cars (no class of their own); walkers are untouched; a breaker without a crossing speed (a pothole) does
+not slow anyone; a scenario's own actors keep the speeds the scenario sets; Live's cutting-in car keeps its own.
+
 ## A standalone OpenDRIVE world: what it is
 `generate_opendrive_world` builds **roads, lanes, sidewalks and junctions** as meshes from the OpenDRIVE file — no
 buildings, trees, real textures, road paint beyond lane marks, or props. Falcon says so on the Worlds page.
 
-CARLA can spawn at runtime only the props in its blueprint library (`static.prop.*`: fixed models such as cones,
-barriers, benches, boxes); it cannot build arbitrary meshes such as extruded building footprints at runtime. Falcon
-therefore does not place buildings in an imported world and reports the OSM extract's building count as *not
-represented*.
+CARLA cannot build a new mesh at runtime (an extruded footprint, say), but `static.prop.mesh` places any mesh
+already cooked into the package — the towns' own buildings, trees and lamps among them. Falcon uses that to put a
+city around the roads (next section): stand-ins, of about the right size, not the real buildings.
+
+## A city around the roads
+Worlds ▸ **City around the roads** (`core.cityprops`) dresses an imported world from an OpenStreetMap file — the
+import's own, or another with the buildings a roads-only download lacks (a regional `.osm.pbf` extract; read, never
+changed). A new import builds it from its source at once; an older world gets it from *Build the city*. It is placed
+in every run of the world while *In runs* is on, recorded in `run.json` (`city`: the plan's SHA-256, how many spawned,
+the time it took) and its plan's hash is in the drive's config, so it is part of the cache key. Off, the world is the
+roads alone, as before.
+
+**What CARLA 0.9.16 allows** (measured on Falcon's own server, 2026-10-29):
+
+| question | measured |
+|---|---|
+| `generate_opendrive_world` | roads, sidewalks and junctions only; its parameters (vertex distance, wall height, additional width, smoothing, mesh visibility, pedestrian navigation) add nothing else |
+| the library's props | 98 `static.prop.*` (benches, bins, bus stops, kiosks, an ATM, plant pots, a coconut palm, a cypress…); no building |
+| `static.prop.mesh` with a package path | 485 of 488 candidate paths under `Static/Building`, `Static/Vegetation` and `Static/Pole` spawn with a real box (3 spawn empty); 92 whole buildings among them (not façade pieces, standing on their origin, 4–80 m), 15 trees and 4 lamps chosen for the city |
+| labels | buildings tag 3 (*building*), trees and bushes 9 (*vegetation*), lamps 6 (*pole*) in the semantic and instance cameras, the instance id being the actor's; bus stops and benches 20 (*static*), bins 21 (*dynamic*), `kiosk_01` 3 |
+| collision | `cast_ray` hits the buildings and lamps (label *Buildings*, *Poles*); it missed the palm and oak trunks along their boxes' centre lines, so whether trees collide is not established |
+| cost | 3341 actors spawned in one synchronous batch in 1.18 s the first time, 0.11–0.12 s after (assets loaded); a recorded drive (one 1280 × 720 camera with labels, 15 vehicles, 10 walkers) ran at 9.2 steps/s against 10.7 without (−14 %, four seeds each) |
+| ground | no flat mesh with a plausible ground surface: `SM_Plane` is an upright debug plane (red), `WaterPlane` draws water, `Big_Plane` flowers, `SM_town03_SM_terrain02` is a 5 m-high terrain chunk; beside the roads the world stays CARLA's empty grey |
+
+**How it is placed.**
+
+- *Buildings.* Each closed OSM footprint (multipolygon buildings are relations, which the reader skips) is reduced
+  to its minimum-area rectangle; its height is OSM's `height`, else `building:levels` × 3.2 m, else a typical number
+  of storeys for its `building` type (*typical*, said so in the summary). The catalogue's building whose box,
+  turned either way and uniformly scaled within 0.6–1.6×, is nearest in size (the RMS of the relative differences of
+  length, width and height — `core.assets.size_score`) is chosen, among those within 0.03 of the best by the seed;
+  the scaled box may exceed the footprint's rectangle by 0.3 m a side. It may not come within 0.3 m of any lane of
+  the map (sidewalks included) — it is moved up to 3 m away from the nearest one, then shrunk to 90, 80, 70 % — nor
+  overlap a building already placed (largest footprints first). Its façade's side is unknown: it faces either way
+  along the length, by the seed. **It is a stand-in**: the style, the façade, the roof and an L-shaped footprint's
+  shape are the town mesh's.
+- *Trees*: OSM's `natural=tree`, and positions spread over parks, gardens, grass, woods and tree rows (a seeded
+  Poisson-disc sample, 9 m apart in parks, 6.3 m in woods, 14.4 m on grass), off carriageways, sidewalks and
+  buildings; at most 2000 spread trees, those nearest a road kept. The species are stand-ins (palms, broad-leaved
+  trees of the package).
+- *Lamps*: OSM's `highway=street_lamp` (a park lamp where no road is within 25 m) and one every 30 m along each
+  sidewalk outside junctions, the arm over the carriageway (procedural, counted apart).
+- *Street furniture*: bus stops, benches, bins, ATMs, post boxes, vending machines and drinking water at OSM's
+  points, as the library's props; one mapped on the carriageway is moved onto the nearest sidewalk.
+
+**Measured on central Bengaluru** (the re-imported world, a scratch copy; the buildings from a regional
+OpenStreetMap extract on this machine, 1123 footprints within the box plus 150 m, read in 348 s; planned in 1.1 s):
+858 buildings placed (125 left out as they would cover a lane or sidewalk, 134 as they would overlap another, 5
+fitting no stand-in, 1 under 12 m²; 104 moved off a lane by up to 3 m); size closeness median 0.264; heights from
+`height` 10, from levels 98, typical 750. 2026 trees (86 OSM's, 1940 spread; 2081 left out over the cap), 329 lamps
+(26 OSM's, 303 procedural), 21 bus stops, 60 benches, 34 bins and 13 other props — 3341 actors. Over four 4 s drives
+each, city off and on, the share of pixels: building 0 → 11.1 %, vegetation 0 → 16.4 %, pole 0 → 0.7 %, sky
+55.6 → 30.2 %, road 22.1 → 22.0 %; the ground relabelling still named 31 % of each frame. The labelled objects (vehicles,
+walkers) fell from 3297 to 742 over the same frames, with the same traffic placed: buildings and trees now hide
+what is behind them.
+
+**Limits.** Stand-ins, not the real buildings or trees; boxes for L-shaped footprints; no façade orientation; no
+ground; trees' collision not established; the props are destroyed and spawned again with every run. **The lamps give
+no light**: measured at night (sun −30°) on the re-imported central Bengaluru, the same view with each of the four
+street-lamp meshes and the package's one light-named prop (`static.prop.gardenlamp`) beside the road had a mean
+brightness of 0.147–0.161 against 0.162 without (out of 255; a car with its low beams on: 1.033), and the light
+manager's count stayed 0. CARLA 0.9.16's Python API cannot add a light: `LightManager` only switches, dims and colours
+the lights a map was built with (an imported world has none), and no spawnable blueprint carries one — a vehicle's
+own lamps are the only light that can be put into an imported world at runtime. Its streets are dark at night. A world's city is
+placed in every worker that loads the world: drives, scenarios, live sessions, replays, dashcam routes, stack testing
+and — since their configs carry the world's settings (`core.drive.world_keys`: the city, `speed_limits`,
+`keep_traffic`, `vehicle_lights`) — the learning environment, adversarial traffic and hardware-in-the-loop.
 
 ## Roads that end: the edge of an imported area
 
@@ -138,8 +268,46 @@ on no driving lane and sinking (more than 1 m below its last height on a lane, o
 put back on the road at a spawn point near the middle of the area and at least 60 m from where it left, stopped. Live
 logs it ("the road ended at …"); a recorded drive marks the step in frames.jsonl (`"teleport"`) and run.json's notes,
 since the pose jumps there. Scenario runs are not guarded (the director places its ego on the scenario's road).
-Traffic vehicles that leave a dead end are not put back: they fall and are removed. CARLA's own towns are closed and
-never trigger the guard.
+CARLA's own towns are closed and never trigger the guard.
+
+**Traffic** is lost at an imported area's edges too. Measured on a scratch copy of the re-imported central Bengaluru
+(Indian mixed traffic, 60 vehicles, CARLA 0.9.16), two things take it:
+
+- **The traffic manager removes it.** Its OSM mode — on by default in 0.9.16 — destroys a vehicle as soon as the path
+  it plans meets a dead end of its road graph (54 vehicles, 30 s: 41 left with the mode on, 54 with it off). That
+  graph has many more dead ends than the map's own 14 lane ends without a successor: 41 of 64 vehicles removed in
+  180 s were last seen on a lane more than 40 m from any of them. With the mode off the vehicles are not removed but
+  drive on past the end of their path, off the road mesh, and fall (39 of 54 in 150 s).
+- **Holes in the road mesh**, where a junction's connecting road does not meet its lanes (150 of 1136 lane links more
+  than 0.5 m apart, see above): a vehicle sinks through the road where the map still has a lane.
+
+Without help, 60 vehicles became 14–17 after 150 s. Falcon's **traffic keeper** (workers/trafficguard.py
+`TrafficKeeper`) keeps the count. Every 0.25 s of simulated time it looks at each traffic vehicle:
+
+- **removed** (by the traffic manager or the server): a vehicle of the same blueprint is spawned in its place and set
+  up as the traffic profile set the first (behaviour, speed difference, class, road speed);
+- **falling** (1 m below its lane, or faster than 3 m/s) or **off the road network** for 2 s: moved at once;
+- **heading for a dead end of the map** within 2 s of travel (12–60 m), along the traffic manager's planned path and
+  then the lane straight on — a lane end with no successor and no driving lane 6 m beyond it (a lane that merely ends
+  beside a road going on is not one): moved, unless the ego might see it go (within 50 m, or within 120 m and 60° of
+  its heading — a heuristic for the rig's cameras); then it comes off the autopilot, stops with full brakes like a car
+  at a closed road, and is moved once out of view.
+
+A move or a replacement takes a spawn point in a seeded order, at least 60 m from where the vehicle was, out of the
+ego's view, with no vehicle within 10 m and no dead end within 40 m ahead; the vehicle is placed before the next tick
+and its autopilot restarted there. Every move is in frames.jsonl (`"traffic_respawns"`) and run.json
+(`traffic.keeper`: counts, the longest hold, the first 200 events). A world can opt out with `keep_traffic: false`.
+
+| 180 s, 60 vehicles, seed 7 | alive at 30 / 60 / 90 / 120 / 150 s (min–max) | at the end | moves |
+|---|---|---|---|
+| `keep_traffic: false` | 35–47 / 27–35 / 23–27 / 17–23 / 14–17 | — | — |
+| the keeper | 58–60 / 59–60 / 59–60 / 59–60 / 59–60 | 60 | 64 replaced, 31 caught falling |
+
+None of the 95 vehicles moved or replaced vanished or appeared within 120 m and 45° of the ego's heading (its front
+camera's view). The removals themselves are the traffic manager's: a vehicle it destroys in view vanishes there
+(none did in this run, but nothing prevents it). Tried and left out: the OSM mode off, with a move wherever the
+planned path runs out — `get_all_actions` gives the next actions, not the end of the path, and that rule moved
+vehicles 3882 times in 180 s, nearly all needlessly.
 
 ## Editing the map
 Worlds ▸ **Edit the map…** (an imported world): the converted lanes are drawn under the OpenStreetMap ways they came
@@ -179,12 +347,12 @@ list (`map_edits`: applied, skipped and why, its SHA-256, connectivity); the wor
 | edit | the converter (carla.Osm2Odr) | CARLA |
 |---|---|---|
 | lanes, direction, road type, remove | built as asked (lanes 2 + 1 asked, 2 + 1 found) | driven as built |
-| speed limit | written as the road's `<type><speed max>` (20 km/h → 5.56 m/s) | **not used**: the traffic manager drives to the vehicle's limit, which stays 30 km/h (a car drove at 28.9 km/h on a road edited to 20). A speed-limit signal (OpenDRIVE type 274) becomes a map landmark, but a generated world spawns no speed-limit sign, so the limit does not change either (tried at 20 and 40 km/h) |
+| speed limit | written as the lanes' `<speed max>` records (20 km/h → 5.56 m/s) | **ignored by CARLA**: the traffic manager drives to the vehicle's limit, which stays 30 km/h (a car drove at 28.9 km/h on a road edited to 20). A speed-limit signal (OpenDRIVE type 274) becomes a map landmark, but a generated world spawns no speed-limit sign, so the limit does not change either (tried at 20 and 40 km/h). **Falcon applies it itself** (below, *Speed limits and speed breakers*) |
 | traffic signals | a traffic-light signal per approach and a controller (one junction: 4 signals, 8 controllers) | 4 traffic-light actors (green and red seen) that control their lanes with this version's left-hand fix; a car stops at red |
 | speed breaker | — (placed by Falcon as an elevation profile) | driven over: the car rose 4–5 cm crossing an IRC hump at 29 km/h (mesh at 0.25 m) |
 
-So a speed limit edited on the map is recorded and drawn but does not slow traffic in CARLA; set the traffic
-profile's *Speed below the limit* (or a scenario's speeds) for slower traffic.
+So CARLA itself ignores a speed limit edited on the map; Falcon reads it from the file and gives every vehicle its
+road's limit ([below](#speed-limits-and-speed-breakers)).
 
 **Re-import with the current converter…** converts the same area again — the import's source file and box (or the
 world's own copy of its area when the source has moved), the same centre (positions in the world do not move),
@@ -220,7 +388,9 @@ semantic lidar does hit the mesh, with tag 0.
 
 Falcon labels the ground of such worlds from the map instead. These worlds are flat (OpenStreetMap has no elevation):
 a pixel tagged sky whose ray meets the map's ground plane within 250 m gets that point's range and the class of the
-map's lanes there, from a 0.25 m raster (driving lanes → road, sidewalks → sidewalk, other lane types → ground); lidar
+map's lanes there, from a 0.25 m raster (driving lanes → road, sidewalks → sidewalk, other lane types → ground —
+`Map.generate_waypoints` gives driving lanes only, so the sidewalks and shoulders are found beside them with
+`Waypoint.get_right_lane`, and across the centre line of a one-way road; measured on the re-imported central Bengaluru: `generate_waypoints` gave 14 836 waypoints, all on driving lanes, though its file has 343 sidewalk lanes; found beside them, the sidewalks took 4.1 % of the pixels of a 10 s drive that had been labelled ground (road 29.1 %, ground 20.1 % → 16.0 %)); lidar
 points tagged 0 within 0.3 m of the plane are named the same way. Each frame's `objects.json` (`ground_relabelled`)
 and each run's lidar checks count them, and `dataset.json` states the method. In the Bengaluru drive this labelled
 about 45 % of each frame (the rest sky); vehicles, walkers, poles and lights keep CARLA's own labels.

@@ -109,8 +109,11 @@ class Drive(Worker):
             ego = scene.spawn_ego(self, world, lib, spawns, order, cfg['rig']['vehicle'])
         # an autopilot ego can drive off a road that ends (an imported area's edge): put back, marked in the frame
         guard = scene.RoadEndGuard(self, world, ego, spawns) if director is None else None
-        scene.spawn_traffic(self, world, lib, spawns, order, rng, cfg.get('traffic') or {})
+        placed = scene.spawn_traffic(self, world, lib, spawns, order, rng, cfg.get('traffic') or {}) or []
         scene.spawn_walkers(self, world, lib, rng, cfg.get('traffic') or {})
+        from . import lights
+        lit = [ego] + [a for a, _ in placed]
+        lights_set = lights.apply(self, cfg, lit)          # headlights at night (docs/protocol.md vehicle_lights)
         cams = self.cameras
         from ..core import faults as F
         self.recorders = [camgt.CameraRecorder(self, world, lib, ego, x, cams, F.actual_pose(x['pose'], x.get('faults')))
@@ -142,6 +145,7 @@ class Drive(Worker):
             if director is not None:
                 director.sync(frame)
             self.emit.progress(0.02 + 0.03 * (k + 1) / max(warm, 1), 'warming up')
+        self.run['lights'] = lights.report(world, lit, lights_set)
         steps = int(cfg.get('steps', 200))
         if director is not None:
             steps = int(round(float(director.scn.get('duration_s', 12.0)) * fps))
@@ -176,8 +180,14 @@ class Drive(Worker):
                 snap_t = world.get_snapshot().timestamp.elapsed_seconds
                 sim_t0 = snap_t if sim_t0 is None else sim_t0
                 rec = {'step': i, 'frame': int(frame), 'sim_t': round(snap_t - sim_t0, 6), 'files': {}}
-                if getattr(self, 'class_limits', None) is not None:     # stand-ins' speeds (core.assets)
-                    self.class_limits.step(rec['sim_t'])
+                moved = scene.speeds_step(self, rec['sim_t'])   # class / road limits; traffic kept at roads that end
+                if moved:
+                    rec['traffic_respawns'] = moved
+                    if not getattr(self, '_moved_noted', False):
+                        self._moved_noted = True
+                        self.note('traffic reaching a road that ends (the edge of the imported area) was put back on '
+                                  'the road (frames.jsonl "traffic_respawns", run.json traffic.keeper); see '
+                                  'docs/worlds.md')
                 if guard is not None:
                     ev = guard.step(rec['sim_t'])
                     if ev is not None:               # the frame's pose jumps: say so where every tool reads it
@@ -284,8 +294,7 @@ class Drive(Worker):
                           f'{c["box_label_share"]}')
         from .oddwatch import write as write_watch
         write_watch(self, self.out_dir, watch)
-        if getattr(self, 'class_limits', None) is not None:
-            self.run.setdefault('traffic', {}).update(self.class_limits.report())
+        scene.speeds_report(self)
         if getattr(self, 'subclass', None):
             self.run['subclasses'] = {str(k): v for k, v in sorted(self.subclass.items())}
         return {'performance': perf, 'lidar_checks': lidar_checks, 'scenario': scenario, 'faults_applied': faults.report(),

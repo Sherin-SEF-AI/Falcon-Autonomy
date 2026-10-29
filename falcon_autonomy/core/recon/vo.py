@@ -22,7 +22,12 @@ The pipeline:
   track_epi_px) and the outliers dropped: independently moving points that leave their epipolar lines (crossing
   traffic, a swerving two-wheeler). Points moving along their epipolar lines — traffic ahead or oncoming, driving
   the same line as the camera — are **not** caught (the epipolar test cannot see them); a mask (the bonnet, a
-  burnt-in overlay, the corridor of road ahead) keeps corners off parts of the image.
+  burnt-in overlay, the corridor of road ahead) keeps corners off parts of the image. **Disruptions**: when a step
+  loses more than bridge_below of its tracks at once (a windscreen wiper sweeping across the view, a flash), the
+  tracks of the frame before are held and followed straight into each next frame — each point started where its
+  image velocity before the disruption puts it — until bridge_accept of them come through the forward-backward and
+  epipolar checks (up to bridge_frames frames); the frames in between keep no tracks, and the odometry skips them
+  (max_skip).
 * **Initialisation** — the first frame and the first later one with enough parallax (the tracks moved init_px, at
   least init_min_points triangulated at a median ray angle above init_angle_deg, half the tracks inliers):
   essential matrix (RANSAC), cv2.recoverPose, triangulation; the baseline is the unit of length — or, given the
@@ -70,6 +75,7 @@ DEFAULTS = {
     'track_epi_px': 3.0, 'gate_px': 6.0, 'max_dev_rel': 0.5, 'max_dev_deg': 2.0,
     'pnp_px': 2.0, 'init_px': None, 'init_angle_deg': 1.5, 'init_min_points': 60, 'huber_px': 1.5, 'outlier_px': 4.0,
     'local_ba_iterations': 30, 'global_ba_iterations': 60, 'max_depth_ratio': 400.0,
+    'bridge_below': 0.5, 'bridge_accept': 0.3, 'bridge_frames': 10, 'max_skip': 10,
 }
 
 
@@ -269,32 +275,79 @@ def track(grays, mask=None, intr: Intrinsics | None = None, settings: dict | Non
     ids, uv = detect(grays[0], np.zeros((0, 2)))
     ids_out.append(ids)
     uv_out.append(uv)
+    anchor = None              # (frame, image, ids, uv) before a disruption (a wiper's sweep, a flash): bridged from
+    st['bridged'] = 0
+    st['disrupted_frames'] = []
+
+    def flow(img0, img1, ids0, uv0, guess=None):
+        """Tracks ids0/uv0 from img0 into img1 (from `guess`, predicted positions in img1, when given): KLT both ways,
+        the image and the mask, then the epipolar check."""
+        p0 = uv0.astype(np.float32).reshape(-1, 1, 2)
+        if guess is None:
+            p1, ok1, _ = cv2.calcOpticalFlowPyrLK(img0, img1, p0, None, **lk)
+            pb, ok2, _ = cv2.calcOpticalFlowPyrLK(img1, img0, p1, None, **lk)
+        else:
+            g = np.clip(guess, 0, [W - 1, H - 1]).astype(np.float32).reshape(-1, 1, 2)
+            p1, ok1, _ = cv2.calcOpticalFlowPyrLK(img0, img1, p0, g.copy(), flags=cv2.OPTFLOW_USE_INITIAL_FLOW, **lk)
+            pb, ok2, _ = cv2.calcOpticalFlowPyrLK(img1, img0, p1, p0.copy(), flags=cv2.OPTFLOW_USE_INITIAL_FLOW, **lk)
+        fb = np.linalg.norm((pb - p0).reshape(-1, 2), axis=1)
+        q = p1.reshape(-1, 2).astype(np.float64)
+        good = (ok1.reshape(-1) == 1) & (ok2.reshape(-1) == 1) & (fb < s['fb_px']) & \
+            (q[:, 0] >= 0) & (q[:, 0] <= W - 1) & (q[:, 1] >= 0) & (q[:, 1] <= H - 1)
+        if m8 is not None:
+            qi = np.clip(np.round(q).astype(int), 0, [W - 1, H - 1])
+            good &= m8[qi[:, 1], qi[:, 0]] > 0
+        lost = int((~good).sum())
+        ids1, a, b = ids0[good], uv0[good], q[good]
+        epi = 0
+        if intr is not None and len(b) >= 12:
+            disp = np.median(np.linalg.norm(b - a, axis=1))
+            if disp > 0.5:
+                E, inl = cv2.findEssentialMat(intr.normalise(a), intr.normalise(b), np.eye(3), cv2.RANSAC, 0.999,
+                                              s['track_epi_px'] / intr.f)
+                if E is not None and inl is not None:
+                    keep = inl.reshape(-1) > 0
+                    epi = int((~keep).sum())
+                    ids1, b = ids1[keep], b[keep]
+        return ids1, b, lost, epi
+
     for i in range(1, n):
         if cancel and cancel():
             raise KeyboardInterrupt()
         prev, cur = grays[i - 1], grays[i]
-        if len(uv):
-            p0 = uv.astype(np.float32).reshape(-1, 1, 2)
-            p1, ok1, _ = cv2.calcOpticalFlowPyrLK(prev, cur, p0, None, **lk)
-            pb, ok2, _ = cv2.calcOpticalFlowPyrLK(cur, prev, p1, None, **lk)
-            fb = np.linalg.norm((pb - p0).reshape(-1, 2), axis=1)
-            q = p1.reshape(-1, 2).astype(np.float64)
-            good = (ok1.reshape(-1) == 1) & (ok2.reshape(-1) == 1) & (fb < s['fb_px']) & \
-                (q[:, 0] >= 0) & (q[:, 0] <= W - 1) & (q[:, 1] >= 0) & (q[:, 1] <= H - 1)
-            if m8 is not None:
-                qi = np.clip(np.round(q).astype(int), 0, [W - 1, H - 1])
-                good &= m8[qi[:, 1], qi[:, 0]] > 0
-            st['lost_fb'] += int((~good).sum())
-            ids1, uv0, uv1 = ids[good], uv[good], q[good]
-            if intr is not None and len(uv1) >= 12:
-                disp = np.median(np.linalg.norm(uv1 - uv0, axis=1))
-                if disp > 0.5:
-                    a, b = intr.normalise(uv0), intr.normalise(uv1)
-                    E, inl = cv2.findEssentialMat(a, b, np.eye(3), cv2.RANSAC, 0.999, s['track_epi_px'] / intr.f)
-                    if E is not None and inl is not None:
-                        keep = inl.reshape(-1) > 0
-                        st['epipolar_outliers'] += int((~keep).sum())
-                        ids1, uv1 = ids1[keep], uv1[keep]
+        if anchor is not None:                 # inside a disruption: track on from the last good frame, each point
+            ids1, uv1, lost, epi = flow(anchor[1], cur, anchor[2], anchor[3],   # where its image velocity puts it
+                                        anchor[3] + (i - anchor[0]) * anchor[4])
+            if len(uv1) >= s['bridge_accept'] * len(anchor[3]) or i - anchor[0] > s['bridge_frames']:
+                if len(uv1) >= s['bridge_accept'] * len(anchor[3]):
+                    st['bridged'] += 1
+                st['lost_fb'] += lost
+                st['epipolar_outliers'] += epi
+                ids, uv = ids1, uv1
+                anchor = None
+            else:                              # still disrupted: this frame keeps no tracks
+                st['disrupted_frames'].append(i)
+                ids_out.append(np.zeros((0,), np.int64))
+                uv_out.append(np.zeros((0, 2)))
+                st['per_frame'].append(0)
+                continue
+        elif len(uv):
+            ids1, uv1, lost, epi = flow(prev, cur, ids, uv)
+            if len(uv) >= 50 and len(uv1) < s['bridge_below'] * len(uv) and s['bridge_frames'] > 0:
+                vel = np.zeros_like(uv)        # most tracks died at once: hold them and try the next frames
+                if len(ids_out) >= 2 and len(ids_out[-2]):
+                    before = dict(zip(ids_out[-2].tolist(), uv_out[-2]))
+                    for k, t in enumerate(ids.tolist()):
+                        if t in before:
+                            vel[k] = uv[k] - before[t]
+                anchor = (i - 1, prev, ids, uv, vel)
+                st['disrupted_frames'].append(i)
+                ids_out.append(np.zeros((0,), np.int64))
+                uv_out.append(np.zeros((0, 2)))
+                st['per_frame'].append(0)
+                continue
+            st['lost_fb'] += lost
+            st['epipolar_outliers'] += epi
             ids, uv = ids1, uv1
         if len(uv) < s['replenish_below'] * s['max_corners']:
             nid, nuv = detect(cur, uv)
@@ -306,6 +359,7 @@ def track(grays, mask=None, intr: Intrinsics | None = None, settings: dict | Non
     st['seconds'] = round(time.perf_counter() - t0, 3)
     st['mean_tracked'] = round(float(np.mean(st['per_frame'])), 1) if st['per_frame'] else 0.0
     del st['per_frame']
+    st['disrupted'] = len(st.pop('disrupted_frames'))
     return Tracks(ids_out, uv_out, (W, H), st)
 
 
@@ -606,7 +660,9 @@ def _pnp(Xw, xn, f, guess=None, px=2.0):
 
 def run_vo(tracks: Tracks, intr: Intrinsics, settings: dict | None = None, emitter=None, cancel=None, times=None,
            distance=None) -> VOResult:
-    """Keyframe VO over the tracks (module doc). Stops (lost_at) if a frame cannot be placed by PnP.
+    """Keyframe VO over the tracks (module doc). A frame that cannot be placed (too few mapped points, or PnP fails —
+    a wiper's sweep the tracker could not bridge) is skipped, up to max_skip frames after the last placed one; then it
+    stops (lost_at).
 
     With `times` and `distance` ((t_a, t_b) -> (metres, σ): e.g. the GPS speed over ground integrated), the map is
     metric from the start (the initial baseline is that distance) and every bundle adjustment holds the distances
@@ -743,16 +799,21 @@ def run_vo(tracks: Tracks, intr: Intrinsics, settings: dict | None = None, emitt
             added += int(good.sum())
         st['triangulated'] += added
 
+    last_placed = kfs[1]
+    st['skipped'] = 0
     for i in range(kfs[1] + 1, n):
         if cancel and cancel():
             raise KeyboardInterrupt()
         have = [(tid, r) for tid, r in look[i].items() if tid in points]
         if len(have) < 12:
+            if i - last_placed <= s['max_skip']:     # a frame the tracks could not follow (a wiper's sweep): skipped
+                st['skipped'] += 1
+                continue
             lost = i
             break
         Xw = np.array([points[t] for t, _ in have])
         xn = np.array([norm[i][r] for _, r in have])
-        guess = poses[i - 1] if i - 1 in poses else None
+        guess = poses[i - 1] if i - 1 in poses else poses[last_placed]
         pred = None
         if distance is not None and i - 1 in poses and i - 2 in poses:
             pred = _predict(poses[i - 2], poses[i - 1], distance(times[i - 1], times[i])[0])
@@ -769,6 +830,9 @@ def run_vo(tracks: Tracks, intr: Intrinsics, settings: dict | None = None, emitt
             guess = pred
         p, inl = _pnp(Xw, xn, intr.f, guess, s['pnp_px'])
         if p is None:
+            if i - last_placed <= s['max_skip']:
+                st['skipped'] += 1
+                continue
             lost = i
             break
         if pred is not None:
@@ -779,6 +843,7 @@ def run_vo(tracks: Tracks, intr: Intrinsics, settings: dict | None = None, emitt
                 p = np.r_[p[:3], -R @ centre_of(pred)]
                 st['scale_overrides'] += 1
         poses[i] = p
+        last_placed = i
         st['pnp_inliers'].append(len(inl))
         last = kfs[-1]
         ids, ia, ib = common(last, i)

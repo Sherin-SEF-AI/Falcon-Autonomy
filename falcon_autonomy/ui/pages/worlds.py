@@ -88,8 +88,9 @@ class WorldsPage(Page):
         sec.add(hb)
         ev.addWidget(sec)
 
-        self.place = Section('Imported place', 'An OpenDRIVE world: roads, lanes, sidewalks and junctions only — no '
-                                               'buildings, vegetation or textures (docs/worlds.md: the full-fidelity '
+        self.place = Section('Imported place', 'An OpenDRIVE world: roads, lanes, sidewalks and junctions only; '
+                                               'City around the roads (below) places CARLA\'s own buildings, trees '
+                                               'and lamps as stand-ins (docs/worlds.md, also the full-fidelity '
                                                'path).')
         from ..osmimport import RoadGraphView
         pb = QHBoxLayout()                       # the place's actions first, above the preview and the report
@@ -114,6 +115,9 @@ class WorldsPage(Page):
         ev.addWidget(self.place)
         self.features = RoadFeatures(self)
         ev.addWidget(self.features)
+        from ..city_panel import CitySection
+        self.city = CitySection(self)
+        ev.addWidget(self.city)
         self.verify_job = None
         win.bridge.finished.connect(self.on_verify)
 
@@ -220,9 +224,11 @@ class WorldsPage(Page):
         import os
         self.place.setVisible(w['kind'] != 'town')
         self.features.setVisible(w['kind'] != 'town')
+        self.city.setVisible(w['kind'] != 'town')
         if w['kind'] == 'town':
             return
         self.features.show_world(w)
+        self.city.show_world(w)
         d = os.path.join(self.win.workspace(), os.path.dirname(w.get('xodr', '')))
         self.place_kv.clear()
         self.verify_kv.clear()

@@ -24,5 +24,6 @@ Each milestone ends with its tests passing, its docs and a demo. Pages appear in
 | 13 | Deployment | TensorRT export and profiling on the Jetson AGX Orin, CI mode for stacks on GitHub, release 2.0 | **done (2.0.0)** |
 | — | Your own dashcam | GPS and frames from the user's dashcam, translation to its look, reconstruction with visual odometry held to its GPS; road-end guard | **done (2.1.0)** |
 | 14 | Workbench | UI and UX audit of every page, Home and grouped navigation, run search and drive sets, run comparison, dataset health, global search, job history, scenario timeline editing, a map editor, a dashcam-route mode | **done (2.2.0)** |
+| — | A living Bengaluru | a city around imported roads (buildings, trees, lamps, furniture from OSM), traffic at each road's speed limit and slowing for breakers, traffic kept at dead ends, sidewalks labelled, night footage and vehicle lights, longer dashcam routes | **done (2.3.0)** |
 
 Pending on the user's hardware: the Jetson AGX Orin acceptance runs (`falcon hil acceptance`, `falcon deploy all --device orin`) need the device's address and an SSH key in Settings.

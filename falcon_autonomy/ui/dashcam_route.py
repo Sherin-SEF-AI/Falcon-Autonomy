@@ -129,7 +129,7 @@ class RouteDialog(QDialog):
 
     def planned(self, w):
         self.win_doc = w
-        self.route_dir = R.default_route_dir(w)
+        self.route_dir = R.default_route_dir(w, os.path.join(self.win.workspace(), 'dashcam-routes'))
         R.save_window(w, self.route_dir)
         self.plan_kv.set('Route', f'{len(w["clips"])} clip(s), {w["start_s"]:g}–{w["end_s"]:g} s: '
                                   f'{len(w["fixes"])} GPS fixes, {w["path_m"]:.0f} m; area '

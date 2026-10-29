@@ -105,10 +105,35 @@ class CarlaService:
         srv.start()
         self._emit('server', srv.state())
 
-    def stop_server(self):
-        if self.server is not None:
+    def stop_server(self, wait_s: float = 5.0) -> bool:
+        """Stop Falcon's own server — only while holding the CARLA lock, so that a job another Falcon process runs on
+        it (it sees the server as shared) is never cut off. False when that lock stayed busy for wait_s."""
+        if self.server is None:
+            return True
+        stopped = self._stop_holding_lock(wait_s)
+        self._emit('server', self.server.state())
+        return stopped
+
+    def _stop_holding_lock(self, wait_s: float) -> bool:
+        import time
+        if not self.server.running:
             self.server.stop()
-            self._emit('server', self.server.state())
+            return True
+        lock = self.queue.carla_lock
+        held = lock.fd is not None             # one of this process's jobs holds it
+        t0 = time.monotonic()
+        while not lock.acquire():
+            if time.monotonic() - t0 >= wait_s:
+                self.server_error = (f'not stopped: process {lock.holder() or "?"} is running a CARLA job on it; '
+                                     'the last Falcon process to finish stops it')
+                return False
+            time.sleep(0.2)
+        try:
+            self.server.stop()
+        finally:
+            if not held:
+                lock.release()
+        return True
 
     def _before_start(self, job) -> str:
         """Before a CARLA job starts: Falcon's server must be up (started here, its memory checked by the queue)."""
@@ -257,7 +282,15 @@ class CarlaService:
             if j.state not in FINAL and j.handle is not None:
                 j.handle.kill()
         if self.server is not None:
-            self.server.stop()
+            self._stop_holding_lock(grace_s)
+        lock = self.queue.carla_lock
+        held = lock.fd is not None
+        if not self.external and not self.fake_carla and lock.acquire():
+            try:
+                S.stop_orphan(self.port)       # a server whose owner left it to a job of ours
+            finally:
+                if not held:
+                    lock.release()
         if self.catalog is not None:
             self.catalog.close()
             self.catalog = None

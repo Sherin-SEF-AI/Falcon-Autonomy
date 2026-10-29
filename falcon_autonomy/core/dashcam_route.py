@@ -187,9 +187,10 @@ def load(route_dir: str, name: str = 'window.json') -> dict:
         return json.load(fh)
 
 
-def default_route_dir(win: dict) -> str:
+def default_route_dir(win: dict, root: str | None = None) -> str:
+    """The route's folder: under root (the GUI passes the project's workspace/dashcam-routes) or DEFAULT_ROUTES."""
     stem = os.path.splitext(win['clips'][0]['name'])[0]
-    return os.path.join(DEFAULT_ROUTES, f'{stem}-{win["start_s"]:g}s-{win["end_s"] - win["start_s"]:g}s')
+    return os.path.join(root or DEFAULT_ROUTES, f'{stem}-{win["start_s"]:g}s-{win["end_s"] - win["start_s"]:g}s')
 
 
 # ================================================================================================ 2. the roads

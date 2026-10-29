@@ -1,4 +1,4 @@
-"""`falcon recon train|from-dashcam|eval|render|rerender|info` (docs/reconstruction.md). Protocol lines on stdout
+"""`falcon recon train|from-dashcam|place|eval|render|rerender|info` (docs/reconstruction.md). Protocol lines on stdout
 (core.protocol); exit codes 0 ok, 2 failed, 3 cancelled. A command that uses CUDA takes Falcon's GPU lock
 (core.training.gpu_locks) unless the job queue holds it for it (FALCON_GPU_LOCK_HELD=1); --device cpu needs no lock.
 """
@@ -80,6 +80,10 @@ def main_recon(argv) -> int:
     dc.add_argument('--device')
     dc.add_argument('--no-train', action='store_true', help='pose and place the segment only')
     dc.add_argument('--keep-raw', action='store_true', help='keep the decoded (distorted) frames')
+    pl = sub.add_parser('place', help='place a posed dashcam segment on an imported world after the fact')
+    pl.add_argument('recon', help='a from-dashcam reconstruction folder')
+    pl.add_argument('--project', required=True)
+    pl.add_argument('--world', required=True)
     e = sub.add_parser('eval', help='measure a reconstruction: held-out frames, another run beside the path, '
                                     'lateral shifts against depth-warped CARLA references')
     e.add_argument('recon')
@@ -163,6 +167,11 @@ def main_recon(argv) -> int:
                 locks = _locks(s.get('device') or 'auto', em, flag)
             res = from_dashcam(a.clip, out, a.start, a.seconds, s, em, flag, argv=['recon'] + list(argv))
             em.result('ok', report=os.path.join(out, 'dashcam.json'), summary=res)
+            return P.OK
+        if a.cmd == 'place':
+            from .fromdashcam import place_existing
+            res = place_existing(a.recon, a.project, a.world)
+            em.result('ok', report=os.path.join(a.recon, 'dashcam.json'), summary=res)
             return P.OK
         locks = _locks(a.device, em, flag)
         if a.cmd == 'eval':

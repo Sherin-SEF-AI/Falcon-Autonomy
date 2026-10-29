@@ -324,7 +324,8 @@ class StatusBarWidgets:
             if any(j.spec.needs_carla and j.state == RUNNING for j in self.win.queue.jobs):
                 QMessageBox.information(self.win, 'Server busy', 'A CARLA job is running: cancel it first.')
                 return
-            svc.stop_server()
+            if not svc.stop_server():
+                QMessageBox.information(self.win, 'Server in use', svc.server_error)
         else:
             try:
                 svc.start_server()

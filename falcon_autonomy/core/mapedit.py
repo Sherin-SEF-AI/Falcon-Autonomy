@@ -46,8 +46,9 @@ HONOURED = {
     'oneway': 'geometry: the converter builds one direction; CARLA drives it',
     'highway': 'the converter\'s default lanes and speed for the type (when the tags do not say)',
     'remove': 'the road and its junction connections are gone; a dead end may remain where it joined',
-    'maxspeed': 'written as the road\'s speed record (<type><speed>); CARLA\'s traffic manager does not read it — '
-                'traffic keeps the vehicle\'s 30 km/h limit (measured)',
+    'maxspeed': 'written by the converter as the lanes\' speed records; CARLA\'s traffic manager ignores them (30 km/h '
+                'without speed signs, measured), so Falcon gives each vehicle its road\'s limit itself '
+                '(workers.speedcontrol)',
     'speed_breaker': 'an elevation profile the vehicle physics drives over (core.roadfeatures)',
     'remove_feature': 'the elevation profile is not written',
     'signal': 'the converter writes a traffic-light signal per approach; CARLA makes traffic lights that control '

@@ -22,6 +22,10 @@ The import:
    dropped, the lane check against OSM on a seeded sample (core.xodr.lane_check: lane counts and positions) and on
    every edited way, the lane links that do not meet, the map edits applied and skipped, the handedness, what an
    OpenDRIVE world does not contain (buildings, vegetation, textures), timings.
+
+With city_only (out: the world's city/ folder, world_dir: the world's folder) it instead dresses an imported world
+(core.cityprops.build): the city features of `source` (an .osm or .osm.pbf file, read only) around the world's box,
+planned on its world.xodr — city/features.json, city/plan.json and city/summary.json (what the world entry keeps).
 """
 from __future__ import annotations
 
@@ -54,6 +58,8 @@ class OsmImport(Worker):
         cfg = self.cfg
         if cfg.get('schema') != IMPORT_SCHEMA:
             raise Failed(f'not an OSM import config (schema {cfg.get("schema")!r})')
+        if cfg.get('city_only'):
+            return self.city_only(cfg)
         carla = self.import_carla()
         t = {}
         t0 = time.monotonic()
@@ -162,10 +168,13 @@ class OsmImport(Worker):
                'not_represented': {
                    'buildings': summ.get('buildings', 0),
                    'text': 'an OpenDRIVE world is roads, lanes, sidewalks and junctions only: no buildings, '
-                           'vegetation, textures or props (CARLA cannot spawn arbitrary meshes at runtime); '
-                           'docs/worlds.md describes the full-fidelity path'},
+                           'vegetation, textures or props; Worlds ▸ City around the roads places CARLA\'s own '
+                           'buildings, trees and lamps as stand-ins at load time (core.cityprops); docs/worlds.md '
+                           'describes that and the full-fidelity path'},
                'timings': t, 'road_features': features, 'lane_links': links, 'map_edits': edit_rep,
                'signal_lanes': X.signal_lanes(text)}
+        if cfg.get('city'):                     # dressed from the same source (core.cityprops); never fails the import
+            rep['city'] = self.city_step(cfg, bbox or summ.get('bbox'), (lat0, lon0))
         write_json(os.path.join(self.out_dir, 'import.json'), rep)
         self.emit.progress(1.0, f'{graph["totals"].get("roads", len(graph.get("roads", [])))} roads, lane check '
                                 f'{check.get("matched")}/{check.get("comparable")}', force=True)
@@ -173,6 +182,41 @@ class OsmImport(Worker):
                 'summary': {'handedness': rep['handedness'], 'lane_agreement': check.get('agreement'),
                             'roads_km': (graph.get('totals') or {}).get('road_km')},
                 'name': f'import {os.path.basename(cfg["source"])}'}
+
+
+    def city_step(self, cfg, bbox, centre) -> dict:
+        from ..core import cityprops as C
+        c = cfg['city']
+        src = c.get('source') or cfg['source']
+        self.emit.progress(0.9, 'placing the city around the roads', force=True)
+        try:
+            return C.build(self.out_dir, src, bbox, centre, int(c.get('seed', 0)), c.get('options'),
+                           float(c.get('margin_m', 150.0)))
+        except (C.CityError, OSError, ValueError, KeyError) as e:
+            self.note(f'the city around the roads was not built: {e}')
+            return {'enabled': False, 'error': str(e)}
+
+    def city_only(self, cfg):
+        from ..core import cityprops as C
+        wd = cfg['world_dir']
+        imp = read_json(os.path.join(wd, 'import.json'))
+        bbox = imp.get('bbox') or (imp.get('osm') or {}).get('bbox')
+        if not bbox:
+            raise Failed('the world\'s import.json has no box to dress')
+        if not os.path.isfile(cfg['source']):
+            raise Failed(f'no such OpenStreetMap file: {cfg["source"]}')
+        self.emit.progress(0.02, 'reading the city features', force=True)
+        try:
+            summ = C.build(wd, cfg['source'], bbox, imp['centre'], int(cfg.get('seed', 0)), cfg.get('options'),
+                           float(cfg.get('margin_m', 150.0)),
+                           progress=lambda f, text: self.emit.progress(0.02 + 0.85 * f, text))
+        except C.CityError as e:
+            raise Failed(str(e)) from None
+        write_json(os.path.join(self.out_dir, 'summary.json'), summ)
+        by = summ['summary']['by_kind']
+        self.emit.progress(1.0, ', '.join(f'{sum(v.values())} {k}' for k, v in sorted(by.items())) or 'nothing placed',
+                           force=True)
+        return {'city': summ, 'name': f'city of {os.path.basename(wd)}'}
 
 
 def main(argv) -> int:

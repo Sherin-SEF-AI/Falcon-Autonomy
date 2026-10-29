@@ -8,7 +8,7 @@ number traceable to the run that produced it.
 **Status: 2.0 — the eight milestones of the plan and the five that followed (9–13).** What works is listed under *What works*; what comes next is in
 the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
 
-## What works (2.2.0)
+## What works (2.3.0)
 
 - **The app shell** (PyQt6): a page navigator, Jobs and Log docks, undo and redo for every project edit, a command
   palette (Ctrl+K), dark and light themes, a status bar with the CARLA server, the GPU and memory.

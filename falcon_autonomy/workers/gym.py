@@ -179,6 +179,7 @@ class Gym(Worker):
         traffic = cfg.get('traffic') or {}
         scene.spawn_traffic(self, world, self.lib, self.spawns, order, rng, traffic)
         scene.spawn_walkers(self, world, self.lib, rng, traffic)
+        self.run['lights'] = scene.light_vehicles(self, cfg)      # headlights at night (workers.lights)
         if traffic.get('vehicles') or traffic.get('walkers'):
             self.note('background traffic is driven by CARLA\'s traffic manager and physics: episodes are not '
                       'bit-for-bit repeatable')
@@ -242,6 +243,7 @@ class Gym(Worker):
                 'sim_s': round(self.n_steps * self.dt, 3), 'source': 'measured'}
         if self.n_steps:
             self.emit.metric('steps_per_s', perf['steps_per_s'], '1/s')
+        scene.speeds_report(self)
         if self.ended_by and self.ended_by != 'closed by the client':
             raise Failed(f'the environment ended: {self.ended_by}')
         return {'performance': perf, 'summary': {'episodes': self.n_episodes, 'steps': self.n_steps,
@@ -409,6 +411,7 @@ class Gym(Worker):
                 if ego is None:
                     raise Failed('the ego could not be placed at the start (something is in the way)')
                 self.own(ego)
+                scene.light_vehicles(self, self.cfg, actors=[ego])
                 world.tick()
                 self.alive()
                 stale = len(self.our_actor_ids() - {a.id for a in self.spawned})
@@ -735,6 +738,7 @@ class Gym(Worker):
         k = ep['k']
         sim_t = k * self.dt
         d.record(sim_t)
+        scene.speeds_step(self, sim_t)
         steer_rate = (applied[0] - ep['prev_action'][0]) / self.dt
         ep['prev_action'] = applied
         state, facts, arrays, rows = self.observe(frame)

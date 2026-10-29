@@ -37,6 +37,17 @@ Every image is first resized to a common width of 640 px, so that resolution doe
 Labelled sets add: class shares, objects per image, box height as a share of image height and range. Objects lower
 than 1.5 % of the image height are left out on both sides (a share, not pixels, so different resolutions compare).
 
+**Night statistics** (`--night on`, or by themselves when the real set is mostly at night — a dashcam set's frames
+say so by the sun's altitude; heuristics, labelled as such). The statistics above stay as they are; these are added:
+
+| statistic | meaning |
+|---|---|
+| dark_share_10, dark_share_25 | share of pixels at L < 10 (deep shadow) and at L < 25 (shadow) |
+| light_share | share of pixels at L > 90: light sources and what they light |
+| light_blobs | bright blobs (L > 90, at least 4 px at 640 px wide) per image: the light sources |
+| halo_L | the glow round the light sources: mean L 3–8 px outside the bright blobs less the image's median L (bloom and lens glare raise it); none without a light |
+| noise_dark | noise in the shadows: Immerkær's estimate on the pixels at L < 25 only (eroded by a pixel); none with fewer than 1000 such pixels |
+
 Each statistic's gap is the **1-Wasserstein distance** between the two sets' distributions. Its **shift** — that
 distance over the real set's interquartile range — ranks the gaps. The shift is a heuristic scale, not a test. Class
 shares are compared by total-variation distance.
@@ -93,9 +104,44 @@ content and rendering — what is in the scenes, the textures, the geometry — 
 scenes also differ (Karlsruhe in 2011 against CARLA's town and Bengaluru), so part of the feature gap is the
 places, not the renderer.
 
+## At night
+
+**CARLA at night against the user's night dashcam frames**: two night drives on a real CARLA 0.9.16 server
+(ClearNight — CARLA's preset, sun −90°, fog density 60 —, 60 s at 10 frames/s, 640 × 360, every vehicle's position
+lights and low beams on: [vehicle lights](protocol.md)), Town10HD (30 vehicles; the town's own street and building
+lights: 208 of its 401 lights on) and the re-imported central Bengaluru (60 vehicles; an imported world has no
+lights of its own), against the 600 held-out night frames of [the user's dashcam](dashcam.md#at-night) (sun below
+−6°). `falcon gap --features`, 300 images a side, seed 0, measured 2026-10-29:
+
+| statistic | CARLA (median) | dashcam (median) | shift |
+|---|---|---|---|
+| L_mean | 4.9 | 16.5 | 1.73 |
+| L_std | 8.6 | 17.6 | 2.11 |
+| dark_share (L < 2) | 0.47 | 0.02 | 6.79 |
+| noise_sigma | 2.78 | 1.32 | 2.13 |
+| spectrum_slope | −1.70 | −2.46 | 3.56 |
+| sharpness | 2.17 | 2.70 | 1.32 |
+| *noise_dark* | 2.80 | 0.54 | 14.8 |
+| *halo_L* | 8.6 | 29.6 | 2.07 |
+| *light_blobs* | 0 | 36 | 1.72 |
+| *dark_share_25* | 0.94 | 0.80 | 1.43 |
+
+FD **181.3** against a real-vs-real floor of 29.8; KD 0.117 ± 0.004 against −0.001 (150 against 150 images).
+For scale, the dashcam's own night frames against its own day frames (the same camera, the same region): FD 129.0
+(floor 31.2), KD 0.101.
+
+**What this says.** CARLA's night is far darker than the camera's (half of its pixels are black; the camera's
+auto-exposure lifts the scene to a median L of 16), and its shadows carry rendering noise where the camera's are
+smoothed by its night processing (noise in the shadows 2.80 against 0.54 levels). The camera sees dozens of light
+sources with wide halos per frame; the median simulated frame has none (the imported Bengaluru has no street lights
+at all, so only the cars' own lights show; Town10HD's lamps are fewer and sharper). Its frames are blurrier
+(motion at long exposure) and their spectrum steeper; the simulated frames' flat −1.7 slope is their noise.
+
 ## Limits
 
 - Appearance only (and object statistics when labelled): no lidar or radar gap yet.
+- The night statistics' thresholds (L 10, 25, 90; the halo's 3–8 px ring) are fixed choices, not fitted; one
+  camera's night footage measured.
 - The feature space is one ImageNet network's; another network would give other numbers. The floor makes the scale
   readable, not universal.
 - Matching is global per set; it cannot add what CARLA does not render (lens artefacts, sensor-specific colour

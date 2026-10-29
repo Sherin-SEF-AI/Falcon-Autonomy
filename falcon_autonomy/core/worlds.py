@@ -20,11 +20,16 @@ def world_dir(workspace: str, world_id: str) -> str:
 
 
 def import_config(source: str, out_dir: str, bbox=None, lht: bool = True, settings: dict | None = None,
-                  centre=None, seed: int = 0, lane_check_sample: int = 50) -> dict:
-    return {'schema': IMPORT_SCHEMA, 'source': os.path.abspath(source), 'bbox': list(bbox) if bbox else None,
-            'centre': list(centre) if centre else None, 'lht': bool(lht),
-            'settings': dict(DEFAULT_SETTINGS, **(settings or {})), 'out': os.path.abspath(out_dir), 'seed': seed,
-            'lane_check_sample': lane_check_sample}
+                  centre=None, seed: int = 0, lane_check_sample: int = 50, city: bool | dict = True) -> dict:
+    """An OSM import's config. city: dress the world with stand-in buildings, trees, lamps and ground from the same
+    source (core.cityprops; a dict gives its source, seed and options), False not to."""
+    cfg = {'schema': IMPORT_SCHEMA, 'source': os.path.abspath(source), 'bbox': list(bbox) if bbox else None,
+           'centre': list(centre) if centre else None, 'lht': bool(lht),
+           'settings': dict(DEFAULT_SETTINGS, **(settings or {})), 'out': os.path.abspath(out_dir), 'seed': seed,
+           'lane_check_sample': lane_check_sample}
+    if city:
+        cfg['city'] = dict({'seed': seed}, **(city if isinstance(city, dict) else {}))
+    return cfg
 
 
 def world_entry(world_id: str, name: str, cfg: dict, report: dict, mesh: dict | None = None,
@@ -34,7 +39,8 @@ def world_entry(world_id: str, name: str, cfg: dict, report: dict, mesh: dict | 
                     'settings': cfg['settings'],
                     'mesh': _mesh(dict(MESH_DEFAULTS, **(mesh or {})), report),
                     'handedness': report.get('handedness', 'RHT')},
-            'weather': {'preset': 'ClearNoon'}, 'traffic_profile': traffic_profile}
+            'weather': {'preset': 'ClearNoon'}, 'traffic_profile': traffic_profile,
+            **({'city': dict(report['city'])} if (report or {}).get('city', {}).get('plan') else {})}
 
 
 def _mesh(mesh: dict, report: dict) -> dict:

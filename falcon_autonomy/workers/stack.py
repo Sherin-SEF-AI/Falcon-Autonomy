@@ -210,6 +210,7 @@ class Stack(Worker):
                                   autopilot=driver == 'autopilot')
         scene.spawn_traffic(self, world, lib, spawns, order, rng, cfg.get('traffic') or {})
         scene.spawn_walkers(self, world, lib, rng, cfg.get('traffic') or {})
+        self.run['lights'] = scene.light_vehicles(self, cfg)      # headlights at night (workers.lights)
         self.ego, self.director, self.world_ = ego, director, world
         sensors = self.spawn_sensors(world, lib, ego, cfg['rig']) if driver == 'ros2' else []
         kinematic = director is not None and director.kinematic and driver != 'autopilot'
@@ -286,6 +287,7 @@ class Stack(Worker):
                 snap = world.get_snapshot()
                 sim_abs = snap.timestamp.elapsed_seconds
                 sim_t0 = sim_abs if sim_t0 is None else sim_t0
+                scene.speeds_step(self, sim_abs - sim_t0)
                 ego_doc, vel, ang = self.ego_now(snap, director)
                 speed = math.sqrt(vel[0] ** 2 + vel[1] ** 2 + vel[2] ** 2)
                 applied = u if driver in ('ros2', 'replay') else self.director_control(director)
@@ -345,6 +347,7 @@ class Stack(Worker):
                 'sim_s': round(n / fps, 3), 'realtime_factor': round(n / fps / max(wall, 1e-6), 3),
                 'source': 'measured'}
         self.emit.metric('steps_per_s', perf['steps_per_s'], '1/s')
+        scene.speeds_report(self)
         out = {'performance': perf, 'driver': driver, 'motion': 'kinematic' if kinematic else 'physics',
                'name': cfg.get('name', 'stack run'), 'config_sha256': sha256_json(cfg)}
         if driver == 'ros2':

@@ -114,22 +114,57 @@ An image set:
 <name>/
   frames/<clip>_<n>.jpg     640 × 360 (or as asked), JPEG quality 95 (--png for lossless)
   frames.jsonl              per frame: image, clip, frame, t (video s), utc, local, lat, lon, speed_kmh, course_deg,
-                            gps ("interpolated" | "nearest" | null), sun_deg
-  run.json                  provenance: arguments, settings, seed, counts (candidates, static, dark, without a fix,
-                            written), timings, the decoder used, and each clip's fingerprint
+                            gps ("interpolated" | "nearest" | null), sun_deg, exposure
+  run.json                  provenance: arguments, settings, seed, counts (candidates, static, dark, too bright,
+                            without a fix, written), timings, the decoder used, each clip's fingerprint, and the
+                            frames' exposure (median, 10th and 90th percentiles)
 ```
 
 Filters, in order: frames on the rate's cadence; **static** — slower than `--min-speed` (2 km/h) at the frame's
 interpolated speed; **dark** — with `--day`, the sun lower than `--min-sun` degrees at the frame's position and time
-(NOAA's formulae, ≈ 0.5°); `--require-gps` drops frames without a position (otherwise they are kept, without one);
+(NOAA's formulae, ≈ 0.5°); **too bright** — with `--night`, the sun higher than `--max-sun` (default −6°: the end of
+civil twilight, so dusk is left out); `--twilight` keeps the sun between −6° and 0° (a frame whose sun altitude is
+unknown is left out by any of the three); `--require-gps` drops frames without a position (otherwise they are kept, without one);
 `--max-frames` then takes that many evenly across everything left (one per equal stretch, at a seeded place in it).
 `--holdout N --split holdout|train` splits by clip (every N-th clip held out), so a test set shares no clip with a
 training set. **Fingerprints**: hashing 59 GB on every extraction would take minutes, so each clip is identified by
 its size, modification time and the SHA-256 of its first MiB (which holds the `moov` box with the GPS index); an
 edited clip almost surely changes one of them, but this is not a full-content hash.
 
+**Exposure** (every frame, as written: after the crop and the scaling): Rec. 601 luma mean, its 1st, 50th and 99th
+percentiles, the share at or below 16 (crushed shadows) and at or above 250 (clipped highlights).
+
 `dashcam:FOLDER` is a [gap](sim-to-real.md) and [translation](translation.md) real set: no labels; each frame's GPS,
-speed, clip, UTC and sun altitude (night = below 0°) as its conditions.
+speed, clip, UTC and sun altitude (night = below 0°) as its conditions. A set that is mostly at night switches the
+gap's night statistics on by itself.
+
+### At night
+
+All of the footage in the city was recorded after dark, so the night sets are the city. Extracted as the day sets
+were (`--holdout 5`, the bottom 6 % cut, moving frames, seed 0), with `--night`:
+
+| set | clips | candidates at night (sun < −6°, moving) | frames | luma mean | luma median | crushed (≤ 16) | clipped (≥ 250) |
+|---|---|---|---|---|---|---|---|
+| night, training | 209 | 6 262 | 3 999 | 41.6 | 27.3 | 21.6 % | 0.59 % |
+| night, held out | 53 | 1 638 | 600 | 42.0 | 27.4 | 22.9 % | 0.56 % |
+| day, held out (for scale) | 53 | — | 600 | 119.9 | 134.6 | 0.004 % | 0.000 % |
+
+(Medians over frames. The training set has 3 999 frames, not 4 000: one planned frame fell past a clip's last
+decodable frame.) Extraction ran at 39 frames/s (104 s for the training set) on NVDEC, key frames only.
+
+What the night frames show, by eye and by the [gap's night statistics](sim-to-real.md#at-night):
+
+- **light sources and glare**: street lamps, headlights and tail lights are clipped blobs with wide halos (the
+  glow round them is 30 L above the frame's median, against −8 by day), and oncoming headlights flare across the
+  lens;
+- **motion blur**: at night the exposure is long; lights streak and edges smear when the car turns or bumps
+  (sharpness 2.70 against 2.81 by day, log10 units);
+- **noise and the camera's own processing**: the shadows are *less* noisy than the day's (0.54 against 1.32 levels
+  in pixels at L < 25): the camera denoises its night video hard, and its compression flattens what is left, so
+  dark areas are smooth, with blocky gradations rather than grain;
+- **colour**: saturation is higher at night (0.23 against 0.12), likely the tint of sodium and LED lights.
+
+These are one camera's; another camera processes night differently.
 
 ## The footage on Falcon's map
 
@@ -163,7 +198,7 @@ falcon dashcam route drive PROJECT ROUTE [--driver follower|log] [--frames]     
 falcon dashcam route pairs ROUTE RUN [--rate 2] [--frames]
 ```
 
-1. **Window** (`ROUTE/window.json`, by default under `~/FalconWorkspace/dashcam-routes/`): one clip or several
+1. **Window** (`ROUTE/window.json`, by default under `~/FalconWorkspace/dashcam-routes/` from the command line and under the project's workspace, `dashcam-routes/`, from the Worlds page): one clip or several
    consecutive ones, joined on their GPS's UTC into one timeline, and a stretch of it. The area to import is the
    track's extent plus 150 m on each side; one wider than 6 km is refused (choose a shorter stretch).
 2. **Roads.** From an OpenStreetMap file you name — `.osm` or `.osm.pbf`, read in place with Falcon's own readers
@@ -213,6 +248,22 @@ whole carriageway sideways by its own width. It now mirrors each road about the 
 behind at 15–28 m/s): CARLA's `set_transform` is asynchronous and sometimes reached the server after the tick. Replays
 and kinematic scenarios now place their actors in one synchronous batch before each tick; the same 1181-step drive
 has no step off its own pose (largest difference 6 mm).
+
+**A 10-minute stretch** (2026-10-29): ten consecutive clips (600 s, 8.8 km by the GPS, 0–101 km/h: a dual-carriageway
+highway, then a town in heavy rain and slow traffic), planned as one window (`--max-side 9000`: the track's box is
+7.7 × 3.8 km), its corridor from the same regional extract.
+
+| step | result |
+|---|---|
+| window | 600 fixes from 10 clips, no hole |
+| roads | reading the extract: 341 s (the 5.7-minute import, almost all of it the PBF) |
+| GPS against the imported lanes | *partial*: 59.9 % of 4564 positions on a lane in their direction, lateral median 1.39 m, 95th percentile 5.1 m. Per clip the GPS sits 0.6–2.4 m (median) from the snapped route, 7.1 m at most — metre-level GPS offsets flip a position across a lane boundary; no clip has a stretch the snapping fails on |
+| route (snapped) | 99.9 % snapped, 6 lane changes, 8822 m against the GPS's 8845 m; against the lanes: 100 % on a lane in direction, lateral median 0.007 m, 95th percentile 0.48 m (*match*) |
+| drive, `log` | 11 981 steps at 640 × 360 with every label in 180 s (66 steps/s); the server's lanes: *match*; 1198 pairs, dashcam frames written; the car exactly on the route |
+| drive, `follower` | 163 s; across the route: median 0.008 m, 95th percentile 0.06 m, max 0.36 m; along: median 2.5 m behind, 95th percentile 5.3 m, max 8.2 m; speed minus GPS speed: median 0.02 m/s, mean \|difference\| 0.29 m/s (0.27 m/s after its first 10 s; it starts at 5.9 m/s where the GPS says 11.4). 23 % of the stretch is below 3 m/s (the town's traffic) |
+
+Two parallel runs on one scratch configuration shared its server port, and one drive waited for the CARLA lock while
+another process stopped the server it was about to use (*no server answered*); runs in parallel need their own ports.
 
 ## Translation to your own roads, measured
 
@@ -318,6 +369,37 @@ falcon translate check $W/translated/town10-tr --real dashcam:~/FalconWorkspace/
     --features --workspace $W --images 300 --out $W/checks/town10
 ```
 
+### At night
+
+The same translator, trained towards the night frames (`--real dashcam:` the night training set, 3 999 frames;
+`--iterations 6000`, the setting that kept the day's structure; seed 0) from two simulated night drives (ClearNight,
+vehicle lights on, 60 s at 10 frames/s, 640 × 360; every second frame of each, 600 in all): Town10HD and the re-imported central
+Bengaluru. Measured on the 600 frames of each drive against the 600 held-out night frames (FD/KD on 150 against
+150; floor 29.8), 2026-10-29:
+
+| | Town10HD at night | Bengaluru (imported) at night |
+|---|---|---|
+| training | 757 s (29 images/s, the GPU shared with other jobs), peak 1.93 GiB | (the same model) |
+| translating 600 frames | 23 s | 28 s |
+| refused (drift > 0.35; raw kept) | 33 of 600: 28 invented lights, 3 removed lights, 2 objects | 0 of 600 |
+| drift when translated, median (90th percentile) | 0.18 (0.30) | 0.16 (0.17) |
+| FD raw → translated | **174.4 → 139.2** | 241.3 → 254.6 |
+| KD raw → translated | 0.188 → 0.132 | 0.276 → 0.289 |
+| light sources per frame (real 36) | 4 → 35.5 | 0 → 0 |
+| glow round them, halo_L (real 29.6) | 8.5 → 28.0 | 1.5 → 2.8 |
+| noise in the shadows (real 0.54) | 2.70 → 1.46 | 3.14 → 5.13 |
+
+Town10HD moves a quarter of the way from its raw FD to the floor; its lights and their glow match the camera's
+counts. **By eye it is not clean**: the kept frames carry bluish-white glare pools painted onto the road (the
+camera's wet, headlit roads) and sparkle in the dark, at drifts of 0.18 that the check lets through — the light
+terms refuse the frames where new lights appear in dark areas, not glare spread over road the source already lit.
+**The imported Bengaluru at night cannot be translated**: it has no street lights, so its frames are black but for
+the ego's own headlight pool (median grey 1–2), and the translator only adds coloured noise (FD rises). What it
+needs is lights in the world itself, not a translator.
+
+Examples (raw | translated | an unpaired held-out real night frame) are in
+`~/FalconWorkspace/realsets/dashcam-night-translation/examples/` (private, like the footage).
+
 ## Limits
 
 - One camera family verified (YOUQING freeGPS, HEVC 4K). Another layout is skipped and counted, not decoded.
@@ -331,5 +413,8 @@ falcon translate check $W/translated/town10-tr --real dashcam:~/FalconWorkspace/
 - Routes: the GPS has metres of error and the snapped lane is a best guess (a real lane change shows late); the
   sub-second GPS-to-video offset is not known; the simulated camera is the rig's, not the dashcam's; the footage's
   traffic is not reproduced; an imported world has roads only. Reading a large `.pbf` takes minutes.
+- Night: a night set is the sun below −6° by NOAA's formulae at the frame's GPS position; street lights, the camera's
+  auto-exposure and its night denoising are this camera's. Night translation is one training (6000 iterations, seed
+  0); its kept frames still show invented glare.
 - The translation figures are single trainings (seed 0) measured on the same simulated drives that trained them, with
   FD and KD on 150 simulated against 150 real frames: their noise is not measured.

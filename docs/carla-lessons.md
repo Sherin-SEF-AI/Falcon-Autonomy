@@ -104,6 +104,11 @@ Measured on 2026-10-29 on Falcon's own server (8 GB cap); the numbers are in [In
 - **A `static.prop.mesh` cannot be moved**: `set_transform` leaves it in place and resets its scale to 1;
   `set_location` leaves it in place; attached to a `util.actor.empty` it is not drawn. A `static.prop.*` moves with
   `set_transform` (physics off). `util.actor.empty` refuses `set_simulate_physics`.
+- **The package's whole buildings, trees and lamps spawn through `static.prop.mesh`** (485 of 488 paths under
+  `Static/Building`, `Static/Vegetation`, `Static/Pole`; measured 2026-10-29) and are labelled by their folder: tag 3
+  buildings, 9 vegetation, 6 poles; `cast_ray` hits buildings and lamps. 3341 of them spawn in one synchronous batch
+  in 1.2 s (0.1 s once loaded) and cost about 14 % of a recorded drive's steps per second. No package mesh makes a
+  plausible flat ground (`SM_Plane` is upright and red, `WaterPlane` is water). ([worlds](worlds.md#a-city-around-the-roads))
 - **`Actor.semantic_tags` is empty for props**; the cameras tag a prop by its mesh's folder (`Static/Static` 20,
   `Static/Dynamic` 21). Two-wheelers report `[4, 18]` / `[4, 19]`.
 - **`ActorAttribute.as_str()` raises on Bool attributes** (`ros_publish_tf`: "bad attribute cast: cannot convert to

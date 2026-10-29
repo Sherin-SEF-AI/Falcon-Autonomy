@@ -163,6 +163,34 @@ def registered(port: int) -> dict | None:
         return None
 
 
+def stop_orphan(port: int, timeout=20.0) -> bool:
+    """Stop a Falcon-started server on this port whose owner process has exited (a server left running because
+    another process's job was using it when its owner shut down). True when one was stopped."""
+    d = registered(port)
+    if not d:
+        return False
+    try:
+        os.kill(int(d.get('owner_pid', 0)), 0)
+        return False                          # its owner is alive: it stops its own server
+    except (OSError, ValueError):
+        pass
+    pid = int(d['pid'])
+    try:
+        os.killpg(pid, signal.SIGTERM)
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            os.kill(pid, 0)
+            time.sleep(0.2)
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        os.remove(registry_path(port))
+    except OSError:
+        pass
+    return True
+
+
 class Server:
     """A CARLA server this process started (its own scope, capped) — or, with external=True, a server the user
     started on a port they chose: then start() and stop() do nothing and only health is watched."""

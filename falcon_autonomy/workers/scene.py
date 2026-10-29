@@ -26,6 +26,8 @@ def load_map(w, cfg: dict):
     that road network (its Map.to_opendrive() hashes the same). Returns the world."""
     client, world = w.client, w.world
     load_s = float(cfg.get('load_timeout_s', 180.0))
+    w.speed_control = None
+    w.traffic_keeper = None
     if cfg.get('xodr'):
         with open(cfg['xodr'], encoding='utf-8') as fh:
             text = fh.read()
@@ -50,6 +52,13 @@ def load_map(w, cfg: dict):
             w.run.setdefault('timings', {})['generate_world_s'] = round(time.monotonic() - t0, 2)
         w.world = world
         w.alive()
+        speed_control_for(w, cfg, text)
+        if cfg.get('keep_traffic', True):       # traffic kept in the world at roads that end (workers.trafficguard)
+            from .trafficguard import TrafficKeeper
+            w.traffic_keeper = TrafficKeeper(w, world, int(cfg.get('seed', 0)))
+        if cfg.get('city'):                     # buildings, trees, lamps and ground around the roads (core.cityprops)
+            from ..core.cityprops import populate
+            populate(w, world, cfg)
         return world
     town = cfg.get('town')
     if town and cfg.get('reload_world') and world.get_map().name.rpartition('/')[2] == town:
@@ -106,6 +115,8 @@ def spawn_ego(w, world, lib, spawns, order, blueprint: str, autopilot=True):
             w.own(ego)
             if autopilot:
                 ego.set_autopilot(True, w.tm.get_port())
+                if getattr(w, 'speed_control', None) is not None:
+                    w.speed_control.add(ego, role='ego')
             w.alive()
             return ego
     raise Failed('no free spawn point for the ego')
@@ -228,6 +239,11 @@ def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
             w.tm.vehicle_percentage_speed_difference(a, diff)
         if kind in classes:                               # a stand-in: its class's label and limits
             class_limits(w).add(a, classes[kind], diff, labels.get(kind))
+        elif getattr(w, 'speed_control', None) is not None:   # an imported world: its roads' limits
+            w.speed_control.add(a, diff)
+        if getattr(w, 'traffic_keeper', None) is not None:    # an imported world: kept in it at roads that end
+            w.traffic_keeper.add(a, beh, diff if diff or beh.get('speed_spread_pct') else None, kind,
+                                 classes.get(kind), labels.get(kind))
         placed.append((a, kind))
     w.alive()
     if len(placed) < n:
@@ -335,6 +351,12 @@ class ClassLimits:
                     self.applied.setdefault(cls, {})['torque_scale'] = float(ts)
             except RuntimeError as e:
                 self.w.note(f'{cls}: the torque scale could not be applied ({e})')
+        sc = getattr(self.w, 'speed_control', None)
+        if sc is not None:                # an imported world: the road's limit from the file, capped at the class's top
+            sc.add(a, float(diff_pct), spec.get('top_kmh'), role=cls)
+            if spec.get('top_kmh'):
+                self.applied.setdefault(cls, {})['top_kmh'] = spec['top_kmh']
+            return
         self.update(a.id, force=True)
 
     def update(self, aid, force=False):
@@ -353,7 +375,7 @@ class ClassLimits:
         self.applied.setdefault(cls, {})['top_kmh'] = top
 
     def step(self, sim_t: float):
-        if not self.rows or sim_t - self.last < self.EVERY_S:
+        if not self.rows or sim_t - self.last < self.EVERY_S or getattr(self.w, 'speed_control', None) is not None:
             return
         self.last = sim_t
         for aid in list(self.rows):
@@ -364,6 +386,72 @@ class ClassLimits:
         for _, cls, _, _ in self.rows.values():
             counts[cls] = counts.get(cls, 0) + 1
         return {'stand_ins': counts, 'limits': self.applied}
+
+
+def speed_control_for(w, cfg: dict, xodr_text: str):
+    """An OpenDRIVE world's SpeedControl (workers.speedcontrol: each vehicle at its road's limit from the file, slowed
+    for breakers) as w.speed_control — unless cfg['speed_limits'] is 'carla' (the traffic manager's own: 30 km/h on a
+    world without speed signs). run.json traffic.speed_source says which."""
+    mode = cfg.get('speed_limits', 'map')
+    if mode == 'carla':
+        w.speed_control = None
+        w.run.setdefault('traffic', {})['speed_source'] = {
+            'mode': 'carla', 'method': 'the traffic manager\'s own: Vehicle.get_speed_limit() (no speed signs on an '
+                                      'OpenDRIVE world: 30 km/h)'}
+        return None
+    from ..core import speedlimits as SL
+    from .speedcontrol import SpeedControl
+    w.speed_control = SpeedControl(w, xodr_text, SL.features_path(cfg['xodr']))
+    return w.speed_control
+
+
+def speeds_step(w, sim_t: float) -> list:
+    """Re-read the vehicles' desired speeds (the stand-ins' class limits, an imported world's road limits), and keep
+    an imported world's traffic in it (workers.trafficguard). Returns the traffic moved this step, as events."""
+    for c in (getattr(w, 'class_limits', None), getattr(w, 'speed_control', None)):
+        if c is not None:
+            c.step(sim_t)
+    k = getattr(w, 'traffic_keeper', None)
+    return k.step(sim_t) if k is not None else []
+
+
+def speeds_report(w):
+    """run.json traffic: the stand-ins' limits, the speed source and the traffic kept in an imported world."""
+    t = w.run.setdefault('traffic', {})
+    if getattr(w, 'class_limits', None) is not None:
+        t.update(w.class_limits.report())
+    if getattr(w, 'speed_control', None) is not None:
+        t['speed_source'] = w.speed_control.report()
+    if getattr(w, 'traffic_keeper', None) is not None:
+        t['keeper'] = w.traffic_keeper.report()
+
+
+def light_vehicles(w, cfg: dict, weather: dict | None = None, actors: list | None = None) -> dict:
+    """Vehicle lights by the config's vehicle_lights (workers.lights: 'auto' on when the sun is below the horizon)
+    for the worker's own vehicles (or actors), with weather in place of the config's when the weather changed (Live):
+    lights switched on by an earlier call go off again when the mode resolves to off. Returns what was applied."""
+    from . import lights
+    c = cfg if weather is None else dict(cfg, weather=weather)
+    acts = actors if actors is not None else [a for a in w.spawned if str(getattr(a, 'type_id', '')).startswith(
+        'vehicle.')]
+    alive = []
+    for a in acts:
+        try:
+            if a is not None and a.is_alive:
+                alive.append(a)
+        except RuntimeError:
+            pass
+    applied = lights.apply(w, c, alive)
+    prev = getattr(w, 'lights_applied', None)
+    if actors is None and applied['resolved'] == 'off' and prev and prev.get('resolved') == 'on':
+        for a in alive:
+            try:
+                a.set_light_state(w.carla.VehicleLightState.NONE)
+            except RuntimeError:
+                pass
+    if actors is None:
+        w.lights_applied = applied
+    return applied
 
 
 def class_limits(w) -> ClassLimits:

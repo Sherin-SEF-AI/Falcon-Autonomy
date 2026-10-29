@@ -83,6 +83,18 @@ STAT_NOTES = {
     'sharpness': 'variance of the Laplacian less its noise share (log10)',
     'spectrum_slope': 'power-spectrum slope (natural images ≈ −2)',
 }
+# Night statistics (heuristics; measured only when asked or when the real set is mostly at night — the daytime ones
+# above stay what they were, so stored gaps and the ODD monitor's statistics are unchanged)
+NIGHT_STATS = ('dark_share_10', 'dark_share_25', 'light_share', 'light_blobs', 'halo_L', 'noise_dark')
+NIGHT_NOTES = {
+    'dark_share_10': 'share of pixels at L < 10 (deep shadow)', 'dark_share_25': 'share of pixels at L < 25 (shadow)',
+    'light_share': 'share of pixels at L > 90 (light sources and what they light)',
+    'light_blobs': 'bright blobs (L > 90, ≥ 4 px at the work width) per image: light sources',
+    'halo_L': 'glow round the light sources: mean L 3–8 px outside the bright blobs less the image\'s median L '
+              '(heuristic; bloom and lens glare raise it)',
+    'noise_dark': 'noise in the shadows (L < 25, eroded): Immerkær\'s estimate on those pixels only, 8-bit levels',
+}
+NIGHT_LIGHT_L, NIGHT_MIN_BLOB_PX, NIGHT_MIN_DARK_PX = 90.0, 4, 1000
 
 
 class GapError(Exception):
@@ -393,6 +405,41 @@ def image_stats(rgb: np.ndarray, hists: list | None = None) -> dict:
             'spectrum_slope': spectrum_slope(gray)}
 
 
+def night_stats(rgb: np.ndarray) -> dict:
+    """The night statistics (NIGHT_NOTES) of one RGB uint8 image, at the working width. halo_L is None without a
+    light source, noise_dark None with fewer than NIGHT_MIN_DARK_PX shadow pixels."""
+    import cv2
+    im = working(rgb)
+    L = cv2.cvtColor(im.astype(np.float32) / 255.0, cv2.COLOR_RGB2Lab)[..., 0]
+    light = (L > NIGHT_LIGHT_L).astype(np.uint8)
+    n, _, st, _ = cv2.connectedComponentsWithStats(light, connectivity=8)
+    blobs = int((st[1:, cv2.CC_STAT_AREA] >= NIGHT_MIN_BLOB_PX).sum()) if n > 1 else 0
+    halo = None
+    if light.any():
+        k = lambda r: cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+        ring = (cv2.dilate(light, k(8)) > 0) & ~(cv2.dilate(light, k(2)) > 0)
+        if ring.any():
+            halo = float(L[ring].mean() - np.median(L))
+    dark = cv2.erode((L < 25).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    noise = None
+    gray = cv2.cvtColor(im, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    r = np.abs(cv2.filter2D(gray, -1, np.array([[1, -2, 1], [-2, 4, -2], [1, -2, 1]], np.float32),
+                            borderType=cv2.BORDER_REFLECT))
+    dark[[0, -1], :] = False
+    dark[:, [0, -1]] = False
+    if dark.sum() >= NIGHT_MIN_DARK_PX:
+        noise = float(math.sqrt(math.pi / 2) * r[dark].mean() / 6.0)
+    return {'dark_share_10': float((L < 10).mean()), 'dark_share_25': float((L < 25).mean()),
+            'light_share': float(light.mean()), 'light_blobs': float(blobs), 'halo_L': halo, 'noise_dark': noise}
+
+
+def is_night_set(s: dict) -> bool:
+    """A set read by read_set is a night set when more than half of its frames say night (their conditions)."""
+    v = [(it.get('conditions') or {}).get('night') for it in s.get('items') or ()]
+    v = [x for x in v if x is not None]
+    return bool(v) and sum(1 for x in v if x) > len(v) / 2
+
+
 def _summary(v) -> dict:
     v = np.asarray([x for x in v if x is not None and np.isfinite(x)], float)
     if not len(v):
@@ -402,11 +449,11 @@ def _summary(v) -> dict:
             'p75': float(p[3]), 'p90': float(p[4])}
 
 
-def set_stats(s: dict, transform=None, progress=None, keep_images: bool = False) -> dict:
+def set_stats(s: dict, transform=None, progress=None, keep_images: bool = False, night: bool = False) -> dict:
     """Per-image appearance statistics and the objects' statistics of a set read by read_set. transform(rgb) ->
     rgb is applied first (appearance matching). keep_images keeps the (transformed) images for feature
-    extraction."""
-    per = {k: [] for k in IMAGE_STATS}
+    extraction. night adds the night statistics (NIGHT_STATS)."""
+    per = {k: [] for k in IMAGE_STATS + (NIGHT_STATS if night else ())}
     hists = [np.zeros(HIST_BINS, np.int64) for _ in HIST_RANGE]
     heights, ranges, per_image, classes = [], [], [], {}
     images = [] if keep_images else None
@@ -418,6 +465,9 @@ def set_stats(s: dict, transform=None, progress=None, keep_images: bool = False)
             rgb = transform(rgb, i)
         for k, v in image_stats(rgb, hists).items():
             per[k].append(v)
+        if night:
+            for k, v in night_stats(rgb).items():
+                per[k].append(v)
         H, W = rgb.shape[:2]
         sizes.append((W, H))
         if images is not None:
@@ -472,6 +522,11 @@ def compare(sim: dict, real: dict) -> dict:
             if r]
     rows.sort(key=lambda r: -(r['shift'] if r['shift'] is not None else -1))
     out = {'appearance': rows}
+    if all(k in sim['per_image'] and k in real['per_image'] for k in NIGHT_STATS):
+        nr = [r for r in (_gap_row(k, sim['per_image'][k], real['per_image'][k], NIGHT_NOTES[k]) for k in NIGHT_STATS)
+              if r]
+        nr.sort(key=lambda r: -(r['shift'] if r['shift'] is not None else -1))
+        out['night'] = nr
     if 'objects' in sim and 'objects' in real:
         so, ro = sim['objects'], real['objects']
         cls = sorted(set(so['class_share']) | set(ro['class_share']))
@@ -655,16 +710,19 @@ def _strip(stats: dict) -> dict:
 
 
 def study(sim_sets: list, real_set: dict, workspace: str = '', features: bool = False, match: bool = False,
-          seed: int = 0, progress=None) -> dict:
+          seed: int = 0, progress=None, night: bool | None = None) -> dict:
     """The gap document: both sets' statistics, the appearance and object gaps, the feature distances (with
-    features) and, with match, the same after appearance matching."""
+    features) and, with match, the same after appearance matching. night (None: when the real set is mostly at
+    night, is_night_set) adds the night statistics' gaps (gap['night'])."""
+    if night is None:
+        night = is_night_set(real_set)
     def prog(lo, hi, label):
         return (lambda f, t: progress(lo + (hi - lo) * f, f'{label}: {t}')) if progress else None
     sim = {'kind': 'falcon', 'labelled': all(s['labelled'] for s in sim_sets),
            'items': [it for s in sim_sets for it in s['items']]}
     keep = features or match
-    s_stats = set_stats(sim, progress=prog(0.0, 0.35, 'simulated'), keep_images=keep)
-    r_stats = set_stats(real_set, progress=prog(0.35, 0.7, 'real'), keep_images=features)
+    s_stats = set_stats(sim, progress=prog(0.0, 0.35, 'simulated'), keep_images=keep, night=night)
+    r_stats = set_stats(real_set, progress=prog(0.35, 0.7, 'real'), keep_images=features, night=night)
     doc = {'schema': SCHEMA, 'sim': {'sources': [{'path': s['path'], 'camera': s.get('camera'), 'n_total':
                                                   s['n_total'], 'notes': s['notes']} for s in sim_sets],
                                      **_strip(s_stats)},
@@ -672,7 +730,7 @@ def study(sim_sets: list, real_set: dict, workspace: str = '', features: bool = 
                     'notes': real_set['notes'], **_strip(r_stats)},
            'gap': compare(s_stats, r_stats), 'features': None, 'matched': None,
            'method': {'work_width': WORK_WIDTH, 'min_box_share': MIN_BOX_SHARE,
-                      'shift': 'W1 / real IQR (heuristic scale)',
+                      'shift': 'W1 / real IQR (heuristic scale)', 'night_stats': bool(night),
                       'seed': seed}}
     extractor = None
     if features:
@@ -721,6 +779,8 @@ def main_gap(argv) -> int:
     ap.add_argument('--features', action='store_true', help='Fréchet and kernel distances (needs the extractor '
                                                            'fetched into the workspace: falcon gap --fetch)')
     ap.add_argument('--match', action='store_true', help='also measure after appearance matching')
+    ap.add_argument('--night', choices=('auto', 'on', 'off'), default='auto',
+                    help='the night statistics (default: when the real set is mostly at night)')
     ap.add_argument('--workspace', default='', help='the workspace holding models/features/')
     ap.add_argument('--out', '-o', default='')
     ap.add_argument('--fetch', action='store_true', help='download the feature extractor into the workspace')
@@ -765,7 +825,8 @@ def main_gap(argv) -> int:
             share = max(1, a.images // len(sims))
             sims = [dict(s, items=_sample(s['items'], share, a.seed + i)) for i, s in enumerate(sims)]
         real = read_set(kind, path, labels=a.labels, camera=a.real_camera, limit=a.images, seed=a.seed)
-        doc = study(sims, real, a.workspace, a.features, a.match, a.seed, prog)
+        doc = study(sims, real, a.workspace, a.features, a.match, a.seed, prog,
+                    night={'auto': None, 'on': True, 'off': False}[a.night])
     except (GapError, OSError, ValueError) as e:
         run.update(status='failed', exit_code=2, error=str(e), finished=PV.utc_now())
         PV.write_json(os.path.join(a.out, 'run.json'), run)
@@ -778,6 +839,9 @@ def main_gap(argv) -> int:
     top = doc['gap']['appearance'][:3]
     print('largest appearance gaps: ' + ', '.join(f'{r["stat"]} (shift {r["shift"]:.2f})' for r in top
                                                  if r['shift'] is not None), flush=True)
+    if doc['gap'].get('night'):
+        print('largest night gaps: ' + ', '.join(f'{r["stat"]} (shift {r["shift"]:.2f})' for r in
+                                                 doc['gap']['night'][:3] if r['shift'] is not None), flush=True)
     if doc['features']:
         f = doc['features']
         print(f'FD {f["fd"]:.1f} (floor {f["fd_floor"]:.1f}), KD {f["kd"]:.4f} ± {f["kd_std"]:.4f} (floor '

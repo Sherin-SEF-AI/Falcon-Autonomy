@@ -32,7 +32,9 @@ CARLA's documented and measured behaviour:
   upper half of a bicycle its rider 13, the rest bicycle 19), walkers 12, props by kind.
 * The map: a straight road along x, right-hand traffic like CARLA's towns (lanes −1, −2 heading +x at y = 0 and 3.5,
   lanes 1, 2 heading −x at y = −3.5 and −7, CARLA's left-handed axes: +y is the right of +x), Waypoint next/previous/
-  get_left_lane/get_right_lane with CARLA's lane-id rules, three parked cars of the level (World.get_level_bbs(Car)).
+  get_left_lane/get_right_lane with CARLA's lane-id rules (sidewalk lanes −3 and 3 beyond the kerbs, reached by
+  get_right_lane, as an OpenDRIVE road's outermost lanes; generate_waypoints gives driving lanes only, as CARLA's),
+  three parked cars of the level (World.get_level_bbs(Car)).
 * The traffic manager: an autopilot vehicle drives along its heading at its desired speed (set_desired_speed, else a
   random one; the hero turns gently unless given one), brakes for any actor ahead in its lane, and changes lanes when
   forced (force_lane_change: True to the right). Walkers move by WalkerControl; a vehicle off the autopilot brakes by
@@ -662,6 +664,9 @@ class Vehicle(Actor):
     def set_light_state(self, s):
         self.light_state = s
 
+    def get_light_state(self):
+        return self.light_state
+
     def _lead_gap(self):
         """The gap (m) to the nearest actor ahead in this vehicle's lane (within 1.6 m of its path), or None."""
         M = self._m_world
@@ -1033,6 +1038,8 @@ class ActorList(list):
 
 # the road: (lane id, y, yaw): right-hand traffic like CARLA's towns, CARLA's axes (+y is the right of +x)
 LANES = ((-1, 0.0, 0.0), (-2, 3.5, 0.0), (1, -3.5, 180.0), (2, -7.0, 180.0))
+SIDEWALKS = ((-3, 7.0, 0.0), (3, -10.5, 180.0))   # beyond the carriageway (ROAD_Y): lane type Sidewalk, as an
+                                                 # OpenDRIVE road's outermost lanes; reached by get_right_lane only
 ROAD_X = (-150.0, 150.0)
 
 
@@ -1043,11 +1050,11 @@ class Waypoint:
     def __init__(self, lane_id, x):
         self.lane_id = int(lane_id)
         self.road_id, self.section_id = 1, 0
-        _, y, yaw = next(l for l in LANES if l[0] == self.lane_id)
+        _, y, yaw = next(l for l in LANES + SIDEWALKS if l[0] == self.lane_id)
         self.s = float(x)
         self.transform = Transform(Location(float(x), y, 0.0), Rotation(0.0, yaw, 0.0))
         self.lane_width = 3.5
-        self.lane_type = LaneType.Driving
+        self.lane_type = LaneType.Sidewalk if any(l[0] == self.lane_id for l in SIDEWALKS) else LaneType.Driving
         self.is_junction = False
         # the marking: broken between the two lanes of a direction, solid at the centre line and the kerb
         self.lane_change = LaneChange.Right if abs(self.lane_id) == 1 else LaneChange.Left
@@ -1069,11 +1076,14 @@ class Waypoint:
         x = self.transform.location.x - self._dir() * float(d)
         return [Waypoint(self.lane_id, x)] if ROAD_X[0] <= x <= ROAD_X[1] else []
 
-    def _lane(self, lid):
-        return Waypoint(lid, self.transform.location.x) if any(l[0] == lid for l in LANES) else None
+    def _lane(self, lid, sidewalks=False):
+        lanes = LANES + SIDEWALKS if sidewalks else LANES
+        return Waypoint(lid, self.transform.location.x) if any(l[0] == lid for l in lanes) else None
 
     def get_right_lane(self):
-        return self._lane(self.lane_id + (1 if self.lane_id > 0 else -1))
+        """Away from the centre line, as CARLA's — across the lane types: the outermost driving lane's right lane
+        is its sidewalk."""
+        return self._lane(self.lane_id + (1 if self.lane_id > 0 else -1), sidewalks=True)
 
     def get_left_lane(self):
         lid = -self.lane_id if abs(self.lane_id) == 1 else self.lane_id + (-1 if self.lane_id > 0 else 1)
@@ -1171,6 +1181,11 @@ class TrafficManager:
 
     def global_percentage_speed_difference(self, v):
         pass
+
+    def vehicle_percentage_speed_difference(self, actor, p):
+        """(Recorded only: the fake's autopilot speed is its own unless set_desired_speed gives one.)"""
+        actor.pct_diff = float(p)
+        LOG.append(('tm_speed_difference', actor.id, float(p)))
 
     def set_global_distance_to_leading_vehicle(self, v):
         pass
@@ -1763,6 +1778,11 @@ class command:                       # carla.command (a submodule in the real wh
             self.actor_id = actor if isinstance(actor, int) else actor.id
             self.transform = transform
 
+    class SpawnActor:                  # the blueprint as it is now (the real command keeps a description of it)
+        def __init__(self, blueprint, transform, parent=None):
+            self.blueprint = ActorBlueprint(blueprint.id, dict(blueprint._a), blueprint.tags)
+            self.transform, self.parent, self.actor_id = transform, parent, 0
+
 
 class Client:
     def __init__(self, host='127.0.0.1', port=2000, worker_threads=0):
@@ -1818,6 +1838,12 @@ class Client:
         w._settle()
         out = []
         for c in commands:
+            if isinstance(c, command.SpawnActor):
+                try:
+                    out.append(_Response(w.spawn_actor(c.blueprint, c.transform, c.parent).id))
+                except RuntimeError as e:
+                    out.append(_Response(0, str(e)))
+                continue
             a = w._actors.get(c.actor_id)
             if a is None:
                 out.append(_Response(c.actor_id, f'actor {c.actor_id} not found'))

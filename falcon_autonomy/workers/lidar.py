@@ -181,7 +181,11 @@ class LidarRecorder:
             # measured: a generated OpenDRIVE world's road mesh is hit by the semantic lidar with tag 0 and id 0;
             # such points within 0.3 m of the map's ground plane take the class of its lanes there
             Pw = raw[:, :3].astype(np.float64) @ M_ws[:3, :3].T + M_ws[:3, 3]
-            g = (tag == 0) & (idx == 0) & (np.abs(Pw[:, 2] - self.raster.z0) < 0.3)
+            g = (tag == 0) & (idx == 0)
+            ground_ids = getattr(self.w, 'city_ground_ids', None)        # a city plan's ground mesh (core.cityprops)
+            if ground_ids:
+                g = g | np.isin(idx, list(ground_ids))
+            g &= np.abs(Pw[:, 2] - self.raster.z0) < 0.3
             if g.any():
                 tag = tag.copy()
                 tag[g] = self.raster.lookup(Pw[g, :2])
