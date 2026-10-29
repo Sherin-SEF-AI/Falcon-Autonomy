@@ -64,7 +64,7 @@ measured rather than assumed:
    sharpness. When the real set is softer than the largest blur tried, no blur is applied, and the fit says why.
 3. **Noise.** Gaussian noise added up to the real set's median noise level.
 
-Learned style transfer (CycleGAN-style) is not part of Falcon.
+Learned translation, which changes local texture and rendering, is [sim-to-real translation](translation.md).
 
 ## Measured: CARLA against KITTI
 

@@ -26,6 +26,7 @@ from ...core.project import Edit
 from ...core.provenance import read_json
 from ..theme import STATUS, THEME
 from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
+from .translation import TranslationTab
 
 
 def _fmt(v, nd=3):
@@ -191,6 +192,8 @@ class TrainingPage(Page):
         self.tabs.addTab(self._active_tab(), 'Active learning')
         self.tabs.addTab(self._policy_tab(), 'Driving policies')
         self.tabs.addTab(self._leaderboard_tab(), 'Leaderboard')
+        self.translation = TranslationTab(self)
+        self.tabs.addTab(self.translation, 'Sim-to-real translation')
         v.addWidget(self.tabs)
         self.state = KeyValues(('Job',))
         v.addWidget(self.state)
@@ -226,7 +229,7 @@ class TrainingPage(Page):
         w.clear()
         cat = self.win.service.catalog
         for r in (cat.list('run', 500) if cat is not None else []):
-            if r['summary'].get('worker') not in (None, 'drive') or r['status'] != 'ok':
+            if r['summary'].get('worker') not in (None, 'drive', 'translate') or r['status'] != 'ok':
                 continue
             it = QListWidgetItem(r['name'])
             it.setData(256, r['path'])
@@ -267,6 +270,7 @@ class TrainingPage(Page):
         if job.id not in self.jobs:
             return
         self.jobs.pop(job.id)
+        self.translation.finished(job)            # a translated run joins the catalogue
         self.state.set('Job', job.summary())
         self.refresh()
 
@@ -278,6 +282,7 @@ class TrainingPage(Page):
         self.load_active()
         self.load_policies()
         self.load_leaderboards()
+        self.translation.refresh()
 
     @staticmethod
     def _combo_dirs(combo, root, name):
@@ -555,6 +560,9 @@ class TrainingPage(Page):
                 if doc.get('schema') == 'falcon.active_results/1':
                     from ...core.activelearn import table as active_table
                     self.exp_text.setPlainText(active_table(doc))
+                elif doc.get('schema') == 'falcon.translation_results/1':
+                    from ...core.translate import table as translation_table
+                    self.exp_text.setPlainText(translation_table(doc))
                 else:
                     self.exp_text.setPlainText(table(doc))
                 return

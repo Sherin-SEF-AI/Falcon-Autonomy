@@ -18,6 +18,7 @@
     falcon gap --sim RUN... --real KIND:PATH --out DIR   the sim-to-real gap of camera images
     falcon train --out DIR --train KIND:PATH... [--val ...] [--arch A --init I]   fine-tune a detector (resumable)
     falcon experiment mixed|list|best|results|export ...   the mixed sim/real experiment, run tracking, MLflow
+    falcon translate train|apply|check|experiment|results ...   learned sim-to-real image translation, labels kept
     falcon policy bc|offline|ppo|rollout ...   driving policies: behaviour cloning, PPO, evaluation in the environment
     falcon sweep PROJECT --scenario S --name N [--grid K | --samples K]   a parameter sweep (resumable)
     falcon search PROJECT --scenario S --name N [--method bayes|bayes-pof|cmaes|adaptive|random] [--budget B]
@@ -27,6 +28,7 @@
     falcon loop PROJECT [status|next|run --until STEP|show N|new|set]   the closed loop (docs/loop.md)
     falcon report KIND SRC --out FILE          a self-contained HTML report (docs/reports.md)
     falcon replay import|match|run|compare ...   real logs (nuScenes, Waymo v2, ROS 2 bags) replayed with changes
+    falcon recon train|eval|render|rerender|info ...   neural reconstruction of a drive (3D Gaussian Splatting)
     falcon rules check RUN... [--set india|generic|FILE] | list | show SET   traffic rules as temporal logic
     falcon why case|evaluation|episode ...   root-cause attribution of a failure (docs/root-cause.md)
     falcon odd monitor RUN... --odd FILE [--reference REF] | calibrate --in RUN... --out FILE   runtime ODD monitoring
@@ -317,6 +319,8 @@ def parser() -> argparse.ArgumentParser:
                                  'docs/training.md)')
     sub.add_parser('experiment', help='the mixed sim/real training experiment, run tracking and MLflow export (see '
                                       'docs/training.md)')
+    sub.add_parser('translate', help='learned sim-to-real image translation, labels kept: falcon translate '
+                                     'train|apply|check|experiment|results (see docs/translation.md)')
     sub.add_parser('policy', help='driving policies: falcon policy bc|offline|ppo|rollout (see docs/policies.md)')
     sub.add_parser('sweep', help='a scenario parameter sweep (see docs/cli.md)')
     sub.add_parser('search', help='a rare-case search over a scenario\'s parameters (see docs/cli.md)')
@@ -328,6 +332,8 @@ def parser() -> argparse.ArgumentParser:
                                 'docs/loop.md)')
     sub.add_parser('report', help='an HTML report: falcon report KIND SRC --out FILE (see docs/reports.md)')
     sub.add_parser('replay', help='log replay: falcon replay import|match|run|compare (see docs/log-replay.md)')
+    sub.add_parser('recon', help='neural reconstruction of a drive: falcon recon train|eval|render|rerender|info (see '
+                                 'docs/reconstruction.md)')
     sub.add_parser('rules', help='traffic rules as temporal logic: falcon rules check RUN... | list | show SET (see '
                                  'docs/traffic-rules.md)')
     sub.add_parser('why', help='why did it fail: falcon why case|evaluation|episode (see docs/root-cause.md)')
@@ -400,6 +406,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['experiment']:                # experiments: mixed sim/real, tracking, MLflow (core.experiments)
         from .core.experiments import main_experiment
         return main_experiment(argv[1:])
+    if argv[:1] == ['translate']:                 # sim-to-real image translation, labels kept (core.translate)
+        from .core.translate import main_translate
+        return main_translate(argv[1:])
     if argv[:1] == ['policy']:                    # driving policies: BC, PPO, rollouts (core.policy)
         from .core.policy import main_policy
         return main_policy(argv[1:])
@@ -427,6 +436,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['replay']:                    # log replay: import, re-simulate with changes, compare
         from .core.logreplay.commands import main_replay
         return main_replay(argv[1:])
+    if argv[:1] == ['recon']:                     # neural reconstruction of a drive (core.recon)
+        from .core.recon.commands import main_recon
+        return main_recon(argv[1:])
     if argv[:1] in (['sweep'], ['search']):       # scenario studies (sim.studio)
         from .sim.studio import main_study
         return main_study(argv)

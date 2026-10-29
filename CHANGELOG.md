@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.3.0 — milestone 11: real to sim
+
+- **Sim-to-real translation** (`falcon translate`, Training ▸ Sim-to-real translation): Falcon's own CUT (Park et al.
+  2020) with a geometry-preserving generator (no layer moves pixels; a residual on the input; the semantic label as
+  input), trained here on drives against real images — no model download. Translated runs keep every label; a drift
+  score per frame (structure, edges, object boxes; heuristic threshold calibrated on 1–2 px shifts) refuses frames
+  that moved. Measured on the RTX 5080 (12 000 iterations, 19 min, 1.9 GB): FD to KITTI 184.8 → 181.0 (held-out
+  drive: 248.4 → 231.3), still 8–12× the real-vs-real floor; brightness and colour move most; the flat imported
+  Bengaluru world is refused (the translator invents structure). The CUT default (λ_NCE 1) repaints buildings and is
+  refused by the check. The downstream effect is not measured on KITTI (no labelled set on disk). Data terms (KITTI:
+  CC BY-NC-SA 3.0) travel with every translator and translated run.
+- **Neural reconstruction** (`falcon recon`, Replay page): 3D Gaussian Splatting (Kerbl et al. 2023) with a
+  differentiable tile rasteriser in pure PyTorch (no CUDA toolkit or gsplat build on this machine; gradients match
+  finite differences to 1e-8): 9–11 steps/s at 640 × 360, 7000 steps in 11–13 min, 2 GB. Measured on a real Town10
+  drive: held-out 28.97 dB PSNR / 0.895 SSIM; 27.0 / 25.4 / 23.3 dB at 0.5 / 1 / 2 m off the path; against genuine CARLA
+  renders 3.5 m to the side 16.8 dB. KITTI 0005: 20.4 dB held-out. Re-rendered drives carry RGB, range and voted
+  semantic labels (no boxes). Static scenes only; CUDA runs bit for bit.
+
 ## 1.2.0 — milestone 10: realism
 
 - **Sensor weather physics** (per world, off by default, recorded per run and frame): lidar extinction in fog (Kim et

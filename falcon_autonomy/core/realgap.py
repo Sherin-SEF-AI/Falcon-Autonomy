@@ -28,7 +28,7 @@ random halves of the real set, at the same set sizes.
 Appearance matching (optional) is a fixed, non-learned transform of the simulated images: CIELAB histogram matching
 from the simulated set's pooled histograms to the real set's (one lookup table per channel for the whole set), a
 Gaussian blur fitted to the real set's sharpness and noise added up to its noise level. Its effect on every
-statistic above is measured, not assumed. Learned style transfer is not part of Falcon.
+statistic above is measured, not assumed. Learned translation is core.translate.
 """
 from __future__ import annotations
 

@@ -463,7 +463,7 @@ class ModelsPage(Page):
         self.runs.clear()
         cat = self.win.service.catalog
         for r in (cat.list('run', 500) if cat is not None else []):
-            if r['summary'].get('worker') not in (None, 'drive') or r['status'] != 'ok':
+            if r['summary'].get('worker') not in (None, 'drive', 'translate') or r['status'] != 'ok':
                 continue
             it = QListWidgetItem(r['name'])
             it.setData(256, r['path'])

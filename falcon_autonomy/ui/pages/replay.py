@@ -1,6 +1,7 @@
 """Replay: import a real log (nuScenes, Waymo v2, a ROS 2 bag, KITTI raw, a Falcon run), see where it goes in a world
 and how well its road matches, see its trajectories top-down over time, edit what-if changes, replay the original and
-the changed log in CARLA as jobs, and compare them (core.logreplay; docs/log-replay.md)."""
+the changed log in CARLA as jobs, and compare them (core.logreplay; docs/log-replay.md); and reconstruct the log's own
+appearance to look at it from poses it never took (recon_panel; core.recon; docs/reconstruction.md)."""
 from __future__ import annotations
 
 import json
@@ -217,6 +218,9 @@ class ReplayPage(Page):
         self.change_list.setMinimumHeight(110)
         sec.add(self.change_list)
         lv.addWidget(sec)
+        from .recon_panel import ReconPanel
+        self.recon = ReconPanel(self)          # the log's own appearance, reconstructed (core.recon)
+        lv.addWidget(self.recon)
         lv.addStretch(1)
         split.addWidget(scroll(left))
 
@@ -341,6 +345,7 @@ class ReplayPage(Page):
         self.changes = []
         self.show_changes()
         self.replan()
+        self.recon.set_log(self.log, path)
 
     # ---------------------------------------------------------------- placement and the preview
     def world_info(self):
@@ -476,6 +481,7 @@ class ReplayPage(Page):
         for which, (j, out) in self.jobs.items():
             if j is job:
                 self.state.set(which.capitalize(), f'{job.state}: {os.path.basename(out)}')
+        self.recon.on_finished(job)
 
     def done_runs(self):
         out = {}

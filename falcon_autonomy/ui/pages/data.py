@@ -413,7 +413,7 @@ class BrowseTab(QWidget):
         self.runs.clear()
         if cat is not None:
             for r in cat.list('run', 500):
-                if r['summary'].get('worker') not in (None, 'drive'):
+                if r['summary'].get('worker') not in (None, 'drive', 'translate'):
                     continue
                 it = QTreeWidgetItem([r['name'], r['status'], str(r['summary'].get('steps', ''))])
                 it.setData(0, 256, r['path'])

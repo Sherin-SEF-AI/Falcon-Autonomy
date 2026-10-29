@@ -179,6 +179,11 @@ Training page's **Active learning** tab measures which frames help a detector mo
 `falcon odd calibrate`) and every drive, live session, episode, stack run and HIL session flags when its conditions
 or its images leave it ([ODD monitoring](odd-monitoring.md)).
 
+**Real to sim**: the Training page's *Sim-to-real translation* tab trains a geometry-preserving translator (CUT) on
+drives against real images and writes translated runs whose labels stay valid, with a drift check per frame
+([translation](translation.md)); the Replay page reconstructs a recorded drive as 3D Gaussians and re-renders it from
+new viewpoints ([reconstruction](reconstruction.md)).
+
 ### Stack testing
 Connect an external driving stack through ROS 2: Falcon's bridge publishes the rig's sensors and waits each step for
 the stack's control (Autoware Control, Ackermann or CARLA's own message), recording missed deadlines. Run scenario
