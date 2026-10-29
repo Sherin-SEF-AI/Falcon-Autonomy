@@ -107,6 +107,8 @@ class Drive(Worker):
             director.setup(ego, ego_wp)
         else:
             ego = scene.spawn_ego(self, world, lib, spawns, order, cfg['rig']['vehicle'])
+        # an autopilot ego can drive off a road that ends (an imported area's edge): put back, marked in the frame
+        guard = scene.RoadEndGuard(self, world, ego, spawns) if director is None else None
         scene.spawn_traffic(self, world, lib, spawns, order, rng, cfg.get('traffic') or {})
         scene.spawn_walkers(self, world, lib, rng, cfg.get('traffic') or {})
         cams = self.cameras
@@ -176,6 +178,13 @@ class Drive(Worker):
                 rec = {'step': i, 'frame': int(frame), 'sim_t': round(snap_t - sim_t0, 6), 'files': {}}
                 if getattr(self, 'class_limits', None) is not None:     # stand-ins' speeds (core.assets)
                     self.class_limits.step(rec['sim_t'])
+                if guard is not None:
+                    ev = guard.step(rec['sim_t'])
+                    if ev is not None:               # the frame's pose jumps: say so where every tool reads it
+                        rec['teleport'] = ev
+                        if len(guard.events) == 1:
+                            self.note('the ego left the road network where a road ends and was put back on the road '
+                                      '(frames.jsonl "teleport"); see docs/worlds.md')
                 rec.update(scene.ego_state(ego))
                 if director is not None and director.kinematic and director.k_vel(ego) is not None:
                     v = director.k_vel(ego)              # physics off: CARLA reports the ego still; the director knows

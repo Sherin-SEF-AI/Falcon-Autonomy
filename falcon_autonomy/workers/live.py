@@ -129,6 +129,7 @@ class Live(Worker):
         order = list(self.rng.permutation(len(spawns)))
         self.ego = scene.spawn_ego(self, world, self.lib, spawns, order, cfg['rig']['vehicle'],
                                    autopilot=self.mode == 'autopilot')
+        self.guard = scene.RoadEndGuard(self, world, self.ego, spawns)      # roads that end: never fall out
         scene.spawn_traffic(self, world, self.lib, spawns, order, self.rng, cfg.get('traffic') or {})
         scene.spawn_walkers(self, world, self.lib, self.rng, cfg.get('traffic') or {})
         if cfg.get('policy'):
@@ -159,6 +160,14 @@ class Live(Worker):
             sim_t = snap.timestamp.elapsed_seconds
             sim_t0 = sim_t if sim_t0 is None else sim_t0
             st = sim_t - sim_t0
+            if not self.ego.is_alive:
+                raise Failed('the ego was destroyed by the simulator (it left the world below its kill depth)')
+            ev = self.guard.step(st)
+            if ev is not None:
+                self.events.append((st, 'road_end', ev))
+                self.emit.log(f'the road ended at ({ev["from"]["x"]:.0f}, {ev["from"]["y"]:.0f}) — the ego was '
+                              f'falling and was put back on the road at ({ev["to"]["x"]:.0f}, {ev["to"]["y"]:.0f})',
+                              'warning')
             steps += 1
             now = time.monotonic()
             hist.append((now, st))

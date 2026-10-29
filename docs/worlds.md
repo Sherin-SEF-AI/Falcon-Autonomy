@@ -88,6 +88,23 @@ barriers, benches, boxes); it cannot build arbitrary meshes such as extruded bui
 therefore does not place buildings in an imported world and reports the OSM extract's building count as *not
 represented*.
 
+## Roads that end: the edge of an imported area
+
+An imported area is cut from a larger map: ways crossing its boundary are kept whole, so some roads run a little past
+the edge and then simply stop. Past their end there is no ground — an OpenDRIVE world is only its roads — and CARLA's
+autopilot does not stop at a dead end: it drives on, off the road mesh, and falls until Unreal destroys the vehicle
+below the world's kill depth. Measured on a 1 km import of central Bengaluru: an ego on the autopilot in Live left a
+dead end 542 m from the centre after 31 s; the view showed a grey void and a speed climbing by 35 km/h every second
+(gravity), and the session ended with "trying to operate on a destroyed actor".
+
+Falcon's **road-end guard** (workers/scene.py `RoadEndGuard`) watches the ego in Live sessions and drives: when it is
+on no driving lane and sinking (more than 1 m below its last height on a lane, or falling faster than 3 m/s), it is
+put back on the road at a spawn point near the middle of the area and at least 60 m from where it left, stopped. Live
+logs it ("the road ended at …"); a recorded drive marks the step in frames.jsonl (`"teleport"`) and run.json's notes,
+since the pose jumps there. Scenario runs are not guarded (the director places its ego on the scenario's road).
+Traffic vehicles that leave a dead end are not put back: they fall and are removed. CARLA's own towns are closed and
+never trigger the guard.
+
 ## Measured on central Bengaluru (CARLA 0.9.16, the reference machine)
 
 1 km² around (12.9716° N, 77.5946° E) from `bangalore-roads.osm`, left-hand traffic, the Indian mixed-traffic profile:

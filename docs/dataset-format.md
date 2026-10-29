@@ -28,7 +28,7 @@ run/
 
 ## Frames
 `frames.jsonl`: `step`, `frame` (CARLA's), `sim_t` (s from the first recorded step), `ego` (pose in CARLA's world),
-`speed_mps`, `control`, `recorded` (false on steps `record_every` skips), `files` (`"<sensor>/<kind>": path`), and
+`speed_mps`, `control`, `recorded` (false on steps `record_every` skips), `teleport` (on the step the road-end guard put the ego back on the road: from, to, why — the pose jumps there; see [worlds](worlds.md#roads-that-end-the-edge-of-an-imported-area)), `files` (`"<sensor>/<kind>": path`), and
 when used `stamps` (per sensor, with its clock-offset fault), `faults` (per sensor: `drop` or `freeze`), `lidar_pose`
 (per lidar: the 3 × 4 world matrix of the sweep's end, row-major), `physics` (per sensor: the weather effects that
 touched the frame — [sensor physics](sensor-physics.md)) and `odd` (`in`, `why`, `road`, … — [ODD

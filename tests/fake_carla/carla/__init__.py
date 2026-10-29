@@ -630,6 +630,9 @@ class Vehicle(Actor):
     def set_target_velocity(self, v):
         self._vel = np.array([v.x, v.y, v.z], float)
 
+    def set_target_angular_velocity(self, v):
+        self._ang_vel = np.array([v.x, v.y, v.z], float)
+
     def get_physics_control(self):
         rear, front, half = self._axles
         M = self.world_matrix()

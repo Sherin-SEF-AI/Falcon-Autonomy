@@ -111,6 +111,65 @@ def spawn_ego(w, world, lib, spawns, order, blueprint: str, autopilot=True):
     raise Failed('no free spawn point for the ego')
 
 
+class RoadEndGuard:
+    """Keeps the ego in the world. An imported (OpenDRIVE) world ends where its roads end: at the edge of an imported
+    area some roads simply stop, and CARLA's autopilot drives straight on, off the road mesh into empty space, until
+    Unreal destroys the vehicle below the world's kill depth (measured: a 1 km import of central Bengaluru, the ego
+    on the autopilot fell from a dead end 542 m from the centre after 31 s; the live view showed a grey void and a
+    falling speed of 300 km/h and more). CARLA's own towns are closed and never trigger it.
+
+    step() after each tick: when the ego is on no driving lane (Map.get_waypoint, project_to_road off) and sinking —
+    more than FALL_M below the last height it had on a lane, or falling faster than FALL_MPS — it is put back on the
+    road at the spawn point nearest the spawn points' centroid that lies more than AWAY_M from where it left (so the
+    autopilot does not drive straight back to the same dead end), stopped, and the event is returned and kept
+    (events). Kinematic, director-driven egos are not guarded (the director places them itself)."""
+    FALL_M = 1.0
+    FALL_MPS = 3.0
+    AWAY_M = 60.0
+
+    def __init__(self, w, world, ego, spawns):
+        self.carla = w.carla
+        self.w, self.ego = w, ego
+        self.cmap = world.get_map()
+        locs = [sp.location for sp in spawns]
+        if locs:
+            cx = sum(l.x for l in locs) / len(locs)
+            cy = sum(l.y for l in locs) / len(locs)
+            self.spawns = sorted(spawns, key=lambda sp: math.hypot(sp.location.x - cx, sp.location.y - cy))
+        else:
+            self.spawns = []
+        self.last_road_z = None
+        self.events: list = []
+
+    def step(self, sim_t: float):
+        carla = self.carla
+        t = self.ego.get_transform()
+        loc = t.location
+        if self.cmap.get_waypoint(loc, project_to_road=False, lane_type=carla.LaneType.Driving) is not None:
+            self.last_road_z = loc.z
+            return None
+        vz = self.ego.get_velocity().z
+        sinking = (self.last_road_z is not None and loc.z < self.last_road_z - self.FALL_M) or vz < -self.FALL_MPS
+        if not sinking:
+            return None
+        target = next((sp for sp in self.spawns
+                       if math.hypot(sp.location.x - loc.x, sp.location.y - loc.y) > self.AWAY_M), None)
+        if target is None:
+            return None
+        self.ego.set_target_velocity(carla.Vector3D(0.0, 0.0, 0.0))
+        self.ego.set_target_angular_velocity(carla.Vector3D(0.0, 0.0, 0.0))
+        self.ego.set_transform(target)
+        self.last_road_z = target.location.z
+        ev = {'sim_t': round(float(sim_t), 3), 'kind': 'road_end',
+              'from': {'x': round(loc.x, 2), 'y': round(loc.y, 2), 'z': round(loc.z, 2)},
+              'to': {'x': round(target.location.x, 2), 'y': round(target.location.y, 2),
+                     'z': round(target.location.z, 2)},
+              'detail': 'the ego left the road network (a road ends there, e.g. at the edge of an imported area) and '
+                        'was falling: put back on the road'}
+        self.events.append(ev)
+        return ev
+
+
 def blueprints_by_type(lib) -> dict:
     by_type = {}
     for bp in lib.filter('vehicle.*'):
