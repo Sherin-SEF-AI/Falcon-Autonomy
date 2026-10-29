@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QTextBrowser, QVBoxLayout
 
 from ..widgets import Page, label
@@ -84,6 +85,19 @@ class HelpPage(Page):
         q = self.search.text().strip()
         if q:
             self.view.find(q)
+
+    def open_doc(self, fn, heading=None) -> bool:
+        """Show one page of the manual, scrolled to a heading (the command palette's manual entries)."""
+        if self.search.text():
+            self.search.setText('')
+        for i in range(self.list.count()):
+            if self.list.item(i).data(256) == fn:
+                self.list.setCurrentRow(i)
+                if heading:
+                    self.view.moveCursor(QTextCursor.MoveOperation.Start)
+                    self.view.find(heading)
+                return True
+        return False
 
     def follow(self, url):
         target = url.toString().split('#')[0]

@@ -21,6 +21,7 @@ class SettingsPage(Page):
     def __init__(self, win):
         super().__init__(win)
         st = win.settings
+        self.fields: list = []           # (label, note, field) of every row: the command palette searches them
         v = self.page_layout(note=f'{self.about} ({tilde(st.path)})')
 
         carla = Section('CARLA')
@@ -31,15 +32,15 @@ class SettingsPage(Page):
         rb = QHBoxLayout()
         rb.addWidget(self.root, 1)
         rb.addWidget(button('Browse…', self.browse_root))
-        f.row('CARLA folder', rb, 'holds CarlaUE4/Binaries/Linux/CarlaUE4-Linux-Shipping')
+        self._row(f, 'CARLA folder', rb, 'holds CarlaUE4/Binaries/Linux/CarlaUE4-Linux-Shipping')
         self.py = QLineEdit(st.get('client_python'))
         self.py.setPlaceholderText(tilde(S.client_python(win.service.carla_root)) or 'a venv beside the CARLA folder')
         pb = QHBoxLayout()
         pb.addWidget(self.py, 1)
         pb.addWidget(button('Check', self.check_python))
-        f.row('CARLA\'s Python', pb, 'the venv with carla==0.9.16, numpy and OpenCV (workers run in it)')
+        self._row(f, 'CARLA\'s Python', pb, 'the venv with carla==0.9.16, numpy and OpenCV (workers run in it)')
         self.py_status = label('', muted=True, wrap=True)
-        f.row('', self.py_status)
+        self._row(f, '', self.py_status)
         carla.add(f)
         v.addWidget(carla)
 
@@ -51,38 +52,42 @@ class SettingsPage(Page):
         self.port = QSpinBox()
         self.port.setRange(1024, 65533)
         self.port.setValue(int(st.get('rpc_port')))
-        g.row('RPC port', self.port, 'CARLA also listens on the next two ports')
+        self._row(g, 'RPC port', self.port, 'CARLA also listens on the next two ports')
         self.tm_port = QSpinBox()
         self.tm_port.setRange(1024, 65535)
         self.tm_port.setValue(int(st.get('tm_port')))
-        g.row('Traffic manager port', self.tm_port)
+        self._row(g, 'Traffic manager port', self.tm_port)
         self.mem = QDoubleSpinBox()
         self.mem.setRange(4, 64)
         self.mem.setSuffix(' GB')
         self.mem.setValue(float(st.get('server_memory_gb')))
-        g.row('Memory cap', self.mem, 'a 0.9.16 server capped at 12 GB ran 77 Mpx per step and crashed at 306')
+        self._row(g, 'Memory cap', self.mem, 'a 0.9.16 server capped at 12 GB ran 77 Mpx per step and crashed at 306')
         self.quality = QComboBox()
         self.quality.addItems(['Epic', 'Low'])
         self.quality.setCurrentText(st.get('server_quality'))
-        g.row('Quality', self.quality)
+        self._row(g, 'Quality', self.quality)
         self.budget = QDoubleSpinBox()
         self.budget.setRange(1, 2000)
         self.budget.setSuffix(' Mpx')
         self.budget.setValue(float(st.get('render_budget_mpx')))
-        g.row('Render budget', self.budget, 'runs rendering more per step are refused before they start')
+        self._row(g, 'Render budget', self.budget, 'runs rendering more per step are refused before they start')
         srv.add(g)
         v.addWidget(srv)
 
-        look = Section('Appearance and privacy')
+        look = Section('Appearance, privacy and notifications')
         h = Form()
         self.theme = QComboBox()
         self.theme.addItems(['dark', 'light'])
         self.theme.setCurrentText(st.get('theme'))
         self.theme.activated.connect(lambda _: win.set_theme(self.theme.currentText()))
-        h.row('Theme', self.theme)
+        self._row(h, 'Theme', self.theme)
         self.geo = QCheckBox('Allow place-name search over the network (OpenStreetMap Nominatim)')
         self.geo.setChecked(bool(st.get('geocoding_allowed')))
-        h.row('Geocoding', self.geo, 'off: imports work from files and bounding boxes only')
+        self._row(h, 'Geocoding', self.geo, 'off: imports work from files and bounding boxes only')
+        self.notify = QCheckBox('Notify me when a job of 20 s or more ends while Falcon is in the background')
+        self.notify.setChecked(bool(st.get('notify_jobs')))
+        self._row(h, 'Job notifications', self.notify, 'through the desktop\'s notifications; nothing leaves this '
+                  'machine')
         look.add(h)
         v.addWidget(look)
         b = QHBoxLayout()
@@ -90,6 +95,22 @@ class SettingsPage(Page):
         b.addStretch(1)
         v.addLayout(b)
         v.addStretch(1)
+
+    def _row(self, form, text, field, note=''):
+        self.fields.append((text, note, field))
+        return form.row(text, field, note)
+
+    def focus_field(self, text) -> bool:
+        """Put the keyboard focus on the field of the row labelled `text` (the command palette's settings)."""
+        from PyQt6.QtWidgets import QWidget
+        for t, _note, field in self.fields:
+            if t == text:
+                w = field if isinstance(field, QWidget) else next(
+                    (field.itemAt(k).widget() for k in range(field.count()) if field.itemAt(k).widget()), None)
+                if w is not None:
+                    w.setFocus()
+                    return True
+        return False
 
     def browse_root(self):
         d = QFileDialog.getExistingDirectory(self, 'CARLA folder', self.root.text() or self.win.service.carla_root)
@@ -131,6 +152,7 @@ class SettingsPage(Page):
         st.set('server_quality', self.quality.currentText(), save=False)
         st.set('render_budget_mpx', self.budget.value(), save=False)
         st.set('geocoding_allowed', self.geo.isChecked(), save=False)
+        st.set('notify_jobs', self.notify.isChecked(), save=False)
         st.save()
         self.win.log.append_line(f'settings saved ({tilde(st.path)})')
         for p in self.win.pages:

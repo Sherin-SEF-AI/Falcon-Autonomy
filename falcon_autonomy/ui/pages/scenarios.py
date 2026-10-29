@@ -11,13 +11,15 @@ import sys
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QListWidget,
-                             QListWidgetItem, QMessageBox, QPlainTextEdit, QSpinBox, QSplitter, QTableWidget,
-                             QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+                             QListWidgetItem, QMessageBox, QPlainTextEdit, QSpinBox, QSplitter, QStackedWidget,
+                             QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+                             QWidget)
 
 from ...core import scenarios as SC
 from ...core.jobs import JobSpec
 from ...core.project import Edit, new_id
 from ..theme import THEME
+from ..timeline_editor import TimelineEditor
 from ..widgets import Form, Page, Section, button, label, set_enabled
 
 ROWS = ('far_sidewalk', 'opposite', 'adjacent', 'line', 'ego', 'kerb', 'sidewalk')   # schematic, right-hand traffic
@@ -46,7 +48,7 @@ class SceneSketch(QWidget):
         self.sample = None
         self.lht = False
         self.drag = None
-        self.setMinimumHeight(240)
+        self.setMinimumHeight(150)
 
     def set_scenario(self, scn, sample, lht):
         self.scn, self.sample, self.lht = scn, sample, lht
@@ -206,14 +208,14 @@ class ScenariosPage(Page):
         self.list.currentRowChanged.connect(lambda _: self.show_scenario())
         lv.addWidget(self.list, 1)
         lb = QHBoxLayout()
-        self.copy_btn = button('Copy to project', self.copy_builtin)
+        self.copy_btn = button('Copy', self.copy_builtin, tip='Copy the built-in scenario to the project to edit it')
         lb.addWidget(self.copy_btn)
         self.rm_btn = button('Remove', self.remove)
         lb.addWidget(self.rm_btn)
         lv.addLayout(lb)
         io = QHBoxLayout()
-        io.addWidget(button('Import .xosc…', self.import_xosc))
-        io.addWidget(button('Export .xosc…', self.export_xosc))
+        io.addWidget(button('Import…', self.import_xosc, tip='Import an OpenSCENARIO (.xosc) file'))
+        io.addWidget(button('Export…', self.export_xosc, tip='Export this sample as OpenSCENARIO (.xosc)'))
         lv.addLayout(io)
         split.addWidget(left)
 
@@ -224,7 +226,12 @@ class ScenariosPage(Page):
         mv.addWidget(self.title_lbl)
         mv.addWidget(self.about_lbl)
         self.sketch = SceneSketch(self)
-        mv.addWidget(self.sketch, 1)
+        vsplit = QSplitter(Qt.Orientation.Vertical)      # the sketch above, the tables and the timeline below
+        vsplit.setChildrenCollapsible(False)
+        self.top = QStackedWidget()                      # the sketch, or the timeline's plan while that tab is open
+        self.top.addWidget(self.sketch)
+        vsplit.addWidget(self.top)
+        mv.addWidget(vsplit, 1)
         self.tabs = QTabWidget()
         self.actors = QTableWidget(0, len(ACTOR_COLS))
         self.actors.setHorizontalHeaderLabels(list(ACTOR_COLS))
@@ -242,14 +249,15 @@ class ScenariosPage(Page):
         ptl.addWidget(self.params)
         ptl.addWidget(button('Add a parameter', self.add_param))
         self.tabs.addTab(pt, 'Parameters')
-        self.timeline = QTreeWidget()
-        self.timeline.setHeaderLabels(['Trigger / action', 'Details'])
-        tt = QWidget()
-        ttl = QVBoxLayout(tt)
-        ttl.addWidget(self.timeline)
-        ttl.addWidget(button('Edit the timeline…', self.edit_timeline))
-        self.tabs.addTab(tt, 'Timeline')
-        mv.addWidget(self.tabs, 1)
+        self.timeline = TimelineEditor(self)
+        self.tabs.addTab(self.timeline, 'Timeline')
+        self.top.addWidget(self.timeline.plan_panel)
+        self.tabs.currentChanged.connect(lambda _: self.top.setCurrentWidget(
+            self.timeline.plan_panel if self.tabs.currentWidget() is self.timeline else self.sketch))
+        vsplit.addWidget(self.tabs)
+        vsplit.setStretchFactor(0, 2)
+        vsplit.setStretchFactor(1, 3)
+        vsplit.setSizes([240, 400])
         self.problems = label('', small=True, wrap=True)
         self.problems.setProperty('crit', True)
         mv.addWidget(self.problems)
@@ -304,6 +312,14 @@ class ScenariosPage(Page):
 
     def editable(self):
         return self.current()[0] == 'project'
+
+    def select(self, ident) -> bool:
+        """Show one scenario, built-in or the project's, by its id (the command palette's scenarios)."""
+        for i, (_src, k, _s) in enumerate(self.entries()):
+            if k == ident:
+                self.list.setCurrentRow(i)
+                return True
+        return False
 
     def index(self):
         src, ident, _ = self.current()
@@ -366,17 +382,6 @@ class ScenariosPage(Page):
                         it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     t.setItem(k, c, it)
             t.blockSignals(False)
-        self.timeline.clear()
-        for ev_ in s.get('timeline', []):
-            t = ev_.get('trigger', {})
-            desc = {'time': f'at {t.get("t_s")} s', 'distance': f'ego within {t.get("lt_m")} m of {t.get("actor")}',
-                    'ahead': f'{t.get("actor")} more than {t.get("gt_m")} m ahead'}.get(t.get('type'), str(t))
-            top = QTreeWidgetItem(['when', desc])
-            for a in ev_.get('actions', []):
-                QTreeWidgetItem(top, [f'{a["actor"]}: {a["do"]}', ', '.join(f'{k}={v}' for k, v in a.items()
-                                                                            if k not in ('actor', 'do'))])
-            self.timeline.addTopLevelItem(top)
-            top.setExpanded(True)
         probs = SC.validate(s)
         self.problems.setText('\n'.join('⚠ ' + p for p in probs))
         self.show_sketch()
@@ -393,6 +398,7 @@ class ScenariosPage(Page):
         world = self.win.project.item('worlds', self.world.currentData() or '') or {}
         lht = (world.get('osm') or {}).get('handedness') == 'LHT'
         self.sketch.set_scenario(copy.deepcopy(s), sample, lht)
+        self.timeline.set_scenario(s, sample, self.editable(), lht)
 
     # ------------------------------------------------------------------ edits
     def actor_cell(self, r, c):
@@ -528,6 +534,9 @@ class ScenariosPage(Page):
                                             for k, v in sorted(r['values'].items()))])
             it.setData(0, 256, r['run'])
             self.results.addTopLevelItem(it)
+
+    def shutdown(self):
+        self.timeline.stop()
 
     # ------------------------------------------------------------------ OpenSCENARIO
     def export_xosc(self):

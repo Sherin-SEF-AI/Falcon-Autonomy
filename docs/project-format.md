@@ -19,6 +19,8 @@ folder beside it (`name.falcon/`). Machine settings (CARLA's folder, ports) and 
 | `rigs` | [rig] | vehicles with their sensors |
 | `scenarios`, `dataset_specs`, `models`, `experiments` | [{`id`, `name`, …}] | filled by later milestones |
 | `loop` | object | the closed loop's settings and iterations |
+| `drive_sets` | [drive set] | optional: named sets of runs ([runs](runs.md)) |
+| `run_tags` | {run folder: [tag]} | optional: your tags on runs, keyed by the run's folder relative to the workspace (an absolute path outside it); the runs themselves are never changed |
 
 Ids match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` and are unique within their list.
 
@@ -72,3 +74,13 @@ does it in place. A file from a newer format than the build knows is refused wit
 
 Every change made in the app is an edit (`set` a value, `insert` into or `remove` from a list) at a path into the
 document, e.g. `["worlds", 0, "weather"]`; each edit knows its inverse, which is how undo and redo work.
+
+## drive set
+
+| field | meaning |
+|---|---|
+| `id`, `name` | |
+| `kind` | `list` (the runs named in `runs`) or `query` (the runs matching `query` whenever the set is used) |
+| `runs` | `kind: list`: run folders relative to the workspace (absolute outside it); one no longer on disk drops out |
+| `query` | `kind: query`: a search in the run index's language ([runs](runs.md)), e.g. `weather:rain tod:night status:ok` |
+| `created` | UTC ISO 8601 |

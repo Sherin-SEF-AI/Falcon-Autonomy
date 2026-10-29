@@ -234,6 +234,8 @@ class WorldModelTab(QWidget):
         sec.add(label('Drives and experience folders', h=True))
         self.sources = QListWidget()
         self.sources.setMinimumHeight(120)
+        from ..drivesets import DriveSetBar
+        sec.add(DriveSetBar(self.page.win, self.sources))
         sec.add(self.sources)
         b = QHBoxLayout()
         b.addWidget(button('Train', self.train, role='primary'))

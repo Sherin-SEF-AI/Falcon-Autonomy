@@ -48,6 +48,9 @@ import random
 
 SCENARIO_SCHEMA = 'falcon.scenario/1'
 DISTS = ('fixed', 'uniform', 'normal', 'choice')
+TRIGGERS = {'time': ('t_s',), 'distance': ('actor', 'lt_m'), 'ahead': ('actor', 'gt_m')}     # type: required fields
+ACTIONS = {'speed': {'kmh': 30.0, 'accel': 3.0}, 'brake': {'decel': 6.0}, 'lane_change': {'to': 'ego', 'duration_s': 2.0},
+           'walk': {'speed_mps': 1.4}, 'open_door': {'door': 'offside'}, 'go': {}, 'stop': {}}  # do: fields, defaults
 
 
 def _p(dist, unit='', about='', **kw):
@@ -376,10 +379,21 @@ def validate(scn: dict) -> list:
         if p.get('dist') == 'uniform' and float(p['lo']) > float(p['hi']):
             out.append(f'parameter {name}: lo > hi')
     for k, ev_ in enumerate(scn.get('timeline', [])):
+        if not isinstance(ev_, dict):
+            out.append(f'timeline {k}: an entry is {{"trigger", "actions"}}')
+            continue
         for a in ev_.get('actions', []):
             if a.get('actor') not in ids:
                 out.append(f'timeline {k}: unknown actor {a.get("actor")!r}')
+            if a.get('do') not in ACTIONS:
+                out.append(f'timeline {k}: unknown action {a.get("do")!r}')
         t = ev_.get('trigger', {})
+        if t.get('type') not in TRIGGERS:
+            out.append(f'timeline {k}: unknown trigger {t.get("type")!r}')
+        else:
+            for f in TRIGGERS[t['type']]:
+                if f not in t:
+                    out.append(f'timeline {k}: a {t["type"]} trigger needs {f}')
         if t.get('type') in ('distance', 'ahead') and t.get('actor') not in ids:
             out.append(f'timeline {k}: trigger on unknown actor {t.get("actor")!r}')
     try:

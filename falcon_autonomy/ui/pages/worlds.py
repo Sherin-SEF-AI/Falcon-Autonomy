@@ -92,17 +92,23 @@ class WorldsPage(Page):
                                                'buildings, vegetation or textures (docs/worlds.md: the full-fidelity '
                                                'path).')
         from ..osmimport import RoadGraphView
+        pb = QHBoxLayout()                       # the place's actions first, above the preview and the report
+        self.verify_btn = button('Verify traffic handedness', self.verify, tip='Load the world, run traffic and '
+                                                                               'measure which side it keeps')
+        self.edit_map_btn = button('Edit the map…', self.edit_map, tip='Change lanes, direction, speed limits, '
+                                                                      'signals and speed breakers; remove roads')
+        self.reimport_btn = button('Re-import with the current converter…', self.reimport,
+                                   tip='Convert the same area again into a new world, keeping this one')
+        pb.addWidget(self.edit_map_btn)
+        pb.addWidget(self.reimport_btn)
+        pb.addWidget(self.verify_btn)
+        pb.addStretch(1)
+        self.place.add(pb)
         self.graph = RoadGraphView()
         self.graph.setMinimumHeight(280)
         self.place.add(self.graph)
         self.place_kv = KeyValues()
         self.place.add(self.place_kv)
-        pb = QHBoxLayout()
-        self.verify_btn = button('Verify traffic handedness', self.verify, tip='Load the world, run traffic and '
-                                                                               'measure which side it keeps')
-        pb.addWidget(self.verify_btn)
-        pb.addStretch(1)
-        self.place.add(pb)
         self.verify_kv = KeyValues()
         self.place.add(self.verify_kv)
         ev.addWidget(self.place)
@@ -227,10 +233,28 @@ class WorldsPage(Page):
                 rep = json.load(fh)
         except (OSError, ValueError):
             self.place_kv.set('State', f'the import\'s files are missing from the workspace ({d})')
+            for b in (self.edit_map_btn, self.reimport_btn):
+                set_enabled(b, False, 'The world\'s files are missing from the workspace')
             return
+        for b in (self.edit_map_btn, self.reimport_btn):
+            set_enabled(b, True)
         from ..osmimport import show_report
         show_report(self.place_kv, rep)
         self.place_kv.set('State', f'imported from {os.path.basename(rep["source"])}')
+        from ...core.mapedit import edits_hash
+        edits = (w.get('osm') or {}).get('edits') or []
+        applied = (rep.get('map_edits') or {}).get('sha256') or edits_hash([])
+        sl = rep.get('signal_lanes')
+        if sl is None and rep.get('handedness') == 'LHT':
+            self.place_kv.set('Converter', '⚠ imported by an earlier version: its traffic lights may control no lane '
+                                           'and one-way roads may lie a carriageway off their street — Re-import with '
+                                           'the current converter… makes a corrected copy (docs/worlds.md)')
+        elif sl and sl.get('no_lane'):
+            self.place_kv.set('Traffic lights', f'⚠ {sl["no_lane"]} of {sl["oriented"]} signal records control no '
+                                                'lane in CARLA')
+        if edits or rep.get('map_edits'):
+            self.place_kv.set('Map edits', f'{len(edits)} — ' + ('applied' if applied == edits_hash(edits) else
+                                                               'not applied yet (Edit the map… ▸ Apply)'))
         try:
             with open(os.path.join(d, 'verify', 'run.json'), encoding='utf-8') as fh:
                 self.show_verify(json.load(fh))
@@ -276,6 +300,25 @@ class WorldsPage(Page):
                     self.show_verify(json.load(fh))
             except (OSError, ValueError):
                 self.verify_kv.set('Handedness', job.summary())
+
+    def edit_map(self):
+        _, w = self.current()
+        if w is None or w['kind'] == 'town':
+            return None
+        from ..map_editor import open_map_editor
+        try:
+            return open_map_editor(self.win, w['id'])
+        except (OSError, ValueError) as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, 'Edit the map', f'The world\'s files cannot be read: {e}')
+            return None
+
+    def reimport(self):
+        _, w = self.current()
+        if w is None or w['kind'] == 'town':
+            return None
+        from ..map_editor import open_reimport
+        return open_reimport(self.win, w['id'])
 
     def dashcam_route(self):
         from ..dashcam_route import open_route_dialog

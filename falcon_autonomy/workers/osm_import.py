@@ -6,7 +6,8 @@ CONFIG.json (schema falcon.osm_import/1, core.worlds.import_config): source (.os
 north, east) or none, the converter's settings, lht (left-hand traffic), out (the world's folder in the workspace).
 The import:
 
-1. reads the source, cropped to the bbox (core.osm; ways crossing the box are kept whole), and writes it (area.osm);
+1. reads the source, cropped to the bbox (core.osm; ways crossing the box are kept whole), applies the config's map
+   edits (core.mapedit; the area as read is kept as area.source.osm) and writes it (area.osm);
 2. converts it with carla.Osm2Odr (SUMO's netconvert inside) projected with a transverse Mercator centred on the area
    (core.osm.proj_string, center_map off), so OpenDRIVE x, y are metres east and north of the centre and the
    geoReference is the area's — CARLA's default projection, centred on 0°E, stretches a place far from it (central
@@ -18,8 +19,9 @@ The import:
    mesh renders (core.roadfeatures; world.base.xodr keeps the file without them, features.json says what was placed
    and skipped) unless settings speed_breakers is "off";
 5. writes world.xodr, the road graph for the preview (graph.json), and import.json: what was read, converted and
-   dropped, the lane check against OSM on a seeded sample (core.xodr.lane_check: lane counts and positions), the
-   handedness, what an OpenDRIVE world does not contain (buildings, vegetation, textures), timings.
+   dropped, the lane check against OSM on a seeded sample (core.xodr.lane_check: lane counts and positions) and on
+   every edited way, the lane links that do not meet, the map edits applied and skipped, the handedness, what an
+   OpenDRIVE world does not contain (buildings, vegetation, textures), timings.
 """
 from __future__ import annotations
 
@@ -27,6 +29,8 @@ import argparse
 import json
 import os
 import time
+
+import numpy as np
 
 from ..core import osm as O
 from ..core import protocol as P
@@ -64,6 +68,14 @@ class OsmImport(Worker):
         summ = O.summary(data)
         lat0, lon0 = cfg.get('centre') or summ['centre']
         os.makedirs(self.out_dir, exist_ok=True)
+        edits, edit_rep = cfg.get('edits') or [], None
+        types = tuple((cfg.get('settings') or {}).get('way_types') or O.CARLA_HIGHWAYS)
+        if edits:                                # map edits (core.mapedit) change what the converter reads
+            from ..core import mapedit as ME
+            O.write_osm(data, os.path.join(self.out_dir, 'area.source.osm'))     # the area as read, unedited
+            data, edit_rep = ME.apply_edits(data, edits, types)
+            if not [w for w in data.ways if w.get('kind') == 'highway']:
+                raise Failed('the map edits leave no roads')
         area = os.path.join(self.out_dir, 'area.osm')
         O.write_osm(data, area)
         t['read_s'] = round(time.monotonic() - t0, 2)
@@ -90,6 +102,10 @@ class OsmImport(Worker):
             fh.write(raw)
         self.check()
         notes = list(data.notes)
+        if edit_rep is not None:
+            notes.append(f'{len(edit_rep["applied"])} of {edit_rep["count"]} map edits applied'
+                         + (f', {len(edit_rep["skipped"])} skipped (map_edits in import.json says why)'
+                            if edit_rep['skipped'] else ''))
         text, fixes = X.sanitize(raw)
         notes += fixes
         if cfg.get('lht'):
@@ -106,7 +122,8 @@ class OsmImport(Worker):
             base = os.path.join(self.out_dir, 'world.base.xodr')
             if os.path.isfile(base):
                 os.remove(base)                         # a re-import: the new conversion is the base
-            doc = RF.apply_to_world(self.out_dir, {'osm': True, 'osm_bump': s.get('osm_bump', 'osm_bump')})
+            opts = dict(cfg.get('road_features') or {'osm': True, 'osm_bump': s.get('osm_bump', 'osm_bump')})
+            doc = RF.apply_to_world(self.out_dir, opts)
             features = {'placed': len(doc['placed']), 'counts': doc['counts'], 'skipped': len(doc['skipped']),
                         'not_represented': doc['not_represented'], 'notes': doc['notes'] + [doc['mesh_note']]}
             if doc['placed']:
@@ -127,6 +144,14 @@ class OsmImport(Worker):
             notes.append(f'lane positions against OSM: median {pos["median_m"]} m, 95th percentile {pos["p95_m"]} m '
                          f'off; {pos["misplaced"]} of {pos["checked"]} checked ways misplaced by more than 0.75 of a '
                          'lane width (the converter\'s own placement included)')
+        if edit_rep is not None:                 # the edited ways themselves, not a sample
+            edit_rep['lane_check'] = X.lane_check(od, data, proj, ways=edit_rep['touched_ways'])
+            edit_rep['signals'] = graph['totals'].get('signals')
+        gaps = X.lane_link_gaps(od)
+        links = {'links': int(len(gaps)), 'over_0_5_m': int((gaps > 0.5).sum()) if len(gaps) else 0,
+                 'p95_m': round(float(np.percentile(gaps, 95)), 3) if len(gaps) else None,
+                 'method': 'every lane link between roads: the distance between the two lanes\' centres where they '
+                           'meet (core.xodr.lane_link_gaps)'}
         offset = od.header.get('offset')
         if offset:
             notes.append(f'the converter shifted coordinates by {offset}: the lane check may not line up')
@@ -139,7 +164,8 @@ class OsmImport(Worker):
                    'text': 'an OpenDRIVE world is roads, lanes, sidewalks and junctions only: no buildings, '
                            'vegetation, textures or props (CARLA cannot spawn arbitrary meshes at runtime); '
                            'docs/worlds.md describes the full-fidelity path'},
-               'timings': t, 'road_features': features}
+               'timings': t, 'road_features': features, 'lane_links': links, 'map_edits': edit_rep,
+               'signal_lanes': X.signal_lanes(text)}
         write_json(os.path.join(self.out_dir, 'import.json'), rep)
         self.emit.progress(1.0, f'{graph["totals"].get("roads", len(graph.get("roads", [])))} roads, lane check '
                                 f'{check.get("matched")}/{check.get("comparable")}', force=True)

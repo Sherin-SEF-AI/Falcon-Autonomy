@@ -71,7 +71,16 @@ Before this (Falcon 2.1.0 and earlier) every road was mirrored across its refere
 road a whole carriageway width sideways: in central Bengaluru 36 of 245 roads (4.2 of 19.0 km) lay 3.35–13.4 m
 (median 6.7 m) off their way, and 11 of the 23 checked ways were misplaced; on a highway mapped as two one-way ways a
 dashcam's GPS fell on a lane 0.7 % of the time against 59.9 % now. A world imported before needs importing again
-(*Import a place…* with the same area) to get the corrected lanes.
+to get the corrected lanes: Worlds ▸ *Re-import with the current converter…* does it into a new world beside the old
+one (below).
+
+**Traffic lights in a left-hand world.** Mirroring a road moves the lanes a signal applies to to the other side, so
+the signal's orientation (`+` / `-`) must flip with them. Until this version it was kept, and CARLA 0.9.16 then gave
+every traffic light of a left-hand import **no lane to control** (`get_affected_lane_waypoints()` empty): traffic-
+manager cars drove through red. Measured on a real server: central Bengaluru's 7 lights controlled 0 lanes each as
+imported by 2.1.0, and 4, 1, 4, 5, 3, 5 and 5 lanes after a re-import; on a synthetic crossroads with every light
+held red, a car 80 m away drove through at 29 km/h before the fix and stopped 10.4 m short of the crossing's centre
+after it — as it does in the same world converted right-hand. Re-import a left-hand world to get working lights.
 
 | central Bengaluru, 1 km² (245 roads, 390 junction roads) | the converter (right-hand) | mirrored only (2.1.0) | now |
 |---|---|---|---|
@@ -131,6 +140,63 @@ logs it ("the road ended at …"); a recorded drive marks the step in frames.jso
 since the pose jumps there. Scenario runs are not guarded (the director places its ego on the scenario's road).
 Traffic vehicles that leave a dead end are not put back: they fall and are removed. CARLA's own towns are closed and
 never trigger the guard.
+
+## Editing the map
+Worlds ▸ **Edit the map…** (an imported world): the converted lanes are drawn under the OpenStreetMap ways they came
+from, with the junctions, traffic signals and speed breakers; wheel or *Zoom* zooms, a drag pans, *Fit* (F) shows the
+whole area. Click a road or a junction to see what can be changed:
+
+| edit | on | what changes |
+|---|---|---|
+| road type | a road | OSM `highway` (one of the types the world converts): the converter's default lanes and speed for the type |
+| direction | a road | `oneway`: two-way, one-way along the way, one-way against it (the lanes all go one way) |
+| lanes forward / backward | a road | `lanes`, `lanes:forward`, `lanes:backward` (at least one lane each way on a two-way road; at most 6) |
+| speed limit | a road | `maxspeed` (5–150 km/h, or the type's default) |
+| remove | a road (Delete) | the way is left out |
+| traffic signals | a junction | `highway=traffic_signals` on the node (only at a node two or more roads share) |
+| speed breaker | *Add a speed breaker*, then click a road | a node on the way at that point, `traffic_calming` = hump, bump or table — placed as an elevation profile by the [road features](indian-assets.md) step like any tagged breaker |
+| remove a breaker | a breaker | its `traffic_calming` tag (or the edit that placed it) |
+
+**Edits change what the converter reads, not what it writes.** Each is a project edit (undoable) to the world's
+`osm.edits` list (`core.mapedit`, `falcon.map_edits/1`); the list is applied in order to the area's OSM data before
+the conversion, deterministically (new breaker nodes are numbered after the data's largest id, in the list's order),
+so lanes, junctions, lane links and signals all come from the same pipeline as any import, and a re-import keeps the
+edits. An edit that would leave a road without a lane is refused with the reason; one whose road the area no longer
+has is skipped and marked. Removing a road that is the only link to others says which roads it cuts off before
+anything is converted (vehicles there could not leave; the server removes traffic-manager cars at dead ends).
+
+**Apply the edits** converts the area again with the list (a background job, CARLA's Python, no server) into a new
+folder of the world (`worlds/<id>/edit-<hash>/`, with `area.source.osm`, the area as read, unedited) and points the
+world at it — one more project edit: undo returns to the previous files, which are kept. Applying also converts with
+the current converter (so it carries this version's fixes). The checks shown after: the edited roads' lane counts
+against what was asked (every edited way, not a sample), the lane check's counts and positions, the lane links that
+do not meet, the driving side, the network's roads and signals, the speed breakers placed. `import.json` records the
+list (`map_edits`: applied, skipped and why, its SHA-256, connectivity); the world entry keeps `applied_edits`.
+
+**What CARLA 0.9.16 does with each edit** (measured on a real server, a synthetic crossroads converted by
+`carla.Osm2Odr`, left-hand, 2026-10-29):
+
+| edit | the converter (carla.Osm2Odr) | CARLA |
+|---|---|---|
+| lanes, direction, road type, remove | built as asked (lanes 2 + 1 asked, 2 + 1 found) | driven as built |
+| speed limit | written as the road's `<type><speed max>` (20 km/h → 5.56 m/s) | **not used**: the traffic manager drives to the vehicle's limit, which stays 30 km/h (a car drove at 28.9 km/h on a road edited to 20). A speed-limit signal (OpenDRIVE type 274) becomes a map landmark, but a generated world spawns no speed-limit sign, so the limit does not change either (tried at 20 and 40 km/h) |
+| traffic signals | a traffic-light signal per approach and a controller (one junction: 4 signals, 8 controllers) | 4 traffic-light actors (green and red seen) that control their lanes with this version's left-hand fix; a car stops at red |
+| speed breaker | — (placed by Falcon as an elevation profile) | driven over: the car rose 4–5 cm crossing an IRC hump at 29 km/h (mesh at 0.25 m) |
+
+So a speed limit edited on the map is recorded and drawn but does not slow traffic in CARLA; set the traffic
+profile's *Speed below the limit* (or a scenario's speeds) for slower traffic.
+
+**Re-import with the current converter…** converts the same area again — the import's source file and box (or the
+world's own copy of its area when the source has moved), the same centre (positions in the world do not move),
+handedness, settings and map edits — into a **new** world named "… (re-imported)"; the old world and its runs stay.
+The dialog shows the lane positions, lane links and traffic-light records of the current files (measured on the
+spot for a world imported before the import measured them) beside the new conversion's, and adds the new world only
+when asked. The traffic-light check is static (`core.xodr.signal_lanes`): a signal whose orientation names a side of
+its road with no driving lane — the case CARLA gave no lane to control. A left-hand world imported by an earlier
+version says so on the Worlds page. Central
+Bengaluru as imported by 2.1.0, re-imported (1.0 s): lane positions 95th percentile 10.05 m → 0.58 m, misplaced ways
+11 → 1 of 23; lane links over 0.5 m 202 → 150 of 1136 (95th percentile 2.25 m); signal records controlling no lane
+23 → 0 of 23, and on the server the 7 lights then control 1–5 lanes each.
 
 ## Measured on central Bengaluru (CARLA 0.9.16, the reference machine)
 

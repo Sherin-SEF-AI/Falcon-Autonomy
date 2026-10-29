@@ -39,6 +39,7 @@ DEFAULTS = {
     'measured': {},                      # throughput measured on this machine (budget.Throughput.to_dict())
     'geocoding_allowed': False,          # network place-name search only when the user turns it on
     'cloud_llm': None,                   # never set unless the user configures and approves one
+    'notify_jobs': True,                 # a desktop notification when a long job ends while the window is in the back
     'hil_device': {},                    # the HIL device: address, ports, SSH user and key path (core.hil); no password
 }
 

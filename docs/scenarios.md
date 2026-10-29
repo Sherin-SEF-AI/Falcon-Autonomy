@@ -20,6 +20,36 @@ and acceleration; `cattle`, `handcart` and `vendor` are proxy props of the real 
 kinematically. They keep CARLA's labels and carry Falcon's `subclass` ([Indian road assets](indian-assets.md)). A
 scenario's optional `weather` replaces the world's for its runs.
 
+## Editing the timeline
+Scenarios ▸ Timeline edits a project scenario's timeline (a built-in is copied first). One row per event on a time
+axis:
+
+- a **time trigger** is a diamond at its time. A numeric one can be dragged, snapped to the chosen step (0.05, 0.1,
+  0.5 or 1 s, or off); one bound to a parameter (`$brake_at`) sits at the seed's sampled value, the parameter's range
+  as a band, and is changed through the parameter (or typed over in the form);
+- a **distance** or **ahead** trigger has no time of its own: a hollow circle marks where the plan (below) has it
+  fire, or the row says *not reached in the plan*;
+- each **action** is a bar from its firing: a lane change for its duration (a numeric one dragged by its right end), a
+  brake or speed change for as long as the plan's ramp takes.
+
+The wheel zooms around the pointer (shift + wheel pans; *Fit* shows it all); a click on the axis moves the playhead.
+The form below edits the selected event: the trigger's kind, actor and value (a number or an expression), and the
+actions — actor, kind (changing it fills that kind's fields with their defaults: `ACTIONS` in `core/scenarios.py`)
+and fields as `name=value, …`. **Add an event** (at the playhead), **Duplicate**, **Remove**, **Add an action**;
+*Edit as JSON…* for anything else. Each change is one project edit — undo and redo apply — and nothing is written
+until something changes, so a scenario looked at but not edited saves byte for byte as it was. Validation runs on
+every change: a trigger without its kind's fields (`TRIGGERS`) is not applied, and says why; an unknown actor or
+action is applied and flagged in red on the axis and under the form, as the runner would refuse it.
+
+**The plan** (`core/scenario_plan.py`; shown above the tab in place of the sketch, with *Play the plan*) applies the
+director's rules to the seed's sample on a straight schematic road with 3.5 m lanes: set speeds ramp at the actions'
+rates, lane changes move linearly over their duration, walkers stand until *walk* and then cross from their side,
+triggers are checked as the director checks them (time; the ego's centre within `lt_m` of the actor's; the actor's
+rear more than `gt_m` ahead of the ego's front, with typical lengths). **It is a plan, not a simulation**: the ego
+holds its set speed — the lane follower's braking and the autopilot are not planned, so a distance trigger that
+depends on the ego slowing fires earlier here than in a run — there is no physics, and a map's lanes and curves are
+not those of the schematic. A run in CARLA is what counts.
+
 ## Running one
 A scenario runs inside a drive (so a scenario run records the rig's data with all its labels): the director picks a
 start that has what the scenario needs (a straight run, an adjacent lane, an oncoming lane, a junction turn), places

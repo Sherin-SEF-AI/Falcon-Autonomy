@@ -20,6 +20,12 @@
     "dataset_specs": {"type": "array", "items": {"$ref": "#/$defs/named"}},
     "models": {"type": "array", "items": {"$ref": "#/$defs/named"}},
     "experiments": {"type": "array", "items": {"$ref": "#/$defs/named"}},
+    "drive_sets": {"type": "array", "items": {
+      "type": "object", "required": ["id", "name", "kind"],
+      "properties": {"id": {"$ref": "#/$defs/id"}, "name": {"type": "string", "minLength": 1},
+                     "kind": {"enum": ["list", "query"]}, "runs": {"type": "array", "items": {"type": "string"}},
+                     "query": {"type": "string"}, "created": {"type": "string"}}}},
+    "run_tags": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string", "minLength": 1}}},
     "loop": {
       "type": "object",
       "properties": {

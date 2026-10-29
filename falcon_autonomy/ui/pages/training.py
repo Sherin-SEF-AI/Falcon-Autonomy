@@ -26,6 +26,7 @@ from ...core.jobs import FINAL, JobSpec
 from ...core.paths import tilde
 from ...core.project import Edit
 from ...core.provenance import read_json
+from ..drivesets import DriveSetBar
 from ..theme import STATUS, THEME
 from ..widgets import Form, KeyValues, Page, PlaceholderList, Section, button, label, scroll
 from .translation import TranslationTab
@@ -347,6 +348,7 @@ class TrainingPage(Page):
         sec.add(f)
         sec.add(label('Training drives', h=True))
         self.det_runs = self._runs_list()
+        sec.add(DriveSetBar(self.win, self.det_runs))
         sec.add(self.det_runs)
         b = QHBoxLayout()
         b.addWidget(button('Train', self.train, role='primary'))
@@ -514,6 +516,7 @@ class TrainingPage(Page):
         sec.add(f)
         sec.add(label('Synthetic drives', h=True))
         self.exp_synth = self._runs_list()
+        sec.add(DriveSetBar(self.win, self.exp_synth))
         sec.add(self.exp_synth)
         b = QHBoxLayout()
         b.addWidget(button('Run the experiment', self.run_experiment, role='primary'))
@@ -632,9 +635,11 @@ class TrainingPage(Page):
         sec.add(grid)
         sec.add(label('Pool: drives to choose frames from', h=True))
         self.al_pool = self._runs_list()
+        sec.add(DriveSetBar(self.win, self.al_pool))
         sec.add(self.al_pool)
         sec.add(label('Test: held-out drives (never in the pool)', h=True))
         self.al_test = self._runs_list()
+        sec.add(DriveSetBar(self.win, self.al_test))
         sec.add(self.al_test)
         b = QHBoxLayout()
         b.addWidget(button('Run the experiment', self.run_active, role='primary'))
@@ -759,6 +764,7 @@ class TrainingPage(Page):
         f.row('Epochs', self.bc_epochs)
         sec.add(f)
         self.bc_runs = self._runs_list()
+        sec.add(DriveSetBar(self.win, self.bc_runs))
         sec.add(self.bc_runs)
         b = QHBoxLayout()
         b.addWidget(button('Clone', self.bc, role='primary'))

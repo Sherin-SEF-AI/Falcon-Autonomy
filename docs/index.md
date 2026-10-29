@@ -30,10 +30,21 @@ does; the [roadmap](roadmap.md) lists what is planned.
   finished — and what every job and the app said. The panel stays out of the way until a job starts, and opens
   then; the **Jobs** badge in the status bar (or Ctrl+J) shows or hides it, and says how many jobs run and wait. The ✕
   cancels a job (a cancelled worker tidies the server first); a finished job's **Open** (or a double-click) goes to its
-  result — a recorded drive in Data ▸ Browse, anything else on the page it was started from.
+  result — a recorded drive in Data ▸ Browse, anything else on the page it was started from. **History** lists every
+  finished job of the workspace, kept across restarts (`WORKSPACE/jobs/jobs.jsonl`: kind, title, start and end in
+  UTC, status and what its exit code means, its result, its last error line), with **Open** and **Show the log**
+  (each job's whole log is kept in `WORKSPACE/jobs/logs/`; the newest 2000 jobs are kept).
+- **Notifications**: a job of 20 s or more that ends while Falcon's window is in the background raises a desktop
+  notification (through the desktop's notification service, else the system tray) — off in Settings ▸ Job
+  notifications. Nothing leaves the machine.
 - **Status bar**: the jobs badge, Falcon's CARLA server (start or stop it there), the GPU's memory and load, free
   memory.
-- **Command palette** (Ctrl+K, also at the foot of the navigator): every command and page by name; type a few letters.
+- **Command palette** (Ctrl+K, also at the foot of the navigator): every command and page by name — and the
+  project's and workspace's things: runs, scenarios, worlds, rigs, models, drive sets, evaluations, reports, settings,
+  the manual's headings and the job history. Type a few letters (in order; word starts and runs of letters rank
+  higher, a title starting with them highest); results come grouped by kind, the best group first. Enter opens the
+  highlighted one on its page — a run in Data ▸ Browse, a scenario selected in the studio, a setting with the
+  keyboard on it, a manual page scrolled to the heading; ↑ ↓ and Page Up/Down move through every group.
 - **Explanations**: a page or section opens with one line; *more* reads the rest in place (the method, the numbers,
   the limits — nothing is left out). A greyed-out button says in its tooltip why it is off. An empty list says what
   goes there and how to get some.
@@ -75,7 +86,11 @@ A world is a CARLA town with its weather and time of day, and the traffic profil
 and *Add town* sit above the list of worlds. Presets set all of CARLA's weather fields; sliders override them one by
 one. *Reads as* says what the weather amounts to (day or night, rain, fog visibility). An imported place has no town
 to choose, so its Town field is not shown. *Drive this world* opens Live with it chosen; *Record a dataset here* opens
-Data ▸ Record with it chosen; the import dialog's *Add and drive it* adds the place and goes to Live.
+Data ▸ Record with it chosen; the import dialog's *Add and drive it* adds the place and goes to Live. An imported
+place has *Edit the map…* — change a road's lanes, direction, type or speed limit, remove it, put traffic signals on
+a junction or a speed breaker on a road; every edit undoable, applied by converting the area again, with the lane
+checks after — and *Re-import with the current converter…*, which converts the same area into a new world beside the
+old one and compares their checks ([worlds](worlds.md): what CARLA does with each edit).
 
 **Traffic profiles** are named and shared between worlds: vehicle and walker counts, fleet shares per CARLA base type,
 behaviour (gaps, speed spread, ignoring lights and signs, random lane changes, walkers crossing anywhere) and an
@@ -138,7 +153,10 @@ faulty rig's would; each frame says which faults touched it.
 The scenario studio: the library (eleven built-ins, four of them for Indian roads) and the project's own scenarios; a
 sketch of the scene with the actors where the seed's sample puts them and each parameter's range as a band; the
 actors, the parameters as distributions and the timeline. **Run this sample** runs one; **Sweep** runs many,
-unattended, and resumes where it stopped. OpenSCENARIO import and export. See [scenarios](scenarios.md).
+unattended, and resumes where it stopped. OpenSCENARIO import and export. The **Timeline** tab is an editor: the
+events on a time axis (drag a time trigger or a lane change's duration, snapped; the wheel zooms), the selected
+event's trigger and actions in a form, and above it a **plan** of where everyone goes — a plan on a straight
+schematic road, not a simulation. See [scenarios](scenarios.md).
 
 ### Rare cases
 Search a scenario's parameters for where it becomes critical (Bayesian optimisation, CMA-ES, adaptive sampling or
@@ -175,11 +193,24 @@ distance next to its real-vs-real floor; optional appearance matching with its e
   ([policies](policies.md)).
 
 ### Data
-**Record** a drive (see *Getting started*). **Browse** recorded runs: filter them by name or status, choose the camera
-and the layer, scrub the frames, set the overlay's opacity; it opens on the newest run. Select one or more runs
-(Ctrl/Shift-click) and *Evaluate on these* (Models ▸ Evaluate with them checked) or *Train on these* (Training ▸
-Detectors with them checked). A cancelled or failed run keeps only `run.json` (why it ended) and its input,
-never half a dataset.
+**Record** a drive (see *Getting started*); *Weather* can set a CARLA preset for that drive alone, the world keeping
+its own. **Browse** recorded runs — drives, scenario and search runs, replays and dashcam routes — with their date,
+world, weather, duration, status and tags in sortable columns, and a **search** that reads like
+`world:w-blr weather:rain status:ok dur>20 after:2026-10-28 tag:golden` (hover the box for every term). Choose the
+camera and the layer, scrub the frames, set the overlay's opacity; it opens on the newest run. Select one or more runs
+(Ctrl/Shift-click, or right-click) and *Evaluate on these* (Models ▸ Evaluate with them checked), *Train on these*
+(Training ▸ Detectors), *Compare*, *Tags…* (kept in the project, the runs untouched) or *Save as a set…*; *Save
+search…* keeps the search itself as a **drive set** that is re-evaluated when used. Every list of drives (Models,
+Training, the VLM, world-model and deployment tabs) has a *Drive set* picker that checks a set's drives and saves the
+checked ones as a new set. A cancelled or failed run keeps only `run.json` (why it ended) and its input, never half a
+dataset.
+
+**Compare** puts two to four runs side by side on one clock — aligned by simulation time from each run's first frame,
+so runs at different rates and lengths line up — with their events (collisions, rule violations, teleports, ODD exits,
+scenario triggers) on a shared timeline and a table of what each recorded, with the difference from the first; what a
+run did not record says so. **Health** measures a set of drives: class balance, frames per world × time of day ×
+weather (the empty cells), scenario values over their ranges, near-duplicate frames and box sanity, and suggests what
+to record next — *Record this…* opens Record with that world and weather. See [runs](runs.md).
 
 **Datasets**: a dataset spec sets targets — objects per class, over worlds × weathers — and the engine **plans** the
 drives that fill them (how many, from the yield measured on the dataset's own drives, or a stated prior before any),

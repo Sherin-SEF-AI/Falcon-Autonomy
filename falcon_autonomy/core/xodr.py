@@ -17,9 +17,11 @@ manager drives in it). Per road: lanes are mirrored across the reference line (l
 inside <left> ordered by descending id; widths, types, road marks, speeds kept; road-mark laneChange increase <->
 decrease), rule="LHT" is set, laneOffset a b c d and superelevation a b c d are negated, lane-link ids (lane
 <link> predecessor/successor, junction <laneLink from to>) are negated, signals' and signal references' t is negated
-and their validity fromLane/toLane swapped and negated (from <= to still holds), objects' t, hdg, cornerLocal v and
-cornerRoad t are negated. Each road's travel direction is unchanged; only its side changes. Signal positionInertial,
-hOffset and orientation are kept (SUMO writes t=0 everywhere, so its signals do not move). lateralProfile <shape> is
+and their validity fromLane/toLane swapped and negated (from <= to still holds) and their orientation flipped ("+"
+<-> "-": the lanes it applies to are now on the other side; with the orientation kept, CARLA 0.9.16's traffic lights
+controlled no lane and traffic-manager cars drove through red — measured), objects' t, hdg, cornerLocal v and cornerRoad t are negated.
+Each road's travel direction is unchanged; only its side changes. Signal positionInertial and hOffset are kept (SUMO
+writes t=0 everywhere, so its signals do not move). lateralProfile <shape> is
 refused. Known limit: on approaches with two or more lanes per direction, which lane turns where is the right-hand
 converter's assignment mirrored (the inner lane keeps the turns it had), not a true left-hand assignment;
 single-lane approaches are unaffected.
@@ -834,7 +836,7 @@ def to_lht(text: str | bytes, force: bool = False, ways=None) -> tuple[str, list
     ids = {r.get('id') for r in roads}
     conv = ids - lht
     counts = dict.fromkeys(('roads', 'lanes', 'lane_links', 'lane_offsets', 'lane_link_junction', 'signals',
-                            'objects', 'superelevations'), 0)
+                            'orientations', 'objects', 'superelevations'), 0)
 
     def negate_for(road, tag):
         """Negate lane links toward the predecessor/successor when that road is converted (or, for a junction or a
@@ -862,6 +864,10 @@ def to_lht(text: str | bytes, force: bool = False, ways=None) -> tuple[str, list
             counts['superelevations'] += 1
         for sig in road.findall('signals/signal') + road.findall('signals/signalReference'):
             _neg_attrs(sig, ('t',))
+            o = sig.get('orientation')          # the lanes a signal applies to are mirrored: so is its side
+            if o in ('+', '-'):
+                sig.set('orientation', '-' if o == '+' else '+')
+                counts['orientations'] += 1
             for v in sig.findall('validity'):
                 f, t = v.get('fromLane'), v.get('toLane')
                 v.set('fromLane', _neg(t))
@@ -900,8 +906,8 @@ def to_lht(text: str | bytes, force: bool = False, ways=None) -> tuple[str, list
         f'({counts["lanes"]} lanes; travel direction along each road unchanged)',
         f'{counts["lane_offsets"]} laneOffsets negated; {counts["lane_links"]} lane links and '
         f'{counts["lane_link_junction"]} junction laneLinks negated',
-        f'{counts["signals"]} signals/signal references: t negated, validity swapped and negated (positionInertial, '
-        f'hOffset and orientation kept)',
+        f'{counts["signals"]} signals/signal references: t negated, validity swapped and negated, orientation '
+        f'flipped on {counts["orientations"]} (positionInertial and hOffset kept)',
         f'{counts["objects"]} objects mirrored (t, hdg, cornerLocal v, cornerRoad t); '
         f'{counts["superelevations"]} superelevations negated',
         f'{placed["kept"]} one-way roads kept in place, mirrored about their carriageway\'s centre by a laneOffset '
@@ -981,7 +987,7 @@ def _position_errors(road: Road, poly: np.ndarray, one_way: int, tol: float, ste
 
 
 def lane_check(od: OpenDrive, osm_data, proj, sample: int = 50, seed: int = 0, transform=None,
-               tol: float = 8.0, step: float = 2.0) -> dict:
+               tol: float = 8.0, step: float = 2.0, ways=None) -> dict:
     """Whether the road network matches OSM's lane tags on a checked SAMPLE of ways (not the whole map).
 
     Eligible ways: highways of the types carla.Osm2Odr converts, with a name and lane tags that give
@@ -999,7 +1005,10 @@ def lane_check(od: OpenDrive, osm_data, proj, sample: int = 50, seed: int = 0, t
     A way is comparable when at least one road was found; matched when found == expected. agreement = matched /
     comparable. `position`: where the matched roads' driving lanes lie against the way (_position_errors): the
     median and 95th percentile error over every sample, and the ways where most samples are off by more than 0.75
-    of a lane width (misplaced)."""
+    of a lane width (misplaced).
+
+    ways: check exactly these way ids instead of a sample (the ways a map edit changed): every one of them whose tags
+    give expected_lanes(), named or not — an unnamed way is matched to unnamed roads near it."""
     from . import osm as O
     to_local = proj.to_local if hasattr(proj, 'to_local') else proj
     tf = _transformer(transform)
@@ -1008,17 +1017,27 @@ def lane_check(od: OpenDrive, osm_data, proj, sample: int = 50, seed: int = 0, t
         if not r.in_junction and r.name:
             by_name.setdefault(_norm_name(r.name), []).append(r)
     samples: dict[str, np.ndarray] = {}
-    eligible = sorted((w for w in osm_data.ways if w['kind'] == 'highway' and w['tags'].get('name')
-                       and w['tags'].get('highway') in O.CARLA_HIGHWAYS and O.expected_lanes(w) is not None),
-                      key=lambda w: w['id'])
-    chosen = random.Random(seed).sample(eligible, min(sample, len(eligible)))
+    if ways is not None:
+        want = {int(i) for i in ways}
+        eligible = sorted((w for w in osm_data.ways if int(w['id']) in want and w['kind'] == 'highway'
+                           and w['tags'].get('highway') in O.CARLA_HIGHWAYS and O.expected_lanes(w) is not None),
+                          key=lambda w: w['id'])
+        chosen = list(eligible)
+        for r in od.roads:
+            if not r.in_junction and not r.name:
+                by_name.setdefault('', []).append(r)
+    else:
+        eligible = sorted((w for w in osm_data.ways if w['kind'] == 'highway' and w['tags'].get('name')
+                           and w['tags'].get('highway') in O.CARLA_HIGHWAYS and O.expected_lanes(w) is not None),
+                          key=lambda w: w['id'])
+        chosen = random.Random(seed).sample(eligible, min(sample, len(eligible)))
     rows, all_errs = [], []
     for w in sorted(chosen, key=lambda w: w['id']):
         exp = O.expected_lanes(w)
-        row = {'way': w['id'], 'name': w['tags']['name'], 'highway': w['tags'].get('highway'), 'expected': exp,
-               'found': None, 'roads': [], 'matched': None, 'reason': None}
+        row = {'way': w['id'], 'name': w['tags'].get('name', ''), 'highway': w['tags'].get('highway'),
+               'expected': exp, 'found': None, 'roads': [], 'matched': None, 'reason': None}
         rows.append(row)
-        cands = by_name.get(_norm_name(w['tags']['name']), [])
+        cands = by_name.get(_norm_name(w['tags'].get('name', '')), [])
         if not cands:
             row['reason'] = 'no OpenDRIVE road with this name'
             continue
@@ -1074,11 +1093,34 @@ def lane_check(od: OpenDrive, osm_data, proj, sample: int = 50, seed: int = 0, t
     return {
         'rows': rows, 'eligible': len(eligible), 'sampled': len(rows), 'comparable': len(comparable),
         'matched': matched, 'agreement': (matched / len(comparable)) if comparable else None, 'seed': seed,
-        'method': f'a seeded sample (seed {seed}) of {len(rows)} of {len(eligible)} named, lane-tagged OSM ways; '
+        'method': (f'the {len(rows)} given ways with lane tags' if ways is not None else
+                   f'a seeded sample (seed {seed}) of {len(rows)} of {len(eligible)} named, lane-tagged OSM ways')
+                  + '; '
                   f'comparable = a same-named road within {tol:g} m along the way; per-direction driving-lane '
                   f'counts compared with OSM expected_lanes',
         'position': position,
     }
+
+
+def signal_lanes(text: str | bytes) -> dict:
+    """Signals and signal references with an orientation ("+" or "-") whose side of their road has no driving lane:
+    CARLA 0.9.16 gives such a traffic light no lane to control, so traffic drives through it. The side: "+" the lanes
+    with positive ids, "-" the negative ones — measured on a real server (a right-hand road's lane -1 with "-", and
+    after the left-hand mirror lane +1 with "+", control their lanes; lane +1 with "-" controls nothing)."""
+    root = ET.fromstring(text.encode() if isinstance(text, str) else text)
+    total = none = 0
+    for road in root.iter('road'):
+        ids = [int(ln.get('id')) for ln in road.iter('lane') if ln.get('type') == 'driving']
+        for sig in road.findall('signals/signal') + road.findall('signals/signalReference'):
+            o = sig.get('orientation')
+            if o not in ('+', '-'):
+                continue
+            total += 1
+            if not any((i > 0) if o == '+' else (i < 0) for i in ids):
+                none += 1
+    return {'oriented': total, 'no_lane': none,
+            'method': 'signals and signal references with an orientation whose side of the road has no driving lane '
+                      '("+": positive lane ids, "-": negative; measured on CARLA 0.9.16)'}
 
 
 SANITIZE_TOL_M = 0.05

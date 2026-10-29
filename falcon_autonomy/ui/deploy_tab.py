@@ -99,13 +99,16 @@ class DeployTab(QWidget):
                         ('Timed runs', self.runs_n), ('Bootstrap resamples', self.boot), ('Gate', gw)):
             f.row(text, w)
         sec.add(f)
+        from .drivesets import DriveSetBar
         sec.add(label('Evaluation drives', h=True))
         self.ev_runs = QListWidget()
         self.ev_runs.setMinimumHeight(90)
+        sec.add(DriveSetBar(self.win, self.ev_runs))
         sec.add(self.ev_runs)
         sec.add(label('Calibration drives (INT8; other drives than the evaluation\'s)', h=True))
         self.cal_runs = QListWidget()
         self.cal_runs.setMinimumHeight(90)
+        sec.add(DriveSetBar(self.win, self.cal_runs))
         sec.add(self.cal_runs)
         b = QHBoxLayout()
         b.addWidget(button('Build, profile, score and gate', self.run_all, role='primary'))

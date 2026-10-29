@@ -25,6 +25,7 @@ from ...core.jobs import FINAL, JobSpec
 from ...core.paths import tilde
 from ...core.project import Edit, new_id
 from ...core.provenance import read_json
+from ..drivesets import DriveSetBar
 from ..theme import SEQ, STATUS, THEME
 from ..widgets import Form, KeyValues, Note, Page, PlaceholderList, PlaceholderTree, Section, button, label, scroll
 
@@ -270,6 +271,8 @@ class ModelsPage(Page):
         sec.add(label('Drives', h=True))
         self.runs = PlaceholderList('No recorded drives yet: record one in Data.')
         self.runs.setMinimumHeight(120)
+        self.run_sets = DriveSetBar(self.win, self.runs)
+        sec.add(self.run_sets)
         sec.add(self.runs)
         b = QHBoxLayout()
         b.addWidget(button('Evaluate', self.evaluate, role='primary'))

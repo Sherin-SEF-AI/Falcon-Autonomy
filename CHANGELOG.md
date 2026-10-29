@@ -1,7 +1,51 @@
 # Changelog
 
-## Unreleased — milestone 14: workbench (first wave)
+## 2.2.0 — milestone 14: workbench
 
+- **Map editor** (Worlds ▸ Edit the map…): an imported world's lanes under its OpenStreetMap ways, pan and zoom,
+  select a road or junction; change lanes per direction, direction, road type and speed limit, remove a road, put
+  traffic signals on a junction or a speed breaker on a road. Edits are an ordered, undoable list applied to the OSM
+  data before the conversion (`core.mapedit`; a re-import keeps them), refused when a road would have no lane, with
+  a warning for roads a removal cuts off; *Apply* converts again into a new folder of the world (undo returns to the
+  old files) and shows the checks: the edited roads' lanes, lane positions, lane links, driving side, signals. What
+  CARLA 0.9.16 honours was measured: lanes, direction, type, signals and breakers yes; a speed limit is written but
+  CARLA's traffic manager does not use it (no speed-limit signs are spawned in a generated world).
+- **Re-import with the current converter** (Worlds): the same area, centre, settings and edits into a new world
+  beside the old one, with the lane positions, lane links and traffic-light records before and after (central
+  Bengaluru: misplaced ways 11 → 1 of 23, lights controlling no lane 7 → 0). A left-hand world imported by an earlier
+  version says so on the Worlds page.
+- **Fix: traffic lights in left-hand worlds controlled no lane.** The left-hand conversion kept each signal's
+  orientation while mirroring its lanes; CARLA then attached no lane to any light and traffic drove through red
+  (central Bengaluru: 7 of 7 lights). The orientation now flips with the lanes; re-import a left-hand world to get it.
+- The import reports lane links that do not meet (`lane_links`) and signal records that would control no lane
+  (`signal_lanes`, `xodr.signal_lanes`) in import.json; its lane check can check given ways (`xodr.lane_check(ways=…)`).
+
+- **Search everything from Ctrl+K**: the command palette also finds runs, scenarios, worlds, rigs, models, drive sets,
+  evaluations, reports, settings, the manual's headings and past jobs — grouped by kind, the best group first — and
+  opens each on its page (a run in Data, a scenario selected, a setting focused, the manual at the heading).
+  Workspace listings are cached until their folder changes.
+- **Job history and notifications**: every finished job is kept in the workspace (`jobs/jobs.jsonl`, with its whole
+  log in `jobs/logs/`) and listed in the Jobs panel's History tab across restarts, with Open and Show the log. A job
+  of 20 s or more that ends while the window is in the background raises a desktop notification (Settings ▸ Job
+  notifications; never offscreen).
+- **Scenario timeline editor** (Scenarios ▸ Timeline): events on a time axis — drag a time trigger or a lane change's
+  duration (snapped), zoom, playhead — a form for the trigger and actions, add, duplicate and remove, every change
+  undoable and validated inline (a trigger missing its fields is refused; unknown actors and actions are flagged), and
+  a plan of everyone's paths on a straight schematic road (the director's rules, no physics; labelled a plan, not a
+  simulation). `core.scenarios.validate` now also checks trigger kinds and their fields and action kinds.
+- **Run search and drive sets** (Data ▸ Browse, `falcon runs search`): every run of the workspace — drives, scenario and
+  search runs, replays, dashcam routes — indexed from what it recorded (world, weather and its kind, time of day,
+  scenario and values, duration, speed, distance, collisions, teleports, ODD exits, saved rule checks), cached by file
+  times; sortable columns and a query language (`world:w-blr weather:rain status:ok dur>20 after:2026-10-28
+  tag:golden -kind:search`). Tags on runs live in the project (undoable; runs untouched). Drive sets — fixed lists or
+  saved queries re-evaluated on use — are picked above every list of drives (Models, Training, VLM, world model,
+  deployment). Record can set a weather preset for one drive.
+- **Compare** (Data ▸ Compare): two to four runs side by side on one clock, aligned by simulation time (different
+  rates and lengths line up), their events on a shared timeline, and what each recorded with the difference from the
+  first — rule violations and lane margins from a background rule check; "not recorded" where a run has no number.
+- **Dataset health** (Data ▸ Health): class balance, frames per world × time of day × weather with the empty cells,
+  scenario values over their ranges, near-duplicate frames (dHash, 4 bits) and box sanity, measured on evenly sampled
+  frames; *Record this…* opens Record with the missing cell's world and weather.
 - **Drive your dashcam route** (`falcon dashcam route`, Worlds ▸ Drive a dashcam route…): the streets a clip's GPS
   track drives are imported (from a local OSM or PBF file; a download from Overpass only after confirmation), the track
   is snapped to the imported lanes, driven in CARLA as an ordinary recorded run (its run.json names the clips and the

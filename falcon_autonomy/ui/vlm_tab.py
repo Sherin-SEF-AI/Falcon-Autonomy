@@ -91,6 +91,8 @@ class LanguageTab(QWidget):
         sec.add(label('Drives (language data are derived from each)', h=True))
         self.runs = QListWidget()
         self.runs.setMinimumHeight(110)
+        from .drivesets import DriveSetBar
+        sec.add(DriveSetBar(self.win, self.runs))
         sec.add(self.runs)
         b = QHBoxLayout()
         b.addWidget(button('Evaluate', self.evaluate, role='primary'))

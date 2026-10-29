@@ -561,7 +561,8 @@ def test_to_lht_signals_objects_and_refusals():
     text = _doc(_road_xml(1, 'A', 0, 0, 0, 50, right=[(-1, 'driving', 3.5), (-2, 'driving', 3.5)], extra=extra),
                 _road_xml(3, 'A', 50, 0, math.pi, 50, right=[(-1, 'driving', 3.5)]))   # the other direction
     new, notes = xodr.to_lht(text)
-    assert 'signal id="s" s="3" t="4.5"' in new and 'hOffset="0.1"' in new and 'orientation="+"' in new
+    # its lanes are now on the other side, so is its orientation (kept, CARLA's lights controlled no lane: measured)
+    assert 'signal id="s" s="3" t="4.5"' in new and 'hOffset="0.1"' in new and 'orientation="-"' in new
     assert '<validity fromLane="1" toLane="2"' in new
     assert 't="-1.5" hdg="-0.25"' in new and 'u="1" v="2"' in new
     assert 'superelevation s="0" a="-0.02"' in new

@@ -7,13 +7,15 @@ import os
 
 from PyQt6.QtCore import QProcess, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QBrush, QIcon, QKeySequence, QUndoCommand, QUndoStack
-from PyQt6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QListWidget,
-                             QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QSizePolicy,
-                             QStackedWidget, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QDialog, QDockWidget, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
+                             QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
+                             QSizePolicy, QStackedWidget, QTabWidget, QToolButton, QTreeWidget, QTreeWidgetItem,
+                             QVBoxLayout, QWidget)
 
 from .. import APP_NAME, __version__
 from ..core import protocol as P
 from ..core import sysinfo
+from ..core.jobhistory import JobHistory
 from ..core.jobs import FINAL, RUNNING, WAITING, JobQueue
 from ..core.paths import PROJECT_SUFFIX, tilde
 from ..core.project import Edit, Project, ProjectError
@@ -21,8 +23,9 @@ from ..core.settings import MEMORY_RESERVE_GB
 from ..sim.service import CarlaService
 from . import icons, tasks
 from .qtjobs import JobsBridge, QProcessLauncher
-from .theme import THEME, sans
-from .widgets import tidy
+from .notify import Notifier
+from .theme import THEME, mono, sans
+from .widgets import PlaceholderTree, set_enabled, tidy
 
 
 class EditCommand(QUndoCommand):
@@ -63,6 +66,9 @@ class JobsDock(QWidget):
         self.win = win
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        v.addWidget(self.tabs)
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(self.COLS)
         self.tree.setRootIsDecorated(False)
@@ -71,7 +77,9 @@ class JobsDock(QWidget):
         self.tree.setColumnWidth(1, 260)
         self.tree.setColumnWidth(2, 120)
         self.tree.itemDoubleClicked.connect(lambda it, _c: self.win.open_job(it.data(0, 256)))
-        v.addWidget(self.tree)
+        self.tabs.addTab(self.tree, 'This session')
+        self.history = HistoryPanel(win)
+        self.tabs.addTab(self.history, 'History')
         self.items: dict = {}
         b = win.bridge
         b.added.connect(self.update_job)
@@ -112,6 +120,94 @@ class JobsDock(QWidget):
             btn.setToolTip('Go to where this job\'s result is shown')
         sev = {'failed': 'critical', 'cancelled': 'warning', 'done': 'good'}.get(job.state)
         it.setIcon(0, icons.status_icon(sev) if sev else icons.icon('history', 12))
+
+
+class HistoryPanel(QWidget):
+    """Every finished job of this workspace, newest first, kept across restarts (core.jobhistory): open its result,
+    read its log."""
+    COLS = ('Finished', 'Job', 'Status', 'Time', 'Result')
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        self.tree = PlaceholderTree('No finished jobs in this workspace yet. Every job that ends is kept here, with '
+                                    'its log, across restarts.')
+        self.tree.setHeaderLabels(self.COLS)
+        self.tree.setRootIsDecorated(False)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.tree.setColumnWidth(0, 130)
+        self.tree.setColumnWidth(2, 200)
+        self.tree.itemDoubleClicked.connect(lambda it, _c: self.open(it))
+        self.tree.currentItemChanged.connect(lambda *_: self._buttons())
+        v.addWidget(self.tree, 1)
+        h = QHBoxLayout()
+        h.setContentsMargins(6, 2, 6, 4)
+        self.open_btn = QToolButton()
+        self.open_btn.setText('Open')
+        self.open_btn.setProperty('text-button', True)
+        self.open_btn.clicked.connect(lambda: self.open(self.tree.currentItem()))
+        self.log_btn = QToolButton()
+        self.log_btn.setText('Show the log')
+        self.log_btn.setProperty('text-button', True)
+        self.log_btn.clicked.connect(lambda: self.show_log(self.tree.currentItem()))
+        self.where = QLabel()
+        self.where.setProperty('muted', True)
+        h.addWidget(self.open_btn)
+        h.addWidget(self.log_btn)
+        h.addStretch(1)
+        h.addWidget(self.where)
+        v.addLayout(h)
+        self.records: list = []
+        self.reload()
+
+    def reload(self):
+        hist = self.win.history
+        self.records = hist.read(500)
+        self.tree.clear()
+        for rec in self.records:
+            when = (rec.get('finished') or '').replace('T', ' ').rstrip('Z')
+            status = rec.get('status', '') + (f' ({rec["exit"]})' if rec.get('status') == 'failed' and rec.get('exit')
+                                              else '')
+            el = rec.get('elapsed_s')
+            it = QTreeWidgetItem([when, rec.get('title', ''), status, f'{el:.0f} s' if el is not None else '',
+                                  tilde(rec.get('result') or '')])
+            it.setToolTip(0, 'UTC')
+            it.setToolTip(2, rec.get('error') or status)
+            it.setData(0, 256, rec)
+            sev = {'failed': 'critical', 'cancelled': 'warning', 'done': 'good'}.get(rec.get('status'))
+            if sev:
+                it.setIcon(0, icons.status_icon(sev))
+            self.tree.addTopLevelItem(it)
+        self.where.setText(f'{len(self.records)} in {tilde(hist.path)}' if hist.path else 'no workspace')
+        self._buttons()
+
+    def _buttons(self):
+        it = self.tree.currentItem()
+        rec = it.data(0, 256) if it is not None else None
+        set_enabled(self.open_btn, rec is not None and self.win.can_open_history(rec),
+                    'Choose a job first' if rec is None else 'Nothing of this job\'s is left to open')
+        set_enabled(self.log_btn, rec is not None, 'Choose a job first')
+
+    def open(self, it):
+        if it is not None:
+            self.win.open_history(it.data(0, 256))
+
+    def show_log(self, it):
+        if it is None:
+            return None
+        rec = it.data(0, 256)
+        d = QDialog(self)
+        d.setWindowTitle(f'Log — {rec.get("title", "")}')
+        d.resize(820, 520)
+        lv = QVBoxLayout(d)
+        ed = QPlainTextEdit(self.win.history.log_text(rec))
+        ed.setReadOnly(True)
+        ed.setFont(mono(11))
+        lv.addWidget(ed)
+        d.show()
+        return d
 
 
 class LogDock(QPlainTextEdit):
@@ -255,6 +351,8 @@ class MainWindow(QMainWindow):
         self.queue = JobQueue(QProcessLauncher(self), memory_reserve_gb=MEMORY_RESERVE_GB)
         self.bridge = JobsBridge(self.queue, self)
         self.service = CarlaService(settings, self.queue, self.workspace(), fake_carla=fake_carla)
+        self.history = JobHistory(self.workspace())
+        self.notifier = Notifier(self)
         self.setWindowTitle(APP_NAME)
         self.resize(1440, 900)
         self.actions_: dict = {}
@@ -299,6 +397,7 @@ class MainWindow(QMainWindow):
         self.bridge.finished.connect(lambda job: self.status.refresh_jobs())
         self._job_origin: dict = {}                      # job id -> the page it was started from
         self.bridge.added.connect(lambda job: self._job_origin.setdefault(job.id, self.current_key()))
+        self.bridge.finished.connect(self._job_finished)
         self.set_jobs_visible(False)                     # nothing to show until a job starts
         self._build_pages()
         self._build_actions()
@@ -403,6 +502,37 @@ class MainWindow(QMainWindow):
         key = self._job_origin.get(job.id) or ''
         return self.go(key) if key and key != 'home' else None
 
+    def _job_finished(self, job):
+        """Keep the finished job in the workspace's history and tell the desktop when it ran long."""
+        if getattr(job, '_history', None) is not None:
+            return
+        try:
+            job._history = self.history.record(job, self._job_origin.get(job.id, ''))
+        except OSError as e:
+            job._history = {}
+            self.log.append_line(f'job history: cannot write {tilde(self.history.path)}: {e}')
+        self.jobs_dock.widget().history.reload()
+        self.notifier.on_finished(job)
+
+    def can_open_history(self, rec) -> bool:
+        p = rec.get('result') or ''
+        return bool((p and os.path.exists(p)) or (rec.get('page') and rec.get('page') != 'home'))
+
+    def open_history(self, rec):
+        """Go to a past job's result: a recorded run in Data, a report on Reports, else the page it was started
+        from."""
+        p = rec.get('result') or ''
+        if p and os.path.isfile(os.path.join(p, 'run.json')):
+            data = self.go('data')
+            data.show_run(p)
+            return data
+        if p.endswith('.html') and os.path.isfile(p):
+            from .search import _open_report
+            _open_report(p)(self)
+            return self.page('reports')
+        key = rec.get('page') or ''
+        return self.go(key) if key and key != 'home' else None
+
     def _act(self, name, text, slot, shortcut=None, menu=None, tip=''):
         a = QAction(text, self)
         if shortcut:
@@ -490,6 +620,7 @@ class MainWindow(QMainWindow):
         self.project = project
         self.undo.clear()
         self.service.set_workspace(self.workspace())
+        self._set_history()
         if project.path:
             self.settings.add_recent(project.path)
             self._fill_recent()
@@ -555,10 +686,15 @@ class MainWindow(QMainWindow):
             return False
         if old_ws != self.workspace():
             self.service.set_workspace(self.workspace())
+            self._set_history()
             self.log.append_line(f'workspace: {tilde(self.workspace())}')
         self.settings.add_recent(self.project.path)
         self._fill_recent()
         return True
+
+    def _set_history(self):
+        self.history = JobHistory(self.workspace())
+        self.jobs_dock.widget().history.reload()
 
     # ------------------------------------------------------------------ commands
     def show_palette(self):
@@ -629,6 +765,7 @@ class MainWindow(QMainWindow):
             return
         self._closing = True
         self.status.stop()
+        self.notifier.stop()
         self.bridge.timer.stop()
         for p in self.pages:
             if hasattr(p, 'shutdown'):

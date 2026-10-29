@@ -234,6 +234,40 @@ class RulesPanel(QWidget):
         self.status.setText(f'saved to {tilde(d)} (Reports ▸ Traffic-rule check)')
 
 
+BROWSABLE = (None, 'drive', 'translate', 'replay')            # workers whose runs have frames to browse
+RUN_COLUMNS = ['Run', 'Date', 'World', 'Weather', 'Duration', 'Status', 'Tags']
+SEARCH_HELP = ('Search the runs (docs/runs.md). Terms are ANDed:\n'
+               '  world:w-blr  map:Town10  weather:rain (a preset or clear/cloudy/wet/rain)  tod:night\n'
+               '  status:ok  kind:scenario|search|route|drive  scenario:lead  rig:…  tag:mine\n'
+               '  events:collision|teleport|odd_exit|rule_violation|failed_check\n'
+               '  dur>20  frames>=100  speed>50 (max km/h)  ttc<1.5  collisions>0  seed=3\n'
+               '  after:2026-10-28  before:2026-11-01   -term negates   "quoted text"   other words: free text')
+
+
+class RunItem(QTreeWidgetItem):
+    """A run's row: sorts dates and durations as values, not text."""
+
+    def __init__(self, e):
+        dur = e.get('duration_s')
+        super().__init__([e['name'], (e.get('started') or '')[:16].replace('T', ' '), e.get('world') or e.get('map')
+                          or '—', e.get('weather') or '—', f'{dur:.1f} s' if dur is not None else '—',
+                          e.get('status') or '?', ', '.join(e.get('tags') or ())])
+        self.entry = e
+        self.setData(0, 256, e['path'])
+        self.setToolTip(0, f'{e["name"]}\n{tilde(e["path"])}\n{(e.get("started") or "").replace("T", " ").rstrip("Z")}'
+                           + (f'\nevents: {", ".join(e["events"])}' if e.get('events') else ''))
+
+    def __lt__(self, other):
+        c = self.treeWidget().sortColumn() if self.treeWidget() else 0
+        key = {1: 'started', 4: 'duration_s'}.get(c)
+        if key is not None:
+            a, b = self.entry.get(key), other.entry.get(key)
+            if a is None or b is None:
+                return a is None and b is not None
+            return a < b
+        return self.text(c).lower() < other.text(c).lower()
+
+
 class RecordTab(QWidget):
     def __init__(self, page):
         super().__init__()
@@ -256,12 +290,20 @@ class RecordTab(QWidget):
         self.fps.setSuffix(' Hz')
         self.seed = QSpinBox()
         self.seed.setRange(0, 2 ** 31 - 1)
+        self.weather = QComboBox()
+        self.weather.addItem('The world\'s weather', '')
+        from ...core import weather as W
+        for name in W.PRESETS:
+            self.weather.addItem(name, name)
         f.row('World', self.world)
+        f.row('Weather', self.weather, 'a CARLA preset for this drive only; the world keeps its own')
         f.row('Rig', self.rig)
         f.row('Duration', self.seconds, 'simulated time')
         f.row('Step', self.fps, 'fixed_delta_seconds = 1 / rate')
         f.row('Seed', self.seed, 'spawn choices, traffic manager, pedestrians')
         sec.add(f)
+        self.note = label('', muted=True, wrap=True)
+        sec.add(self.note)
         self.cost = KeyValues(('Rendering', 'Budget', 'Estimate'))
         sec.add(self.cost)
         b = QHBoxLayout()
@@ -313,6 +355,11 @@ class RecordTab(QWidget):
             cfg = drive_config(w.project, self.world.currentData(), self.rig.currentData(), out, w.service.port,
                                w.service.tm_port, self.seconds.value(), self.fps.value(), self.seed.value(),
                                render_budget_mpx=float(w.settings.get('render_budget_mpx')))
+            preset = self.weather.currentData()
+            if preset:                        # this drive's weather (Health's "record more of"), the world unchanged
+                from ...core import weather as W
+                cfg['weather'] = W.resolve({'preset': preset})
+                cfg['weather_source'] = {'preset': preset, 'override': 'Data ▸ Record'}
             w.service.submit_drive(cfg)
         except (ProjectError, RuntimeError) as e:
             QMessageBox.warning(self, 'Record a drive', str(e))
@@ -335,19 +382,28 @@ class BrowseTab(QWidget):
         sv = QVBoxLayout(side)
         sv.setContentsMargins(0, 0, 0, 0)
         self.filter = QLineEdit()
-        self.filter.setPlaceholderText('Filter runs by name, status or world')
+        self.filter.setPlaceholderText('Search: world:w-blr weather:rain status:ok dur>20 tag:night …')
+        self.filter.setToolTip(SEARCH_HELP)
         self.filter.setClearButtonEnabled(True)
         self.filter.textChanged.connect(lambda _t: self.apply_filter())
         sv.addWidget(self.filter)
+        self.query_state = label('', muted=True, small=True)
+        sv.addWidget(self.query_state)
         self.runs = PlaceholderTree('No recorded runs yet: Record makes one.')
-        self.runs.setHeaderLabels(['Run', 'Status', 'Steps'])
+        self.runs.setHeaderLabels(RUN_COLUMNS)
         self.runs.setRootIsDecorated(False)
         self.runs.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.runs.setSortingEnabled(True)
+        self.runs.sortByColumn(1, Qt.SortOrder.DescendingOrder)
         self.runs.header().setStretchLastSection(False)
-        self.runs.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for c in (1, 2):
+        self.runs.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.runs.setColumnWidth(0, 170)
+        for c in range(1, len(RUN_COLUMNS)):
             self.runs.header().setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        self.runs.setMinimumWidth(420)         # name, date and world without scrolling; the rest scrolls
         self.runs.currentItemChanged.connect(lambda it, _p: self.show_run(it.data(0, 256)) if it else None)
+        self.runs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.runs.customContextMenuRequested.connect(self._menu)
         sv.addWidget(self.runs, 1)
         hb = QHBoxLayout()                    # hand-offs: use the selected drives elsewhere
         self.eval_btn = button('Evaluate on these', self.evaluate_selected,
@@ -355,10 +411,23 @@ class BrowseTab(QWidget):
                                    'select several)')
         self.train_btn = button('Train on these', self.train_selected,
                                 tip='Open Training ▸ Detectors with the selected drives checked')
+        self.compare_btn = button('Compare', self.compare_selected,
+                                  tip='Open Data ▸ Compare with the selected runs (two to four) side by side')
         hb.addWidget(self.eval_btn)
         hb.addWidget(self.train_btn)
+        hb.addWidget(self.compare_btn)
         hb.addStretch(1)
         sv.addLayout(hb)
+        sb = QHBoxLayout()                    # the user's own organisation of runs: tags and drive sets
+        sb.addWidget(button('Tags…', self.edit_tags, tip='Tag the selected runs (kept in the project; the runs are '
+                                                         'not changed)'))
+        sb.addWidget(button('Save as a set…', self.save_selection_set,
+                            tip='Save the selected runs as a named drive set (Training, Models and Health use it)'))
+        self.save_query_btn = button('Save search…', self.save_query_set,
+                                     tip='Save the search as a drive set that is re-evaluated when used')
+        sb.addWidget(self.save_query_btn)
+        sb.addStretch(1)
+        sv.addLayout(sb)
         split.addWidget(side)
         self.empty = EmptyState('Choose a run on the left to see its frames, labels, objects and traffic rules.')
         right = QWidget()
@@ -441,22 +510,19 @@ class BrowseTab(QWidget):
         self.opacity.valueChanged.connect(lambda _: self.compose())
 
     def refresh(self):
-        cat = self.win.service.catalog
+        from ..drivesets import index_entries
         cur = self.run_dir
+        self.entries = [e for e in index_entries(self.win) if e.get('worker') in BROWSABLE]
         self.runs.blockSignals(True)
+        self.runs.setSortingEnabled(False)
         self.runs.clear()
-        if cat is not None:
-            for r in cat.list('run', 500):
-                if r['summary'].get('worker') not in (None, 'drive', 'translate'):
-                    continue
-                it = QTreeWidgetItem([r['name'], r['status'], str(r['summary'].get('steps', ''))])
-                it.setData(0, 256, r['path'])
-                it.setToolTip(0, f'{r["name"]}\n{tilde(r["path"])}\n{r["created"].replace("T", " ").rstrip("Z")}')
-                sev = {'ok': 'good', 'cancelled': 'warning'}.get(r['status'], 'critical')
-                it.setIcon(1, icons.status_icon(sev))
-                self.runs.addTopLevelItem(it)
-                if r['path'] == cur:
-                    self.runs.setCurrentItem(it)
+        for e in self.entries:
+            it = RunItem(e)
+            it.setIcon(5, icons.status_icon({'ok': 'good', 'cancelled': 'warning'}.get(e['status'], 'critical')))
+            self.runs.addTopLevelItem(it)
+            if e['path'] == cur:
+                self.runs.setCurrentItem(it)
+        self.runs.setSortingEnabled(True)
         self.runs.blockSignals(False)
         self.apply_filter()
         self.empty.set_message('Choose a run on the left to see its frames, labels, objects and traffic rules.'
@@ -465,10 +531,78 @@ class BrowseTab(QWidget):
                                'appears here.')
 
     def apply_filter(self):
-        q = self.filter.text().strip().lower()
+        from ...core import runindex as RI
+        q = self.filter.text().strip()
+        try:
+            terms = RI.parse(q)
+        except RI.QueryError as e:
+            self.query_state.setText(f'⚠ {e}')
+            set_enabled(self.save_query_btn, False, f'The search is not valid: {e}')
+            return
+        shown = 0
         for i in range(self.runs.topLevelItemCount()):
             it = self.runs.topLevelItem(i)
-            it.setHidden(bool(q) and q not in ' '.join(it.text(c) for c in range(3)).lower())
+            ok = RI.match(it.entry, terms)
+            it.setHidden(not ok)
+            shown += ok
+        n = self.runs.topLevelItemCount()
+        self.query_state.setText(f'{shown} of {n} runs' if q else (f'{n} runs' if n else ''))
+        set_enabled(self.save_query_btn, bool(q), 'Type a search first')
+
+    def visible_runs(self) -> list:
+        return [self.runs.topLevelItem(i).data(0, 256) for i in range(self.runs.topLevelItemCount())
+                if not self.runs.topLevelItem(i).isHidden()]
+
+    def _menu(self, pos):
+        from PyQt6.QtWidgets import QMenu
+        if not self.selected_runs():
+            return
+        m = QMenu(self)
+        m.addAction('Tags…', self.edit_tags)
+        m.addAction('Save as a drive set…', self.save_selection_set)
+        m.addSeparator()
+        m.addAction('Compare', self.compare_selected)
+        m.addAction('Evaluate on these', self.evaluate_selected)
+        m.addAction('Train on these', self.train_selected)
+        m.exec(self.runs.viewport().mapToGlobal(pos))
+
+    def edit_tags(self):
+        from PyQt6.QtWidgets import QInputDialog
+        from ..drivesets import set_tags
+        runs = self.selected_runs()
+        if not runs:
+            return
+        have = sorted({t for e in self.entries if e['path'] in runs for t in e.get('tags') or ()})
+        text, ok = QInputDialog.getText(self, 'Tags', f'Tags for {len(runs)} run(s), separated by commas (empty: '
+                                                      'none):', text=', '.join(have))
+        if ok:
+            set_tags(self.win, runs, text.split(','))
+
+    def save_selection_set(self):
+        from PyQt6.QtWidgets import QInputDialog
+        from ..drivesets import add_set
+        runs = self.selected_runs()
+        if not runs:
+            return
+        name, ok = QInputDialog.getText(self, 'Save a drive set', f'A name for these {len(runs)} runs:')
+        if ok and name.strip():
+            add_set(self.win, name.strip(), 'list', runs)
+            self.query_state.setText(f'saved the drive set {name.strip()!r} ({len(runs)} runs)')
+
+    def save_query_set(self):
+        from PyQt6.QtWidgets import QInputDialog
+        from ..drivesets import add_set
+        q = self.filter.text().strip()
+        if not q:
+            return
+        name, ok = QInputDialog.getText(self, 'Save a search', f'A name for the search “{q}” (re-evaluated when '
+                                                               'used):')
+        if ok and name.strip():
+            add_set(self.win, name.strip(), 'query', query=q)
+            self.query_state.setText(f'saved the search as {name.strip()!r}')
+
+    def compare_selected(self):
+        self.page.compare_runs(self.selected_runs())
 
     def showEvent(self, ev):
         super().showEvent(ev)
@@ -689,12 +823,18 @@ class DataPage(Page):
         v.addWidget(label(self.title, page=True))
         v.addWidget(Note(self.about, limit=160))
         self.tabs = QTabWidget()
+        from .data_health import HealthTab
         from .datasets import DatasetsTab
+        from .runs_compare import CompareTab
         self.record = RecordTab(self)
         self.browse = BrowseTab(self)
         self.datasets = DatasetsTab(self)
+        self.compare = CompareTab(self)
+        self.health = HealthTab(self)
         self.tabs.addTab(scroll(self.record), 'Record')
         self.tabs.addTab(self.browse, 'Browse')
+        self.tabs.addTab(self.compare, 'Compare')
+        self.tabs.addTab(scroll(self.health), 'Health')
         self.tabs.addTab(scroll(self.datasets), 'Datasets')
         v.addWidget(self.tabs, 1)
         self.refresh()
@@ -703,14 +843,53 @@ class DataPage(Page):
         self.record.refresh()
         self.browse.refresh()
         self.datasets.refresh()
+        self.health.refresh()                 # (Compare reads the run index when it is shown)
 
-    def record_in(self, world_id):
-        """Open Record with this world chosen (Worlds' *Record a dataset here*)."""
+    def record_in(self, world_id, preset: str | None = None):
+        """Open Record with this world (and weather preset) chosen (Worlds' *Record a dataset here*, Health's
+        *Record this*)."""
         self.tabs.setCurrentIndex(0)
         self.record.refresh()
         k = self.record.world.findData(world_id)
         if k >= 0:
             self.record.world.setCurrentIndex(k)
+        k = self.record.weather.findData(preset or '')
+        self.record.weather.setCurrentIndex(k if k >= 0 else 0)
+        self.record.note.setText('')
+
+    def show_drive_set(self, ident) -> bool:
+        """Open Browse on a drive set (the command palette's drive sets): a saved query becomes the search; a list's
+        runs are selected."""
+        ds = self.win.project.item('drive_sets', ident)
+        if ds is None:
+            return False
+        self.tabs.setCurrentWidget(self.browse)
+        self.browse.refresh()
+        if ds.get('kind') == 'query':
+            self.browse.filter.setText(ds.get('query') or '')
+            return True
+        from ..drivesets import resolve
+        want = set(resolve(self.win, ds, self.browse.entries))
+        self.browse.filter.setText('')
+        self.browse.runs.clearSelection()
+        first = None
+        for i in range(self.browse.runs.topLevelItemCount()):
+            it = self.browse.runs.topLevelItem(i)
+            if it.data(0, 256) in want:
+                it.setSelected(True)
+                first = first or it
+        if first is not None:
+            self.browse.runs.scrollToItem(first)
+        self.browse.query_state.setText(f'drive set {ds["name"]!r}: {len(want)} run(s) selected')
+        return True
+
+    select_drive_set = show_drive_set
+
+    def compare_runs(self, paths):
+        """Open Compare with these runs (Browse's *Compare*)."""
+        self.tabs.setCurrentWidget(self.compare)
+        self.compare.refresh()
+        self.compare.set_runs(paths)
 
     def show_run(self, path):
         self.tabs.setCurrentWidget(self.browse)

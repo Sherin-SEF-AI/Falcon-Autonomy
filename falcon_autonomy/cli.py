@@ -34,6 +34,7 @@
     falcon recon train|from-dashcam|eval|render|rerender|info ...   neural reconstruction of a drive (3DGS)
     falcon dashcam list|gps|extract|match ...   a dashcam's clips, GPS track and GPS-stamped frames (docs/dashcam.md)
     falcon dashcam route plan|import|match|drive|pairs ...   drive your dashcam's route in simulation on its streets
+    falcon runs search PROJECT|WORKSPACE [QUERY...] [--sort KEY] [--json]   search the runs (docs/runs.md)
     falcon vlm list|verify|fetch|eval|finetune ...   vision-language driving explanations scored against ground truth
     falcon rules check RUN... [--set india|generic|FILE] | list | show SET   traffic rules as temporal logic
     falcon why case|evaluation|episode ...   root-cause attribution of a failure (docs/root-cause.md)
@@ -310,7 +311,8 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument('--into', default='')
     r.add_argument('--pose-tol', type=float, default=1e-3)
     r.add_argument('--rgb-tol', type=float, default=2.0)
-    ru = sub.add_parser('runs', help='list a project\'s runs')
+    ru = sub.add_parser('runs', help='list a project\'s runs; falcon runs search PROJECT|WORKSPACE QUERY… searches '
+                                     'them (see docs/runs.md)')
     ru.add_argument('project')
     ru.add_argument('--rebuild', action='store_true')
     sub.add_parser('schema', help='print the project schema\'s path')
@@ -479,6 +481,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['dashcam']:                   # a dashcam's clips, GPS track and frames (core.dashcam)
         from .core.dashcam import main_dashcam
         return main_dashcam(argv[1:])
+    if argv[:2] == ['runs', 'search']:            # search a workspace's runs (core.runindex)
+        from .core.runindex import main_runs
+        return main_runs(argv[2:])
     if argv[:1] == ['vlm']:                       # vision-language explanations scored against the truth (core.vlm)
         from .core.vlm_eval import main_vlm
         return main_vlm(argv[1:])

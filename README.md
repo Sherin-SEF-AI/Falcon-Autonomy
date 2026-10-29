@@ -8,7 +8,7 @@ number traceable to the run that produced it.
 **Status: 2.0 — the eight milestones of the plan and the five that followed (9–13).** What works is listed under *What works*; what comes next is in
 the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
 
-## What works (2.1.0)
+## What works (2.2.0)
 
 - **The app shell** (PyQt6): a page navigator, Jobs and Log docks, undo and redo for every project edit, a command
   palette (Ctrl+K), dark and light themes, a status bar with the CARLA server, the GPU and memory.
@@ -24,7 +24,10 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
   `run.json` and exiting with a [documented code](docs/cli.md#exit-codes). A watchdog ends a worker whose server
   stopped answering; cancels always tidy the server.
 - **Recorded drives**: synchronous mode at a fixed step, the ego and traffic on the traffic manager, the rig's
-  cameras with semantic labels rendered at the same pose and tick; browse them frame by frame with the label overlay.
+  cameras with semantic labels rendered at the same pose and tick; browse them frame by frame with the label overlay,
+  search every run (`world:… weather:rain dur>20 events:collision`), tag them, keep drive sets, compare up to four
+  runs on one clock and measure a dataset's health — class balance, coverage gaps, near duplicates
+  ([runs](docs/runs.md)).
 - **Rigs and data**: a rig editor with a 3D view; pinhole and fisheye cameras, lidar, radar, GNSS, IMU; sensor faults
   of known size; perfectly labelled frames (semantic, instance, range, 2D and 3D boxes, occlusion, track ids, lane
   lines, lidar point labels proven point for point); a data engine that plans, costs and fills coverage targets;
