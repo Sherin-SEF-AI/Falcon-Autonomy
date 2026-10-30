@@ -1,6 +1,8 @@
-"""`falcon recon train|from-dashcam|place|eval|render|rerender|info` (docs/reconstruction.md). Protocol lines on stdout
+"""`falcon recon train|from-dashcam|place|eval|render|rerender|hybrid|hybrid-drive|info` (docs/reconstruction.md). Protocol lines on stdout
 (core.protocol); exit codes 0 ok, 2 failed, 3 cancelled. A command that uses CUDA takes Falcon's GPU lock
 (core.training.gpu_locks) unless the job queue holds it for it (FALCON_GPU_LOCK_HELD=1); --device cpu needs no lock.
+hybrid-drive records its CARLA drive first (a CARLA job through CarlaService: the CARLA lock, Falcon's own server,
+stopped afterwards) and takes the GPU lock only to composite.
 """
 from __future__ import annotations
 
@@ -32,6 +34,63 @@ def _pose_kw(a) -> dict:
         size = (int(w), int(h))
     return {'lateral_m': a.lateral, 'forward_m': a.forward, 'up_m': a.up, 'yaw_deg': a.yaw, 'mount': mount,
             'fov': a.fov, 'size': size}
+
+
+def _hybrid_args(ap):
+    ap.add_argument('--method', choices=('auto', 'mask', 'depth'), default='auto',
+                    help='auto: CARLA\'s occlusion (mask) for a reconstruction of a CARLA run of the same world, '
+                         'else the per-pixel depth test')
+    ap.add_argument('--tolerance', type=float, default=0.05, help='the depth test\'s relative slack')
+    ap.add_argument('--camera', action='append', help='a camera to composite (default: every pinhole camera)')
+    ap.add_argument('--align', help='a JSON 4 × 4: the reconstruction\'s world ← CARLA\'s world (right-handed), '
+                                    'for a reconstruction not of a CARLA run')
+    ap.add_argument('--no-measure', action='store_true', help='do not measure against CARLA\'s frames')
+    ap.add_argument('--device', default='auto')
+
+
+def _hybrid_kw(a) -> dict:
+    align = None
+    if a.align:
+        from ..provenance import read_json
+        doc = read_json(a.align)
+        align = doc.get('matrix') if isinstance(doc, dict) else doc
+    return {'cameras': a.camera, 'method': a.method, 'tolerance': a.tolerance, 'align': align,
+            'measure': not a.no_measure, 'device': a.device}
+
+
+def hybrid_drive_command(a, em, flag, argv) -> tuple:
+    """Record the re-drive in CARLA, stop the server, then composite: (exit code, summary)."""
+    from .. import protocol as P
+    from ..jobs import JobQueue, SubprocessLauncher
+    from ..logreplay.commands import _wait, submit
+    from ..project import Project
+    from ..settings import Settings
+    from ...sim.service import CarlaService
+    from .hybrid import hybrid_drive_config, hybrid_run
+    from .scene import Recon
+    proj = Project.load(a.project)
+    rec = Recon.load(a.recon, a.device)
+    carla_dir, hyb_dir = os.path.join(a.out, 'carla'), os.path.join(a.out, 'hybrid')
+    svc = CarlaService(Settings(), JobQueue(SubprocessLauncher()), proj.workspace)
+    try:
+        cfg = hybrid_drive_config(proj, rec, carla_dir, svc.port, svc.tm_port, a.world, a.rig, a.lateral, a.seed,
+                                  a.vehicles, a.walkers, float(svc.settings.get('render_budget_mpx')),
+                                  proj.workspace)
+        em.progress(0.0, f'recording the CARLA drive into {carla_dir}', force=True)
+        code = _wait(svc, submit(svc, cfg, cfg['name']), em)
+    finally:
+        svc.shutdown()
+    if code != P.OK:
+        return code, {'carla': carla_dir, 'error': f'the CARLA drive ended with code {code}'}
+    locks = _locks(a.device, em, flag)
+    try:
+        kw = _hybrid_kw(a)
+        kw.pop('device')
+        res = hybrid_run(rec, carla_dir, hyb_dir, emitter=em, cancel=flag, argv=['recon'] + list(argv), **kw)
+    finally:
+        for lk in locks:
+            lk.release()
+    return P.OK, dict(res, carla=carla_dir)
 
 
 def _locks(device: str, em, flag):
@@ -109,6 +168,24 @@ def main_recon(argv) -> int:
     rr.add_argument('--every', type=int, default=1)
     rr.add_argument('--split', choices=('all', 'train', 'test'), default='all')
     _pose_args(rr)
+    hy = sub.add_parser('hybrid', help='a recorded CARLA drive with its actors composited over the reconstruction '
+                                       '(a hybrid world; labels CARLA\'s)')
+    hy.add_argument('recon')
+    hy.add_argument('--drive', required=True, help='the recorded CARLA drive (a falcon-raw run with instance labels)')
+    hy.add_argument('--out', '-o', required=True)
+    _hybrid_args(hy)
+    hd = sub.add_parser('hybrid-drive', help='drive the reconstruction\'s path in CARLA with new traffic (and the '
+                                             'ego moved sideways), then composite it')
+    hd.add_argument('recon')
+    hd.add_argument('--project', required=True)
+    hd.add_argument('--out', '-o', required=True, help='a folder: carla/ (CARLA\'s run, the truth) and hybrid/')
+    hd.add_argument('--world', help='the project\'s world (default: the one of the source drive\'s town)')
+    hd.add_argument('--rig', help='a rig with a pinhole camera labelled instance and depth (default: the first)')
+    hd.add_argument('--lateral', type=float, default=0.0, help='metres to the right of the source\'s path')
+    hd.add_argument('--seed', type=int, help='the traffic\'s seed (default: the source drive\'s + 1)')
+    hd.add_argument('--vehicles', type=int, help='default: the source drive\'s')
+    hd.add_argument('--walkers', type=int, help='default: the source drive\'s')
+    _hybrid_args(hd)
     i = sub.add_parser('info', help='what a reconstruction is and how it measured')
     i.add_argument('recon')
     try:
@@ -132,6 +209,7 @@ def main_recon(argv) -> int:
     from .data import DataError
     from .train import Cancelled, ReconError
     from .vo import VOError
+    from .hybrid import HybridError
     try:
         if a.cmd == 'train':
             from ..provenance import read_json
@@ -173,7 +251,17 @@ def main_recon(argv) -> int:
             res = place_existing(a.recon, a.project, a.world)
             em.result('ok', report=os.path.join(a.recon, 'dashcam.json'), summary=res)
             return P.OK
+        if a.cmd == 'hybrid-drive':
+            code, res = hybrid_drive_command(a, em, flag, argv)
+            em.result(P.status_of(code), run=res.get('run'), summary=res, error=res.get('error'))
+            return code
         locks = _locks(a.device, em, flag)
+        if a.cmd == 'hybrid':
+            from .hybrid import hybrid_run
+            res = hybrid_run(a.recon, a.drive, a.out, emitter=em, cancel=flag, argv=['recon'] + list(argv),
+                             **_hybrid_kw(a))
+            em.result('ok', run=res['run'], summary=res)
+            return P.OK
         if a.cmd == 'eval':
             res = evaluate_command(a.recon, a.reference, a.warp_shift, a.warp_check, a.limit, a.device,
                                    a.allow_other_world, em)
@@ -201,7 +289,7 @@ def main_recon(argv) -> int:
     except (Cancelled, TCancelled, KeyboardInterrupt):
         em.result('cancelled')
         return P.CANCELLED
-    except (DataError, ReconError, VOError, ValueError, OSError, KeyError) as ex:
+    except (DataError, ReconError, VOError, HybridError, ValueError, OSError, KeyError) as ex:
         print(f'failed: {ex}', flush=True)
         em.result('failed', error=str(ex))
         return P.FAILED

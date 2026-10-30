@@ -18,8 +18,8 @@ Sources:
 * **falcon** — frames.jsonl and rgb/<camera>/; the pose from the ego pose and the camera's actual mount (its mount
   faults included, as CARLA rendered it); K from the camera's field of view; pinhole cameras only (a fisheye would
   need another projection). Masks: every pixel whose instance belongs to an actor (an object with a CARLA actor id:
-  every vehicle and walker, moving or not) and the ego's own body (class 29) is left out; map meshes (parked cars
-  included) stay. Lidar: every sweep's static returns (actor id 0, not the ego, not weather noise) in the world through
+  every vehicle and walker, moving or not, and the traffic lights, whose state changes: actor_object_ids) and the
+  ego's own body (class 29) is left out; map meshes (parked cars included) stay. Lidar: every sweep's static returns (actor id 0, not the ego, not weather noise) in the world through
   frames.jsonl's lidar_pose. The run's semantic labels are kept for voting the Gaussians' classes, its range labels
   for evaluation only (never for training, unless init='range' is asked for — a simulator's privilege, labelled).
 * **kitti_raw** — image_02/ (the left colour camera, rectified) or image_03/; poses from OXTS as
@@ -285,6 +285,15 @@ def falcon_capture(path: str, camera: str | None = None, every: int = 1) -> Capt
     return cap
 
 
+def actor_object_ids(objs) -> np.ndarray:
+    """The instance ids of a frame's objects that are CARLA actors (an integer actor or track id): every vehicle and
+    walker, moving or not, and the traffic lights (actors whose state changes); map meshes (parked cars, signs,
+    'level:<k>' tracks without an actor) are not. A static reconstruction leaves these out of training and a hybrid
+    world (core.recon.hybrid) takes their pixels from CARLA."""
+    return np.array([o['id'] for o in objs if isinstance(o.get('actor_id'), int) or
+                     isinstance(o.get('track_id'), int)], np.int64)
+
+
 def _falcon_mask(run, rec, cid):
     def mk():
         import cv2
@@ -293,9 +302,7 @@ def _falcon_mask(run, rec, cid):
         m = None
         if rel_i:
             inst = cv2.imread(run.p(rel_i), cv2.IMREAD_UNCHANGED)
-            objs = run.objects(rec, cid) or []
-            ids = np.array([o['id'] for o in objs if isinstance(o.get('actor_id'), int) or
-                            (isinstance(o.get('track_id'), int))], np.int64)
+            ids = actor_object_ids(run.objects(rec, cid) or [])
             m = ~np.isin(inst, ids) if len(ids) else np.ones(inst.shape, bool)
         if rel_s:
             sem = cv2.imread(run.p(rel_s), cv2.IMREAD_UNCHANGED)
