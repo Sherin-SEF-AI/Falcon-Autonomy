@@ -45,6 +45,9 @@ def _hybrid_args(ap):
     ap.add_argument('--align', help='a JSON 4 × 4: the reconstruction\'s world ← CARLA\'s world (right-handed), '
                                     'for a reconstruction not of a CARLA run')
     ap.add_argument('--no-measure', action='store_true', help='do not measure against CARLA\'s frames')
+    ap.add_argument('--render-width', type=int, default=0,
+                    help='the width the background is rendered at before upsampling to a wider camera (0: the '
+                         'reconstruction\'s working width; -1: the camera\'s own)')
     ap.add_argument('--device', default='auto')
 
 
@@ -55,7 +58,8 @@ def _hybrid_kw(a) -> dict:
         doc = read_json(a.align)
         align = doc.get('matrix') if isinstance(doc, dict) else doc
     return {'cameras': a.camera, 'method': a.method, 'tolerance': a.tolerance, 'align': align,
-            'measure': not a.no_measure, 'device': a.device}
+            'measure': not a.no_measure, 'device': a.device,
+            'render_width': None if a.render_width < 0 else a.render_width}
 
 
 def hybrid_drive_command(a, em, flag, argv) -> tuple:

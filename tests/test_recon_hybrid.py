@@ -187,6 +187,13 @@ def test_compositor_matches_the_reconstruction_off_actor_pixels(trained):
     alone = rec.render({'viewmat': f.viewmat, 'K': f.K, 'size': f.size}, semantic=False)['image']
     assert np.array_equal(out['image'][~actor], alone[~actor]) and np.array_equal(out['image'][actor], rgb[actor])
     assert out['render_ms'] > 0 and out['composite_ms'] >= 0
+    rec.work_size = (48, 27)                    # a camera wider than the working width: rendered there, upsampled
+    small = Compositor(rec).background(f.viewmat, f.K, f.size)
+    assert small['image'].shape == (54, 96, 3) and small['range'].shape == (54, 96) and small['semantic'].dtype == \
+        torch.int64
+    assert not np.array_equal((small['image'].numpy() * 255 + 0.5).astype(np.uint8), alone)
+    native = Compositor(rec, render_width=None).background(f.viewmat, f.K, f.size)['image']
+    assert np.array_equal((native.numpy() * 255 + 0.5).astype(np.uint8), alone)
 
 
 def test_redrive_log_moves_the_ego_right_and_drops_the_actors(trained):
@@ -246,6 +253,7 @@ def test_redrive_end_to_end_on_the_fake(tmp_path):
     hc = hybrid_drive_config(proj, rec, str(tmp_path / 'carla'), 2310, 8310, lateral_m=1.0, vehicles=3)
     assert hc['traffic']['vehicles'] == 3 and hc['hybrid']['seed'] == 4 and hc['replay']['plan']['actors'] == []
     assert hc['replay']['plan']['ego']['driver'] == 'log' and os.path.isfile(tmp_path / 'carla' / 'log.json')
+    assert hc['replay']['plan']['placement']['allow_mismatch']          # a shifted path may leave the lanes
     src0 = _rows(str(tmp_path / 'src' / 'frames.jsonl'))[0]['ego']
     plan = hc['replay']['plan']['ego']
     yaw = np.radians(src0['yaw'])

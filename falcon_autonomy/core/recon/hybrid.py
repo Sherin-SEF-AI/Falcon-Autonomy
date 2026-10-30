@@ -103,7 +103,8 @@ class Compositor:
     """One camera and tick at a time (module doc). rec: a scene.Recon; align: reconstruction world ← CARLA's world
     (right-handed), None for a reconstruction of a CARLA run of the same world."""
 
-    def __init__(self, rec, align=None, method: str = 'auto', tolerance: float = DEFAULTS['tolerance']):
+    def __init__(self, rec, align=None, method: str = 'auto', tolerance: float = DEFAULTS['tolerance'],
+                 render_width: int | None = 0):
         if method not in METHODS:
             raise HybridError(f'method must be one of {", ".join(METHODS)}')
         self.rec, self.dev = rec, rec.device
@@ -115,6 +116,9 @@ class Compositor:
                               'world (reconstruction ← CARLA, right-handed, a rigid 4 × 4)')
         self.method = ('mask' if self.exact else 'depth') if method == 'auto' else method
         self.tolerance = float(tolerance)
+        # 0: the reconstruction's working width (a wider camera's background is rendered there and upsampled);
+        # None: the camera's own size
+        self.render_width = int(rec.work_size[0]) if render_width == 0 else render_width
         self.votes = rec.gs.votes is not None
         self._feats = None
 
@@ -125,7 +129,29 @@ class Compositor:
     @torch.no_grad()
     def background(self, viewmat_carla, K, size) -> dict:
         """The reconstruction at the camera: image (H, W, 3) in [0, 1], range (m along each ray, 0: nothing or
-        sky), alpha and, with votes, semantic (the voted class; 0 where alpha < ½) — torch tensors on the device."""
+        sky), alpha and, with votes, semantic (the voted class; 0 where alpha < ½) — torch tensors on the device. A
+        camera wider than render_width is rendered at that width and upsampled to its size (image and alpha
+        bicubic / bilinear, range and classes nearest): a 3D Gaussian reconstruction rendered far above the resolution
+        it was fitted at shows gaps between its Gaussians (their 0.3 px dilation is in pixels) — module doc."""
+        w, h = int(size[0]), int(size[1])
+        ws = D.working_size((w, h), self.render_width) if self.render_width else (w, h)
+        if ws == (w, h):
+            return self._render(viewmat_carla, K, (w, h))
+        import torch.nn.functional as F
+        r = self._render(viewmat_carla, D.scaled_K(K, (w, h), ws), ws)
+
+        def up(x, mode):
+            x = x.permute(2, 0, 1)[None] if x.dim() == 3 else x[None, None]
+            kw = {} if mode == 'nearest' else {'align_corners': False}
+            y = F.interpolate(x.float(), size=(h, w), mode=mode, **kw)[0]
+            return y.permute(1, 2, 0) if y.shape[0] > 1 else y[0]
+        out = {'image': up(r['image'], 'bicubic').clamp(0, 1), 'alpha': up(r['alpha'], 'bilinear'),
+               'range': up(r['range'], 'nearest')}
+        if 'semantic' in r:
+            out['semantic'] = up(r['semantic'], 'nearest').long()
+        return out
+
+    def _render(self, viewmat_carla, K, size) -> dict:
         from .scene import render_views
         gs = self.rec.gs
         if self.votes and self._feats is None:
@@ -294,9 +320,11 @@ def _class_names(run) -> dict:
 
 def hybrid_run(recon, drive_dir: str, out_dir: str, cameras=None, method: str = 'auto',
                tolerance: float = DEFAULTS['tolerance'], align=None, measure: bool = True, link: str = 'hard',
-               settings: dict | None = None, emitter=None, cancel=None, argv=None, device: str = 'auto') -> dict:
+               settings: dict | None = None, emitter=None, cancel=None, argv=None, device: str = 'auto',
+               render_width: int | None = 0) -> dict:
     """Composite a recorded CARLA drive over a reconstruction into a new falcon-raw run (module doc); returns its
-    summary. recon: a scene.Recon or its folder. Raises HybridError, or KeyboardInterrupt on cancel (the partial
+    summary. render_width: 0 renders a wider camera's background at the reconstruction's working width and
+    upsamples it (Compositor.background), None at the camera's own size. recon: a scene.Recon or its folder. Raises HybridError, or KeyboardInterrupt on cancel (the partial
     folder is removed)."""
     import cv2
     from .. import provenance as PV
@@ -313,7 +341,7 @@ def hybrid_run(recon, drive_dir: str, out_dir: str, cameras=None, method: str = 
         raise HybridError('the hybrid run needs a folder of its own')
     if os.path.exists(out_dir) and os.listdir(out_dir):
         raise HybridError(f'{out_dir} exists and is not empty')
-    comp = Compositor(rec, align, method, tolerance)
+    comp = Compositor(rec, align, method, tolerance, render_width)
     town = rec.views.get('town') or ''
     if comp.exact and (run.cfg.get('town') or run.cfg.get('xodr') or '') != town:
         raise HybridError(f'the drive is of {run.cfg.get("town") or run.cfg.get("xodr")!r}, the reconstruction of '
@@ -339,6 +367,7 @@ def hybrid_run(recon, drive_dir: str, out_dir: str, cameras=None, method: str = 
     by_step = {r['step']: r for r in run.frames}
     alt = [m for m in ('mask', 'depth') if m != comp.method]
     settings_doc = {'method': comp.method, 'asked': method, 'tolerance': comp.tolerance, 'cameras': cams,
+                    'render_width': comp.render_width,
                     'align': None if align is None else comp.A.round(9).tolist(), 'measure': exact, 'link': link,
                     **{k: s[k] for k in ('near_px', 'min_actor_px', 'jpeg_quality', 'depth_max_m')}}
     os.makedirs(out_dir, exist_ok=True)
@@ -606,7 +635,9 @@ def hybrid_drive_config(project, rec, out_dir: str, port: int, tm_port: int, wor
     """The CARLA drive of a hybrid re-drive: a log replay (workers.replay) of the reconstruction's source drive with
     its ego on the logged path (driver 'log': the camera poses are the path's, moved lateral_m to the right) and no
     logged actors, plus the traffic manager's traffic — the source's numbers unless given — seeded by seed (default:
-    the source's seed + 1, so the traffic differs). Raises HybridError."""
+    the source's seed + 1, so the traffic differs). A shifted path may leave the driving lanes (3 m to the right of a
+    lane's centre is the kerb or the next lane), which a replay refuses unless told: a shift allows it, deliberately.
+    Raises HybridError."""
     from ..logreplay.commands import replay_config
     from ..logreplay.model import LogError
     from ..logreplay.plan import make_plan, town_key, world_info
@@ -642,7 +673,8 @@ def hybrid_drive_config(project, rec, out_dir: str, port: int, tm_port: int, wor
     log_path = log.save(os.path.join(out_dir, 'log.json'))
     seed = int(sdrive.get('seed', 0)) + 1 if seed is None else int(seed)
     try:
-        plan = make_plan(log, winfo, fps=float(sdrive.get('fps') or 20.0), seed=seed, driver='log', log_path=log_path)
+        plan = make_plan(log, winfo, fps=float(sdrive.get('fps') or 20.0), seed=seed, driver='log', log_path=log_path,
+                         allow_mismatch=bool(lateral_m))
     except LogError as e:
         raise HybridError(str(e)) from None
     cfg = replay_config(project, plan, world, rig_doc['id'], out_dir, port, tm_port, render_budget_mpx, workspace,
