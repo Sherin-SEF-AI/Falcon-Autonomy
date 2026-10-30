@@ -2,7 +2,10 @@
 camera images (a job on the GPU queue), look at it from poses the log never took — any frame, the ego moved sideways
 with a slider — and read how it measured (core.recon; docs/reconstruction.md). *From a dashcam* does the same for a
 time window of a dashcam clip: posed by visual odometry and its GPS (core.recon.fromdashcam), reconstructed, placed on
-an imported world. torch is imported only when a reconstruction is opened, on a worker thread."""
+an imported world. *Hybrid world* composites CARLA's actors over the reconstruction (core.recon.hybrid): a recorded
+drive of the same world, or a new CARLA drive of the log's path with seeded traffic and the ego at the slider's offset
+(a replay job, then the composite on the GPU queue). torch is imported only when a reconstruction is opened, on a
+worker thread."""
 from __future__ import annotations
 
 import os
@@ -42,7 +45,9 @@ class ReconPanel(QWidget):
         self.source = None
         self.rec_dir = ''
         self.rec = None
-        self.jobs = {}                         # 'train' | 'eval' | 'rerender' | 'dashcam' -> job
+        self.jobs = {}                         # 'train' | 'eval' | 'rerender' | 'dashcam' | 'hybrid' | 'hybrid-carla'
+        self.hybrid_next = None                # (carla run, hybrid run): the composite to queue when CARLA's drive ends
+        self.hybrid_out = ''
         self.dash_dir = ''
         self.busy = False
         self.pending = False
@@ -103,7 +108,124 @@ class ReconPanel(QWidget):
         self.note = label('', muted=True, wrap=True)
         sec.add(self.note)
         v.addWidget(sec)
+        v.addWidget(self._hybrid_section())
         v.addWidget(self._dashcam_section())
+
+    # ---------------------------------------------------------------- hybrid worlds
+    def _hybrid_section(self) -> Section:
+        sec = Section('Hybrid world: CARLA\'s actors in the reconstruction',
+                      'CARLA simulates and renders the actors — traffic, the ego\'s motion, the traffic lights — and '
+                      'the reconstruction gives the static scene: CARLA\'s actor pixels are laid over the '
+                      'reconstruction rendered at each camera. Labels stay CARLA\'s. Shadows and lighting between '
+                      'the two are not modelled. On a reconstruction of a CARLA run each frame is measured against '
+                      'CARLA\'s own.')
+        f = Form()
+        self.hy_drive = QComboBox()
+        self.hy_method = QComboBox()
+        for k, text in (('auto', 'Automatic (CARLA\'s occlusion for a CARLA run of the same world)'),
+                        ('mask', 'CARLA\'s occlusion (the actor mask)'), ('depth', 'Per-pixel depth test')):
+            self.hy_method.addItem(text, k)
+        self.hy_seed = QSpinBox()
+        self.hy_seed.setRange(0, 2 ** 31 - 1)
+        self.hy_seed.setValue(7)
+        self.hy_vehicles = QSpinBox()
+        self.hy_vehicles.setRange(0, 200)
+        self.hy_vehicles.setValue(30)
+        for text, w in (('Recorded drive', self.hy_drive), ('Compositing', self.hy_method),
+                        ('New traffic: seed', self.hy_seed), ('Vehicles', self.hy_vehicles)):
+            f.row(text, w)
+        sec.add(f)
+        b = QHBoxLayout()
+        b.addWidget(button('Composite this drive', self.hybrid,
+                           tip='falcon recon hybrid: the recorded drive\'s actors over the reconstruction (a GPU job)'))
+        b.addWidget(button('Drive the path with new traffic', self.hybrid_drive,
+                           tip='a CARLA replay of the log\'s path (the ego at the slider\'s offset) with the traffic '
+                               'manager\'s traffic, then its composite'))
+        b.addStretch(1)
+        sec.add(b)
+        self.hy_info = KeyValues(('Hybrid run', 'Against CARLA', 'Cost'))
+        sec.add(self.hy_info)
+        return sec
+
+    def refresh_drives(self):
+        """The workspace's recorded runs with instance labels (the actors' mask)."""
+        cur = self.hy_drive.currentData()
+        self.hy_drive.clear()
+        svc = getattr(self.win, 'service', None)
+        runs = svc.runs_dir() if svc is not None else ''
+        for d in sorted(os.listdir(runs), reverse=True) if runs and os.path.isdir(runs) else []:
+            p = os.path.join(runs, d)
+            if os.path.isfile(os.path.join(p, 'frames.jsonl')) and os.path.isdir(os.path.join(p, 'instance')):
+                self.hy_drive.addItem(d, p)
+        if cur:
+            self.hy_drive.setCurrentIndex(max(0, self.hy_drive.findData(cur)))
+
+    def hybrid_argv(self, drive: str, out: str) -> list:
+        return ['hybrid', self.rec_dir, '--drive', drive, '--out', out, '--method', self.hy_method.currentData(),
+                '--device', self.device.currentData()]
+
+    def hybrid(self, drive: str | None = None, out: str | None = None):
+        if self.rec is None:
+            self.note.setText('open a reconstruction first')
+            return None
+        from ...core.drive import run_dir_name
+        drive = drive or self.hy_drive.currentData()
+        if not drive:
+            self.note.setText('no recorded drive with instance labels in this workspace')
+            return None
+        out = out or os.path.join(os.path.dirname(drive), run_dir_name(f'hybrid-{os.path.basename(drive)}'))
+        job = self._submit('hybrid', self.hybrid_argv(drive, out), f'Hybrid {os.path.basename(drive)}')
+        if job:
+            self.hy_info.set('Hybrid run', f'compositing into {out}')
+            self.hybrid_out = out
+        return out
+
+    def hybrid_drive(self, out: str | None = None):
+        """A CARLA replay of the log's path with new traffic (a CARLA job); its composite follows (on_finished)."""
+        if self.rec is None:
+            self.note.setText('open a reconstruction first')
+            return None
+        from ...core.drive import run_dir_name
+        from ...core.logreplay.commands import submit
+        from ...core.recon.hybrid import HybridError, hybrid_drive_config
+        lat = self.lateral.value()
+        svc = self.win.service
+        out = out or os.path.join(svc.runs_dir() or os.path.join(self.win.workspace(), 'runs'),
+                                  run_dir_name(f'hybrid-drive-{lat:+.1f}m-seed{self.hy_seed.value()}'))
+        try:
+            cfg = hybrid_drive_config(self.win.project, self.rec, os.path.join(out, 'carla'), svc.port, svc.tm_port,
+                                      lateral_m=lat, seed=self.hy_seed.value(), vehicles=self.hy_vehicles.value(),
+                                      render_budget_mpx=float(svc.settings.get('render_budget_mpx')),
+                                      workspace=self.win.workspace())
+        except (HybridError, ValueError, KeyError, OSError) as e:
+            self.note.setText(f'cannot drive it: {e}')
+            return None
+        job = submit(svc, cfg, cfg['name'])
+        self.jobs['hybrid-carla'] = job
+        self.hybrid_next = (os.path.join(out, 'carla'), os.path.join(out, 'hybrid'))
+        self.hy_info.set('Hybrid run', f'recording CARLA\'s drive into {os.path.join(out, "carla")}')
+        self.win.jobs_dock.raise_()
+        return out
+
+    def show_hybrid(self, out: str):
+        from ...core.provenance import read_json
+        p = os.path.join(out, 'run.json')
+        if not os.path.isfile(p):
+            return
+        hy = read_json(p).get('hybrid') or {}
+        self.hy_info.set('Hybrid run', f'{hy.get("frames")} frames, {hy.get("compositing", {}).get("method")}: {out}',
+                         tip=out)
+        a = (hy.get('summary') or {}).get('all') or {}
+        if hy.get('measured'):
+            bg, wh = a.get('background') or {}, a.get('whole') or {}
+            lab = a.get('labels') or {}
+            self.hy_info.set('Against CARLA', f'background {bg.get("psnr")} dB / SSIM {bg.get("ssim")}, whole frame '
+                                              f'{wh.get("psnr")} dB; voted classes right on {lab.get("accuracy")} of '
+                                              f'the background (the labels written are CARLA\'s)')
+        else:
+            self.hy_info.set('Against CARLA', hy.get('why_not_measured') or '—')
+        self.hy_info.set('Cost', f'render {(a.get("render_ms") or {}).get("median")} ms, composite '
+                                 f'{(a.get("composite_ms") or {}).get("median")} ms a frame (medians)')
 
     # ---------------------------------------------------------------- from a dashcam
     def _dashcam_section(self) -> Section:
@@ -218,6 +340,7 @@ class ReconPanel(QWidget):
             for k in ('Poses', 'Held out', 'Novel views', 'Cost'):
                 self.info.set(k, '—')
         self.refresh_worlds()
+        self.refresh_drives()
 
     def _submit(self, which: str, argv: list, title: str):
         from ...core.recon.train import job_spec
@@ -267,6 +390,16 @@ class ReconPanel(QWidget):
         self.note.setText(f'{which}: {job.state}' + (f' — {job.summary()}' if job.state != DONE else ''))
         if job.state == DONE and which == 'dashcam' and self.dash_dir:
             self.rec_dir = self.dash_dir
+        if which == 'hybrid-carla' and self.hybrid_next:
+            carla, out = self.hybrid_next
+            self.hybrid_next = None
+            if job.state == DONE:
+                self.hybrid(carla, out)
+            else:
+                self.hy_info.set('Hybrid run', f'CARLA\'s drive did not finish ({job.state})')
+        if job.state == DONE and which == 'hybrid':
+            self.show_hybrid(self.hybrid_out)
+            self.refresh_drives()
         if job.state == DONE and which in ('train', 'eval', 'dashcam'):
             self.open_recon()
 

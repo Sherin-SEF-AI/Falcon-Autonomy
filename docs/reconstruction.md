@@ -15,6 +15,9 @@ falcon recon eval ~/demo.falcon/recon/drive --warp-shift 0.5 --warp-shift 1.0 --
     --reference falcon:~/demo.falcon/runs/other-lane
 falcon recon render ~/demo.falcon/recon/drive --frame 40 --lateral 1.0 --out view.png --depth-out range.png
 falcon recon rerender ~/demo.falcon/recon/drive --lateral 1.0 --out ~/demo.falcon/runs/drive-shifted-1m
+falcon recon hybrid ~/demo.falcon/recon/drive --drive ~/demo.falcon/runs/redrive --out ~/demo.falcon/runs/redrive-hybrid
+falcon recon hybrid-drive ~/demo.falcon/recon/drive --project ~/demo.falcon.json --lateral 1.0 --seed 7 \
+    --out ~/demo.falcon/runs/hybrid-1m
 falcon recon info ~/demo.falcon/recon/drive
 ```
 
@@ -23,8 +26,11 @@ auto|lidar|points|sfm|range|random`, `--holdout` (8), `--seed`, `--sh-degree` (3
 `--every`, `--camera`, `--device`, `--raster-backend auto|torch|triton` ([the rasteriser](#the-rasteriser-triton-kernels-and-a-pytorch-reference)),
 `--no-masks`, `--no-semantic`, `--config FILE`. `render` and `rerender` take
 `--lateral` (metres to the right), `--forward`, `--up`, `--yaw` (degrees, CARLA's sense: positive turns right), `--mount
-x,y,z,roll,pitch,yaw` (the camera's mount in CARLA's vehicle frame, as in a rig), `--fov` and `--size WxH`. Exit codes
-are the CLI's ([cli](cli.md#exit-codes)).
+x,y,z,roll,pitch,yaw` (the camera's mount in CARLA's vehicle frame, as in a rig), `--fov` and `--size WxH`. `hybrid`
+and `hybrid-drive` ([hybrid worlds](#hybrid-worlds-carlas-actors-in-the-reconstruction)) take `--method
+auto|mask|depth`, `--tolerance` (0.05), `--camera`, `--align FILE`, `--render-width` (0: the working width; −1: the
+camera's), `--no-measure`, `--device`; `hybrid-drive` also `--world`, `--rig`, `--lateral`, `--seed`, `--vehicles`,
+`--walkers`. Exit codes are the CLI's ([cli](cli.md#exit-codes)).
 
 ## The method
 
@@ -385,12 +391,171 @@ Real logs have moving vehicles and people. A reconstruction is of the **static s
 learned from, so moving actors are not drawn — where a mask misses one (KITTI raw, unmasked; a box that does not cover
 a whole pedestrian), it leaves a blurred ghost along its path. Parked cars are part of the static scene.
 
-*Compositing moving actors back* (described, not implemented): a replay of the same log (log replay, `--driver log`
-with the shifted ego) renders CARLA's actors at their logged poses; CARLA's instance and depth images of that replay
-give each actor's pixels and depth, which can be laid over the reconstruction's image wherever the actor is nearer
-than the reconstruction's range — which also gives the re-rendered run real objects labels (boxes from CARLA's
-instance image). What it would not give: matching appearance (CARLA's meshes against the log's real pixels), lighting
-and shadows consistent between the two.
+Which pixels are "moving" is decided by the source's labels: in a Falcon run, every object with a CARLA actor id —
+every vehicle and walker, moving or stopped (a car waiting at a light is an actor too), and the **traffic lights**,
+whose state changes — and the ego's body (`data.actor_object_ids`). The map's own meshes stay, **parked cars
+included**: in CARLA's towns they are level geometry (`track_id` `level:<k>`, no actor), as static as a building, and
+a hybrid world takes them from the reconstruction. Not masked: the actors' **shadows** (no label covers them), which a
+moving actor smears faintly into the road; the actor's anti-aliased edge (no dilation).
+
+## Hybrid worlds: CARLA's actors in the reconstruction
+
+A reconstruction holds the static scene; CARLA holds everything that moves. A **hybrid world** puts the two together:
+CARLA simulates and renders the actors — traffic reacting to the ego and to itself, scenario actors, the ego's motion,
+the traffic lights' states — and the reconstruction gives the rest, so a drive can have the log's own appearance and
+CARLA's reactive actors, with CARLA's exact labels (`core/recon/hybrid.py`).
+
+```sh
+falcon recon hybrid RECON --drive RUN --out OUT            # a recorded CARLA drive of the same world, composited
+falcon recon hybrid-drive RECON --project P.falcon.json --lateral 1.0 --seed 7 --out DIR   # drive it, then composite
+```
+
+**Per camera and tick.** CARLA's camera gives the actors' colours; its instance label (objects with a CARLA actor id,
+and the ego class — the same rule that masked them out of training) the actor mask; its range label the actors' range.
+The reconstruction rendered at the camera's pose gives the background's colour and range (the median depth's). The
+pose is frames.jsonl's ego with the camera's actual mount — CARLA's world mirrored, which *is* the reconstruction's
+world when it was made from a Falcon run (no alignment to estimate). Two rules:
+
+* **`mask`** — CARLA's pixel wherever the actor mask holds. CARLA's render has already decided, exactly, which surface
+  is nearest at every pixel against CARLA's static geometry, and for a reconstruction of a CARLA run that geometry is
+  the reconstruction's scene. Actor pixels are then CARLA's own (identical to its frame); only background pixels are
+  the reconstruction's.
+* **`depth`** — CARLA's pixel where the actor mask holds *and* the actor's range ≤ the reconstruction's × (1 +
+  tolerance) (or the reconstruction has nothing there): the per-pixel depth test a reconstruction whose geometry is
+  not CARLA's needs, since its static surfaces may hide an actor CARLA's do not (it cannot show an actor CARLA's own
+  geometry hides). An actor pixel it hides takes the reconstruction's labels (voted class, instance 0, its range).
+
+`--method auto` (the default) is `mask` for a reconstruction of a Falcon run used as it is, `depth` with `--align`
+(a JSON 4 × 4, the reconstruction's world ← CARLA's mirrored world, rigid: any reconstruction whose frame is aligned
+to a CARLA world).
+
+**The background is rendered at the reconstruction's working width** and upsampled (bicubic; range and classes
+nearest) for a wider camera (`--render-width -1` renders at the camera's own size). A reconstruction fitted at 640 px
+rendered directly at 1280 × 720 shows gaps between its Gaussians — their 0.3 px dilation is in pixels, so they are
+half as wide relative to the scene: on the Town 10 reconstruction's 38 held-out frames, **27.31 dB at 1280 × 720
+rendered there against 30.04 dB rendered at 640 × 360 and upsampled** (28.75 against 33.68 dB compared at 640 × 360).
+
+**The run** is made from the CARLA drive as a [translated run](translation.md) is: every per-frame file hard-linked
+(copied across file systems; a hard link is never written through — a changed file is written beside it and renamed
+over it), the run's records copied, each composited camera's rgb written new (JPEG, quality 92 as the drive worker
+writes). **Every label is CARLA's** — semantic, instance, range, objects, flow, lidar: exact for the world at that
+tick — except the pixels the `depth` rule relabels. The reconstruction's voted classes are not written; they are
+measured against CARLA's (below), and CARLA's are kept because they are exact and agree with every other label of the
+frame, where the votes are an estimate (91–95 % right on the background below). run.json keeps the drive's (its
+clock, rig, settings) with worker `recon.hybrid` and a `hybrid` block: the source drive, the reconstruction and its
+`point_cloud.ply`'s SHA-256, the method and rule, the alignment, settings, what was measured; dataset.json a `hybrid`
+block; `hybrid.jsonl` a row per frame; `hybrid-previews/` three strips (CARLA, hybrid, reconstruction alone, the
+pixels taken from CARLA).
+
+**`hybrid-drive`** records the CARLA drive first: a [log replay](log-replay.md) of the reconstruction's source drive
+with the ego on its logged path (driver `log`, moved `--lateral` metres to the right; a shifted path may leave the
+lanes, which the replay is told to allow), none of the logged actors, and the traffic manager's traffic — the
+source's numbers unless `--vehicles`/`--walkers` — seeded by `--seed` (default the source's + 1), in the source's
+weather; then it stops Falcon's server and composites on the GPU (`DIR/carla`, the truth, and `DIR/hybrid`). On the
+*Replay* page: *Hybrid world* in the reconstruction section — *Composite this drive* (a recorded run of the workspace
+with instance labels) and *Drive the path with new traffic* (the slider's offset; a CARLA job, then the composite).
+
+**Closed loop.** The traffic is closed-loop (the traffic manager reacts to the ego and to itself); the ego follows
+the logged path kinematically, so the camera poses are controlled and it does not yield — in 3 of the 6 re-drives
+below (0 m and ±1 m) it touched a traffic-manager vehicle. Falcon's own drivers never read the camera's pixels, so
+compositing a recorded drive afterwards gives exactly the images compositing at each tick would; `Compositor.frame()`
+is one camera and tick, for a loop whose policy drives on the hybrid image (not wired into the environment worker).
+
+**Not modelled: shadows and lighting between the two worlds.** CARLA's actors cast no shadow on the reconstruction's
+background, and the actors are lit by CARLA's sun, the background by whatever lit the source. Darkening under actors
+from CARLA's own render difference was considered and not done: it needs CARLA's render *without* the actors at the
+same tick (a second render with every actor hidden), and the ratio of CARLA's frame to the reconstruction would put
+the ground truth into the measured background and cannot carry over to a reconstruction whose appearance is not
+CARLA's. The measured cost of the missing shadows is in the *near actors* column below.
+
+### Measured against CARLA's own frames
+
+On 2026-10-30, RTX 5080 (shared with other jobs), the Town 10 reconstruction of the demo project
+(`recon/town10-drive`: a 300-frame, 52.6 m drive at 1280 × 720 with 30 cars, trained at 640 × 360, 476 992
+Gaussians, lidar start; 33.68 dB / SSIM 0.941 held out). Because the source is a CARLA run, CARLA's own frame at the
+same tick and pose is the ground truth of every hybrid frame. Each re-drive: 300 frames at 1280 × 720 (the source's
+camera), seed 7, 30 traffic-manager cars, the source's weather, recorded at 5.2 steps a second. PSNR in dB / SSIM,
+the mean over frames, over the whole frame and over the background pixels (no actor in CARLA's frame), at 640 × 360
+(both images area-resampled, as the training images were) and at 1280 × 720; *near actors*: background pixels within
+12 px of an actor at 1280 × 720 (where a shadow would fall, and the actor's edge).
+
+| drive | whole, 640 | background, 640 | background, 1280 | near actors | voted classes: right / mIoU | depth error | shift |
+|---|---|---|---|---|---|---|---|
+| the source drive itself, its held-out frames (its own traffic) | 33.21 / 0.940 | 33.20 / 0.939 | 30.04 / 0.880 | 22.52 | 95.1 % / 0.718 | 4.2 % | 0.02 px |
+| **(a) the same path, other traffic** (0 m) | 29.72 / 0.930 | 29.53 / 0.926 | 27.42 / 0.870 | 19.61 | 94.9 % / 0.718 | 3.8 % | 0.04 px |
+| (b) the ego 1 m to the right | 24.48 / 0.825 | 24.41 / 0.822 | 23.75 / 0.787 | 18.45 | 93.8 % / 0.685 | 3.7 % | 0.23 px |
+| the ego 1 m to the left | 24.74 / 0.842 | 24.46 / 0.832 | 23.74 / 0.800 | 18.84 | 93.8 % / 0.677 | 3.5 % | 0.28 px |
+| the ego 2 m to the right | 21.35 / 0.756 | 21.29 / 0.753 | 20.93 / 0.741 | 18.29 | 92.5 % / 0.635 | 4.1 % | 0.18 px |
+| the ego 3 m to the right (off the lanes: the kerb side) | 19.38 / 0.697 | 19.35 / 0.695 | 19.07 / 0.698 | 16.75 | 90.4 % / 0.631 | 4.5 % | 0.16 px |
+| the ego 3 m to the left (the oncoming lane) | 19.47 / 0.737 | 19.42 / 0.734 | 19.20 / 0.729 | 16.44 | 91.9 % / 0.639 | 4.5 % | 0.13 px |
+
+*Actor pixels* are CARLA's own under `mask` — identical to the ground truth by construction (SSIM 1, no PSNR). The
+*voted classes* column is the reconstruction's estimate against CARLA's semantic label on background pixels (the
+labels written are CARLA's); *depth error*: the reconstruction's range against CARLA's on background pixels within
+80 m (median absolute relative error); *shift*: the residual translation between the reconstruction's render and
+CARLA's frame (phase correlation of the background, median).
+
+What the numbers say:
+
+* **The alignment is exact**: on the 0 m re-drive every camera that should coincide with a training camera does
+  (offset ≤ 10⁻⁴ m, 0.0°), the residual image shift is 0.04 px and the background's range is within 3.8 % (median).
+  The camera's exposure did not change with the traffic (one gain per frame between the source's and the re-drive's
+  frames on common background pixels: 1.000–1.012, no PSNR gained by it).
+* **Even CARLA does not repeat its own background**: the source's own frames against the 0 m re-drive's, at the
+  same poses, on pixels that are background in both, score **32.43 dB at 640 × 360 and 30.70 dB at 1280 × 720** —
+  other cars cast other shadows. That is the ceiling for any static background under new traffic. The hybrid's 29.53
+  dB lies 2.9 dB below it, and that gap is the road the source's own traffic hid: over background pixels the source
+  frame at that step also saw, the reconstruction scores 30.80 dB (mean of frames); over the 1.25 % of a frame where
+  a source actor stood, **12.39 dB** (pooled) — what a masked actor hid in every training frame was never observed.
+* **Training poses are no easier than held-out ones** under new traffic (0 m: 29.53 dB at both; the source's own
+  drive: 33.42 against 33.20 dB): the reconstruction is not over-fitted, and new traffic, not interpolation, sets the
+  error.
+* **Off the path it degrades with every metre**: −5.1 dB at 1 m (either side), −8.2 dB at 2 m, −10.1 to −10.2 dB at 3
+  m (both sides) against the 0 m re-drive, on genuine CARLA renders — the same fall as against the depth-warped references
+  above (−3.4 to −4.9 dB at 1 m), steeper because these frames also carry new traffic and every frame is off the path.
+  The voted classes hold up better (95 → 90 % right).
+* **The missing shadows show**: the background within 12 px of an actor scores 7.8 dB below the rest at 0 m (19.61
+  against 27.42 dB at 1280 × 720) and 2.3 dB below it at 3 m, where the reconstruction's own error dominates.
+* **A re-drive at 640 × 360** (CARLA rendering at the training width itself) scores 27.13 dB on the background,
+  against 27.74 dB for CARLA's own 640 × 360 frames against its 1280 × 720 frames area-resampled at the same poses: a
+  renderer's resolution changes its images by as much as the reconstruction's error here, so a re-drive's camera
+  should be the source's and the comparison made at the working width.
+
+**`mask` against `depth`** (the depth test as the alternative on the same frames; the share of actor pixels it hides
+though CARLA shows them, per frame then averaged — small, distant actors weigh as much as near ones):
+
+| drive | actors, `depth` at 5 % | actor pixels hidden | whole frame, 1280: `mask` / `depth` |
+|---|---|---|---|
+| the source's held-out frames | 27.00 dB | 7.9 % | 30.10 / 29.83 |
+| 0 m | 25.99 dB | 9.4 % | 27.64 / 27.54 |
+| +1 m / −1 m | 23.22 / 30.09 dB | 11.1 / 7.9 % | 23.83 / 23.79, 24.02 / 23.98 |
+| +2 m | 22.22 dB | 12.4 % | 20.99 / 20.96 |
+| +3 m / −3 m | 20.82 / 22.80 dB | 18.5 / 10.5 % | 19.10 / 19.04, 19.25 / 19.23 |
+
+The tolerance (the depth test as a pure measurement; actor PSNR, then the share of actor pixels hidden — per frame
+averaged / pooled over all actor pixels):
+
+| tolerance | 0 | 5 % | 10 % | 20 % | 50 % | 100 % |
+|---|---|---|---|---|---|---|
+| 0 m | 25.48 dB, 19.5 / 1.4 % | 25.99, 9.4 / 0.5 % | 26.94, 8.6 / 0.4 % | 28.40, 6.3 / 0.3 % | 35.37, 1.2 / 0.07 % | 45.07, 0.6 / 0.03 % |
+| +3 m | 19.04 dB, 34.8 / 33.3 % | 20.82, 18.5 / 27.7 % | 21.10, 17.3 / 27.3 % | 21.52, 14.7 / 26.4 % | 25.27, 8.8 / 24.5 % | 26.42, 6.8 / 20.6 % |
+
+On the path, what the test hides is little of the actors' area (0.5 % pooled at 5 %) but much of small, distant
+actors (9.4 % per frame), where the reconstruction's depth is coarsest. 3 m off the path it hides a quarter of the
+actors' pixels even at 100 % tolerance: from a viewpoint the drive never took, the reconstruction puts surfaces
+(floaters, smeared geometry seen only at grazing angles) in front of what CARLA shows, at half its range or nearer.
+
+So on a reconstruction of CARLA's own world the depth test only loses: CARLA's occlusion is exact, and the
+reconstruction's median depth is a few per cent off everywhere and far off at blurred edges and floaters. `auto`
+therefore uses `mask` there; `depth` is for reconstructions whose geometry is not CARLA's, where these numbers say a
+5 % tolerance hides a tenth of the actors' pixels, mostly on small, distant cars.
+
+**Cost** (a frame, medians; the GPU was shared with other jobs at about 75 % utilisation, so the 1280 × 720 numbers
+spread to 70 ms at the 90th percentile): at 640 × 360, rendering the background 6.0 ms and compositing 0.5 ms; at
+1280 × 720 (rendered at 640 × 360 and upsampled) 14.8–20.4 ms and 6.7–6.9 ms. Reading CARLA's frame and labels and
+writing the JPEG: 6.7 ms at 640 × 360, 49 ms at 1280 × 720; measuring against CARLA: 12 ms and 245–257 ms. A 300-frame
+1280 × 720 re-drive composites and measures in 70–180 s; its CARLA drive took 58 s (5.2 steps a second, labels
+included) plus the server's start.
 
 ## The Replay page
 
@@ -400,7 +565,8 @@ on the log's own source (a Falcon run, KITTI raw or nuScenes; a ROS 2 bag or Way
 ego moved −3 to +3 m by a slider (rendered on a worker thread), and the held-out and novel-view numbers and the cost
 are shown. *Measure novel views* runs `falcon recon eval` with ±0.5 m and ±1 m warped references and a 1 m warp
 check; *Re-render the log from the shifted path* runs `falcon recon rerender` at the slider's offset into the
-workspace's runs.
+workspace's runs. *Hybrid world* composites a recorded drive of the workspace, or drives the log's path anew with seeded
+traffic at the slider's offset ([hybrid worlds](#hybrid-worlds-carlas-actors-in-the-reconstruction)).
 
 ## From a dashcam
 
@@ -629,7 +795,16 @@ the camera's layout).
 - **Determinism**: not with several CPU threads; on CUDA measured on one machine, driver and torch version only.
 - **LPIPS** is not reported; nuScenes and Waymo are not verified on real files (none on this machine); Waymo and ROS 2
   bags are not reconstructed.
-- Re-rendered runs have no objects labels; their range and semantic labels are estimates.
+- Re-rendered runs have no objects labels; their range and semantic labels are estimates (a hybrid world's are
+  CARLA's).
+- **Hybrid worlds**: no shadows or lighting between CARLA's actors and the reconstruction (measured: the background
+  near actors is 7.8 dB worse on the path); the actors look like CARLA's meshes, not the log's; road a source actor
+  hid in every frame renders as a blur (12.4 dB there); the depth test, needed for a reconstruction whose geometry is
+  not CARLA's, hides a tenth of small actors' pixels on the path and a quarter of all actor pixels 3 m off it; the
+  re-drive's ego follows the logged path kinematically and does not yield; compositing runs after the drive (a policy
+  that drives on the hybrid image is not wired in); pinhole cameras only (fisheye cameras of the rig keep CARLA's
+  image). Measured on one CARLA reconstruction (Town 10); a reconstruction of real footage aligned to a CARLA world is
+  accepted (`--align`) but not measured, and CARLA's frame is no ground truth for it.
 - **From a dashcam**: monocular odometry with the GPS speed for scale; the poses are only as good as the measured
   residuals (metres against the GPS, which has metres of error itself). Not modelled: rolling shutter, auto-exposure,
   motion blur, rain drops on the windscreen; wipers are bridged (step 4) but rain defeats the odometry more often than

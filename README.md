@@ -68,8 +68,8 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
   [Indian road assets](docs/indian-assets.md)).
 - **Real to sim** (1.3): a geometry-preserving sim-to-real translator (CUT, trained here) whose translated runs keep
   their labels, checked per frame; neural reconstruction of recorded drives as 3D Gaussians (Triton kernels, a
-  pure-PyTorch fallback) re-rendered from new viewpoints, including from your own dashcam's footage and GPS
-  ([translation](docs/translation.md), [reconstruction](docs/reconstruction.md), [dashcam](docs/dashcam.md)).
+  pure-PyTorch fallback) re-rendered from new viewpoints, including from your own dashcam's footage and GPS; hybrid
+  worlds — CARLA's reactive actors composited over a reconstruction, labels CARLA's ([translation](docs/translation.md), [reconstruction](docs/reconstruction.md), [dashcam](docs/dashcam.md)).
 - **Learned worlds** (1.4): a latent world model scored honestly against baselines, policies learnt in imagination,
   end-to-end camera policies; adversarial traffic that learns to make the ego fail within realism limits;
   vision-language driving answers scored against the simulator's truth ([world-model training](docs/world-model-training.md),
