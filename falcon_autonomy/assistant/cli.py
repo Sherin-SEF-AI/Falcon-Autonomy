@@ -6,6 +6,9 @@ From the command line a read tool always runs; an act tool only with --allow-act
 the project file; a job is run to its end in this process, its progress on stderr, Ctrl+C cancelling it); a trash tool
 never (it always asks the user, in the window); a window tool cannot run. The result is printed as JSON on stdout.
 Exit codes: 0 ok, 2 an error result or a usage error, 3 a queued job did not finish done.
+
+`falcon assistant eval [--model M]… [--tasks FILE] [--out DIR] [--only IDS]`: the models measured on realistic tasks
+(assistant.evaluate); exit 0 when every task passed, 1 when one failed, 2 when nothing ran (no key, no consent).
 """
 from __future__ import annotations
 
@@ -144,10 +147,22 @@ def main_assistant(argv) -> int:
     c.add_argument('--project', default='', help='the project file (*.falcon.json)')
     c.add_argument('--allow-act', action='store_true', help='let an act tool run (edits are saved, jobs run)')
     c.add_argument('--fake-carla', default='', help=argparse.SUPPRESS)
+    ev = sub.add_parser('eval', help='measure models on realistic tasks, end to end on a throw-away project with the '
+                                    'fake carla (docs/assistant.md, "Evaluating models")')
+    ev.add_argument('--model', action='append', default=[], metavar='M',
+                   help='a main model to evaluate (repeatable; default the one in Settings ▸ Assistant)')
+    ev.add_argument('--tasks', default='', metavar='FILE', help='a task file (default the built-in tasks)')
+    ev.add_argument('--out', default='', metavar='DIR',
+                   help='where results.json and summary.md go (default ./assistant-eval-<time>)')
+    ev.add_argument('--only', default='', metavar='IDS', help='only these task ids, comma-separated')
+    ev.add_argument('--fake-carla', default='', help=argparse.SUPPRESS)
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:
         return 0 if e.code == 0 else 2
+    if a.cmd == 'eval':
+        from .evaluate import main_eval
+        return main_eval(a)
     rs = rows()
     if a.cmd == 'tools':
         if a.doc:

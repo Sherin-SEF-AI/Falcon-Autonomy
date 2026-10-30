@@ -229,6 +229,54 @@ API reference), read on 2026-10-30:
 
 Nothing was sent to Groq while building this: the tests run against a fake server (`tests/fake_groq.py`).
 
+## Evaluating models
+
+`falcon assistant eval` measures how well a model does Falcon's work through the assistant: about twenty realistic
+requests (`falcon_autonomy/assistant/eval_tasks.json`) — *find my worst rare case in the lead_brake study and replay
+it*, *record a 10 s night drive in the Bengaluru world and check its dataset health*, *job N failed: why?*, *add a
+trigger rule that marks close calls*, *compare my last two drives*, *tag every rainy run*, *move this run to the
+trash* (the harness answers the approval card with no), a request about a run from the dashcam footage (it must be
+refused), a request to change a setting (it must not act) and more — each run end to end by the real agent with its
+permission mode, its tools on demand and your per-minute token limit.
+
+```
+falcon assistant eval --out eval-results                     # your main model (Settings ▸ Assistant)
+falcon assistant eval --model openai/gpt-oss-120b --model qwen/qwen3.8-27b --out eval-results
+falcon assistant eval --tasks my-tasks.json --only explain_failed_job,add_trigger_rule --out eval-results
+```
+
+It uses your key, your server, your prices and your token limit as Settings ▸ Assistant has them (read, never
+changed), and is refused — exit 2, nothing sent — until the assistant is on, its notice accepted and a key stored. It
+does send requests: each task is several model requests, each carrying the conversation and the tool schemas sent
+that step (see *Tools on demand*), so a run takes a real share of a plan's daily tokens; your per-minute limit paces
+them, and `--only` runs a few tasks.
+
+**Nothing touches your work.** Each task runs on its own throw-away project (the default world and rig with a small
+camera) in a temporary folder that is deleted afterwards; its jobs run on the fake carla (`tests/fake_carla` in
+Falcon's source folder: the workers run against a stand-in for CARLA's API, no server is started) on a job queue with
+its own locks — your workspace, your settings and any CARLA server are never used. The *Bengaluru* world of that task
+is a Town10HD stand-in the task's setup adds under that name: the task measures whether the model finds and uses the
+right world, not an OSM import.
+
+**How success is checked.** A task's setup is declarative and goes through the tools themselves (drives queued and
+waited for, a small sweep, a drive whose server never answers, a run marked as dashcam-derived — a marker, no footage).
+Its criteria are machine-checked after the turn (and after the jobs the assistant queued have ended): the tool calls
+made (with the arguments that matter), calls and tiers that must not be used, a refusal returned by a tool, how
+approval cards were answered, the project afterwards (a trigger rule matching `actor.ttc`, 20 vehicles in the default
+profile), runs still there, read tools called afterwards (`runs_search tag:rain` finds one run), the jobs' outcomes,
+words the answer must contain, and no number flagged by the grounding check. A task fails with the criteria it missed,
+in words. A task file of your own uses the same format (`assistant/evaluate.py`, `TASK_SCHEMA`).
+
+**What it reports**, per model, in `DIR/summary.md` (printed) and `DIR/results.json`: the success rate, the mean
+number of model requests per task, the tokens (the server's counts), the mean wall time of a turn and the time spent
+waiting for the model, the **estimated** cost from your price table (blank for a model without a price — it is your
+configuration, not a bill), and the tasks whose answers had numbers not from Falcon's data; then each task with why it
+failed. `DIR/audit/` keeps each task's audit log (no payloads). Exit 0 when every task passed, 1 otherwise.
+
+No results are given here: none were measured with a real key while building this (the tests run the tasks against
+the fake server with scripted answers). Run it yourself; results depend on the model, the server's version of it and
+the day.
+
 ## For developers
 
 - `assistant.tool_api` — the tool contract (tiers, the registry, `NEVER`, `call`); `assistant.privacy` — redaction and
