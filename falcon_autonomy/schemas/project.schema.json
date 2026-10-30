@@ -115,7 +115,7 @@
       "properties": {
         "id": {"$ref": "#/$defs/id"},
         "name": {"type": "string", "minLength": 1},
-        "type": {"enum": ["camera.pinhole", "camera.fisheye", "lidar", "radar", "gnss", "imu"]},
+        "type": {"enum": ["camera.pinhole", "camera.fisheye", "lidar", "radar", "gnss", "imu", "audio_array"]},
         "pose": {"$ref": "#/$defs/pose"},
         "width": {"type": "integer", "minimum": 16, "maximum": 8192},
         "height": {"type": "integer", "minimum": 16, "maximum": 8192},

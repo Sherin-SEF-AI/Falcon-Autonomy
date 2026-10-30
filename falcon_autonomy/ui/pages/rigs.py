@@ -21,7 +21,7 @@ from ..widgets import Form, KeyValues, Page, Section, button, label, scroll, set
 
 LABELS = ('semantic', 'instance', 'depth', 'boxes2d', 'boxes3d', 'flow')
 TYPE_NAMES = {'camera.pinhole': 'Pinhole camera', 'camera.fisheye': 'Fisheye camera', 'lidar': 'Lidar',
-              'radar': 'Radar', 'gnss': 'GNSS', 'imu': 'IMU'}
+              'radar': 'Radar', 'gnss': 'GNSS', 'imu': 'IMU', 'audio_array': 'Microphone array (synthetic)'}
 FIELDS = {     # type: [(key, label, kind, lo, hi, decimals/None, unit)]
     'camera.pinhole': [('width', 'Width', 'int', 16, 8192, None, 'px'), ('height', 'Height', 'int', 16, 8192, None, 'px'),
                        ('fov', 'Field of view (horiz.)', 'float', 1, 179, 1, '°'),
@@ -49,6 +49,8 @@ FIELDS = {     # type: [(key, label, kind, lo, hi, decimals/None, unit)]
     'imu': [('rate_hz', 'Rate', 'float', 1, 1000, 0, 'Hz'),
             ('noise_accel_stddev', 'Accelerometer noise (1 σ)', 'float', 0, 1, 4, 'm/s²'),
             ('noise_gyro_stddev', 'Gyroscope noise (1 σ)', 'float', 0, 1, 5, 'rad/s')],
+    'audio_array': [('mics', 'Microphones (circle)', 'int', 2, 64, None, ''),
+                    ('radius', 'Circle radius', 'float', 0.01, 2, 3, 'm')],
 }
 
 
