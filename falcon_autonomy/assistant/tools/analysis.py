@@ -18,7 +18,17 @@ OUTPUTS = {'study': ('studies', ('study.json',)), 'evaluation': ('evaluations', 
            'translator': ('translators', ('',)), 'reconstruction': ('recon', ('',)),
            'training': ('training', ('',)), 'worldmodel': ('worldmodels', ('',)), 'policy': ('policies', ('',)),
            'export': ('exports', ('',)), 'report': ('reports', ('',)), 'v2x_benefit': ('v2x', ('',)),
-           'derived': ('derived', ('',)), 'leaderboard': ('leaderboard', ('leaderboard.json',))}
+           'derived': ('derived', ('',)), 'leaderboard': ('leaderboard', ('leaderboard.json',)),
+           # the lab's jobs (tools/lab.py), whose numbers analysis_outputs reads with an id (lab.result)
+           'ci': ('ci', ('ci-results.json',)), 'deploy': ('deploy', ('deploy.json',)),
+           'adversary': ('adversary', ('adversary-eval.json', os.path.join('policy', 'policy.json'))),
+           'experiment': ('experiments', ('experiment.json',)),
+           'vlm': (os.path.join('vlm', 'evaluations'), ('scores.json', 'run.json')), 'log': ('logs', ('log.json',)),
+           'hil': ('runs', ('hil.json',)), 'replay_comparison': ('runs', ('comparison.json',))}
+LAB = ('ci', 'deploy', 'adversary', 'experiment', 'vlm', 'log', 'hil', 'replay_comparison')
+READER = {'study': 'analysis_study', 'evaluation': 'analysis_evaluation', 'comparison': 'analysis_evaluation',
+          'gap': 'analysis_gap', 'suite': 'analysis_suite', 'rootcause': 'analysis_rootcause',
+          'v2x_benefit': 'analysis_v2x_benefit'}
 
 
 def compact(v, depth=0, cap=10):
@@ -44,12 +54,23 @@ def compact(v, depth=0, cap=10):
 @tool('analysis_outputs', 'analysis', 'read',
       'The workspace\'s analysis outputs of one kind, newest first, by id (folder or file name): studies, '
       'evaluations, comparisons, gaps, suites, root-cause answers, translators, reconstructions, trainings, world '
-      'models, policies, exports, reports, V2X benefit files, derived data, leaderboards. Use the ids in the '
-      'analysis and jobs tools.',
-      C.obj({'kind': C.s('what to list', enum=sorted(OUTPUTS)), 'limit': C.i('rows (default 20)', minimum=1,
-                                                                             maximum=50)}, ['kind']))
-def analysis_outputs(ctx, kind, limit=20):
+      'models, policies, exports, reports, V2X benefit files, derived data, leaderboards, and the lab jobs\' outputs '
+      '(CI runs, deployments, adversary trainings and evaluations, experiments, VLM evaluations, imported logs, HIL '
+      'sessions, replay comparisons). Use the ids in the analysis and jobs tools. With id, a lab output\'s numbers: '
+      'a CI run\'s verdict and gates, a HIL session\'s latency per stage and deadlines, a deployment\'s engines '
+      '(latency, power, AP ratio, gate verdict), failure rates, an experiment\'s arms with intervals, VLM scores '
+      '(text only), a log\'s actors and duration, a replay comparison\'s differences.',
+      C.obj({'kind': C.s('what to list', enum=sorted(OUTPUTS)),
+             'id': C.s('a lab output\'s id: its numbers (a run id for hil)'),
+             'limit': C.i('rows (default 20)', minimum=1, maximum=50)}, ['kind']))
+def analysis_outputs(ctx, kind, id='', limit=20):
     from ..privacy import private_reason
+    if id:
+        if kind not in LAB:
+            raise ToolError(f'read a {kind} with {READER[kind]}' if kind in READER else
+                            f'a {kind} id is used by the jobs tools; nothing more to read here')
+        from .lab import result
+        return result(ctx, kind, id)
     folder, must = OUTPUTS[kind]
     root = os.path.join(C.workspace(ctx), folder)
     rows, hidden = [], 0

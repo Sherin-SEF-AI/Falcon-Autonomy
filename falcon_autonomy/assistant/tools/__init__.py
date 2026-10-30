@@ -1,5 +1,5 @@
 """The assistant's tools: importing this package registers every one in tool_api.REGISTRY (docs/assistant-tools.md is
-generated from it). One module per group — project, runs, jobs, analysis, ui, knowledge, system — each calling the code
+generated from it). One module per group — project, runs, jobs, analysis, lab, ui, knowledge, system — each calling the code
 the GUI pages and the CLI call; _common holds what they share (ids to workspace paths, privacy checks, edits, jobs,
 compact results); _compact holds each tool's one-line description for the model (the full texts are the doc).
 
@@ -9,7 +9,7 @@ loaded, the user's settings, a job queue with the subprocess launcher and a Carl
 from __future__ import annotations
 
 from ..tool_api import REGISTRY
-from . import analysis, jobs, knowledge, project, runs, system, ui  # noqa: F401 (registers the tools)
+from . import analysis, jobs, knowledge, lab, project, runs, system, ui  # noqa: F401 (registers the tools)
 from ._compact import compact_registry
 
 compact_registry(REGISTRY)          # what the model is sent: one-line descriptions, short argument texts (_compact)

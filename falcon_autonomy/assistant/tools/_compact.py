@@ -19,7 +19,8 @@ DETAILS: dict = {}          # name -> {'description': the full text, 'params': t
 
 SHORT = {
     # analysis
-    'analysis_outputs': 'List analysis outputs of one kind (studies, evaluations, suites, …) by id, newest first.',
+    'analysis_outputs': 'List outputs of one kind (studies, suites, CI runs, …) by id; with id, a lab output\'s '
+                        'numbers.',
     'analysis_study': 'A sweep or search study: ranked failures with RSS labels, parameter values and run ids.',
     'analysis_failure_map': 'Failure-region map of a study over two parameters: runs, failure share, mean per cell.',
     'analysis_criticality': 'A scenario run\'s recorded criticality (TTC, PET, distance, deceleration) and RSS label.',
@@ -31,7 +32,7 @@ SHORT = {
     'analysis_rules': 'Check a run against the Indian traffic rules: violations, per km, lane margins.',
     'analysis_report_sources': 'What can be reported on (per report kind) and the reports already written.',
     # jobs
-    'jobs_drive': 'Queue a recorded drive (world, rig, seconds, seed, weather). Returns the job and run ids.',
+    'jobs_drive': 'Queue a recorded drive. Returns the job and run ids.',
     'jobs_scenario_run': 'Queue one run of a scenario, sampled with a seed or given parameter values.',
     'jobs_sweep': 'Queue a parameter sweep of a scenario (a resumable study).',
     'jobs_search': 'Queue a rare-case search over a scenario\'s parameters (criticality or perception).',
@@ -45,21 +46,30 @@ SHORT = {
     'jobs_evaluate': 'Queue scoring a registered model on drives (AP/AR or mIoU with intervals).',
     'jobs_compare_evaluations': 'Queue a paired comparison of two evaluations (B − A with intervals).',
     'jobs_gap': 'Queue measuring the sim-to-real gap of drives against a real image set.',
-    'jobs_export': 'Queue exporting a run (COCO, YOLO, KITTI, nuScenes, Waymo-style, BDD, MCAP, occupancy).',
+    'jobs_export': 'Queue exporting a run in a dataset or log format.',
     'jobs_derive': 'Queue deriving synthetic audio, world-model or language data from a drive.',
     'jobs_reconstruct': 'Queue a neural (Gaussian splatting) reconstruction of a drive (GPU job).',
     'jobs_hybrid': 'Queue a hybrid world: a drive\'s CARLA actors composited over a reconstruction.',
-    'jobs_stack_suite': 'Queue a stack test suite (scenarios × seeds, faults, MRM, degraded mode).',
+    'jobs_stack_suite': 'Queue a stack test suite: scenarios × seeds, judged pass/fail.',
     'jobs_safety_case': 'Queue the safety-case report of a finished suite against the workspace ODD.',
     'jobs_v2x_benefit': 'Queue measuring what roadside units add, over runs that recorded CPMs.',
-    'jobs_report': 'Queue an HTML report (iteration, evaluation, dataset, study, …) with provenance.',
+    'jobs_report': 'Queue an HTML report of a source, with provenance.',
     'jobs_why': 'Queue "why did it fail?" counterfactual re-runs of a failing scenario run.',
     'jobs_loop': 'Queue the closed loop\'s next step, a run to step N, or a new iteration.',
-    'jobs_apply_map_edits': 'Queue re-converting an imported world with its map edits.',
+    'jobs_apply_map_edits': 'Queue re-converting an imported world with its map edits, or a re-import when it has '
+                            'none.',
     'jobs_list': 'This session\'s jobs (or the workspace\'s job history) with state and progress.',
     'jobs_get': 'One job: state, progress, step, ETA, exit, error and log tail.',
     'jobs_cancel': 'Cancel a queued or running job (it tidies up first).',
     'jobs_wait': 'Wait until any of the jobs is final or the timeout (≤ 600 s) passes.',
+    # lab
+    'lab_hil': 'Queue a hardware-in-the-loop session on the simulated device.',
+    'lab_deploy': 'Queue deploying an ONNX detector as TensorRT engines, profiled and gated.',
+    'lab_ci': 'Queue CI mode on a stack suite, with its gates.',
+    'lab_replay': 'Log replay: import a log, replay it in CARLA, or compare two replays.',
+    'lab_adversary': 'Queue training or evaluating adversarial traffic.',
+    'lab_experiment': 'Queue a mixed sim/real or active-learning experiment.',
+    'lab_vlm': 'Queue scoring a VLM\'s driving explanations.',
     # knowledge
     'knowledge_manual': 'Search the built-in manual offline: best sections with heading, link and text.',
     'knowledge_cli': 'Falcon\'s command-line commands with what they do, optionally filtered.',
@@ -71,18 +81,18 @@ SHORT = {
     'project_scenarios': 'Every runnable scenario: built-ins and the project\'s own, with parameters.',
     'project_options': 'Valid choices for edits: towns, weather, sensor types, actions, rule syntax, presets.',
     'project_world_add': 'Add a CARLA town as a world. Returns its id.',
-    'project_world_set': 'Change a world: name, town, traffic profile, weather, speed limits, city, sensor physics.',
+    'project_world_set': 'Change the given settings of a world.',
     'project_world_import_osm': 'Queue importing a place from an OSM file in the workspace\'s osm/ folder.',
     'project_world_add_imported': 'Add a finished OSM import (or a finished map-edit re-conversion) to the project.',
     'project_map_edit': 'Add, replace or drop one map edit of an imported world (checked against its OSM data).',
     'project_rig_add': 'Add a rig (default, or a copy of one). Returns its id.',
     'project_rig_set': 'Rename a rig or change its vehicle.',
-    'project_sensor_add': 'Add a sensor (camera, fisheye, lidar, radar, GNSS, IMU, audio array) to a rig.',
+    'project_sensor_add': 'Add a sensor of a given type to a rig.',
     'project_sensor_set': 'Change a sensor: name, pose, fields (resolution, fov, labels, faults, …).',
     'project_scenario_create': 'Create an editable scenario as a copy of a built-in or project scenario.',
-    'project_scenario_set': 'Edit a project scenario: parameters, actors, timeline, ego, weather, pass criteria.',
+    'project_scenario_set': 'Edit the given parts of a project scenario.',
     'project_traffic_add': 'Add a traffic profile (preset or copy). Returns its id.',
-    'project_traffic_set': 'Change a traffic profile: counts, handedness, fleet, behaviour, lateral filtering.',
+    'project_traffic_set': 'Change the given settings of a traffic profile.',
     'project_trigger_add': 'Add a trigger rule "when <condition> -> <action>" (parsed and checked).',
     'project_trigger_set': 'Change, enable or disable a trigger rule (checked).',
     'project_trigger_check': 'Check the project\'s trigger rules, or one rule text, with the rule parser.',
@@ -90,7 +100,7 @@ SHORT = {
     'project_rsu_place': 'Place a roadside unit at a junction corner or a CARLA position. Returns its id.',
     'project_rsu_set': 'Change a roadside unit: position, yaw, height, CPM settings.',
     'project_odd_set': 'Set the loop\'s ODD or model, or write the safety-case ODD (odd.json).',
-    'project_remove': 'Remove a world, rig, scenario, profile, rule, drive set, roadside unit or sensor.',
+    'project_remove': 'Remove one project item by kind and id.',
     # runs
     'runs_search': 'Search runs with the run query language (e.g. "weather:rain dur>20 events:collision").',
     'runs_get': 'One run compactly: settings, performance, summary, scenario result, streams held.',
@@ -125,15 +135,26 @@ def _short_arg(text: str) -> str:
     return t if len(t) <= ARG_CHARS else t[:ARG_CHARS - 1].rstrip() + '…'
 
 
-FILLER = {'id', 'ids', 'its', 'the', 'a', 'an', 'of', 'to', 'default', 'run', 'runs'}
+FILLER = {'id', 'ids', 'its', 'the', 'a', 'an', 'of', 'to', 'default', 'run', 'runs', 'drives', 'rows', 'new',
+          'another', 'short'}
+BOOL_FILLER = {'default', 'true', 'false', 'on', 'off'}
 
 
-def _says_nothing(name: str, text: str, enum: bool = False) -> bool:
-    """A description that only repeats its argument's name ('seed', 'world id', 'its name'), or a short one beside an
-    enum that already says it ('search method')."""
-    words = set(re.findall(r'[a-z0-9]+', text.lower()))
-    return words <= (set(re.findall(r'[a-z0-9]+', name.lower().replace('_', ' '))) | FILLER) or \
-        (enum and len(words) <= 3)
+def _words(text: str) -> set:
+    return set(re.findall(r'[a-z0-9]+', text.lower()))
+
+
+def _says_nothing(name: str, text: str, enum=(), kind: str = '') -> bool:
+    """A description that only repeats its argument's name ('seed', 'world id', 'its name', 'a new name'), a boolean's
+    that only gives its default ('default true'), or one beside an enum that is short ('search method') or only lists
+    the enum's values ('once, every or cooldown')."""
+    words = _words(text)
+    own = _words(name.replace('_', ' ')) | FILLER
+    if words <= own or (kind == 'boolean' and words <= own | BOOL_FILLER):
+        return True
+    if enum:
+        return len(words) <= 3 or words <= set().union(*(_words(str(e)) for e in enum)) | {'or', 'and'}
+    return False
 
 
 def minify(schema):
@@ -150,7 +171,8 @@ def minify(schema):
             d = x.get('description')
             if isinstance(d, str) and not top:
                 d = _short_arg(d)
-                if item or _says_nothing(name, d, 'enum' in x or 'enum' in (x.get('items') or {})):
+                if item or _says_nothing(name, d, x.get('enum') or (x.get('items') or {}).get('enum') or (),
+                                         x.get('type', '')):
                     x.pop('description')
                 else:
                     x['description'] = d

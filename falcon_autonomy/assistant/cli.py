@@ -39,8 +39,8 @@ user's dashcam footage to the model.
 From the command line: `falcon assistant tools [--json]` lists them; `falcon assistant call NAME '{"arg": …}'
 --project P.falcon.json` runs a read tool (`--allow-act` lets an act tool run; trash tools never run from there).
 """
-GROUP_TITLES = {'project': 'Project', 'runs': 'Runs', 'jobs': 'Jobs', 'analysis': 'Analysis', 'ui': 'Window',
-                'knowledge': 'Knowledge', 'system': 'System'}
+GROUP_TITLES = {'project': 'Project', 'runs': 'Runs', 'jobs': 'Jobs', 'analysis': 'Analysis', 'lab': 'Lab',
+                'ui': 'Window', 'knowledge': 'Knowledge', 'system': 'System'}
 
 
 def doc_markdown() -> str:

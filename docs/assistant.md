@@ -67,9 +67,10 @@ mode the model can ask to be resumed when a job it queued finishes (`plan_wait_j
 
 ## Tools on demand, and the per-minute token limit
 
-Falcon's 92 tools ([the list](assistant-tools.md)) are in seven groups whose compact schemas weigh, in tokens
-(characters / 4), about: project 3,100 (25 tools), jobs 3,300 (29), analysis 900 (11), runs 860 (11), ui 650 (8),
-knowledge 310 (4), system 180 (4) — 9,300 in all, more than Groq's base per-minute limit. So each step sends:
+Falcon's 99 tools ([the list](assistant-tools.md)) are in eight groups whose compact schemas weigh, in tokens
+(characters / 4), about: project 3,000 (25 tools), jobs 3,200 (29), analysis 940 (11), lab 860 (7: hardware in the
+loop, deployment, CI mode, log replay, adversarial traffic, experiments, VLM evaluation), runs 850 (11), ui 650 (8),
+knowledge 310 (4), system 180 (4) — 9,960 in all, more than Groq's base per-minute limit. So each step sends:
 
 - the **core**: the runtime's own `plan_update`, `plan_wait_jobs`, `tools_find` and `tools_load`, with the two small
   groups knowledge and system (about 1,200 tokens together);

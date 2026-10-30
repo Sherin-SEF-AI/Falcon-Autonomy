@@ -865,29 +865,47 @@ def jobs_loop(ctx, **a):
 
 
 def _apply_edits(ctx, world, dry=False):
+    """(world, import config, the world id it writes): its map edits applied into worlds/<id>/edit-<hash> (the map
+    editor's Apply), or without edits a re-import with the current converter into a new world (Worlds ▸ Re-import)."""
     from ...core import mapedit as ME
+    from ...core.project import new_id
     from ...core.worlds import world_dir
     _i, w = C.find(ctx, 'worlds', world, 'world')
+    if w.get('kind') != 'osm':
+        raise ToolError('only a world imported from OpenStreetMap can be re-converted')
     edits = (w.get('osm') or {}).get('edits') or []
-    if w.get('kind') != 'osm' or not edits:
-        raise ToolError('the world has no map edits to apply (project_map_edit adds them)')
-    folder = os.path.join(C.workspace(ctx), os.path.dirname(w['xodr']))
-    out = os.path.join(world_dir(C.workspace(ctx), w['id']), f'edit-{ME.edits_hash(edits)[:10]}')
-    return w, ME.import_config_for(w, folder, out, edits)
+    folder = C.checked(ctx, os.path.join(C.workspace(ctx), os.path.dirname(w['xodr'])))
+    wid = w['id'] if edits else new_id('world')
+    out = os.path.join(world_dir(C.workspace(ctx), wid), f'edit-{ME.edits_hash(edits)[:10]}') if edits else \
+        world_dir(C.workspace(ctx), wid)
+    try:
+        return w, ME.import_config_for(w, folder, out, edits), wid
+    except FileNotFoundError as e:
+        raise ToolError(f'cannot re-convert: {e}') from e
+
+
+def _apply_preview(ctx, world):
+    w, cfg, wid = _apply_edits(ctx, world)
+    if cfg['edits']:
+        return f'apply {len(cfg["edits"])} map edit(s) to {w["name"]} (osm_import worker)'
+    return f're-import {w["name"]} with the current converter into a new world {wid} (osm_import worker; the old ' \
+           'world and its runs stay)'
 
 
 @tool('jobs_apply_map_edits', 'jobs', 'act',
-      'Re-convert an imported world with its map edits (the map editor\'s Apply): a job in CARLA\'s Python (no '
-      'server). When done, project_world_add_imported with the world id takes the new conversion into the project.',
-      C.obj({'world': C.s('imported world id')}, ['world']),
-      preview=lambda ctx, world: f'apply {len(_apply_edits(ctx, world)[1]["edits"])} map edit(s) to '
-                                 f'{_apply_edits(ctx, world)[0]["name"]} (osm_import worker)')
+      'Re-convert an imported world with its map edits (the map editor\'s Apply), or, when it has none, re-import it '
+      'with the current converter (Worlds ▸ Re-import: same area, centre, handedness and settings) into a new world: '
+      'a job in CARLA\'s Python (no server). When done, project_world_add_imported with the returned world id takes '
+      'the new conversion into the project.',
+      C.obj({'world': C.s('imported world id')}, ['world']), preview=_apply_preview)
 def jobs_apply_map_edits(ctx, world):
-    w, cfg = _apply_edits(ctx, world)
-    job = C.need_service(ctx).submit_osm_import(cfg, title=f'Apply map edits: {w["name"]}')
+    w, cfg, wid = _apply_edits(ctx, world)
+    title = f'Apply map edits: {w["name"]}' if cfg['edits'] else f'Re-import: {w["name"]}'
+    job = C.need_service(ctx).submit_osm_import(cfg, title=title)
     ctx.emit('job_queued', {'job': job.id, 'title': job.spec.title})
-    return {'job': job.id, 'title': job.spec.title, 'world': w['id'],
-            'next': 'jobs_wait, then project_world_add_imported with this world id'}
+    return {'job': job.id, 'title': job.spec.title, 'world': wid, 'reimport': not cfg['edits'],
+            'next': 'jobs_wait, then project_world_add_imported with this world id' + (
+                '' if cfg['edits'] else ' (added as a new world beside the old one)')}
 
 
 # ================================================================================================= following jobs
