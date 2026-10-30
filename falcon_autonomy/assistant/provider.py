@@ -134,11 +134,25 @@ def model_params(model: str, effort: str = 'medium', quick: bool = False) -> dic
                 'include_reasoning': False}
     if m == 'qwen/qwen3-32b':
         return {'reasoning_effort': 'none'} if quick else {'reasoning_format': 'hidden'}
-    if m.startswith('qwen/qwen3'):
-        return {'reasoning_format': 'hidden'} if quick else {'reasoning_format': 'hidden',
-                                                              'reasoning_effort': effort if effort in
-                                                              REASONING_EFFORTS else 'medium'}
+    if m.startswith('qwen/qwen3'):             # qwen3.8-27b: none (its default: no reasoning tokens) … high
+        return {'reasoning_effort': 'none', 'reasoning_format': 'hidden'} if quick else \
+            {'reasoning_format': 'hidden', 'reasoning_effort': effort if effort in REASONING_EFFORTS else 'medium'}
     return {}
+
+
+# parallel tool use, as Groq's tool-use page lists it (2026-10-30): gpt-oss takes tools one call at a time
+PARALLEL_TOOLS = {'openai/gpt-oss': False, 'qwen/': True, 'llama-3': True, 'meta-llama/': True, 'minimaxai/': True,
+                  'meta-models/': True}
+
+
+def parallel_tools(model: str):
+    """parallel_tool_calls for model: False for the models without parallel tool use (sent, so a call never fans out),
+    True for those with it, None (left out) for a model Falcon knows nothing about."""
+    m = (model or '').lower()
+    for prefix, on in PARALLEL_TOOLS.items():
+        if m.startswith(prefix):
+            return on
+    return None
 
 
 OPTIONAL_PARAMS = ('reasoning_effort', 'include_reasoning', 'reasoning_format', 'stream_options',
@@ -167,7 +181,7 @@ def classify(status: int, message: str, model: str, code: str = '') -> ProviderE
         return ProviderError('model', f'The model {model or "?"} is not available (it may have been retired). '
                              'Choose another in Settings ▸ Assistant — Refresh lists what the server offers.' + said,
                              status)
-    if status == 413 or (status == 429 and ('tokens per minute' in low or 'tpm' in low) and 'requested' in low):
+    if status == 413:                          # a 429 over the TPM limit is a wait (retry-after), not this
         if 'tokens per minute' in low or 'tpm' in low or 'rate limit' in low:
             return ProviderError('too_large', 'This request is larger than your plan\'s tokens-per-minute limit on '
                                  'the server. Clear the conversation or wait a minute; the limit is on your account '
@@ -241,6 +255,12 @@ def parse_prices(text: str) -> dict:
 
 def format_prices(prices: dict) -> str:
     return '\n'.join(f'{m}  {p[0]:g}  {p[1]:g}' for m, p in sorted((prices or {}).items()))
+
+
+def estimate_tokens(*objs) -> int:
+    """A request's tokens before it is sent: its JSON's characters / 4 (an estimate; the server's count comes back)."""
+    import json
+    return sum(len(json.dumps(o, ensure_ascii=False)) for o in objs if o) // 4
 
 
 def fmt_tokens(n: int) -> str:

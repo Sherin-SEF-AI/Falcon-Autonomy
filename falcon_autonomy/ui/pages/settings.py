@@ -151,7 +151,17 @@ class SettingsPage(Page):
         mr.addWidget(self.as_main, 1)
         mr.addWidget(button('Refresh', self.assistant_refresh, tip='List the models the server offers now'))
         self._row(f, 'Main model', mr, 'plans, calls Falcon\'s tools, reasons over results')
-        self._row(f, 'Fast model', self.as_fast, 'short answers: summaries, explaining an error')
+        self._row(f, 'Fast model', self.as_fast, 'short answers: summaries, explaining an error; a Qwen model '
+                  '(Preview on Groq) falls back to openai/gpt-oss-20b while the server does not offer it')
+        self.as_tpm = QSpinBox()
+        self.as_tpm.setRange(0, 10_000_000)
+        self.as_tpm.setSingleStep(1000)
+        self.as_tpm.setSuffix(' tokens/min')
+        self.as_tpm.setSpecialValueText('no limit')
+        self.as_tpm.setValue(int(c.get('tpm_limit') or 0))
+        self._row(f, 'Token limit', self.as_tpm, 'your plan\'s tokens per minute (Groq\'s base developer plan: '
+                  '8000) — requests are trimmed and paced to it; your account\'s limits page at console.groq.com '
+                  'is authoritative')
         self.as_temp = QDoubleSpinBox()
         self.as_temp.setRange(0.0, 2.0)
         self.as_temp.setSingleStep(0.1)
@@ -292,7 +302,7 @@ class SettingsPage(Page):
             return None, 'Choose a main and a fast model.'
         return {'base_url': url, 'main_model': main, 'fast_model': fast, 'temperature': self.as_temp.value(),
                 'reasoning_effort': self.as_effort.currentText(), 'mode': self.as_mode.currentData(),
-                'prices': prices}, None
+                'prices': prices, 'tpm_limit': self.as_tpm.value()}, None
 
     def _assistant_apply(self, vals) -> bool:
         svc = self.win.assistant

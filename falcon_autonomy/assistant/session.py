@@ -3,8 +3,8 @@
 WORKSPACE/assistant/conversation.json — the conversation, resumable after a restart: the messages in the wire format
 (user, assistant with its tool calls, tool results), with Falcon's own notes on them under keys starting with '_'
 (never sent: how long a tool took, how it was approved, the numbers of an answer no tool returned, a job event); the
-plan checklist; the tools the user approved for the whole conversation; the activity log (what it changed, and how to
-undo it); the tokens it used. Never the key — nothing here ever holds it.
+plan checklist; the tools the user approved for the whole conversation; the tool groups loaded; the activity log
+(what it changed, and how to undo it); the tokens it used. Never the key — nothing here ever holds it.
 
 WORKSPACE/assistant/audit.jsonl — one line per request to the model server: the time (UTC), what it was for, the model,
 the HTTP status, the token counts, the tools the answer called and the SHA-256 of the exact payload sent (not the
@@ -44,6 +44,7 @@ class Session:
         self.messages: list = []
         self.plan: list = []                 # [{'text', 'done'}]
         self.allowed: list = []              # tool names approved for the whole conversation
+        self.loaded: list = []               # tool groups whose schemas are sent (tools_load, or the user's words)
         self.activity: list = []             # [{'id', 'time', 'tool', 'kind', 'text', ...undo data}]
         self.usage = {'prompt': 0, 'completion': 0, 'cost': 0.0, 'requests': 0}
         self.created = utc()
@@ -70,6 +71,7 @@ class Session:
         self.messages = [m for m in d['messages'] if isinstance(m, dict) and m.get('role')]
         self.plan = [p for p in d.get('plan') or [] if isinstance(p, dict)]
         self.allowed = [str(x) for x in d.get('allowed') or []]
+        self.loaded = [str(x) for x in d.get('loaded') or []]
         self.activity = [a for a in d.get('activity') or [] if isinstance(a, dict)]
         self.usage.update({k: v for k, v in (d.get('usage') or {}).items() if k in self.usage})
         self.created = d.get('created') or self.created
@@ -78,6 +80,7 @@ class Session:
         with self.lock:
             return {'version': VERSION, 'created': self.created, 'saved': utc(), 'messages': copy.deepcopy(self.messages),
                     'plan': copy.deepcopy(self.plan), 'allowed': list(self.allowed),
+                    'loaded': list(self.loaded),
                     'activity': copy.deepcopy(self.activity), 'usage': dict(self.usage)}
 
     def save(self):
@@ -87,7 +90,7 @@ class Session:
 
     def clear(self):
         with self.lock:
-            self.messages, self.plan, self.allowed, self.activity = [], [], [], []
+            self.messages, self.plan, self.allowed, self.activity, self.loaded = [], [], [], [], []
             self.usage = {'prompt': 0, 'completion': 0, 'cost': 0.0, 'requests': 0}
             self.created = utc()
         self.save()

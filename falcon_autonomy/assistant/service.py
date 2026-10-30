@@ -2,9 +2,15 @@
 usage and cost, and the hooks the next features call (docs/assistant.md).
 
 Two models: the main model (cfg main_model) runs the agent — planning, tool calls, reasoning over results; the fast
-model (cfg fast_model) answers one-shot helpers through quick(): a summary, "explain this error", phrasing a
-suggestion. ask() opens the Assistant panel with a request; propose() puts an approval card for a suggested action in
-it. The panel registers itself as the handler of both (ask_handler, propose_handler).
+model (cfg fast_model, Qwen by default) answers one-shot helpers through quick(): a summary, "explain this error",
+phrasing a suggestion. Qwen is a Preview model on Groq: when the server's model list lacks it, or a call says it is
+gone, the fast lane falls back to FAST_FALLBACK and says so once (notice_listeners).
+
+Tokens per minute: the responses of the last 60 s are counted (tpm_used) against the user's limit (cfg tpm_limit);
+tpm_wait says how long a request must wait to fit.
+
+ask() opens the Assistant panel with a request; propose() puts an approval card for a suggested action in it. The
+panel registers itself as the handler of both (ask_handler, propose_handler).
 
 The gate: no request leaves the machine — not a chat, not a model list, not a connection test — until the user has
 turned the assistant on and accepted the notice (NOTICE, version NOTICE_VERSION). Every request is audited
@@ -23,6 +29,7 @@ from .provider import CancelToken, ProviderError, Usage, cost, model_params
 from .session import Audit
 
 NOTICE_VERSION = 1
+FAST_FALLBACK = 'openai/gpt-oss-20b'      # production on Groq: used while the (Preview) fast model is not offered
 NOTICE = """Falcon's assistant sends text to the model server you configure — Groq (api.groq.com) unless you set another \
 — using your own API key. Groq's terms and privacy policy apply to what it receives.
 
@@ -50,8 +57,12 @@ class AssistantService:
         self.ask_handler = None             # ask_handler(text, context): the panel
         self.propose_handler = None         # propose_handler(action): the panel
         self.usage_listeners: list = []     # fn(totals): the status bar
+        self.notice_listeners: list = []    # fn(text): something the user should know once (a model fallen back)
         self._lock = threading.Lock()
         self.totals = {'prompt': 0, 'completion': 0, 'cost': 0.0, 'requests': 0, 'unpriced': 0, 'model': ''}
+        self._window: list = []             # (monotonic time, tokens) of this minute's responses: the TPM in use
+        self._gone: set = set()             # models the server said it does not have (this session)
+        self._told: set = set()
 
     # ------------------------------------------------------------------ configuration
     def cfg(self) -> dict:
@@ -122,9 +133,43 @@ class AssistantService:
         c = self.cfg()
         parts = [f'Connected: the server offers {len(ids)} models.']
         for role, m in (('main', c['main_model']), ('fast', c['fast_model'])):
-            parts.append(f'The {role} model {m} is ' + ('available.' if m in ids else
-                                                        'NOT offered — choose another.'))
+            parts.append(f'The {role} model {m} is ' + (
+                'available.' if m in ids else f'NOT offered — Falcon uses {FAST_FALLBACK} instead.'
+                if role == 'fast' and FAST_FALLBACK in ids else 'NOT offered — choose another.'))
         return ' '.join(parts)
+
+    # ------------------------------------------------------------------ the fast model, and its fallback
+    def listed(self) -> set:
+        return {m['id'] for m in self.cfg().get('models') or [] if isinstance(m, dict) and m.get('id')}
+
+    def fast_model(self) -> str:
+        """The fast model to use: the chosen one, or FAST_FALLBACK when the server's last list (Refresh, Test
+        connection) does not have it or a call this session said it is gone — told once (notice)."""
+        m = self.cfg()['fast_model']
+        if m == FAST_FALLBACK:
+            return m
+        listed = self.listed()
+        if m in self._gone or (listed and m not in listed):
+            self.notice(f'fallback:{m}', f'The fast model {m} is not offered by the server now (Groq lists it as '
+                        f'Preview: it can go at short notice); Falcon uses {FAST_FALLBACK} instead. Settings ▸ '
+                        'Assistant chooses another.')
+            return FAST_FALLBACK
+        return m
+
+    def model_gone(self, model: str):
+        self._gone.add(model)
+
+    def notice(self, key: str, text: str):
+        """Tell the user something once per session (the panel shows it, the log keeps it)."""
+        with self._lock:
+            if key in self._told:
+                return
+            self._told.add(key)
+        for fn in list(self.notice_listeners):
+            try:
+                fn(text)
+            except Exception:                  # noqa: BLE001
+                pass
 
     def context_window(self, model: str):
         for m in self.cfg().get('models') or []:
@@ -133,9 +178,33 @@ class AssistantService:
         return None
 
     # ------------------------------------------------------------------ usage and cost
+    def tpm_used(self, now: float | None = None) -> int:
+        """Tokens of the responses in the last 60 s (prompt and completion, as the server counted them)."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            self._window = [(t, n) for t, n in self._window if now - t < 60.0]
+            return sum(n for _t, n in self._window)
+
+    def tpm_wait(self, tokens: int, now: float | None = None) -> float:
+        """Seconds until a request of about `tokens` fits the user's per-minute limit (0: now). A request larger than
+        the limit itself never fits: the agent trims it first."""
+        limit = int(self.cfg().get('tpm_limit') or 0)
+        now = time.monotonic() if now is None else now
+        if limit <= 0 or self.tpm_used(now) + tokens <= limit:
+            return 0.0
+        with self._lock:
+            win = sorted(self._window)
+        used = sum(n for _t, n in win)
+        for t, n in win:                       # the oldest responses leave the window first
+            used -= n
+            if used + tokens <= limit:
+                return max(0.0, 60.0 - (now - t)) + 0.05
+        return 0.0
+
     def add_usage(self, model: str, usage: Usage):
         c = cost(self.cfg().get('prices') or {}, model, usage)
         with self._lock:
+            self._window.append((time.monotonic(), usage.prompt + usage.completion))
             t = self.totals
             t['prompt'] += usage.prompt
             t['completion'] += usage.completion
@@ -146,6 +215,7 @@ class AssistantService:
             else:
                 t['cost'] = round(t['cost'] + c, 6)
             snap = dict(t)
+        snap['tpm_used'], snap['tpm_limit'] = self.tpm_used(), int(self.cfg().get('tpm_limit') or 0)
         for fn in list(self.usage_listeners):
             try:
                 fn(snap)
@@ -159,8 +229,7 @@ class AssistantService:
         """A one-shot answer from the fast model (blocking: call it off the GUI thread). context: text or a
         JSON-serialisable value the answer is about (an error, a run's summary) — redacted like everything sent."""
         import json
-        c = self.cfg()
-        model = c['fast_model']
+        model = self.fast_model()
         msgs = [{'role': 'system', 'content': system or (
             'You are Falcon\'s assistant (Falcon Autonomy: self-driving AI development on CARLA). Answer briefly and '
             'precisely from the context given; never invent numbers; say when the context does not hold the '
@@ -169,8 +238,17 @@ class AssistantService:
             msgs.append({'role': 'user', 'content': 'Context:\n' + (context if isinstance(context, str) else
                                                                     json.dumps(context, default=str)[:12000])})
         msgs.append({'role': 'user', 'content': prompt})
-        res = self.client('quick').chat(msgs, model, stream=False, temperature=0.2, max_completion_tokens=max_tokens,
-                                        extra=model_params(model, quick=True), cancel=cancel, purpose='quick')
+        while True:
+            try:
+                res = self.client('quick').chat(msgs, model, stream=False, temperature=0.2,
+                                                max_completion_tokens=max_tokens, extra=model_params(model, quick=True),
+                                                cancel=cancel, purpose='quick')
+                break
+            except ProviderError as e:
+                if e.kind != 'model' or model == FAST_FALLBACK:
+                    raise
+                self.model_gone(model)          # retired mid-session: the fallback, said once
+                model = self.fast_model()
         self.add_usage(model, res.usage)
         return (res.content or '').strip()
 

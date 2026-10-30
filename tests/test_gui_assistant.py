@@ -129,11 +129,14 @@ def test_settings_key_consent_and_test_connection(window, qapp, srv, tmp_path, m
     page.apply()
     assert asked[-1] == 'warned' and not window.assistant.keys.has()          # nothing saved on a bad table
     page.as_prices.setPlainText('openai/gpt-oss-120b 1 2')
+    assert page.as_tpm.value() == 8000 and page.as_fast.currentText() == 'qwen/qwen3.8-27b'
+    page.as_tpm.setValue(250000)
     page.apply()
     svc = window.assistant
     assert svc.keys.get() == FAKE_KEY and page.as_key.text() == '' and 'stored in your secrets file' in \
         page.as_key.placeholderText()
     assert svc.cfg()['prices'] == {'openai/gpt-oss-120b': [1.0, 2.0]} and svc.consented()
+    assert svc.cfg()['tpm_limit'] == 250000
     settings_text = open(window.settings.path).read()
     assert FAKE_KEY not in settings_text and '"enabled": true' in settings_text
     assert oct(os.stat(tmp_path / 'secrets.json').st_mode & 0o777) == '0o600'
@@ -179,6 +182,13 @@ def test_conversation_approval_undo_and_persistence(window, qapp, srv, reg):
     assert [c.name for c in cards] == ['runs_count', 'project_rename'] and cards[1].approval == 'approved'
     assert card.outcome.text() == 'Approved'
     assert 'Assistant · gpt-oss-120b · ' in window.assistant_badge.text() and 'tokens' in window.assistant_badge.text()
+    tip = window.assistant_badge.toolTip()
+    assert 'of 8000 tokens per minute' in tip and 'limits page' in tip and 'Last minute: 0 ' not in tip
+    window.assistant.notice('k', 'The fast model is not offered; Falcon uses another.')
+    window.assistant.notice('k', 'The fast model is not offered; Falcon uses another.')       # once only
+    assert pump(qapp, lambda: 'uses another' in window.log.toPlainText(), 3)
+    pump(qapp, timeout=0.1)
+    assert sum(b.raw.startswith('The fast model') for b in panel.findChildren(D.Bubble)) == 1
     acts = panel.session.activity
     assert [a['kind'] for a in acts] == ['edit']
     assert panel.activity.topLevelItemCount() == 1

@@ -80,12 +80,12 @@ class Recorder(A.Host):
         return [p for k, p in self.events if k == kind]
 
 
-def make(tmp_path, srv, queue=None, mode='ask', decide=None, enabled=True, consent=True, key=True):
+def make(tmp_path, srv, queue=None, mode='ask', decide=None, enabled=True, consent=True, key=True, tpm=0):
     st = Settings(str(tmp_path / 'config' / 'settings.json'))
     ks = KeyStore(Secrets(str(tmp_path / 'config' / 'secrets.json')), use_keyring=False)
     ws = str(tmp_path / 'proj.falcon')
     svc = AssistantService(st, ks, workspace_fn=lambda: ws)
-    svc.set_cfg(base_url=srv.base_url, enabled=enabled)
+    svc.set_cfg(base_url=srv.base_url, enabled=enabled, tpm_limit=tpm)          # 0: no per-minute limit
     if consent:
         svc.accept_notice()
     if key:
@@ -363,11 +363,145 @@ def test_quick_uses_the_fast_model_and_counts_cost(tmp_path, srv, reg):
     svc, ag, host, ws = make(tmp_path, srv)
     totals = []
     svc.usage_listeners.append(totals.append)
-    srv.push({'json': {'model': 'openai/gpt-oss-20b', 'choices': [{'message': {'role': 'assistant', 'content':
+    srv.push({'json': {'model': 'qwen/qwen3.8-27b', 'choices': [{'message': {'role': 'assistant', 'content':
               ' The port is taken. '}, 'finish_reason': 'stop'}], 'usage': {'prompt_tokens': 1000000,
               'completion_tokens': 0}}})
     assert svc.explain_error('OSError: [Errno 98] Address already in use') == 'The port is taken.'
     b = bodies(srv)[0]
-    assert b['model'] == 'openai/gpt-oss-20b' and 'stream' not in b and b['reasoning_effort'] == 'low'
-    assert totals[-1]['cost'] == pytest.approx(0.075) and totals[-1]['requests'] == 1
+    assert b['model'] == 'qwen/qwen3.8-27b' and 'stream' not in b and b['reasoning_effort'] == 'none'
+    assert totals[-1]['cost'] == pytest.approx(0.80) and totals[-1]['requests'] == 1
     assert Audit(ws).read()[-1]['purpose'] == 'quick'
+
+
+def _answer(content='ok', model='openai/gpt-oss-20b'):
+    return {'json': {'model': model, 'choices': [{'message': {'role': 'assistant', 'content': content},
+                                                  'finish_reason': 'stop'}],
+                     'usage': {'prompt_tokens': 50, 'completion_tokens': 5}}}
+
+
+def test_fast_model_falls_back_when_qwen_is_not_listed(tmp_path, srv, reg):
+    from fake_groq import MODELS
+    svc, ag, host, ws = make(tmp_path, srv)
+    told = []
+    svc.notice_listeners.append(told.append)
+    srv.models = [m for m in MODELS if not m['id'].startswith('qwen/')]
+    assert 'Falcon uses openai/gpt-oss-20b instead' in svc.test_connection()       # the list is remembered
+    srv.push(_answer('a'), _answer('b'))
+    assert svc.quick('one') == 'a' and svc.quick('two') == 'b'
+    assert [b['model'] for b in bodies(srv)] == ['openai/gpt-oss-20b'] * 2
+    assert bodies(srv)[0]['reasoning_effort'] == 'low'                             # gpt-oss's own parameters
+    assert len(told) == 1 and 'qwen/qwen3.8-27b' in told[0] and 'Preview' in told[0]
+
+
+def test_fast_model_falls_back_when_the_server_says_it_is_gone(tmp_path, srv, reg):
+    from fake_groq import error
+    svc, ag, host, ws = make(tmp_path, srv)
+    told = []
+    svc.notice_listeners.append(told.append)
+    srv.push(error(404, 'The model `qwen/qwen3.8-27b` does not exist or you do not have access to it.',
+                   'model_not_found'), _answer('fine'), _answer('again'))
+    assert svc.quick('x') == 'fine' and svc.quick('y') == 'again'
+    assert [b['model'] for b in bodies(srv)] == ['qwen/qwen3.8-27b', 'openai/gpt-oss-20b', 'openai/gpt-oss-20b']
+    assert len(told) == 1
+    svc.set_cfg(fast_model='openai/gpt-oss-20b')
+    srv.push(error(404, 'The model `openai/gpt-oss-20b` does not exist', 'model_not_found'))
+    from falcon_autonomy.assistant.provider import ProviderError
+    with pytest.raises(ProviderError) as ei:                                         # the fallback itself gone: said
+        svc.quick('z')
+    assert ei.value.kind == 'model'
+
+
+@pytest.mark.parametrize('model,parallel,extra', [
+    ('openai/gpt-oss-120b', False, {'include_reasoning': False, 'reasoning_effort': 'medium'}),
+    ('qwen/qwen3.8-27b', True, {'reasoning_format': 'hidden', 'reasoning_effort': 'medium'}),
+    ('local/some-model', None, {}),
+])
+def test_parallel_tool_calls_and_reasoning_per_model(tmp_path, srv, reg, model, parallel, extra):
+    svc, ag, host, ws = make(tmp_path, srv)
+    svc.set_cfg(main_model=model)
+    srv.push(text('ok'))
+    run(ag)
+    b = bodies(srv)[0]
+    assert b.get('parallel_tool_calls') == parallel and ('parallel_tool_calls' in b) == (parallel is not None)
+    for k in ('include_reasoning', 'reasoning_effort', 'reasoning_format'):
+        assert b.get(k) == extra.get(k), k
+    if model.startswith('openai/gpt-oss'):
+        assert 'reasoning_format' not in b                    # gpt-oss does not take it
+
+
+def _groups_tools():
+    for name, group, about in (('runs_search', 'runs', 'Search recorded runs by query.'),
+                               ('runs_get', 'runs', 'One run\'s summary.'),
+                               ('analysis_metrics', 'analysis', 'Evaluation metrics of a model on a drive set.'),
+                               ('project_worlds', 'project', 'The project\'s worlds.')):
+        T.register(T.Tool(name, group, 'read', about, {'type': 'object', 'properties': {}},
+                          lambda ctx, _n=name: {'tool': _n, 'value': 0.5}))
+
+
+def _sent_tools(body):
+    return sorted(t['function']['name'] for t in body.get('tools') or [])
+
+
+def test_tool_schemas_on_demand(tmp_path, srv, reg):
+    _groups_tools()
+    svc, ag, host, ws = make(tmp_path, srv)
+    core = sorted(A.CORE)
+    srv.push(tools(('tools_find', {'query': 'evaluation metrics'})), tools(('tools_load', {'groups': ['analysis']})),
+             tools(('analysis_metrics', {})), text('Metric 0.5.'))
+    run(ag, 'hello there')
+    b = bodies(srv)
+    assert _sent_tools(b[0]) == core and _sent_tools(b[1]) == core                 # only the core until loaded
+    found = json.loads([m for m in ag.session.messages if m.get('_name') == 'tools_find'][0]['content'])
+    assert found['tools'][0]['name'] == 'analysis_metrics' and found['groups']['runs']['tools'] == 2
+    assert _sent_tools(b[2]) == sorted(core + ['analysis_metrics']) and ag.session.loaded == ['analysis']
+    assert 'analysis' in b[2]['messages'][0]['content']                              # the system prompt says so
+    assert Session(ws).loaded == ['analysis']                                        # kept with the conversation
+    # the user's words make a group obviously relevant: loaded with the message
+    srv.push(text('Two runs.'))
+    run(ag, 'search my recorded runs')
+    assert set(_sent_tools(bodies(srv)[-1])) >= {'runs_search', 'runs_get'}
+    # a tool called by name before its group was loaded runs, and its group comes with the next step
+    ag.session.loaded = []
+    srv.push(tools(('project_worlds', {})), text('One world.'))
+    run(ag, 'next')
+    assert 'project_worlds' in _sent_tools(bodies(srv)[-1]) and 'project' in ag.session.loaded
+    assert any(k == 'tools' for k, _p in host.events)
+
+
+def test_tokens_per_minute_trimming_pacing_and_refusal(tmp_path, srv, reg, monkeypatch):
+    from falcon_autonomy.assistant.provider import Usage, estimate_tokens
+    from fake_groq import error
+    T.register(T.Tool('runs_big', 'runs', 'read', 'A large result.', {'type': 'object', 'properties': {}},
+                      lambda ctx: {'text': 'x' * 3000}))
+    svc, ag, host, ws = make(tmp_path, srv, tpm=2500)
+    monkeypatch.setattr(svc, 'tpm_wait', lambda tokens: 0.0)         # pacing is checked on its own below
+    srv.push(*[tools(('runs_big', {}))] * 4, text('Done.'))
+    run(ag, 'look at it')
+    last = bodies(srv)[-1]
+    assert estimate_tokens(last['messages'], last.get('tools')) <= 2500
+    assert sum('elided' in m['content'] for m in last['messages'] if m['role'] == 'tool') >= 2
+    assert any(k == 'notice' and 'per minute' in p for k, p in host.events)
+    # pacing: the last minute's tokens count against the limit
+    svc.set_cfg(tpm_limit=8000)
+    svc._window.clear()
+    svc.add_usage('m', Usage(5000, 0))
+    real = AssistantService.tpm_wait
+    assert real(svc, 2000) == 0.0 and 55.0 < real(svc, 4000) <= 60.1
+    waits = iter([0.05, 0.0])
+    monkeypatch.setattr(svc, 'tpm_wait', lambda tokens: next(waits))
+    srv.push(text('Paced.'))
+    run(ag, 'again')
+    assert [p['limit'] for k, p in host.events if k == 'tpm_wait'] == [8000]
+    # a 413 from the server: trimmed and sent again
+    monkeypatch.setattr(svc, 'tpm_wait', lambda tokens: 0.0)
+    srv.push(error(413, 'Request too large for model `openai/gpt-oss-120b` on tokens per minute (TPM): Limit 8000, '
+                        'Requested 9100'), text('Smaller now.'))
+    run(ag, 'once more')
+    a, b = bodies(srv)[-2:]
+    assert len(json.dumps(b)) < len(json.dumps(a))                                  # strictly smaller
+    assert host.kinds('assistant')[-1]['content'] == 'Smaller now.'
+    # a step larger than the limit even when trimmed: refused before sending
+    svc.set_cfg(tpm_limit=300)
+    n = len(srv.chats())
+    run(ag, 'y ' * 1500)
+    assert host.kinds('error')[-1]['kind'] == 'too_large' and len(srv.chats()) == n

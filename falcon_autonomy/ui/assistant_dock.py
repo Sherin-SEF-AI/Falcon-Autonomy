@@ -926,10 +926,9 @@ class AssistantPanel(QWidget):
             self.pages.setCurrentIndex(1)
             return False
         if self.svc.cfg().get('preview'):
-            from ..assistant import tool_api as T
             msgs = [self.agent.system_message()] + wire(self.session.snapshot()) + [{'role': 'user',
                                                                                      'content': content}]
-            names = [s['function']['name'] for s in T.schemas(gui=True)]
+            names = [s['function']['name'] for s in self.agent.tool_schemas()]
             d = PayloadPreview(self, {'messages': privacy.redact(msgs), '_to': self.svc.cfg()['base_url']}, names)
             if d.exec() != QDialog.DialogCode.Accepted:
                 return False
@@ -1058,6 +1057,14 @@ class AssistantPanel(QWidget):
             self.status.setText(f'{what.capitalize()} — retrying in {p["wait_s"]:.0f} s (attempt {p["attempt"]})')
         elif kind == 'notice':
             self.status.setText(str(p))
+        elif kind == 'notice_once':                      # said once per session (a model fallen back)
+            self._bubble('event', str(p))
+            self.win.log.append_line(f'assistant: {p}')
+        elif kind == 'tools':
+            self.status.setText(f'Tools loaded: {", ".join(p["added"])}' + (f' ({p["why"]})' if p.get('why') else ''))
+        elif kind == 'tpm_wait':
+            self.status.setText(f'Waiting {p["wait_s"]:.0f} s for your per-minute token limit ({p["limit"]}; this '
+                                f'step is about {p["tokens"]} tokens)')
         elif kind == 'usage':
             self._usage_text()
         elif kind == 'error':
@@ -1141,6 +1148,8 @@ class AssistantPanel(QWidget):
         if self.agent is not None:
             self.agent.close()
         self.svc.ask_handler = self.svc.propose_handler = None
+        self.svc.usage_listeners.clear()
+        self.svc.notice_listeners.clear()
 
 
 # --------------------------------------------------------------------------------------------- installing it
@@ -1203,13 +1212,21 @@ def install(win):
             badge.setText(f'Assistant · {model} · {fmt_tokens(t["prompt"] + t["completion"])} tokens{cost}')
         else:
             badge.setText(f'Assistant · {model}')
+        limit = int(c.get('tpm_limit') or 0)
+        tpm = (f'\nLast minute: {win.assistant.tpm_used()} of {limit} tokens per minute' if limit else
+               f'\nLast minute: {win.assistant.tpm_used()} tokens (no per-minute limit set)') + \
+            ' — the limit is your setting; your account\'s limits page at console.groq.com is authoritative.'
         badge.setToolTip(f'This session: {t["prompt"]} prompt and {t["completion"]} completion tokens in '
                          f'{t["requests"]} requests' + (f', about ${t["cost"]:.4f} estimated from your price table '
-                                                         '(Settings ▸ Assistant)' if t['requests'] else '') +
-                         '. Click to show or hide the Assistant panel (Ctrl+Shift+A).')
+                                                         '(Settings ▸ Assistant)' if t['requests'] else '') + '.' +
+                         tpm + '\nClick to show or hide the Assistant panel (Ctrl+Shift+A).')
     panel.host.bridge.usage.connect(show_usage)
     win.assistant.usage_listeners.append(panel.host.bridge.usage.emit)    # from the agent's thread, onto the GUI's
+    win.assistant.notice_listeners.append(lambda text: panel.host.bridge.event.emit('notice_once', text))
     win.refresh_assistant_badge = show_usage
+    tick = QTimer(badge)                     # the last minute's tokens age out: keep the tooltip current
+    tick.timeout.connect(lambda: show_usage() if win.assistant.cfg()['enabled'] else None)
+    tick.start(5000)
     show_usage()
 
     view = next((a.menu() for a in win.menuBar().actions() if a.menu() and a.text() == '&View'), None)

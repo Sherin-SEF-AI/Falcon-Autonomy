@@ -36,7 +36,7 @@ import time
 
 from . import grounding, privacy
 from . import tool_api as T
-from .provider import Cancelled, CancelToken, ProviderError, model_params
+from .provider import Cancelled, CancelToken, ProviderError, estimate_tokens, model_params, parallel_tools
 from .session import Session, wire
 
 MODES = ('ask', 'auto', 'autopilot')
@@ -62,6 +62,9 @@ which tool or job would measure it. Falcon marks any number in your answer that 
 - Prefer the user's project: its worlds, rigs, scenarios, runs and models, before built-ins or generic advice.
 - Plan: for any request needing more than one step, call plan_update first with a short checklist (a few items, \
 imperative), and update it as items are done. Skip it for a single question.
+- Tools: you start with a few. tools_find searches all of Falcon's tools by what you need (names and one line
+each); tools_load makes a group's tools callable from your next step. Load only the groups you need — every loaded
+schema is sent with each step and counts against the user's tokens-per-minute limit.
 - Long jobs: when you queue a job you need the result of, call plan_wait_jobs with its id and end your turn; Falcon \
 resumes you when it finishes. Do not poll.
 - Refusals from tools are final: a private source, an action that is never allowed, or the user declining. Explain \
@@ -108,6 +111,85 @@ def _plan_wait_jobs(ctx, job_ids, note=''):
     return out
 
 
+GROUP_ABOUT = {
+    'project': 'the project: worlds, rigs, scenarios, models, drive sets — read them, edit them (undoable)',
+    'runs': 'recorded runs: search, summaries, statistics, tags, moving runs to the trash',
+    'jobs': 'the job queue: queue drives, sweeps, trainings, evaluations, exports; their state, logs, cancel, wait',
+    'analysis': 'evaluations, metrics, comparisons, rare-case search results, root causes, dataset health',
+    'ui': 'Falcon\'s window: go to a page, select and show things',
+    'knowledge': 'Falcon\'s manual: how-to, methods, CARLA lessons',
+    'system': 'the machine and Falcon\'s CARLA server: state, memory, GPU (read only)',
+}
+CORE = ('plan_update', 'plan_wait_jobs', 'tools_find', 'tools_load')     # always sent; the rest by group, on demand
+
+
+def _about(t) -> str:
+    first = (t.description or '').split('. ')[0].strip().rstrip('.')
+    return first[:140] + ('…' if len(first) > 140 else '')
+
+
+def _tools_find(ctx, query, limit=12):
+    words = [w for w in re.split(r'[^a-z0-9]+', query.lower()) if len(w) > 1]
+    scored = []
+    for t in T.REGISTRY.values():
+        if t.name in CORE:
+            continue
+        hay = f'{t.name.replace("_", " ")} {t.group} {t.description}'.lower()
+        sc = sum((3 if w in t.name else 1) for w in words if w in hay)
+        if sc:
+            scored.append((-sc, t.name, t))
+    scored.sort()
+    out = {'tools': [{'name': t.name, 'group': t.group, 'tier': t.tier, 'about': _about(t)}
+                     for _s, _n, t in scored[:limit]]}
+    counts = {}
+    for t in T.REGISTRY.values():
+        if t.name not in CORE:
+            counts[t.group] = counts.get(t.group, 0) + 1
+    out['groups'] = {g: {'tools': counts.get(g, 0), 'about': GROUP_ABOUT[g]} for g in T.GROUPS}
+    out['next'] = 'call tools_load with the groups whose tools you need'
+    return out
+
+
+def _tools_load(ctx, groups):
+    groups = [g for g in dict.fromkeys(groups)]
+    ctx.emit('load_groups', groups)
+    tools = [{'name': t.name, 'about': _about(t)} for t in T.REGISTRY.values()
+             if t.group in groups and t.name not in CORE]
+    out = {'loaded': groups, 'tools': tools[:60], 'next': 'their schemas come with your next step'}
+    empty = [g for g in groups if not any(t.group == g and t.name not in CORE for t in T.REGISTRY.values())]
+    if empty:
+        out['empty'] = empty
+    return out
+
+
+FIND_PARAMS = {'type': 'object', 'additionalProperties': False, 'required': ['query'], 'properties': {
+    'query': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+    'limit': {'type': 'integer', 'minimum': 1, 'maximum': 30}}}
+LOAD_PARAMS = {'type': 'object', 'additionalProperties': False, 'required': ['groups'], 'properties': {
+    'groups': {'type': 'array', 'minItems': 1, 'items': {'type': 'string', 'enum': list(T.GROUPS)}}}}
+
+# a user's words or page that make a group obviously relevant (loaded with the message; at most two, best first)
+GUESS = {
+    'runs': r'\b(runs?|drives?|recorded|recordings?|frames?|datasets?)\b',
+    'jobs': r'\b(jobs?|queued?|cancel|sweeps?|train(ing)?|record)\b',
+    'project': r'\b(project|worlds?|rigs?|scenarios?|sensors?|cameras?|traffic|weather)\b',
+    'analysis': r'\b(evaluat\w*|metrics?|mAP|AP|mIoU|recall|precision|compare|regressions?|failures?|worse|better)\b',
+    'knowledge': r'(\bhow (do|can|to)\b|\bwhat is\b|\bmanual\b|\bdocs?\b)',
+    'system': r'\b(gpu|vram|memory|ram|server|machine)\b',
+}
+PAGE_GROUPS = {'data': 'runs', 'replay': 'runs', 'models': 'analysis', 'loop': 'analysis', 'rarecases': 'analysis',
+               'reports': 'analysis', 'training': 'jobs', 'stack': 'jobs', 'scenarios': 'project', 'worlds': 'project',
+               'rigs': 'project', 'hardware': 'system', 'help': 'knowledge'}
+
+
+def guess_groups(text: str, page: str = '') -> list:
+    """The groups a message (and the open page) make obviously relevant: the page's first, then by matches."""
+    hits = sorted(((len(re.findall(rx, text or '', re.I)), g) for g, rx in GUESS.items()), reverse=True)
+    out = [PAGE_GROUPS[page]] if page in PAGE_GROUPS else []
+    out += [g for n, g in hits if n and g not in out]
+    return out[:2]
+
+
 META = (
     T.Tool('plan_update', 'ui', 'read', 'Show the user your plan as a short checklist (replaces the previous one). '
            'Call it first for any multi-step request and again as items are done. Changes nothing in Falcon.',
@@ -115,6 +197,12 @@ META = (
     T.Tool('plan_wait_jobs', 'jobs', 'read', 'Resume this conversation when one of these queued jobs finishes (you get '
            'its outcome as a message). Call it after queueing a job whose result you need, then end your turn — do not '
            'poll. Returns the ids it will wait for.', WAIT_PARAMS, _plan_wait_jobs),
+    T.Tool('tools_find', 'system', 'read', 'Search all of Falcon\'s tools by what you need: returns matching tool '
+           'names with their group and one line each, and every group with its number of tools. Load a group with '
+           'tools_load to call its tools.', FIND_PARAMS, _tools_find),
+    T.Tool('tools_load', 'system', 'read', 'Make every tool of these groups callable from your next step (their '
+           'schemas are sent from then on). Groups: ' + '; '.join(f'{g}: {a}' for g, a in GROUP_ABOUT.items()) + '.',
+           LOAD_PARAMS, _tools_load),
 )
 
 
@@ -375,6 +463,7 @@ class Agent:
     def _run(self):
         try:
             close_dangling(self.session)
+            self._guess()
             self.host.event('turn', {'state': 'started'})
             self._loop()
             self.host.event('turn', {'state': 'done'})
@@ -394,7 +483,8 @@ class Agent:
                 self.host.event('error', {'kind': 'save', 'message': f'Could not save the conversation: {e}'})
 
     def system_message(self) -> dict:
-        ctx = self.host.context_summary()
+        ctx = dict(self.host.context_summary())
+        ctx['tool groups loaded'] = list(self.session.loaded) or 'none yet'
         extra = ('\n\nNow: ' + json.dumps(ctx, ensure_ascii=False, default=str)) if ctx else ''
         return {'role': 'system', 'content': SYSTEM + '\n\n' + MODE_RULES[self.mode] + extra}
 
@@ -437,10 +527,47 @@ class Agent:
                     continue
             return
 
+    def _guess(self):
+        last = next((m for m in reversed(self.session.messages) if m.get('role') == 'user'), None)
+        if last is None or last.get('_event'):
+            return
+        page = (self.host.context_summary() or {}).get('page') or ''
+        new = [g for g in guess_groups(last.get('_display') or last.get('content') or '', page)
+               if g not in self.session.loaded]
+        if new:
+            self.load_groups(new, why='your message')
+
+    def load_groups(self, groups, why: str = ''):
+        with self.session.lock:
+            add = [g for g in groups if g in T.GROUPS and g not in self.session.loaded]
+            self.session.loaded.extend(add)
+        if add:
+            self.host.event('tools', {'loaded': list(self.session.loaded), 'added': add, 'why': why})
+
+    def tool_schemas(self, groups=None) -> list:
+        """The schemas sent: the core, and the tools of the loaded groups (or of `groups`)."""
+        groups = self.session.loaded if groups is None else groups
+        names = set(CORE) | {t.name for t in T.REGISTRY.values() if t.group in groups}
+        return T.schemas(names=names, gui=self.host.has_window)
+
+    def _recent_groups(self) -> list:
+        """The groups of the tools called in the last two steps (what trimming keeps)."""
+        out = []
+        for m in [m for m in self.session.snapshot() if m.get('role') == 'assistant'][-2:]:
+            for tc in m.get('tool_calls') or []:
+                t = T.REGISTRY.get((tc.get('function') or {}).get('name'))
+                if t is not None and t.name not in CORE and t.group not in out:
+                    out.append(t.group)
+        return out
+
     def _add_event(self, text: str):
         idx = self.session.add({'role': 'user', 'content': text, '_event': True})
         self.session.save()
         self.host.event('event', {'index': idx, 'text': text})
+
+    # trimming, step by step, when a request is too large (the context, or the tokens-per-minute limit):
+    # (tool results kept — None: as many as the context holds; which tool groups' schemas are sent)
+    LEVELS = ((None, 'loaded'), (4, 'loaded'), (4, 'recent'), (1, 'core'))
 
     def _request(self):
         cfg = self.service.cfg()
@@ -448,19 +575,48 @@ class Agent:
         client = self.service.client(purpose='agent')
         client.on_retry = lambda status, wait, attempt: self.host.event(
             'retry', {'status': status, 'wait_s': wait, 'attempt': attempt})
-        tools = T.schemas(gui=self.host.has_window)
-        squeeze, failed_tool = 0, False
+        level, failed_tool = 0, False
+        limit = int(cfg.get('tpm_limit') or 0)
+        refused = None                          # (the server's too-large error, the size it refused)
         while True:
-            msgs = self.fit([self.system_message()] + wire(self.session.snapshot()), tools, model, squeeze)
+            keep, which = self.LEVELS[level]
+            groups = {'loaded': self.session.loaded, 'recent': self._recent_groups(), 'core': []}[which]
+            tools = self.tool_schemas(groups)
+            msgs = self.fit([self.system_message()] + wire(self.session.snapshot()), tools, model, keep)
+            est = estimate_tokens(msgs, tools)
+            if refused is not None and est >= refused[1]:
+                if level + 1 < len(self.LEVELS):
+                    level += 1                  # no smaller than what the server refused: leave more out
+                    continue
+                raise refused[0]
+            if limit and est > limit:
+                if level + 1 < len(self.LEVELS):
+                    level += 1
+                    self.host.event('notice', f'This step is about {est} tokens, over your limit of {limit} per '
+                                    'minute: older tool results and unused tools are left out.')
+                    continue
+                raise ProviderError('too_large', f'This step needs about {est} tokens even with older results and '
+                                    f'unused tools left out — more than your limit of {limit} tokens per minute '
+                                    '(Settings ▸ Assistant). Clear the conversation, or raise the limit if your '
+                                    'plan allows it (your account\'s limits page at console.groq.com).')
+            wait = self.service.tpm_wait(est) if hasattr(self.service, 'tpm_wait') else 0.0
+            if wait > 0:
+                self.host.event('tpm_wait', {'wait_s': wait, 'tokens': est, 'limit': limit})
+                if self.cancel.wait(wait):
+                    raise Cancelled()
+                continue
             try:
-                res = client.chat(msgs, model, tools=tools, stream=True, temperature=cfg.get('temperature'),
+                res = client.chat(msgs, model, tools=tools, parallel_tool_calls=parallel_tools(model), stream=True,
+                                  temperature=cfg.get('temperature'),
                                   extra=model_params(model, cfg.get('reasoning_effort', 'medium')),
                                   on_delta=lambda d: self.host.event('delta', d), cancel=self.cancel,
                                   purpose='agent')
             except ProviderError as e:
-                if e.kind == 'context' and squeeze < 2:
-                    squeeze += 1                # elide older tool results harder and try again
-                    self.host.event('notice', 'The conversation is long: older tool results are left out.')
+                if e.kind in ('context', 'too_large') and level + 1 < len(self.LEVELS):
+                    level += 1                  # the server says too long: leave more out and try again
+                    refused = (e, est)
+                    self.host.event('notice', 'The request was too large: older tool results and unused tools '
+                                    'are left out.')
                     continue
                 if e.kind == 'tool_use_failed' and not failed_tool:
                     failed_tool = True          # the model wrote an unparseable call: once more
@@ -476,7 +632,7 @@ class Agent:
             u['requests'] += 1
             u['cost'] = round(u['cost'] + (cost or 0.0), 6)
         self.host.event('usage', {'model': model, 'prompt': res.usage.prompt, 'completion': res.usage.completion,
-                                  'cost': cost, 'conversation': dict(self.session.usage)})
+                                  'cost': cost, 'conversation': dict(self.session.usage), 'estimate': est})
         return res
 
     def context_window(self, model: str) -> int:
@@ -484,21 +640,20 @@ class Agent:
         n = cw(model) if callable(cw) else None
         return int(n) if n else 131072
 
-    def fit(self, msgs: list, tools: list, model: str, squeeze: int = 0) -> list:
-        """The messages trimmed to fit the model's context: the oldest tool results are elided first (their call
-        stays; the model can call again). squeeze > 0 (the server said it is too long) elides all but the last
-        four results whatever the estimate says."""
+    def fit(self, msgs: list, tools: list, model: str, keep: int | None = None) -> list:
+        """The messages trimmed to fit: the oldest tool results are elided first (their call stays; the model can
+        call again) until the request fits the model's context; keep: elide all but the last `keep` results."""
         budget = int(self.context_window(model) * 3.0 * 0.7) - (len(json.dumps(tools)) if tools else 0)
         size = len(json.dumps(msgs, ensure_ascii=False))
         tool_idx = [i for i, m in enumerate(msgs) if m.get('role') == 'tool']
         out = list(msgs)
-        for i in (tool_idx[:-4] if squeeze else tool_idx):
-            if not squeeze and size <= budget:
+        for i in (tool_idx[:len(tool_idx) - keep] if keep is not None else tool_idx):
+            if keep is None and size <= budget:
                 break
             c = out[i].get('content') or ''
             if len(c) > 200:
-                stub = json.dumps({'elided': 'this older result was left out to fit the context; call the tool '
-                                             'again if you need it'})
+                stub = json.dumps({'elided': 'this older result was left out to fit; call the tool again if you '
+                                             'need it'})
                 size -= len(c) - len(stub)
                 out[i] = dict(out[i], content=stub)
         return out
@@ -517,6 +672,8 @@ class Agent:
             elif kind == 'wait_jobs':
                 with self._lock:
                     self._wait_ids |= {int(j) for j in payload}
+            elif kind == 'load_groups':
+                self.load_groups(payload, why='the model asked')
             else:
                 self.host.event('tool_event', {'kind': kind, 'payload': payload})
         ctx.emit = emit
@@ -539,7 +696,10 @@ class Agent:
         plan = []                                # (tc, tool, args, parse error)
         for tc in calls:
             args, err = self._parse(tc)
-            plan.append((tc, T.REGISTRY.get(tc.name), args, err))
+            tool = T.REGISTRY.get(tc.name)
+            if tool is not None and tool.name not in CORE and tool.group not in self.session.loaded:
+                self.load_groups([tool.group], why=f'{tool.name} was called')    # found by name: its group now
+            plan.append((tc, tool, args, err))
         i = 0
         while i < len(plan):
             if self.cancel.is_set():

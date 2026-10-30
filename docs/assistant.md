@@ -28,14 +28,19 @@ Parameters a server does not know (`reasoning_effort`, `stream_options`, …) ar
 | | Default | Does |
 |---|---|---|
 | **Main** | `openai/gpt-oss-120b` | the agent: plans, calls Falcon's tools, reasons over their results, answers |
-| **Fast** | `openai/gpt-oss-20b` | one-shot helpers: a summary, *explain this error*, phrasing a suggestion |
+| **Fast** | `qwen/qwen3.8-27b` | one-shot helpers: a summary, *explain this error*, phrasing a suggestion |
 
-The fast lane was planned on `qwen/qwen3-32b`; Groq shut that model down on 2026-07-17 (its deprecations page names
-`openai/gpt-oss-120b` as the replacement). The default is the production `openai/gpt-oss-20b` instead; pick any model
-the server lists. Falcon still passes the right reasoning parameters if you choose a Qwen 3 model.
+Either can be any model the server lists — Qwen as the main model too (it takes parallel tool calls; gpt-oss does
+not). Groq lists `qwen/qwen3.8-27b` as a **Preview** model, which it may withdraw at short notice (it shut
+`qwen/qwen3-32b` down on 2026-07-17 and `qwen/qwen3.6-27b` on 2026-09-14). So the fast lane **falls back to
+`openai/gpt-oss-20b`** (production) when the server's model list (Refresh, Test connection) does not have the chosen
+fast model, or a call says the model is gone (404) — and says so once, in the panel and the log. Falcon sends each
+family its own parameters: gpt-oss gets `reasoning_effort` and `include_reasoning` and `parallel_tool_calls: false`;
+Qwen 3 gets `reasoning_format: hidden` (with tools it must be parsed or hidden), `reasoning_effort` (`none` for the fast
+lane) and `parallel_tool_calls: true`; a model Falcon does not know gets neither.
 
 Settings ▸ Assistant also sets the temperature (default 0.3), the reasoning effort for models that take it
-(gpt-oss: low, medium, high) and the default permission mode.
+(gpt-oss: low, medium, high), the default permission mode and your plan's tokens-per-minute limit.
 
 ## Permission modes
 
@@ -59,6 +64,30 @@ queued are still running it waits for the job queue to say one finished (a subsc
 with what happened. There is no step or token budget: **Stop** (the button, or Esc in the message box) always ends
 it — it closes the request in flight, answers a waiting approval card with *stopped* and ends a wait for a job. In any
 mode the model can ask to be resumed when a job it queued finishes (`plan_wait_jobs`).
+
+## Tools on demand, and the per-minute token limit
+
+Falcon has some fifty to seventy tools in seven groups (project, runs, jobs, analysis, ui, knowledge, system); their
+schemas would make every step large. So each step sends a small **core** — `plan_update`, `plan_wait_jobs`,
+`tools_find` (searches every tool by what is needed: names, groups and one line each) and `tools_load` (makes groups'
+tools callable from the next step) — plus the groups loaded so far in this conversation. A group is also loaded when
+your message (or the page you are on) makes it obviously relevant — "runs", "recorded" load runs; "evaluation", "mAP"
+analysis; "how do I" knowledge; Data loads runs, Models analysis (a heuristic, at most two groups per message) — and
+when the model calls a tool by name whose group is not loaded yet. The loaded groups are kept with the conversation.
+
+Groq's rate-limits page gives the base developer plan 30 requests, 8,000 tokens per minute and 200,000 per day for
+`openai/gpt-oss-120b`, `openai/gpt-oss-20b` and `qwen/qwen3.8-27b` (its models page says 250,000 tokens per minute;
+**your account's limits page at console.groq.com is authoritative**). Settings ▸ Assistant ▸ *Token limit* is that
+number for your plan (default 8,000; 0: no limit). Before each step Falcon estimates its tokens (characters / 4):
+
+- a step larger than the limit is trimmed — older tool results left out first (the last four kept), then the schemas
+  of the groups not used in the last two steps, then all but the last result and the core tools only; one that still
+  does not fit is not sent, and you are told why;
+- a step that fits, but not on top of the tokens the last minute's responses used (as the server counted them), waits
+  until enough of them age out (the panel says how long; Stop ends the wait);
+- a 413 from the server is trimmed the same way and sent again, smaller; a 429 waits for its `retry-after`.
+
+The status bar badge's tooltip shows the last minute's tokens against the limit.
 
 ## The panel
 
@@ -149,8 +178,11 @@ it as an error to correct; one the server itself could not parse (`tool_use_fail
 
 ## Limits
 
-- Groq's base developer-plan limits (verified 2026-10-30) are 30 requests and 8,000 tokens per minute for the gpt-oss
-  models; Falcon's tool schemas and a long conversation can come near that. Your account page shows your limits.
+- The per-minute limit is paced from an estimate (characters / 4) and the server's own counts of the last minute's
+  responses; the server's count can differ, and a 429 then waits for its `retry-after`. Requests per minute and per
+  day are not paced (a 429 says when they are reached).
+- Tools on demand rest on the model loading what it needs: a model that does not call `tools_find` or `tools_load`
+  answers with the core tools and the groups the user's words loaded.
 - Context: about 70 % of the model's context window (from the server's model list; 131,072 tokens for gpt-oss) is
   used before older tool results are left out; each tool result is cut at 16,000 characters.
 - Stop ends the turn at once, but a tool already running finishes on its own (its result is dropped; what it changed
@@ -168,12 +200,18 @@ API reference), read on 2026-10-30:
   `required`, or a named function), `parallel_tool_calls` (default true), `stream` (server-sent events ending with
   `data: [DONE]`), `stream_options`, `temperature` (0–2), `max_completion_tokens`; `GET /models` lists each model's
   `id`, `active`, `context_window`, `owned_by`.
-- `openai/gpt-oss-120b` (production; 131,072 context, 65,536 max output) and `openai/gpt-oss-20b` take tools but not
-  parallel tool use, and `reasoning_effort` `low`/`medium`/`high` (default medium) with `include_reasoning`;
-  `reasoning_format` is not supported by gpt-oss. Qwen 3 models take `reasoning_effort` `none`/`default`
-  (`qwen/qwen3.8-27b`: low/medium/high) and `reasoning_format` (`parsed` or `hidden` with tools; `raw` with tools is a
-  400).
-- `qwen/qwen3-32b` is deprecated, shut down on 2026-07-17, replacement `openai/gpt-oss-120b`.
+- `openai/gpt-oss-120b` (production; 131,072 context, 65,536 max output; $0.15 / $0.60 per million tokens) and
+  `openai/gpt-oss-20b` (production; $0.075 / $0.30) take tools but **not parallel tool use**, and `reasoning_effort`
+  `low`/`medium`/`high` (default medium) with `include_reasoning`; `reasoning_format` is not supported by gpt-oss.
+- `qwen/qwen3.8-27b` (**Preview** — "may be discontinued at short notice"; 131,072 context, 16,384 max completion;
+  $0.80 / $4.00): tool use and **parallel tool use**, JSON mode; `reasoning_effort` `none`/`default`/`low`/`medium`/
+  `high` (`none` and `default` only for this model; `default` returns no reasoning tokens); `reasoning_format`
+  `parsed`/`raw`/`hidden`, which must be `parsed` or `hidden` with tools or JSON mode (else a 400).
+- Deprecations: `qwen/qwen3-32b` shut down on 2026-07-17 (replacement `openai/gpt-oss-120b`); `qwen/qwen3.6-27b` shut
+  down on 2026-09-14 (replacement `qwen/qwen3.8-27b`).
+- Rate limits, base developer plan: 30 requests, 8,000 tokens per minute and 200,000 tokens per day for
+  `openai/gpt-oss-120b`, `openai/gpt-oss-20b` and `qwen/qwen3.8-27b` (the models page says 250,000 tokens per minute;
+  the account's own limits page is authoritative).
 - Errors: 400, 401, 403, 404, 413, 422, 424, 429, 498 (flex capacity), 499, 500, 502, 503, with
   `{"error": {"message", "type"}}`; `retry-after` (seconds) only on 429; `x-ratelimit-*` headers on every response.
 - Not documented there, handled defensively: where usage arrives in a stream (Falcon reads a final chunk's `usage`
@@ -188,7 +226,9 @@ Nothing was sent to Groq while building this: the tests run against a fake serve
 - `assistant.groq.GroqClient` — the HTTP client (standard library); `assistant.provider` — results, errors, model
   parameters, cost; `assistant.keystore` — the key.
 - `assistant.agent.Agent` — the loop, Qt-free, driven by a `Host` (the panel's `QtHost`, or a headless one in tests
-  and on the command line). Meta-tools it registers: `plan_update` and `plan_wait_jobs`.
+  and on the command line). Meta-tools it registers, always sent (`agent.CORE`): `plan_update`, `plan_wait_jobs`,
+  `tools_find`, `tools_load`; every other tool's schema is sent once its group is loaded. A tool's `group` and the
+  first sentence of its `description` are what `tools_find` shows, so both should say what it is for.
 - `assistant.service.AssistantService` (`win.assistant`) — what the rest of Falcon calls:
   `quick(prompt, context) -> str` (fast model, blocking: call it from a task), `explain_error(text, where)`,
   `ask(text, context=None)` (opens the panel with a request; sent at once when the assistant is ready),

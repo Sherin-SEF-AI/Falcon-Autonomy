@@ -31,7 +31,8 @@ ASSISTANT_DEFAULTS = {
     'consent_time': '',
     'base_url': 'https://api.groq.com/openai/v1',
     'main_model': 'openai/gpt-oss-120b',
-    'fast_model': 'openai/gpt-oss-20b',
+    'fast_model': 'qwen/qwen3.8-27b',    # Preview on Groq: falls back to openai/gpt-oss-20b when it is gone
+    'tpm_limit': 8000,                   # tokens per minute the account allows (its limits page is authoritative)
     'temperature': 0.3,
     'reasoning_effort': 'medium',
     'mode': 'ask',

@@ -12,8 +12,11 @@
   jobs, the trash); a grounding check that marks numbers no tool returned; a conversation per project and an audit
   log of payload hashes in the workspace; Settings ▸ Assistant (the key in the keyring or the 0600 secrets file, model
   pickers from /models, the user's price table); Ctrl+Shift+A, Ctrl+K ▸ Ask Falcon…, a status-bar badge with tokens
-  and estimated cost. Groq's API verified against its documentation on 2026-10-30: `qwen/qwen3-32b` was shut down on
-  2026-07-17, so the fast lane defaults to `openai/gpt-oss-20b`. Tested against a fake server only.
+  and estimated cost. Groq's API verified against its documentation on 2026-10-30: the fast lane is
+  `qwen/qwen3.8-27b` (Preview), falling back to `openai/gpt-oss-20b` — said once — when the server does not list it or
+  says it is gone; `parallel_tool_calls` per model (false for gpt-oss). Tool schemas on demand: a core of four
+  meta-tools (`tools_find`, `tools_load`) and the groups loaded; each step estimated and trimmed or paced to the
+  user's tokens-per-minute limit (default 8,000). Tested against a fake server only.
 
 - **Lateral filtering for two-wheelers** (`workers/lateral.py`, a traffic profile's `lateral_filtering`, Worlds ▸
   traffic profile): background two-wheelers choose their own lateral position over the same-direction lanes every
