@@ -185,6 +185,7 @@ def cmd_drive(a, smoke=False) -> int:
     from .core.project import ProjectError
     proj = _load_project(a.project)
     svc, st = _service(proj.path, a.fake_carla)
+    audio = False
     try:
         if smoke:
             out = a.out or os.path.join(svc.runs_dir(), run_dir_name('smoke'))
@@ -201,20 +202,23 @@ def cmd_drive(a, smoke=False) -> int:
         code = _run_job(svc, job)
         if code == P.OK:
             print(out)
-            if getattr(a, 'audio', False):          # synthetic array audio from what the drive recorded
-                from .core.audio import derive_audio
-                man = derive_audio(out)
-                print(f'audio: {os.path.join(out, "audio")} ({man["cost"]["seconds"]:.0f} s, '
-                      f'{man["sources"]["by_kind"]})')
+            audio = bool(getattr(a, 'audio', False))
             if smoke and not a.fake_carla:
                 print(f'throughput: {svc.throughput().source}')
-        return code
     except (ProjectError, RuntimeError) as e:
         print(f'failed: {e}', file=sys.stderr)
         return P.FAILED
     finally:
         if not a.keep_server:
             svc.shutdown()
+    if audio:                   # synthetic array audio from what the drive recorded; needs no server (stopped above)
+        from .core.audio import derive_audio, summary
+        try:
+            print(f'audio: {os.path.join(out, "audio")}: {summary(derive_audio(out))}')
+        except (OSError, ValueError) as e:
+            print(f'failed: audio: {e}', file=sys.stderr)
+            return P.FAILED
+    return code
 
 
 def cmd_probe(a) -> int:

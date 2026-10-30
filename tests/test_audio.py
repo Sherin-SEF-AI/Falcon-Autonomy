@@ -400,9 +400,22 @@ def test_a_rig_with_an_audio_array_drives_on_the_fake_and_derives(project, tmp_p
     os.makedirs(tmp_path / 'run')
     with open(tmp_path / 'run' / 'drive.json', 'w') as fh:          # where the service puts it
         json.dump(cfg, fh)
-    r = subprocess.run([sys.executable, '-m', 'falcon_autonomy.workers', 'drive', str(tmp_path / 'run' / 'drive.json')],
-                       capture_output=True, text=True, env=worker_env(), timeout=120)
+    r = subprocess.run([sys.executable, '-m', 'falcon_autonomy.workers', 'drive',
+                        str(tmp_path / 'run' / 'drive.json')], capture_output=True, text=True, env=worker_env(),
+                       timeout=120)
     assert r.returncode == 0, r.stderr
     man = A.derive_audio(str(tmp_path / 'run'))
     assert man['wav']['channels'] == 4 and man['array']['mics_vehicle_frame'][0] == pytest.approx([0.25, 0.0, 1.55])
     assert json.load(open(tmp_path / 'run' / 'run.json'))['derived']['audio']['channels'] == 4
+
+
+def test_cli_drive_with_audio_on_the_fake(project, tmp_path, capsys):
+    from conftest import FAKE
+    from falcon_autonomy.cli import main
+    project.doc['rigs'][0]['sensors'].append({'id': 'mics', 'name': 'mics', 'type': 'audio_array', 'mics': 4,
+                                              'radius': 0.2, 'pose': dict(R.POSE0, z=1.55)})
+    project.save(project.path)
+    out = tmp_path / 'drive'
+    assert main(['--fake-carla', FAKE, 'drive', project.path, '--seconds', '1', '--out', str(out), '--audio']) == 0
+    assert 'synthetic audio: 4 channels' in capsys.readouterr().out
+    assert os.path.isfile(out / 'audio' / 'audio.wav')
