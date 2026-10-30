@@ -111,7 +111,11 @@ clutter in rain and fog, lens droplets, glare and bloom — modelled from cited 
 (from OpenStreetMap or every N metres), and Indian traffic gets measured stand-ins and proxies within what the packaged
 CARLA can spawn ([Indian road assets](indian-assets.md)). **City around the roads** places CARLA's own buildings,
 trees, lamps and street furniture where OpenStreetMap has them — size-matched stand-ins kept off the lanes, labelled
-correctly ([worlds](worlds.md#a-city-around-the-roads)).
+correctly ([worlds](worlds.md#a-city-around-the-roads)). **Roadside units (V2X)** put smart-pole cameras and
+intersection lidars in a world — at a junction's corner or a position, on a top-down map with their fields of view —
+recorded in every drive with the ego's labels and sending Collective Perception Messages (the shape of ETSI TS 103 324,
+UPER-encoded, read by an asn1c decoder) of what they saw; the benefit to the ego's view is measured
+([V2X](v2x.md)).
 
 ### Live
 Drive a world in real time. **Start** opens a session (a job like any other: the Jobs dock shows it and Stop ends it).

@@ -65,6 +65,7 @@ same, so `use_sim_time` stacks see one time base):
 | `/tf` | `tf2_msgs/msg/TFMessage` | `map → base_link`, ground truth (`ego_tf: false` for a stack that localises) |
 | `/falcon/ego/odometry` | `nav_msgs/msg/Odometry` | ground truth, pose in `map`, twist in `base_link` (`odometry: false` to drop) |
 | `/vehicle/status/velocity_status`, `steering_status`, `gear_status`, `control_mode` | `autoware_vehicle_msgs/msg/…` | `autoware_status: false` to drop |
+| `/falcon/v2x/<rsu>/cpm`, `/falcon/v2x/<rsu>/cpm_json` | `udp_msgs/msg/UdpPacket`, `std_msgs/msg/String` | each roadside unit of the world, at the steps it sends a CPM: a BTP-B header and the UPER CPM (what etsi_its_messages' conversion node decodes: `falcon v2x converter RSU`), and the CPM as JSON ([V2X](v2x.md)); `v2x: false` to drop. A node whose ROS lacks `udp_msgs` says so in its `ready` and the run leaves the topic out (noted) |
 
 Frames are those of the MCAP export: `map` is CARLA's world mirrored (x, −y, z), REP 103 axes; steering angles are
 positive to the left. The odometry and vehicle status come last in a step, so a stack that acts on the odometry has

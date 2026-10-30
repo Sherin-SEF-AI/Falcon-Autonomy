@@ -28,6 +28,7 @@ run/
   radar/<radar>/<n>.npy          float32 velocity, azimuth, altitude, depth (CARLA's order)
   radar/<radar>/<n>.flags.npy    uint8 per row: 1 = weather clutter (only frames the sensor physics touched)
   odd-monitor.json               the ODD monitor's timeline (runs with an ODD, or `falcon odd monitor`)
+  cpm.jsonl                      the roadside units' Collective Perception Messages, one line per message (below)
   gnss/<gnss>.jsonl  imu/<imu>.jsonl
 ```
 
@@ -50,6 +51,25 @@ when the scenario director drives the ego it is the director's own command (in k
 reaches CARLA). Live recordings keep their own `control` (the manual, policy or `null` for autopilot steps). Drives
 recorded before 0.6 have no `control`. In kinematic scenario drives `speed_mps` is the director's speed (CARLA reports
 a physics-off actor as still; drives before 0.6 recorded 0 there — `actors.jsonl` had the right velocity).
+
+## Roadside units
+A drive in a world with roadside units ([V2X](v2x.md)) records their sensors in the same layout and with the same
+labels as the ego's, under the id **`<rsu id>.<sensor id>`** (`rgb/rsu-036d8e6f.cam/000042.jpg`,
+`lidar/rsu-036d8e6f.lidar/000021.bin`, `objects/rsu-036d8e6f.cam/…`; frames.jsonl `files` and `lidar_pose` likewise).
+Their poses and labels are in the **station frame** — CARLA's vehicle frame put at the pole's foot and turned by the
+RSU's heading — where an ego's are in its vehicle frame: a roadside camera's `objects` `box3d` (`"frame": "vehicle"`
+names that convention) is relative to the pole's foot. No pixel or point of a roadside sensor is class 29 `ego`: the
+ego vehicle is an ordinary car to it, with its track id. `dataset.json`: each roadside sensor's entry has `station`
+(the RSU id; `null` for the ego's), `infrastructure.stations` the poles (world pose, mast height, ETSI station id,
+reference position in latitude/longitude, CPM settings, each sensor's station-frame pose and CPM sensor id), and `ego`
+the ego's actor id. `run.json` → `infrastructure.stations`: CPMs sent, objects reported, message sizes; the roadside
+lidars' proofs are in `lidar_checks` with the ego's.
+
+`cpm.jsonl`, per message: `step`, `frame`, `sim_t`, `station`, `station_id`, `cpm` (the CollectivePerceptionMessage as
+a dict with the ASN.1's own names: CHOICEs a one-key dict, ENUMERATEDs their names), `uper` (its UPER encoding,
+base64; `falcon v2x decode RUN` checks every line decodes to its `cpm`), `bytes`, and `objects` — per perceived object
+Falcon's extras: `objectId`, `actor_id`, `type_id`, `category`, `distance_m` (from the pole), `evidence` (CPM sensor id
+→ instance pixels or lidar points that reached it).
 
 ## Coordinates
 CARLA's frames throughout: x forward, y right, z up — left-handed — metres and degrees. Sensor poses are in the

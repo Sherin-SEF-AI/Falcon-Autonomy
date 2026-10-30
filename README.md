@@ -80,6 +80,12 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
 - **Stack testing**: a closed-loop ROS 2 bridge (Autoware, Ackermann or CARLA control), scenario suites with pass/fail
   and intervals, a SOTIF-style safety-case report; CARLA 0.9.16's native ROS 2 measured and documented
   ([stack testing](docs/stack-testing.md)).
+- **Cooperative V2X** (roadside units): smart-pole cameras and intersection lidars standing in a world, placed at a
+  junction of an imported place, recorded with the ego's labels; per period a Collective Perception Message in the
+  shape of ETSI TS 103 324 (UPER, checked against etsi_its_messages' asn1c decoder) of the road users their sensors
+  actually saw, published over ROS 2 and written to MCAP; at a busy Bengaluru junction the ego's own camera and lidar
+  saw 73 % of the road users within 50 m, with the pole's messages 92 % (walkers and two-wheelers 61 → 87 %), 2.4 s
+  earlier on average out of occlusion — measured, an upper bound with perfect detection ([V2X](docs/v2x.md)).
 - **Log replay**: nuScenes, Waymo v2, ROS 2 bags, KITTI raw and Falcon runs rebuilt in CARLA, changed (timing, speeds,
   an added pedestrian, weather) and compared ([log replay](docs/log-replay.md)).
 - **Hardware in the loop**: camera (H.264/RTP) and lidar streamed to a Jetson (or a simulated device), control back,
@@ -131,7 +137,7 @@ FALCON_REAL_CARLA=1 python3 -m pytest -m real_server     # also against a real C
 [project format](docs/project-format.md) · [CLI and exit codes](docs/cli.md) · [methods](docs/methods.md) ·
 [CARLA lessons](docs/carla-lessons.md) · [models](docs/models.md) · [sim-to-real](docs/sim-to-real.md) ·
 [world model](docs/world-model.md) · [training](docs/training.md) · [policies](docs/policies.md) · [loop](docs/loop.md) · [reports](docs/reports.md) ·
-[stack testing](docs/stack-testing.md) · [log replay](docs/log-replay.md) · [hardware](docs/hardware.md) ·
+[stack testing](docs/stack-testing.md) · [V2X](docs/v2x.md) · [log replay](docs/log-replay.md) · [hardware](docs/hardware.md) ·
 [packaging](docs/packaging.md) · [deploy](docs/deploy.md) · [CI](docs/ci.md) · [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
 
 ## Licence
