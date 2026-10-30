@@ -7,8 +7,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QInputDialog, QListWidget, QWidget
 
 from ..core import runindex as RI
-from ..core.project import Edit, new_id
-from ..core.provenance import utc_now
+from ..core.project import Edit
 from .widgets import button, label
 
 
@@ -26,17 +25,8 @@ def drive_sets(win) -> list:
 
 
 def add_set(win, name: str, kind: str, runs=(), query: str = '') -> dict:
-    ws = win.workspace()
-    ds = {'id': new_id('ds'), 'name': name, 'kind': kind, 'created': utc_now()}
-    if kind == 'query':
-        RI.parse(query)                      # raises QueryError on a malformed query
-        ds['query'] = query
-    else:
-        ds['runs'] = [RI.key_of(p, ws) for p in runs]
-    if 'drive_sets' in win.project.doc:
-        win.edit(Edit('insert', ['drive_sets'], ds, text=f'Add the drive set {name}'))
-    else:
-        win.edit(Edit('set', ['drive_sets'], [ds], text=f'Add the drive set {name}'))
+    e, ds = RI.drive_set_edit(win.project.doc, win.workspace(), name, kind, runs, query)
+    win.edit(e)
     return ds
 
 
@@ -52,17 +42,7 @@ def resolve(win, ds: dict, entries: list | None = None) -> list:
 
 def set_tags(win, paths, tags: list):
     """Give these runs exactly these tags (an empty list removes them); one undoable edit."""
-    ws = win.workspace()
-    cur = dict(win.project.doc.get('run_tags') or {})
-    clean = sorted({t.strip() for t in tags if t.strip()})
-    for p in paths:
-        k = RI.key_of(p, ws)
-        if clean:
-            cur[k] = clean
-        else:
-            cur.pop(k, None)
-    n = len(list(paths))
-    win.edit(Edit('set', ['run_tags'], cur, text=f'Tag {n} run{"s" if n != 1 else ""}'))
+    win.edit(RI.tags_edit(win.project.doc, win.workspace(), paths, tags))
 
 
 class DriveSetBar(QWidget):

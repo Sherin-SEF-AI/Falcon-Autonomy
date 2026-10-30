@@ -45,6 +45,44 @@ DEFAULTS = {
 }
 
 
+# What each setting is, in the Settings page's words (the assistant's knowledge_setting and the manual read these):
+# key -> (where it is set, what it does). Settings marked private are explained but their values never shown.
+EXPLAIN = {
+    'carla_root': ('Settings ▸ CARLA ▸ CARLA folder', 'the CARLA 0.9.16 folder (it holds CarlaUE4/Binaries/Linux/'
+                   'CarlaUE4-Linux-Shipping); empty: Falcon uses the first one it finds'),
+    'client_python': ('Settings ▸ CARLA ▸ CARLA\'s Python', 'the venv with carla==0.9.16, numpy and OpenCV that the '
+                      'workers run in; empty: the venv beside the CARLA folder'),
+    'rpc_port': ('Settings ▸ Falcon\'s server ▸ RPC port', 'the port of Falcon\'s own server (CARLA also listens on '
+                 'the next two); CARLA\'s defaults 2000–2010 and 8100 only when chosen there, and then Falcon connects '
+                 'to the server it finds and never starts or stops it'),
+    'tm_port': ('Settings ▸ Falcon\'s server ▸ Traffic manager port', 'the traffic manager\'s port of Falcon\'s server'),
+    'allowed_ports': ('Settings ▸ Falcon\'s server (asked when a default port is chosen)', 'CARLA default ports the '
+                      'user chose explicitly: a server there is the user\'s own (external)'),
+    'server_memory_gb': ('Settings ▸ Falcon\'s server ▸ Memory cap', 'the server\'s systemd memory cap (no swap); a '
+                         '0.9.16 server capped at 12 GB ran 77 Mpx per step and crashed at 306'),
+    'server_quality': ('Settings ▸ Falcon\'s server ▸ Quality', 'the server\'s rendering quality: Epic or Low'),
+    'server_ros2': ('Settings (stack testing)', 'start Falcon\'s server with --ros2, CARLA\'s native ROS 2 '
+                    '(docs/stack-testing.md)'),
+    'free_gpu_for_jobs': ('Settings ▸ Falcon\'s server ▸ GPU jobs', 'stop Falcon\'s idle server before a training or '
+                          'other GPU job: an idle 0.9.16 server holds about 6 GB of video memory'),
+    'render_budget_mpx': ('Settings ▸ Falcon\'s server ▸ Render budget', 'runs rendering more megapixels per step are '
+                          'refused before they start'),
+    'theme': ('Settings ▸ Appearance ▸ Theme', 'dark or light'),
+    'recent_projects': ('File ▸ Recent projects', 'the projects opened last (private: paths)'),
+    'first_run_done': ('Tools ▸ First-run wizard', 'whether the first-run wizard has finished'),
+    'measured': ('the first-run wizard\'s smoke drive and every drive after', 'this machine\'s measured rendering '
+                 'throughput (megapixels per second and per-step overhead) behind every cost estimate'),
+    'geocoding_allowed': ('Settings ▸ Appearance, privacy and notifications ▸ Geocoding', 'place-name search over the '
+                          'network (OpenStreetMap Nominatim); off: imports work from files and bounding boxes only'),
+    'cloud_llm': ('not set from the app', 'a cloud language model the user configured and approved; never set '
+                  'otherwise'),
+    'notify_jobs': ('Settings ▸ Appearance, privacy and notifications ▸ Job notifications', 'a desktop notification '
+                    'when a job of 20 s or more ends while Falcon is in the background; nothing leaves the machine'),
+    'hil_device': ('Hardware page', 'the hardware-in-the-loop device: address, ports, SSH user and key path (private: '
+                   'never in a project; no password here)'),
+}
+PRIVATE_SETTINGS = ('recent_projects', 'hil_device', 'cloud_llm')
+
 class Settings:
     def __init__(self, path: str | None = None):
         self.path = path or os.path.join(config_dir(), 'settings.json')

@@ -7,11 +7,12 @@ before it leaves the machine.
 
 private_reason(path): why a file or folder must not reach the model, or None. The user's dashcam footage is private:
 it shows where and when they drove. Refused: anything under ~/Videos; a run, reconstruction, image set, translator
-or world whose own records say it came from dashcam footage — a drive along a dashcam route (its settings'
-dashcam_route), a reconstruction posed from a dashcam segment (dashcam.json), frames extracted from clips (worker
-dashcam-extract), a real image set or translator of kind dashcam, an OSM import whose source is a dashcam route. The
-markers are read from the folder's own run.json / import.json / model json (and its parent's, for a file in a run);
-a folder without any record is not private by this test — the tools only hand over Falcon's own outputs.
+or world whose own records say it came from dashcam footage — a drive along a dashcam route (dashcam_route in its
+settings, or in its provenance.settings, where run.json keeps the config), a reconstruction posed from a dashcam
+segment (dashcam.json), frames extracted from clips (worker dashcam-extract), a real image set or translator of kind
+dashcam, an OSM import whose source is a dashcam route. The markers are read from the folder's own run.json /
+import.json / model json (and its parent's, for a file in a run); a folder without any record is not private by this
+test — the tools only hand over Falcon's own outputs.
 
 guard(path): raise ToolError(private_reason) when it is private. Tools call it on every path they read before
 returning anything from it.
@@ -60,6 +61,9 @@ def _says_dashcam(doc) -> str | None:
         return None
     st = doc.get('settings') or {}
     if isinstance(st, dict) and st.get('dashcam_route'):
+        return 'a drive along a route taken from the dashcam footage'
+    pst = (doc.get('provenance') or {}).get('settings') if isinstance(doc.get('provenance'), dict) else None
+    if isinstance(pst, dict) and pst.get('dashcam_route'):     # where a run.json keeps its config (new_run)
         return 'a drive along a route taken from the dashcam footage'
     if doc.get('dashcam_route'):
         return 'a drive along a route taken from the dashcam footage'

@@ -14,7 +14,7 @@ from ..core import osm as O
 from ..core.jobs import FINAL
 from ..core.paths import tilde
 from ..core.project import Edit, new_id
-from ..core.worlds import MESH_DEFAULTS, import_config, world_dir, world_entry
+from ..core.worlds import MESH_DEFAULTS, import_config, imported_world, world_dir
 from . import tasks
 from .theme import SEQ, THEME
 from .widgets import Form, KeyValues, Section, button, label, set_enabled
@@ -412,11 +412,8 @@ class ImportDialog(QDialog):
     def add_world(self, drive=False):
         mesh = {k: sb.value() for k, sb in self.mesh.items()}
         mesh['smooth_junctions'] = self.smooth.isChecked()
-        doc = self.win.project.doc
-        india = next((tp['id'] for tp in doc['traffic_profiles'] if tp.get('handedness') == 'left'), None)
-        tp = india if self.rep['handedness'] == 'LHT' and india else 'tp-default'
-        name = os.path.basename(self.cfg['source']).split('.')[0].replace('-', ' ').replace('_', ' ').title()
-        w = world_entry(self.world_id, name, self.cfg, self.rep, mesh, tp)
+        w = imported_world(self.win.project.doc, self.world_id, self.cfg, self.rep, mesh)
+        name = w['name']
         self.win.edit(Edit('insert', ['worlds'], w, text=f'Import {name}'))
         self.accept()
         if drive:                                 # straight to Live with the new world chosen

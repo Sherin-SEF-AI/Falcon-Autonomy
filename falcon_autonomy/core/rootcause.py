@@ -1297,3 +1297,16 @@ def report(src: str):
         pg.note(f'Sufficiency: {d.get("sufficiency")}.')
     pg.provenance(d.get('provenance'), 'the attribution')
     return pg
+
+
+def out_dir(ws: str, label_: str) -> str:
+    """A new folder for a why-job's answer: <ws>/rootcause/<local stamp>-<label> (made now; -2, -3 … when taken)."""
+    import re
+    import time
+    base = os.path.join(ws, 'rootcause', f'{time.strftime("%Y%m%d-%H%M%S")}-'
+                        f'{re.sub(r"[^A-Za-z0-9_.-]+", "-", label_)[:40]}')
+    p, k = base, 2
+    while os.path.exists(p):
+        p, k = f'{base}-{k}', k + 1
+    os.makedirs(p)
+    return p

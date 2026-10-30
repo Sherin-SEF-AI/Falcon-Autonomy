@@ -836,9 +836,10 @@ class BrowseTab(QWidget):
         out = QFileDialog.getExistingDirectory(self, f'Folder for the {fmt} export')
         if not out:
             return
+        from ...core.exporters import export_argv
         variant = self.export_fmt.currentData()
-        argv = [sys.executable, '-m', 'falcon_autonomy', 'export', self.run_dir, '--format',
-                variant[0] if variant else fmt, '--out', out] + (['--option', f'variant={variant[1]}'] if variant else [])
+        argv = [sys.executable, '-m', 'falcon_autonomy'] + export_argv(self.run_dir, variant[1] if variant else fmt,
+                                                                       out)
         self.win.queue.submit(JobSpec('export', f'Export {os.path.basename(self.run_dir)} as {fmt}', argv,
                                       memory_gb=1.0))
         self.win.jobs_dock.raise_()

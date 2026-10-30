@@ -308,14 +308,9 @@ class RareCasesPage(Page):
     def study(self):
         """The study's name: one per scenario, objective (and model), searched weather and rate — a study's runs
         and objective values only compare among themselves."""
-        obj = self.objective.currentData()
-        parts = ['search', self.scenario.currentData()] if obj == 'criticality' else \
-            ['mil', self.scenario.currentData(), self.model.currentData() or 'none', obj]
-        parts += [{'fog_density': 'fog', 'sun_altitude_angle': 'sun', 'precipitation': 'rain'}[k]
-                  for k in self.weather_dims()]
-        if self.fps.value() != 20:
-            parts.append(f'{self.fps.value()}hz')
-        return '-'.join(parts)
+        from ...sim.studio import search_name
+        return search_name(self.scenario.currentData(), self.objective.currentData(), self.model.currentData() or '',
+                           self.weather_dims(), self.fps.value())
 
     def study_dir(self):
         return os.path.join(self.win.workspace(), 'studies', self.study())
@@ -332,21 +327,12 @@ class RareCasesPage(Page):
             QMessageBox.information(self, 'Search', 'The perception objective needs a model: register one (or add '
                                                     'the synthetic detector) on the Models page.')
             return
-        argv = [sys.executable, '-m', 'falcon_autonomy', 'search', w.project.path, '--scenario',
-                self.scenario.currentData(), '--name', self.study(), '--method', self.method.currentData(),
-                '--budget', str(self.budget.value()), '--batch', str(self.batch.value()), '--threshold',
-                str(self.threshold.value()), '--seed', str(self.seed.value()), '--world', self.world.currentData(),
-                '--rig', self.rig.currentData(), '--objective', obj, '--count', self.count.currentData()]
-        if not self.feasible.isChecked():
-            argv.append('--no-feasibility')
-        if obj != 'criticality':
-            argv += ['--model', self.model.currentData()]
-        for k in self.weather_dims():
-            argv += ['--weather', k]
-        if self.fps.value() != 20:
-            argv += ['--fps', str(self.fps.value())]
-        if w.fake_carla:
-            argv += ['--fake-carla', w.fake_carla]
+        from ...sim.studio import search_argv
+        argv = [sys.executable, '-m', 'falcon_autonomy'] + search_argv(
+            w.project.path, self.scenario.currentData(), self.study(), self.method.currentData(), self.budget.value(),
+            self.batch.value(), self.threshold.value(), self.seed.value(), self.world.currentData(),
+            self.rig.currentData(), obj, self.count.currentData(), self.feasible.isChecked(),
+            self.model.currentData() or '', self.weather_dims(), self.fps.value(), w.fake_carla)
         self.job = w.queue.submit(JobSpec('study', f'Search {self.scenario.currentText()} '
                                                    f'({self.method.currentText()}, {self.budget.value()}'
                                                    + (f', {self.objective.currentText().lower()}'

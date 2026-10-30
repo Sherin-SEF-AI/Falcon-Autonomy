@@ -7,14 +7,10 @@ from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLineEdit, QListWidget, QLi
 
 from ...core import weather as W
 from ...core.project import Edit, new_id
+from ...core.worlds import TOWNS
 from .. import icons
 from ..widgets import Form, KeyValues, Page, clear_layout, Section, SliderField, button, label, set_enabled
 
-# the towns of CARLA 0.9.16's base package (the "_Opt" variants have layers that can be unloaded; Town10HD_Opt is the
-# default map). Town06, 07 and 11–15 come with CARLA's additional-maps package: once a probe has listed the server's
-# maps, those are offered instead.
-TOWNS = ('Town01', 'Town01_Opt', 'Town02', 'Town02_Opt', 'Town03', 'Town03_Opt', 'Town04', 'Town04_Opt', 'Town05',
-         'Town05_Opt', 'Town10HD', 'Town10HD_Opt')
 LIMITS = ('Limits of CARLA\'s weather: its lidar and radar ignore it (no loss of range in rain or fog) — switch on '
           'Falcon\'s sensor weather physics below for modelled losses and clutter; rain on a camera '
           'is water on the lens and wet surfaces; fog visibility ≈ 7000 m / fog density (measured on 0.9.16, a 5 % '
