@@ -148,7 +148,8 @@ class Study:
         return scenario_config(self.project, self.scn, self.world, self.rig, '/pending', self.svc.port,
                                self.svc.tm_port, seed=self.seed, values=values, traffic_vehicles=self.traffic,
                                render_budget_mpx=float(self.svc.settings.get('render_budget_mpx')),
-                               workspace=self.project.workspace, **({'fps': self.fps} if self.fps else {}))
+                               workspace=self.project.workspace, trigger_rules='project',
+                               **({'fps': self.fps} if self.fps else {}))
 
     def config(self, values: dict, k: int) -> dict:
         from ..core import milsearch as MS

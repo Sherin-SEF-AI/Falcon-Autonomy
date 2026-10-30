@@ -1,6 +1,7 @@
 """Scenarios: the scenario studio — the library (built-ins and the project's own), a sketch of the scene with the
 actors where a sample puts them and their parameter ranges as bands, the actors, the parameters as distributions and
-the timeline of triggers and actions, running one sample or a sweep, OpenSCENARIO import and export."""
+the timeline of triggers and actions, the project's live trigger rules (core.triggers), running one sample or a sweep,
+OpenSCENARIO import and export."""
 from __future__ import annotations
 
 import copy
@@ -191,6 +192,135 @@ class JsonDialog(QDialog):
         self.accept()
 
 
+class RulesTab(QWidget):
+    """The project's live trigger rules (core.triggers): "when <condition> -> <action>" evaluated every tick of the
+    project's drives, scenario runs and Live sessions (each rule as its "applies" says). One row per rule, edited in
+    place, every change one undoable edit; problems listed under the table (a rule that does not parse says the
+    column and why); a run refuses to start while an enabled rule it would use has a problem."""
+    COLS = ('on', 'id', 'rule', 'repeat', 'cooldown_s', 'applies')
+
+    def __init__(self, page):
+        super().__init__()
+        self.page, self.win = page, page.win
+        v = QVBoxLayout(self)
+        v.addWidget(label('Project rules, for every scenario: e.g. "when ego.speed > 40 and visibility < 30 -> spawn '
+                          'jaywalker". repeat: once, every (each time the condition becomes true) or cooldown (while '
+                          'it holds, once per cooldown_s). applies: drives, scenarios, live.', small=True, wrap=True,
+                          muted=True))
+        self.table = QTableWidget(0, len(self.COLS))
+        self.table.setHorizontalHeaderLabels(list(self.COLS))
+        self.table.cellChanged.connect(self.cell)
+        v.addWidget(self.table, 1)
+        b = QHBoxLayout()
+        b.addWidget(button('Add a rule', self.add_rule))
+        b.addWidget(button('Remove', self.remove_rule))
+        b.addWidget(button('Signals and actions…', self.show_help))
+        b.addStretch(1)
+        v.addLayout(b)
+        self.problems = label('', small=True, wrap=True)
+        self.problems.setProperty('crit', True)
+        v.addWidget(self.problems)
+        self.refresh()
+
+    def rules(self) -> list:
+        return self.win.project.doc.get('trigger_rules') or []
+
+    def refresh(self):
+        from ...core import triggers as T
+        t = self.table
+        t.blockSignals(True)
+        t.setRowCount(0)
+        for r in self.rules():
+            k = t.rowCount()
+            t.insertRow(k)
+            for c, col in enumerate(self.COLS):
+                if col == 'on':
+                    it = QTableWidgetItem('')
+                    it.setFlags((it.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable)
+                    it.setCheckState(Qt.CheckState.Checked if r.get('enabled', True) else Qt.CheckState.Unchecked)
+                else:
+                    v = r.get(col, {'repeat': 'once', 'cooldown_s': 0.0, 'applies': list(T.CONTEXTS)}.get(col))
+                    it = QTableWidgetItem(', '.join(v) if col == 'applies' else
+                                          f'{float(v):g}' if col == 'cooldown_s' else str(v or ''))
+                    if col == 'id':
+                        it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    if col == 'rule':
+                        it.setToolTip(r.get('about') or r.get('name') or '')
+                t.setItem(k, c, it)
+        t.resizeColumnToContents(0)
+        t.setColumnWidth(self.COLS.index('rule'), 460)
+        t.blockSignals(False)
+        sensors = {s['id']: s['type'] for rig in self.win.project.doc.get('rigs') or []
+                   for s in rig.get('sensors') or []}
+        probs = T.validate_rules(self.rules(), sensors)
+        self.problems.setText('\n'.join('⚠ ' + p for p in probs))
+
+    def cell(self, r, c):
+        from ...core import triggers as T
+        rules = self.rules()
+        if not 0 <= r < len(rules):
+            return
+        new = copy.deepcopy(rules[r])
+        col = self.COLS[c]
+        it = self.table.item(r, c)
+        if col == 'on':
+            new['enabled'] = it.checkState() == Qt.CheckState.Checked
+        elif col == 'rule':
+            new['rule'] = it.text().strip()
+        elif col == 'repeat':
+            new['repeat'] = it.text().strip()
+        elif col == 'cooldown_s':
+            try:
+                new['cooldown_s'] = max(float(it.text()), 0.0)
+            except ValueError:
+                self.refresh()
+                self.problems.setText(f'⚠ cooldown_s: {it.text()!r} is not a number of seconds\n' +
+                                      self.problems.text())
+                return
+        elif col == 'applies':
+            new['applies'] = [x.strip() for x in it.text().replace(';', ',').split(',') if x.strip()]
+        if new == rules[r]:
+            return
+        if not new.get('rule') or new.get('repeat', 'once') not in T.REPEATS or \
+                any(x not in T.CONTEXTS for x in new.get('applies') or []):
+            self.refresh()                        # the schema would refuse it: not taken, said why
+            self.problems.setText(f'⚠ a rule is not empty; repeat is one of {", ".join(T.REPEATS)}; applies lists '
+                                  f'some of {", ".join(T.CONTEXTS)}\n' + self.problems.text())
+            return
+        self.win.edit(Edit('set', ['trigger_rules', r], new, text=f'Trigger rule {new["id"]}: {col}'))
+
+    def add_rule(self):
+        from ...core import triggers as T
+        if 'trigger_rules' not in self.win.project.doc:
+            self.win.edit(Edit('set', ['trigger_rules'], [], text='Trigger rules'))
+        n = len(self.rules()) + 1
+        ids = {r['id'] for r in self.rules()}
+        while f'rule{n}' in ids:
+            n += 1
+        r = T.new_rule('when ego.speed > 40 and visibility < 30 -> spawn jaywalker', f'rule{n}')
+        self.win.edit(Edit('insert', ['trigger_rules'], r, text='Add a trigger rule'))
+
+    def remove_rule(self):
+        r = self.table.currentRow()
+        if 0 <= r < len(self.rules()):
+            self.win.edit(Edit('remove', ['trigger_rules'], index=r,
+                               text=f'Remove trigger rule {self.rules()[r]["id"]}'))
+
+    def show_help(self):
+        from ...core import triggers as T
+        d = QDialog(self)
+        d.setWindowTitle('Trigger rules: signals and actions')
+        d.resize(760, 560)
+        v = QVBoxLayout(d)
+        ed = QPlainTextEdit(T.help_text())
+        ed.setReadOnly(True)
+        v.addWidget(ed)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        bb.rejected.connect(d.reject)
+        v.addWidget(bb)
+        d.open()
+
+
 class ScenariosPage(Page):
     key, title, icon = 'scenarios', 'Scenarios', 'timeline'
     about = 'Script scenarios: actors around the ego, triggers and actions, parameters as distributions; run them.'
@@ -251,6 +381,8 @@ class ScenariosPage(Page):
         self.tabs.addTab(pt, 'Parameters')
         self.timeline = TimelineEditor(self)
         self.tabs.addTab(self.timeline, 'Timeline')
+        self.rules_tab = RulesTab(self)
+        self.tabs.addTab(self.rules_tab, 'Trigger rules')
         self.top.addWidget(self.timeline.plan_panel)
         self.tabs.currentChanged.connect(lambda _: self.top.setCurrentWidget(
             self.timeline.plan_panel if self.tabs.currentWidget() is self.timeline else self.sketch))
@@ -352,6 +484,7 @@ class ScenariosPage(Page):
             k = combo.findData(cur)
             combo.setCurrentIndex(k if k >= 0 else 0)
             combo.blockSignals(False)
+        self.rules_tab.refresh()
         self.show_scenario()
 
     def show_scenario(self):
@@ -487,7 +620,7 @@ class ScenariosPage(Page):
                                   os.path.join(w.service.runs_dir(), run_dir_name(f'scenario-{ident}')),
                                   w.service.port, w.service.tm_port, seed=self.seed.value(),
                                   render_budget_mpx=float(w.settings.get('render_budget_mpx')),
-                                  workspace=w.workspace())
+                                  workspace=w.workspace(), trigger_rules='project')
             w.service.submit_drive(cfg, title=f'{s["name"]} (seed {self.seed.value()})')
         except (ProjectError, RuntimeError, ValueError) as e:
             QMessageBox.warning(self, 'Run', str(e))

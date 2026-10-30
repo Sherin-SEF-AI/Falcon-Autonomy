@@ -98,9 +98,11 @@ def smoke_config(project: Project, out_dir: str, port: int, tm_port: int, seed: 
 
 def scenario_config(project: Project, scenario: dict, world_id: str, rig_id: str, out_dir: str, port: int,
                     tm_port: int, seed: int = 0, values: dict | None = None, fps: float = 20.0,
-                    traffic_vehicles: int = 0, render_budget_mpx: float = 200.0, workspace: str = '') -> dict:
+                    traffic_vehicles: int = 0, render_budget_mpx: float = 200.0, workspace: str = '',
+                    trigger_rules=None) -> dict:
     """A drive running a scenario: sampled with the seed (or the given parameter values), the background traffic
-    off unless asked, its length the scenario's."""
+    off unless asked, its length the scenario's. trigger_rules: None (none), 'project' (the project's enabled rules
+    that apply to scenarios, core.triggers) or a list of rule ids."""
     from . import scenarios as SC
     conc = SC.sample(scenario, seed, values) if values is None or set(values) != set(scenario.get('params') or {}) \
         else dict(SC.concrete(scenario, values), seed=seed)
@@ -118,4 +120,7 @@ def scenario_config(project: Project, scenario: dict, world_id: str, rig_id: str
                 '0.9.16: no visible change on a generated road, a large one on Town10HD); rain and wetness are')
     cfg['warmup_steps'] = 5
     cfg['reload_world'] = True            # bit-for-bit repetition needs the same initial world state
+    if trigger_rules is not None:
+        from .triggers import attach
+        attach(cfg, project, 'scenarios', None if trigger_rules == 'project' else list(trigger_rules))
     return cfg

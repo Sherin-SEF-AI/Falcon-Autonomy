@@ -8,7 +8,7 @@ Kinds (FAULTS):
 * mount_rotation  {deg: [roll, pitch, yaw]} — the sensor is turned on its mount (CARLA spawns it turned).
 * mount_translation {m: [x, y, z]} — moved on its mount, in the vehicle frame.
 * clock_offset    {ms} — data captured at t is stamped t + ms.
-* drop            {rate} (0–0.9, seeded) — frames never delivered.
+* drop            {rate} (0–0.9, seeded; a timed one up to 1: the sensor dies) — frames never delivered.
 * freeze          {from_s, to_s} — frames in [from, to) repeat the last one before (a stuck sensor).
 * noise           {sigma} — Gaussian noise of sigma 8-bit levels on the image (measured back by the tests).
 * dirt            {cover} (0–0.5) — opaque dark blotches, blurred, covering that share of the image (seeded).
@@ -20,6 +20,11 @@ Kinds (FAULTS):
 * compression     {quality} (1–100) — JPEG at that quality.
 * motion_blur     {intensity, max_distortion} — CARLA's own camera attributes (motion_blur_intensity,
                     motion_blur_max_distortion), set at spawn.
+
+Timed onset. Any fault but the spawn-time ones (mount, clock, motion blur) may carry "onset_s" and "until_s"
+(simulation seconds from the run's first recorded frame): it acts only in [onset_s, until_s) — a sensor that fails
+mid-drive. TIMED lists the kinds that can; a trigger rule's "fault" action (core.triggers) starts one at its firing.
+frames.jsonl marks every frame a timed fault touched, as any other fault's.
 
 Labels are of the scene, not of the faulty image: image faults change the RGB only; mount faults move every label
 camera with the image (they are one rigid sensor), so labels stay pixel-aligned with the faulty image.
@@ -33,6 +38,10 @@ import numpy as np
 FAULTS = ('mount_rotation', 'mount_translation', 'clock_offset', 'drop', 'freeze', 'noise', 'dirt', 'rain', 'glare',
           'rolling_shutter', 'compression', 'motion_blur')
 IMAGE_FAULTS = ('noise', 'dirt', 'rain', 'glare', 'rolling_shutter', 'compression')
+SPAWN_TIME = ('mount_rotation', 'mount_translation', 'clock_offset', 'motion_blur')
+TIMED = ('drop', 'freeze', 'noise', 'dirt', 'rain', 'glare', 'rolling_shutter', 'compression')
+CAMERA_ONLY = IMAGE_FAULTS + ('motion_blur',)
+CAMERAS = ('camera.pinhole', 'camera.fisheye')
 LIMITS = {'deg': 30.0, 'm': 2.0, 'ms': 1000.0, 'rate': 0.9, 'cover': 0.5, 'sigma': 50.0, 'readout_ms': 100.0}
 
 
@@ -43,8 +52,9 @@ def validate(faults: list) -> list:
         if k not in FAULTS:
             out.append(f'unknown fault {k!r}')
             continue
-        for key, lim in (('rate', LIMITS['rate']), ('cover', LIMITS['cover']), ('sigma', LIMITS['sigma']),
-                         ('ms', LIMITS['ms']), ('readout_ms', LIMITS['readout_ms'])):
+        timed = 'onset_s' in f or 'until_s' in f        # a timed drop may lose every frame (the sensor dies)
+        for key, lim in (('rate', 1.0 if timed else LIMITS['rate']), ('cover', LIMITS['cover']),
+                         ('sigma', LIMITS['sigma']), ('ms', LIMITS['ms']), ('readout_ms', LIMITS['readout_ms'])):
             if key in f and not 0 <= abs(float(f[key])) <= lim:
                 out.append(f'{k}: {key} {f[key]} outside 0–{lim}')
         for key, lim in (('deg', LIMITS['deg']), ('m', LIMITS['m'])):
@@ -52,7 +62,31 @@ def validate(faults: list) -> list:
                 out.append(f'{k}: {key} needs three values within ±{lim}')
         if k == 'compression' and not 1 <= int(f.get('quality', 0)) <= 100:
             out.append('compression: quality must be 1–100')
+        if ('onset_s' in f or 'until_s' in f) and k in SPAWN_TIME:
+            out.append(f'{k}: is set when the sensor is spawned; it cannot have onset_s / until_s')
+        for key in ('onset_s', 'until_s'):
+            if key in f and (not isinstance(f[key], (int, float)) or f[key] < 0):
+                out.append(f'{k}: {key} must be a number of seconds ≥ 0')
+        if isinstance(f.get('onset_s'), (int, float)) and isinstance(f.get('until_s'), (int, float)) and \
+                f['until_s'] <= f['onset_s']:
+            out.append(f'{k}: until_s must be after onset_s')
     return out
+
+
+def applies_to(kind: str, sensor_type: str) -> bool:
+    """Whether a fault kind can act on a sensor of this type (image faults: cameras only)."""
+    if kind in CAMERA_ONLY:
+        return sensor_type in CAMERAS
+    return True
+
+
+def active(f: dict, sim_t: float) -> bool:
+    """Whether a fault acts at sim_t: always, or within its [onset_s, until_s) when it has them."""
+    if f.get('onset_s') is not None and sim_t < float(f['onset_s']) - 1e-9:
+        return False
+    if f.get('until_s') is not None and sim_t >= float(f['until_s']) - 1e-9:
+        return False
+    return True
 
 
 def actual_pose(pose: dict, faults: list) -> dict:
@@ -76,9 +110,13 @@ def delivery(faults: list, step: int, sim_t: float, rng) -> str:
     """'ok', 'drop' or 'freeze' for a frame (the drop draws from rng: seeded, one draw per frame)."""
     d = 'ok'
     for f in faults or []:
+        if not active(f, sim_t):
+            continue                          # a timed fault before its onset or after its end: no draw either
         if f.get('kind') == 'drop' and rng.random() < float(f.get('rate', 0.0)):
             d = 'drop'
-        elif f.get('kind') == 'freeze' and float(f.get('from_s', 0)) <= sim_t < float(f.get('to_s', 0)) and d == 'ok':
+        elif f.get('kind') == 'freeze' and d == 'ok' and (
+                ('from_s' not in f and 'to_s' not in f and ('onset_s' in f or 'until_s' in f))
+                or float(f.get('from_s', 0)) <= sim_t < float(f.get('to_s', 0))):
             d = 'freeze'
     return d
 

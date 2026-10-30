@@ -360,6 +360,8 @@ class RecordTab(QWidget):
                 from ...core import weather as W
                 cfg['weather'] = W.resolve({'preset': preset})
                 cfg['weather_source'] = {'preset': preset, 'override': 'Data ▸ Record'}
+            from ...core.triggers import attach           # the project's trigger rules for drives
+            attach(cfg, w.project, 'drives')
             w.service.submit_drive(cfg)
         except (ProjectError, RuntimeError) as e:
             QMessageBox.warning(self, 'Record a drive', str(e))

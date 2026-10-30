@@ -50,6 +50,74 @@ holds its set speed — the lane follower's braking and the autopilot are not pl
 depends on the ego slowing fires earlier here than in a run — there is no physics, and a map's lanes and curves are
 not those of the schematic. A run in CARLA is what counts.
 
+## Trigger rules
+A **trigger rule** reacts to what happens in a run, at every tick: `when <condition> -> <action>[; <action>]`.
+
+    when ego.speed > 40 and visibility < 30 -> spawn jaywalker
+    when actor.ttc < 2 or ego.light:red and ego.light_m < 25 -> marker "close call"; weather fog_density=40
+    when time >= 8 -> fault cam-front dirt cover=0.3 for=4
+
+Rules belong to the project (`trigger_rules`, [project format](project-format.md#trigger-rule)) and are edited on
+Scenarios ▸ **Trigger rules** (one row per rule, each change one undoable edit, problems listed under the table with
+the column and the reason) or with `falcon triggers add|remove|list|check|signals`. Each says where it applies —
+`drives` (Data ▸ Record, `falcon drive`, which takes `--triggers all|none|ID,…`), `scenarios` (a scenario run, its
+sweeps and rare-case searches, their replays) and `live` (Live sessions) — and can be switched off. A run refuses to
+start while a rule it would use does not parse or names a sensor its rig lacks; the config carries the rules
+(`drive.json` `trigger_rules`), so `falcon reproduce` re-runs them.
+
+**Conditions** reuse the [run query language](runs.md)'s comparisons — `key>n`, `key<n`, `key>=n`, `key<=n`,
+`key=n` on numbers (a unit after the number is checked: `40 km/h`, `30m`, `2 s`), `key:value` on text, `!=` —
+joined by `and`, `or`, `not` and parentheses (`and` binds tighter than `or`). The signals, all read from the world
+snapshot of the frame just ticked (the scenario director's own state for the actors it moves kinematically):
+
+| signal | unit | what |
+|---|---|---|
+| `time` (`t`) | s | simulation time since the run's first recorded frame |
+| `ego.speed`, `ego.accel` | km/h, m/s² | the ego's speed; its longitudinal acceleration over the last step (braking negative) |
+| `ego.junction_m` | m | from the ego's front along its lane to the next junction (`Waypoint.is_junction`, 2 m steps, straight-most at forks, look-ahead 150 m; none: inf) |
+| `ego.light_m`, `ego.light` | m, text | from its front along its lane to the stop line of the next traffic light (`TrafficLight.get_stop_waypoints`); that light's state `red`, `yellow`, `green`, `off`, `unknown` or `none` |
+| `visibility` | m | the fog's meteorological visibility, 7000 m / `fog_density` (measured relation, [sensor physics](sensor-physics.md)); no fog: inf |
+| `fog`, `rain`, `wetness`, `puddles`, `cloud` | % | CARLA's `fog_density`, `precipitation`, `wetness`, `precipitation_deposits`, `cloudiness` in force |
+| `sun`, `tod` | °, text | the sun's altitude; `day`, `low sun`, `twilight` or `night` (the run index's names) |
+| `actor.nearest_m`, `vehicle.nearest_m`, `walker.nearest_m` | m | box to box ([criticality](methods.md#criticality)) to the nearest vehicle, walker or scenario prop within 80 m |
+| `actor.ttc` | s | the smallest time to collision with any of them (boxes at constant velocity, horizon 10 s; none: inf) |
+| `actor.count` | | vehicles, walkers and props within 50 m |
+| `fired.<rule id>` | | how many times that rule has fired so far |
+
+A signal that cannot be read makes its comparison false.
+
+**Actions.** `spawn` adds an actor of a kind the scenario director already runs — `jaywalker` (`distance=25`,
+`walk=1.4`), `child`, `cut_in` (`behind=8`, `faster=15` km/h over the ego, `gap=5`, `duration=1.5`),
+`autorickshaw_cut_in`, `cattle` (`distance`, `lateral`), `handcart`, `stalled` (`kind=car|truck|van|bus|autorickshaw`),
+`wrong_way`, or any scenario kind with `lane= ahead= lateral= heading= speed= start=`; arguments are range-checked.
+`weather [Preset] field=value …` changes the weather (and with it the weather signals, the sensor physics and, at
+night, the vehicle lights). `fault <sensor> <kind> key=value … [for=s]` starts a sensor fault from the next frame — a
+timed one of known size ([faults](index.md#rigs): `drop` (default rate 1: the sensor dies), `freeze`,
+`noise`, `dirt`, `rain`, `glare`, `rolling_shutter`, `compression`; mount, clock and motion-blur faults are set at
+spawn and refused). `marker [text]` only marks the run.
+
+**Repeat.** `once` (the default) fires the first tick the condition holds. `every` fires each tick the condition
+becomes true, skipped within `cooldown_s` of the last firing. `cooldown` fires every tick it holds, at most once per
+`cooldown_s` (> 0).
+
+**Determinism.** Rules read only simulation state and time; their random choices (a walker's blueprint) draw from a
+generator seeded by the run's seed and the rule's id, never the run's own. An actor a rule spawns is driven by the
+scenario director — kinematic in scenario runs, so **a scenario run with rules still repeats bit for bit** (tested
+against the fake; measured on the real server below); a drive without a scenario attaches a director that drives
+only those actors (the ego stays on the traffic manager, whose physics is not bit-for-bit, so such drives repeat as
+closely as drives do — `falcon reproduce` measures it).
+
+**Records.** A firing is written on the frame whose state made the condition true (`frames.jsonl` `triggers`); its
+actions act from the next tick. `run.json` `trigger_rules` lists the rules, every firing (step, time, the signals the
+condition read, what each action did — or why it could not, e.g. *the map has no adjacent lane here*; the run goes
+on), the counts and the actors spawned; a drive whose rules spawned actors also writes `trajectories.json` and their
+criticality. The run index tags such runs `events:trigger`. In Live, firings are events (shown and recorded), a rule's
+`dirt`/`drop`/`freeze` fault is shown as Live's black, dropped or frozen view, other faults are refused there.
+
+Limits: the lane look-ahead follows the straight-most branch at a fork (not the route a traffic-manager ego will
+take); `ego.accel` is a one-step difference (noisy under physics); a rule spawn placed where something already stands
+is refused (*could not be placed*), not moved.
+
 ## Running one
 A scenario runs inside a drive (so a scenario run records the rig's data with all its labels): the director picks a
 start that has what the scenario needs (a straight run, an adjacent lane, an oncoming lane, a junction turn), places

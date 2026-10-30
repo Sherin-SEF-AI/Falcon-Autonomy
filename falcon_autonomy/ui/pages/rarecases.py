@@ -415,7 +415,7 @@ class RareCasesPage(Page):
         cfg = scenario_config(w.project, scn, self.world.currentData(), self.rig.currentData(),
                               os.path.join(w.service.runs_dir(), run_dir_name('replay')), w.service.port,
                               w.service.tm_port, seed=self.seed.value(), values=values,
-                              workspace=w.workspace(), fps=float(self.fps.value()))
+                              workspace=w.workspace(), fps=float(self.fps.value()), trigger_rules='project')
         MS.apply_weather(cfg, weather)
         w.service.submit_drive(cfg, title=f'Replay: {scn["name"]}')
         w.jobs_dock.raise_()

@@ -148,6 +148,10 @@ class Director:
         self.kin = {}                     # actor id -> [x, y, z, yaw_deg, v] when kinematic
         self.ego_control = None           # the control drive_ego applied for the coming tick (None: not driving it)
         self.external = set()             # actor ids driven from outside (workers/adversary.py's learned traffic)
+        self.attached_only = False        # attach(): a run without a scenario; only actors added during it
+        self.added = []                   # actors added during the run (trigger rules): {id, kind, t, carla_id}
+        self.extra_timeline = []          # timeline entries added during the run
+        self.fired_added = []             # (index in extra_timeline, t) as fired
 
     # ------------------------------------------------------------------ lanes relative to the handedness
     def overtaking(self, wp):
@@ -361,44 +365,12 @@ class Director:
         self.driver = self.scn.get('ego', {}).get('driver', 'follower')
         from ..plugins.lane_follower import LaneFollower
         self.policy = LaneFollower(cruise_kmh=self.ego_speed * 3.6 + 1e-6)
-        from ..core import assets as AS
         if not hasattr(self.w, 'subclass'):
             self.w.subclass = {}
         if not hasattr(self.w, 'proxies'):
             self.w.proxies = {}
         for a in self.scn.get('actors', []):
-            path, lateral = self.actor_path(a, ego_wp)
-            x, y, yaw = path.at(0.0, lateral)
-            cls = _class_of(a['kind'])
-            prop = a['kind'] in PROXIES
-            if prop:
-                actor, true = self.spawn_proxy(a, path, lateral)
-                self.w.proxies[actor.id] = true
-            else:
-                bp = self.blueprint(a['kind'], a.get('variant', 0))
-                bp.set_attribute('role_name', ROLE_PREFIX + 'scenario')
-                tf = carla.Transform(carla.Location(x=x, y=y, z=path.z + (1.0 if a['kind'] in ('pedestrian', 'child')
-                                                                           else 0.5)), carla.Rotation(yaw=yaw))
-                actor = self.world.try_spawn_actor(bp, tf)
-                if actor is None:
-                    raise Failed(f'actor {a["id"]} ({a["kind"]}) could not be placed: something is in the way')
-            self.w.own(actor)
-            spec = AS.CLASSES.get(cls) or {}
-            if cls is not None:
-                self.w.subclass[actor.id] = spec.get('label', cls)
-            top = spec.get('top_kmh')
-            moving = a.get('start', 'moving') == 'moving'
-            sp = float(a.get('speed_kmh', 0.0)) / 3.6 if moving else 0.0
-            if top is not None:
-                sp = min(sp, float(top) / 3.6)
-            self.actors[a['id']] = {'actor': actor, 'kind': a['kind'], 'path': path, 'lateral': lateral,
-                                    'lat_from': lateral, 'lat_to': lateral, 'lat_t0': 0.0, 'lat_dur': 0.0,
-                                    'speed': sp, 'target': sp, 'accel': 3.0, 'walking': False,
-                                    'walk_speed': 0.0, 'walker': a['kind'] in ('pedestrian', 'child'),
-                                    'heading': a.get('heading', 'lane'), 'prop': prop, 's': 0.0,
-                                    'top': (float(top) / 3.6) if top is not None else None,
-                                    'max_accel': spec.get('accel_mps2'), 'class': cls}
-            self.traj[a['id']] = []
+            self.spawn_actor(a, ego_wp)
         bp = self.lib.find('sensor.other.collision')
         bp.set_attribute('role_name', ROLE_PREFIX + 'sensor')
         self.col = self.w.own(self.world.spawn_actor(bp, carla.Transform(), attach_to=ego))
@@ -409,6 +381,112 @@ class Director:
             ego.set_autopilot(True, self.w.tm.get_port())
             if getattr(self.w, 'speed_control', None) is not None:     # an imported world's road limits
                 self.w.speed_control.add(ego, role='ego')
+
+    def spawn_actor(self, a, ego_wp):
+        """Place one scenario actor (an entry of the scenario's "actors") relative to the ego's waypoint and register
+        it; its trajectory is recorded from the next record(). Returns its state."""
+        carla = self.carla
+        from ..core import assets as AS
+        path, lateral = self.actor_path(a, ego_wp)
+        x, y, yaw = path.at(0.0, lateral)
+        cls = _class_of(a['kind'])
+        prop = a['kind'] in PROXIES
+        if prop:
+            actor, true = self.spawn_proxy(a, path, lateral)
+            self.w.proxies[actor.id] = true
+        else:
+            bp = self.blueprint(a['kind'], a.get('variant', 0))
+            bp.set_attribute('role_name', ROLE_PREFIX + 'scenario')
+            tf = carla.Transform(carla.Location(x=x, y=y, z=path.z + (1.0 if a['kind'] in ('pedestrian', 'child')
+                                                                       else 0.5)), carla.Rotation(yaw=yaw))
+            actor = self.world.try_spawn_actor(bp, tf)
+            if actor is None:
+                raise Failed(f'actor {a["id"]} ({a["kind"]}) could not be placed: something is in the way')
+        self.w.own(actor)
+        spec = AS.CLASSES.get(cls) or {}
+        if cls is not None:
+            self.w.subclass[actor.id] = spec.get('label', cls)
+        top = spec.get('top_kmh')
+        moving = a.get('start', 'moving') == 'moving'
+        sp = float(a.get('speed_kmh', 0.0)) / 3.6 if moving else 0.0
+        if top is not None:
+            sp = min(sp, float(top) / 3.6)
+        self.actors[a['id']] = {'actor': actor, 'kind': a['kind'], 'path': path, 'lateral': lateral,
+                                'lat_from': lateral, 'lat_to': lateral, 'lat_t0': 0.0, 'lat_dur': 0.0,
+                                'speed': sp, 'target': sp, 'accel': 3.0, 'walking': False,
+                                'walk_speed': 0.0, 'walker': a['kind'] in ('pedestrian', 'child'),
+                                'heading': a.get('heading', 'lane'), 'prop': prop, 's': 0.0,
+                                'top': (float(top) / 3.6) if top is not None else None,
+                                'max_accel': spec.get('accel_mps2'), 'class': cls}
+        self.traj[a['id']] = []
+        return self.actors[a['id']]
+
+    def add_actor(self, a, t, rng=None):
+        """An actor added during the run (a trigger rule's spawn, core.triggers): placed relative to where the ego
+        is now, driven from the next step like the scenario's own (kinematic when the run is), its random choices
+        from rng (the rule's own generator: the run's draws stay as they were). Returns the actor's CARLA id."""
+        ego_wp = self.map.get_waypoint(self.loc(self.ego))
+        if ego_wp is None:
+            raise Failed('the ego is off the road network')
+        if self.attached_only:                     # the ego's own route from here (lane changes aim at its lane)
+            self.ego_path = lane_path(ego_wp, 400.0)
+        if a['id'] in self.actors:
+            raise Failed(f'an actor {a["id"]!r} is already in the run')
+        keep = self.rng
+        if rng is not None:
+            self.rng = rng
+        try:
+            st = self.spawn_actor(a, ego_wp)
+        finally:
+            self.rng = keep
+        actor = st['actor']
+        if self.started:
+            if st['prop']:
+                tr = actor.get_transform()
+                px = self.w.proxies[actor.id]
+                self.kin[actor.id] = [tr.location.x, tr.location.y, px['z'], tr.rotation.yaw - px['yaw_offset'],
+                                      st['speed']]
+            elif self.kinematic:
+                self.kin_init(actor)
+                self.kin[actor.id][4] = st['speed']
+            elif st['speed'] > 0 and not st['walker']:
+                y = math.radians(actor.get_transform().rotation.yaw)
+                actor.set_target_velocity(self.carla.Vector3D(st['speed'] * math.cos(y), st['speed'] * math.sin(y),
+                                                              0))
+        self.added.append({'id': a['id'], 'kind': a['kind'], 't': round(float(t), 4), 'carla_id': int(actor.id)})
+        return int(actor.id)
+
+    def add_timeline(self, entry):
+        """A timeline entry added during the run (a rule's cut-in: its lane change when the gap opens); fired as the
+        scenario's own, listed in report() "fired_added"."""
+        self.extra_timeline.append(entry)
+
+    @classmethod
+    def attach(cls, w, world, cfg, lib, rng, ego):
+        """A director for a run without a scenario (a plain drive, a Live session) that drives only the actors added
+        to it (add_actor): the ego stays as the run drives it (the traffic manager, the keyboard, a policy) and is
+        never placed or controlled here; a collision sensor on it records contacts with the added actors."""
+        d = cls(w, world, dict(cfg, scenario={'id': None, 'name': 'trigger rules', 'actors': [], 'timeline': [],
+                                              'ego': {'driver': 'external'}, 'motion': cfg.get('motion',
+                                                                                              'kinematic')}),
+                lib, rng)
+        d.attached_only = True
+        d.ego = ego
+        d.driver = 'external'
+        d.ego_speed = 0.0
+        d.ego_path = lane_path(d.map.get_waypoint(ego.get_location()), 400.0)
+        if not hasattr(w, 'subclass'):
+            w.subclass = {}
+        if not hasattr(w, 'proxies'):
+            w.proxies = {}
+        bp = lib.find('sensor.other.collision')
+        bp.set_attribute('role_name', ROLE_PREFIX + 'sensor')
+        d.col = w.own(world.spawn_actor(bp, w.carla.Transform(), attach_to=ego))
+        d.col.listen(lambda e: d.events.append((d.t, int(e.other_actor.id) if e.other_actor else 0,
+                                                float(math.sqrt(e.normal_impulse.x ** 2 + e.normal_impulse.y ** 2
+                                                                + e.normal_impulse.z ** 2)))))
+        d.started = True                            # nothing to start: actors added later are started as they come
+        return d
 
     # ------------------------------------------------------------------ frame-consistent state
     def sync(self, frame, timeout=5.0):
@@ -578,8 +656,12 @@ class Director:
                                    2 * ex, 2 * ey))
 
     def timeline(self, t):
-        for k, ev in enumerate(self.scn.get('timeline', [])):
-            if k in {f[0] for f in self.fired}:
+        self._fire(t, self.scn.get('timeline', []), self.fired)
+        self._fire(t, self.extra_timeline, self.fired_added)
+
+    def _fire(self, t, entries, fired):
+        for k, ev in enumerate(entries):
+            if k in {f[0] for f in fired}:
                 continue
             trig = ev.get('trigger', {})
             go = False
@@ -593,7 +675,7 @@ class Director:
                 else:
                     go = gap is not None and gap > float(trig['gt_m'])
             if go:
-                self.fired.append((k, round(t, 3)))
+                fired.append((k, round(t, 3)))
                 for act in ev.get('actions', []):
                     self.act(act, t)
 
@@ -727,7 +809,8 @@ class Director:
                 'actor_ids': {k: int(v['actor'].id) for k, v in self.actors.items()},
                 'blueprints': {k: v['actor'].type_id for k, v in self.actors.items()},
                 'subclasses': {k: self.w.subclass[v['actor'].id] for k, v in self.actors.items()
-                               if v['actor'].id in (getattr(self.w, 'subclass', None) or {})}}
+                               if v['actor'].id in (getattr(self.w, 'subclass', None) or {})},
+                **({'added': self.added, 'fired_added': self.fired_added} if self.added else {})}
 
 
 def follow(actor, path, lateral, speed, dt, st, tr, v):

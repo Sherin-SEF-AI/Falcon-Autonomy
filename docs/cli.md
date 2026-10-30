@@ -12,7 +12,8 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon project migrate PATH` | migrates a project to this build's format, in place |
 | `falcon probe [--wait S]` | what server answers on Falcon's port (starts Falcon's server if none) |
 | `falcon smoke PROJECT` | the 30 s smoke drive; records this machine's throughput |
-| `falcon drive PROJECT [--world ID] [--rig ID] [--seconds S] [--fps F] [--seed N] [--out DIR] [--max-wall S]` | a recorded drive |
+| `falcon drive PROJECT [--world ID] [--rig ID] [--seconds S] [--fps F] [--seed N] [--out DIR] [--max-wall S] [--triggers all\|none\|ID,…]` | a recorded drive (with the project's trigger rules for drives unless `none`) |
+| `falcon triggers list\|check PROJECT [--json]` · `add PROJECT "when … -> …" [--id ID] [--repeat once\|every\|cooldown] [--cooldown S] [--applies drives,scenarios,live] [--disabled]` · `remove PROJECT ID` · `signals` | live trigger rules: list, validate (exit 2 on a problem), add, remove; the signals and actions ([scenarios](scenarios.md#trigger-rules)) |
 | `falcon tidy` | tidies Falcon's server after a killed worker |
 | `falcon reproduce RUN [--into DIR] [--pose-tol M] [--rgb-tol L]` | re-runs a run from its input and compares |
 | `falcon runs PROJECT [--rebuild]` | lists a project's runs (re-indexing the workspace) |

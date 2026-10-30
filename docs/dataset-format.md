@@ -11,10 +11,14 @@ run/
                       from the file's limits ("map") or CARLA's own ("carla"), see worlds.md, and keeper — the
                       traffic moved away from roads that end (counts, events); lights: vehicle lights set and read
                       back (drives, live, stack, gym, HIL); city: an imported
-                      world's buildings, trees and lamps placed (the plan's SHA-256, spawned, failed, seconds)
+                      world's buildings, trees and lamps placed (the plan's SHA-256, spawned, failed, seconds);
+                      trigger_rules: the rules, every firing, counts, actors spawned (and their criticality
+                      in a drive without a scenario); faults_applied[sensor].started: faults started mid-run
   dataset.json        sensors (K, lens, views, planned pose, streams), label encodings and classes, provenance
   frames.jsonl        one line per simulation step (below)
   lanes.json          the map's driving lanes and lane graph (labelled drives)
+  trajectories.json   scenario runs, and drives whose trigger rules spawned actors: every scripted actor's
+                      (t, x, y, yaw, vx, vy, length, width) per step, for core.criticality
   actors.jsonl        every vehicle and walker at every step: pose, velocity, box, category (CARLA world frame);
                       actors a kinematic scenario moves carry the director's velocity (CARLA reports them still)
   rgb/<camera>/<n>.jpg
@@ -37,7 +41,7 @@ run/
 when used `stamps` (per sensor, with its clock-offset fault), `faults` (per sensor: `drop` or `freeze`), `lidar_pose`
 (per lidar: the 3 × 4 world matrix of the sweep's end, row-major), `physics` (per sensor: the weather effects that
 touched the frame — [sensor physics](sensor-physics.md)) and `odd` (`in`, `why`, `road`, … — [ODD
-monitoring](odd-monitoring.md)).
+monitoring](odd-monitoring.md)), and `triggers` (on the step whose state made a trigger rule's condition true: per firing `rule`, `t`, `signals` — the values its condition read, inf as `"inf"` — and `actions`, each with `did` or `error`; the actions act from the next step — [trigger rules](scenarios.md#trigger-rules)).
 
 Lidar labels: the tag is CARLA's semantic tag of the surface hit, except **30 `weather_noise`**: a spurious return of
 fog or rain added by Falcon's sensor physics (actor id 0; nuScenes-lidarseg `noise`). Real returns always keep CARLA's
