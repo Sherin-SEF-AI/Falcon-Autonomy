@@ -12,6 +12,7 @@ def make_app():
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(APP_ID)
+    app.setDesktopFileName('falcon-autonomy')   # Wayland app id: the dock matches the window to falcon-autonomy.desktop
     return app
 
 
