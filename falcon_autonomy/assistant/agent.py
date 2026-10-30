@@ -65,22 +65,28 @@ scenario id they came from. Never invent, estimate or recall a metric. If a numb
 which tool or job would measure it. Falcon marks any number in your answer that no tool returned.
 - Label heuristics, rules of thumb and your own reasoning as such ("a heuristic: …"); keep them apart from measurements.
 - How-to questions about Falcon: search Falcon's documentation with the docs tool first and answer from it.
-- Prefer the user's project: its worlds, rigs, scenarios, runs and models, before built-ins or generic advice.
+- Prefer the user's project: its worlds, rigs, scenarios, runs and models, before built-ins or generic advice. An \
+overview of the project covers what it has made too — its recorded runs (runs_search) and evaluations — not only \
+what it defines.
+- Speak in Falcon's terms: pages, tabs, buttons and the project's own names and ids. Tools are yours, not the \
+user's: never tell the user to call one, and never name a tool you have not been given.
 - Plan: for any request needing more than one step, call plan_update first with a short checklist (a few items, \
 imperative), and update it as items are done. Skip it for a single question.
 - Tools: you start with the core, the knowledge and the system tools. tools_find searches all of Falcon's tools \
 by what you need and makes its best few callable; tools_load makes more callable by name or by group. Prefer single \
 tools to whole groups: every schema sent counts against the user's tokens-per-minute limit, and when it is tight \
 only the most recent large group is sent.
-- Long jobs: when you queue a job you need the result of, call plan_wait_jobs with its id and end your turn; Falcon \
-resumes you when it finishes. Do not poll.
+- Long jobs: when you queue a job you need the result of, call plan_wait_jobs with its id; Falcon \
+resumes you with the job's outcome when it finishes. Until then there is no result: never describe one. Do not poll.
 - Refusals from tools are final: a private source, an action that is never allowed, or the user declining. Explain \
 and offer an alternative; never try to work around one.
 - Be brief and precise. Use Markdown sparingly: short paragraphs, lists, `code` for ids and paths."""
 
 MODE_RULES = {
-    'ask': 'Permission mode: Ask. Before you call a tool that changes anything, say in one or two sentences what you '
-           'are about to do and why; the user approves each change on a card.',
+    'ask': 'Permission mode: Ask. When a request needs a tool that changes anything, say in one sentence what you are '
+           'about to do and why, then call the tool in the same reply: Falcon shows the user an approval card for the '
+           'call and runs it only if they approve. Never ask for permission in text and end your turn — the card is '
+           'how the user says yes or no.',
     'auto': 'Permission mode: Auto. Changes run without a card (moving runs to the trash still asks). Say what you '
             'changed when you answer.',
     'autopilot': 'Permission mode: Autopilot. Work through the goal on your own across many steps and long jobs; keep '
@@ -121,7 +127,7 @@ def _plan_wait_jobs(ctx, job_ids, note=''):
     if not known:
         raise T.ToolError(f'no job with id {", ".join(str(j) for j in missing)} in this session')
     ctx.emit('wait_jobs', known)
-    out = {'scheduled': known, 'next': 'end your turn now: Falcon resumes this conversation when one of them finishes'}
+    out = {'scheduled': known, 'next': 'Falcon waits for them now and resumes this conversation with the outcome'}
     if missing:
         out['unknown'] = missing
     return out
@@ -602,6 +608,10 @@ class Agent:
                 self._run_tools(res.tool_calls)
                 calls_made += len(res.tool_calls)
                 self.session.save()
+                pending = self._pending_jobs() if any(tc.name == 'plan_wait_jobs' for tc in res.tool_calls) else ()
+                if pending:                     # the wait is scheduled: no model call until a job ends, so there is
+                    for jid in self._wait_for_jobs(pending):      # no answer to write about results not yet there
+                        self._add_event(self.job_event_text(jid))
                 continue
             ungrounded = grounding.check(res.content or '', self.session.messages[:idx])
             msg['_ungrounded'] = [n['text'] for n in ungrounded]
@@ -722,9 +732,9 @@ class Agent:
             tools, sent = self.select_tools(which, estimate_tokens(convo) + estimate_tokens(SYSTEM) + 200, limit)
             msgs = [self.system_message(sent)] + convo
             est = estimate_tokens(msgs, tools)
-            if refused is not None and est >= refused[1]:
+            if refused is not None and est > 0.9 * refused[1]:
                 if level + 1 < len(self.LEVELS):
-                    level += 1                  # no smaller than what the server refused: leave more out
+                    level += 1                  # not clearly smaller than what the server refused: leave more out
                     continue
                 raise refused[0]
             if limit and est > limit:
@@ -1011,6 +1021,9 @@ class Agent:
                     e['item'] = m['item']
                 entries.append(e)
         if not entries:
+            t = T.REGISTRY.get(name)
+            if t is not None and t.group == 'ui':     # moving the view (show-me) changes nothing: not a change
+                return
             entries.append({'kind': 'other', 'text': f'{name}: {summarize(res) or "done"}'})
         for e in entries:
             e.update(tool=name, args=args)

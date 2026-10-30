@@ -44,7 +44,8 @@ def _done(ctx, edit, **more) -> dict:
       'The open project at a glance: its name and file, unsaved changes, and the ids and names of its worlds (kind, '
       'town or imported, weather preset), rigs (sensor count), scenarios (project ones; built-ins via '
       'project_scenarios), traffic profiles, trigger rules (enabled), roadside units, drive sets, registered models, '
-      'and the loop\'s model and ODD. Use the ids in the other project tools.')
+      'the loop\'s model and ODD, and what it has recorded: how many runs (the newest five) and evaluations. Use the '
+      'ids in the other tools.')
 def project_overview(ctx):
     p = C.project(ctx)
     d = p.doc
@@ -71,7 +72,26 @@ def project_overview(ctx):
         'models': rows('models', lambda m: {'id': m['id'], 'name': m.get('name'), 'kind': m.get('kind')}),
         'loop': {'model': (d.get('loop') or {}).get('model'), 'odd': ((d.get('loop') or {}).get('odd') or {}).get(
             'name') if (d.get('loop') or {}).get('odd') else None},
+        'recorded': _recorded(ctx) if p.path or ctx.win is not None else None,
     }
+
+
+def _recorded(ctx) -> dict:
+    """What the project has made: its runs (newest few; private ones only counted) and evaluations."""
+    import os
+    from .runs import _entries, _row
+    es, hidden = _entries(ctx)
+    es = sorted(es, key=lambda e: e.get('started') or '', reverse=True)
+    ev = os.path.join(C.workspace(ctx), 'evaluations')
+    n_ev = sum(os.path.isfile(os.path.join(ev, x, 'evaluation.json')) for x in os.listdir(ev)) \
+        if os.path.isdir(ev) else 0
+    out = {'runs': len(es), 'latest_runs': [{k: v for k, v in _row(ctx, e).items()
+                                             if k in ('id', 'name', 'status', 'world', 'frames', 'started')}
+                                            for e in es[:5]],
+           'evaluations': n_ev, 'more': 'runs_search for every run'}
+    if hidden:
+        out['private_runs_not_listed'] = hidden
+    return out
 
 
 @tool('project_get', 'project', 'read',
@@ -642,7 +662,8 @@ def _scenario_set(ctx, scenario, name=None, about=None, duration_s=None, params=
       'uniform|normal|choice|fixed, lo, hi | mean, sd | choices | value, unit}), parameters to remove, the actors '
       '(whole list, or add_actor with {id, kind, place{lane, ahead_m, lateral_m}, heading, speed_kmh, start}), the '
       'timeline (whole list, or add_event {trigger{type time|distance|ahead …}, actions[{actor, do …}]}), the ego, '
-      'weather and pass criteria. Values may be "$param" expressions. Checked with core.scenarios.validate.',
+      'weather and pass criteria. Values may be "$param" expressions. Checked with core.scenarios.validate. A '
+      'scenario has no world: the world is chosen when it is run (jobs_scenario_run).',
       C.obj({'scenario': C.s('the project scenario id'), 'name': C.s('name'), 'about': C.s('what it tests'),
              'duration_s': C.n('length in seconds', minimum=1),
              'params': {'type': 'object', 'description': 'parameters to add or replace, by name'},

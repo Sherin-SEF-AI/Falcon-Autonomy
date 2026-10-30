@@ -76,7 +76,7 @@ SHORT = {
     'knowledge_setting': 'What a setting does, where it is set, and its value (private ones hidden).',
     'knowledge_tools': 'The assistant\'s tools by group and tier, and what is never possible.',
     # project
-    'project_overview': 'The project at a glance: ids and names of worlds, rigs, scenarios, profiles, rules, units.',
+    'project_overview': 'The project at a glance: its worlds, rigs, scenarios, profiles, rules, units; runs, evaluations.',
     'project_get': 'One project item in full by kind and id (also the loop or safety-case ODD).',
     'project_scenarios': 'Every runnable scenario: built-ins and the project\'s own, with parameters.',
     'project_options': 'Valid choices for edits: towns, weather, sensor types, actions, rule syntax, presets.',
@@ -90,7 +90,7 @@ SHORT = {
     'project_sensor_add': 'Add a sensor of a given type to a rig.',
     'project_sensor_set': 'Change a sensor: name, pose, fields (resolution, fov, labels, faults, …).',
     'project_scenario_create': 'Create an editable scenario as a copy of a built-in or project scenario.',
-    'project_scenario_set': 'Edit the given parts of a project scenario.',
+    'project_scenario_set': 'Edit the given parts of a project scenario (it has no world: chosen when run).',
     'project_traffic_add': 'Add a traffic profile (preset or copy). Returns its id.',
     'project_traffic_set': 'Change the given settings of a traffic profile.',
     'project_trigger_add': 'Add a trigger rule "when <condition> -> <action>" (parsed and checked).',

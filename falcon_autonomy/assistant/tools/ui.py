@@ -46,8 +46,10 @@ def _current(ctx):
 
 @tool('ui_open_page', 'ui', 'act',
       'Go to a page (and optionally one of its tabs by its label, e.g. data + Browse, models + Failures, training + '
-      'World model). ui_current lists the pages and tabs.',
-      C.obj({'page': C.s('page key', enum=list(PAGE_KEYS)), 'tab': C.s('a tab label of that page')}, ['page']),
+      'World model, or a section by its title: scrolled into view, with the names of its controls). ui_current lists '
+      'the pages and tabs.',
+      C.obj({'page': C.s('page key', enum=list(PAGE_KEYS)), 'tab': C.s('a tab label or section title of that page')},
+            ['page']),
       preview=lambda ctx, **a: f'go to {a["page"]}' + (f' ▸ {a["tab"]}' if a.get('tab') else ''), gui=True)
 def ui_open_page(ctx, page, tab=''):
     p = ctx.win.go(page)
@@ -58,7 +60,16 @@ def ui_open_page(ctx, page, tab=''):
         names = _tabs(p)
         k = next((i for i, n in enumerate(names) if n.lower() == tab.lower()), None)
         if k is None:
-            raise ToolError(f'{page} has no tab {tab!r} (tabs: {", ".join(names) or "none"})')
+            from ...ui import highlight as H
+            from ...ui.widgets import Section
+            secs = [x for x in p.findChildren(Section) if getattr(x, 'title', '')]
+            sec = next((x for x in secs if tab.lower() in x.title.lower()), None)
+            if sec is None:                      # a section asked for by its title, as models often do
+                raise ToolError(f'{page} has no tab or section {tab!r} (tabs: {", ".join(names) or "none"}; '
+                                f'sections: {", ".join(x.title for x in secs) or "none"})')
+            H.bring_into_view(sec)
+            ctl = [k for k, w in H.controls(p).items() if not isinstance(w, tuple) and H.section_of(w) == sec.title]
+            return {'page': page, 'section': sec.title, 'its_controls': ctl[:20]}
         tw.setCurrentIndex(k)
     return {'page': page, 'tab': tab or None}
 
@@ -130,8 +141,9 @@ def ui_open_job(ctx, job):
 
 @tool('ui_controls', 'ui', 'read',
       'The named controls of a page, for ui_highlight: attribute names (e.g. record.world, record.go_btn) and visible '
-      'labels (button:Record, check:…, tab:Browse) with each control\'s kind and tooltip.',
-      C.obj({'page': C.s('page key', enum=list(PAGE_KEYS)), 'filter': C.s('only names containing this')}, ['page']),
+      'labels (button:Record, check:…, tab:Browse) with each control\'s kind, the section it is in and its tooltip.',
+      C.obj({'page': C.s('page key', enum=list(PAGE_KEYS)),
+             'filter': C.s('only controls whose name, section or tooltip has every word of this')}, ['page']),
       gui=True)
 def ui_controls(ctx, page, filter=''):
     from ...ui import highlight as H
@@ -140,8 +152,13 @@ def ui_controls(ctx, page, filter=''):
         p = ctx.win.page(page)
         if p is None:
             raise ToolError(f'no page {page!r}')
-        return [{'name': k, 'kind': H.describe(k, w)} for k, w in H.controls(p).items()
-                if filter.lower() in k.lower()]
+        words = filter.lower().split()
+        out = []
+        for k, w in H.controls(p).items():
+            d = H.describe(k, w)
+            if all(x in f'{k} {d}'.lower() for x in words):
+                out.append({'name': k, 'kind': d})
+        return out
     return C.capped(C.on_gui(ctx, rows), 60, 'use filter')
 
 

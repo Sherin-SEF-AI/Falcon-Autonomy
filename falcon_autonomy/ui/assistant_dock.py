@@ -130,12 +130,21 @@ WORD = re.compile(r'[A-Za-z0-9][\w.\-]{2,}')
 JOB = re.compile(r'\b([Jj]ob)\s+#?(\d+)\b')
 
 
+BR = re.compile(r'<br\s*/?>', re.I)
+
+
+def md_safe(text: str) -> str:
+    """Markdown Qt's importer reads without losing text: a raw <br> (models put them in table cells) makes Qt 6.11
+    drop every later word that is not code, so it becomes ' · ' in a table row and a hard line break elsewhere."""
+    return '\n'.join(BR.sub(' · ' if ln.lstrip().startswith('|') else '  \n', ln) for ln in (text or '').split('\n'))
+
+
 def render_html(text: str, ungrounded=(), win=None, final=True) -> str:
     """Markdown as rich text for a QLabel; when final, run/job/scenario ids become falcon:// links and the numbers no
     tool returned are marked."""
     doc = QTextDocument()
     doc.setDefaultFont(sans(12))
-    doc.setMarkdown(text or '', QTextDocument.MarkdownFeature.MarkdownDialectGitHub)
+    doc.setMarkdown(md_safe(text), QTextDocument.MarkdownFeature.MarkdownDialectGitHub)
     out = doc.toHtml()
     m = re.search(r'<body[^>]*>(.*)</body>', out, re.S)
     body = m.group(1) if m else out
@@ -768,6 +777,7 @@ class AssistantPanel(QWidget):
         self.activity.setColumnWidth(2, 64)
         av.addWidget(self.activity)
         self.tabs.addTab(act, 'Activity')
+        self.tabs.currentChanged.connect(lambda i: self._fill_activity() if i == 1 else None)  # jobs end meanwhile
         self.setMinimumWidth(300)
 
         self._render_timer = QTimer(self)
@@ -1245,13 +1255,18 @@ class AssistantPanel(QWidget):
             it.setToolTip(1, e.get('text', '') + ('\n' + json.dumps(e.get('args'), ensure_ascii=False)
                                                   if e.get('args') else ''))
             self.activity.addTopLevelItem(it)
+            if e.get('kind') not in ('edit', 'job', 'trash'):
+                it.setToolTip(2, 'This change cannot be undone from here')
+                continue                                 # no button that looks clickable and is not
             b = QToolButton()
             b.setText('Undone' if e.get('undone') else 'Undo')
             b.setProperty('text-button', True)
-            can = e.get('kind') in ('edit', 'job', 'trash') and not e.get('undone')
-            set_enabled(b, can, 'Already undone' if e.get('undone') else 'This change cannot be undone from here',
-                        {'edit': 'Undo these project edits', 'job': 'Cancel this job',
-                         'trash': 'Move it back out of the trash'}.get(e.get('kind'), ''))
+            j = self.win.queue.get(e.get('job_id')) if e.get('kind') == 'job' else None
+            ended = j is not None and j.state in ('done', 'failed', 'cancelled')
+            why = ('Already undone' if e.get('undone') else
+                   f'Job {j.id} already {j.state}: nothing to cancel (its result stays)' if ended else '')
+            set_enabled(b, not why, why, {'edit': 'Undo these project edits', 'job': 'Cancel this job',
+                                          'trash': 'Move it back out of the trash'}.get(e.get('kind'), ''))
             b.clicked.connect(lambda _=False, ident=e.get('id'): self.undo(ident))
             self.activity.setItemWidget(it, 2, b)
 

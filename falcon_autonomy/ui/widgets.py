@@ -194,6 +194,7 @@ class Section(QWidget):
 
     def __init__(self, title: str, note: str = '', parent=None):
         super().__init__(parent)
+        self.title = title                   # show-me names a control by the section it is in (ui.highlight)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 12)
         v.setSpacing(6)

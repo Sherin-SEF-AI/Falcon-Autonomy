@@ -230,6 +230,10 @@ def test_plan_wait_jobs_in_ask_mode_and_stop_while_waiting(tmp_path, srv, reg, q
     while not host.kinds('waiting'):
         assert time.monotonic() < deadline
         time.sleep(0.02)
+    time.sleep(0.3)
+    # waiting starts at once: the model is not asked again before the job ends, so it cannot write about results that
+    # do not exist yet (gpt-oss-120b once described a dataset-health check it never ran)
+    assert len(srv.chats()) == 1 and not [p for p in host.kinds('assistant') if p.get('final')]
     t0 = time.monotonic()
     ag.stop()
     assert ag.wait(3) and time.monotonic() - t0 < 2
@@ -508,12 +512,12 @@ def test_tokens_per_minute_trimming_pacing_and_refusal(tmp_path, srv, reg, monke
     from fake_groq import error
     T.register(T.Tool('runs_big', 'runs', 'read', 'A large result.', {'type': 'object', 'properties': {}},
                       lambda ctx: {'text': 'x' * 3000}))
-    svc, ag, host, ws = make(tmp_path, srv, tpm=2500)
+    svc, ag, host, ws = make(tmp_path, srv, tpm=2700)
     monkeypatch.setattr(svc, 'tpm_wait', lambda tokens: 0.0)         # pacing is checked on its own below
     srv.push(*[tools(('runs_big', {}))] * 4, text('Done.'))
     run(ag, 'look at it')
     last = bodies(srv)[-1]
-    assert estimate_tokens(last['messages'], last.get('tools')) <= 2500
+    assert estimate_tokens(last['messages'], last.get('tools')) <= 2700
     assert sum('elided' in m['content'] for m in last['messages'] if m['role'] == 'tool') >= 2
     assert any(k == 'notice' and 'per minute' in p for k, p in host.events)
     # pacing: the last minute's tokens count against the limit

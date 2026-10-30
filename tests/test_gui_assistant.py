@@ -278,6 +278,10 @@ def test_panel_fits_1280_in_both_themes(window, qapp, srv, reg):
     assert D.MARK['dark'] in b.text()
     html = D.render_html('see job 1 and `x`', ['0.5'], window)
     assert 'falcon://job/1' not in html                      # no job 1 in this session's queue: not a link
+    # a raw <br> (as models write in table cells) made Qt drop every later word that is not code
+    html = D.render_html('| A |\n|---|\n| one <br> two |\n\n1. **Define** – pick `x`.\n\nend <br/> here', (), window)
+    for word in ('two', 'Define', 'pick', 'end', 'here'):
+        assert word in html, word
 
 
 def test_ask_and_propose_hooks(window, qapp, srv, reg, tmp_path):

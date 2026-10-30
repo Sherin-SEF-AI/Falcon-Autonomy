@@ -223,7 +223,10 @@ def test_private_runs_and_paths_outside_are_refused(ctx):
     _fake_run(ws, 'route', {'seed': 2, 'dashcam_route': {'route_sha256': 'x'}})
     s = call(ctx, 'runs_search', {})
     assert [x['id'] for x in s['items']] == ['runs/plain'] and s['private_left_out'] == 1
-    with_run = [t for t in REGISTRY.values() if {'run', 'runs'} & set(t.params.get('properties') or {})
+    rec = call(ctx, 'project_overview', {})['recorded']              # the overview: counted, never named
+    assert rec['runs'] == 1 and [r['id'] for r in rec['latest_runs']] == ['runs/plain']
+    assert rec['private_runs_not_listed'] == 1 and 'route' not in json.dumps(rec)
+    with_run =[t for t in REGISTRY.values() if {'run', 'runs'} & set(t.params.get('properties') or {})
                 and not t.gui]
     assert len(with_run) >= 20
     for t in with_run:
@@ -403,6 +406,12 @@ def test_window_tools_edit_undo_drive_and_show_me(qapp, window):
     assert call(c, 'ui_highlight', {'page': 'data', 'control': 'tab:Browse', 'seconds': 1})['page'] == 'data'
     assert window.page('data').tabs.tabText(window.page('data').tabs.currentIndex()) == 'Browse'
     assert 'no control' in call(c, 'ui_highlight', {'page': 'data', 'control': 'nope'})['error']
+    # a section by its title (models ask for one as a tab), and controls found by the section they are in
+    sec = call(c, 'ui_open_page', {'page': 'worlds', 'tab': 'Roadside units'})
+    assert sec['section'] == 'Roadside units (V2X)' and 'infra.add_j_btn' in sec['its_controls'], sec
+    assert 'sections: ' in call(c, 'ui_open_page', {'page': 'worlds', 'tab': 'Nope'})['error']
+    names = {x['name'] for x in call(c, 'ui_controls', {'page': 'worlds', 'filter': 'roadside units'})['items']}
+    assert 'infra.add_j_btn' in names, names
     # a drive queued from the window, waited for off the GUI thread while the event loop runs
     r = call(c, 'jobs_drive', {'seconds': 1})
     assert 'off the window' in call(c, 'jobs_wait', {'jobs': [r['job']], 'timeout_s': 5})['error']

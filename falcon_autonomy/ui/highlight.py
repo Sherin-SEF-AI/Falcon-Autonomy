@@ -44,12 +44,24 @@ def controls(page) -> dict:
     return out
 
 
+def section_of(w) -> str:
+    """The title of the page section a control is in ('' outside one)."""
+    from .widgets import Section
+    p = w.parentWidget() if isinstance(w, QWidget) else None
+    while p is not None:
+        if isinstance(p, Section):
+            return p.title
+        p = p.parentWidget()
+    return ''
+
+
 def describe(name: str, w) -> str:
     if isinstance(w, tuple):
         return 'tab'
     kind = type(w).__name__.replace('Q', '', 1).lower()
+    sec = section_of(w)
     tip = w.toolTip() if isinstance(w, QWidget) else ''
-    return kind + (f': {tip[:100]}' if tip else '')
+    return kind + (f' in "{sec}"' if sec else '') + (f': {tip[:100]}' if tip else '')
 
 
 def bring_into_view(w: QWidget):

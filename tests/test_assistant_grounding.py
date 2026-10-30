@@ -24,6 +24,8 @@ def test_what_is_checked():
         '14:05, job #12, ~/runs/r12, run_2026_a, 5-10 m, -0.5 m, 12,345 steps\n1. first\n2. second, 2 options\n'
         '```\nseed = 99\n```')]
     assert got == ['0.73', '73.4 %', '1.2k', '5', '10', '-0.5', '12,345']
+    # thousands grouped with a narrow, thin or no-break space (gpt-oss writes 3 013) are one number, not 3 and 013
+    assert flagged('3 013 objects, 1 693 signs, 1 272 tiny', tool({'n': [3013, 1693, 1272]})) == []
 
 
 def test_rounding_percentages_suffixes_and_counts():

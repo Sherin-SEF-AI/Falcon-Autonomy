@@ -18,7 +18,8 @@ from __future__ import annotations
 import json
 import re
 
-NUM = re.compile(r'(?P<sign>[-−])?(?P<int>\d{1,3}(?:,\d{3})+(?!\d)|\d+)(?P<frac>\.\d+)?'
+SEP = ',\u202f\u2009\u00a0'                 # thousands separators: a comma, the narrow, thin and no-break spaces
+NUM = re.compile(r'(?P<sign>[-−])?(?P<int>\d{1,3}(?:[' + SEP + r']\d{3})+(?!\d)|\d+)(?P<frac>\.\d+)?'
                  r'(?P<suffix>\s?%|[kKMB](?![A-Za-z]))?')
 CODE_BLOCK = re.compile(r'```.*?```', re.S)
 CODE_SPAN = re.compile(r'`[^`\n]*`')
@@ -50,7 +51,7 @@ def numbers(answer: str) -> list:
         suffix = (m.group('suffix') or '').strip()
         if not suffix and (nxt == '_' or nxt.isdigit() or (nxt == 'D' and not t[end + 1:end + 2].isalpha())):
             continue                                       # 3D, 2D, run_12_x
-        whole = m.group('int').replace(',', '')
+        whole = re.sub('[' + SEP + ']', '', m.group('int'))
         frac = m.group('frac') or ''
         v = float(whole + frac)
         if m.group('sign') and start == m.start():

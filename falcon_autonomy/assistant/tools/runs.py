@@ -241,7 +241,8 @@ def runs_health(ctx, runs=None, drive_set='', max_frames=1500):
     lab = rep.get('labels') or {}
     out['labels'] = {k: lab.get(k) for k in ('tiny', 'degenerate', 'outside', 'tiny_rule') if k in lab}
     dup = rep.get('duplicates') or {}
-    out['duplicates'] = {k: dup.get(k) for k in ('hashed', 'near_duplicates', 'share', 'bits') if k in dup}
+    out['duplicates'] = {('frames_compared' if k == 'hashed' else k): dup.get(k)       # 'hashed' read as duplicates
+                         for k in ('hashed', 'near_duplicates', 'share', 'bits') if k in dup}
     if isinstance(out.get('runs'), list):
         out['runs'] = len(out['runs'])
     return C.no_media(C.rounded(out, 3))
