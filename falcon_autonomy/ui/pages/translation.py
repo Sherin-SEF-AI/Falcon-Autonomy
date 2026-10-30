@@ -325,8 +325,16 @@ class TranslationTab(QWidget):
         self.on_drift = QComboBox()
         self.on_drift.addItem('keep the raw frame', 'raw')
         self.on_drift.addItem('keep the translation, flagged', 'flag')
+        self.pin = QCheckBox('Pin the dynamic actors (only a colour map of the input inside their masks)')
+        self.pin.setChecked(True)
+        self.pin.setToolTip('Vehicles, two-wheelers, pedestrians and movable objects keep the input\'s every pixel '
+                            'position and edge inside their instance mask; their tone and colour follow the '
+                            'translation (a gain and an offset per channel, fitted per object). On the cameras '
+                            'recorded with the instance label; measured to lower the drift at no cost in realism '
+                            '(docs/translation.md).')
         f.row('Drift threshold', self.threshold)
         f.row('Over the threshold', self.on_drift)
+        f.row('', self.pin)
         sec.add(f)
         sec.add(label('Drives to translate (with the translator chosen on the right)', h=True))
         self.apply_runs = QListWidget()
@@ -421,7 +429,10 @@ class TranslationTab(QWidget):
             self.info.set('Status', f'translator.json could not be read: {e}')
             return
         data, cost, pr = doc.get('data') or {}, doc.get('cost') or {}, doc.get('probe') or {}
-        self.info.set('Method', f'{doc.get("method", "?").upper()} — {doc.get("paper", "")}')
+        arch = doc.get('arch') or {}
+        inputs = ('RGB' if not arch.get('cond') else 'RGB + the semantic label' +
+                  (f' + inverse range (d_min {arch["depth_min_m"]:g} m)' if arch.get('depth_min_m') else ''))
+        self.info.set('Method', f'{doc.get("method", "?").upper()} — {doc.get("paper", "")}; input: {inputs}')
         self.info.set('Data', f'{data.get("sim_images")} simulated frames ({", ".join(data.get("sim_runs") or [])}) '
                               f'→ {data.get("real_images")} real images ('
                               f'{", ".join(tilde(r["path"]) for r in data.get("real") or [])})')
@@ -458,7 +469,10 @@ class TranslationTab(QWidget):
                 self.check_text.setPlainText(
                     f'{dr.get("frames")} frames translated by {tr.get("model_id")}: drift median '
                     f'{_f((dr.get("drift") or {}).get("median"))}, {dr.get("flagged")} over {dr.get("threshold")} '
-                    f'({dr.get("refused")} kept raw).\nTerms: {tr.get("licence_note")}\nNo gap measured yet.')
+                    f'({dr.get("refused")} kept raw)'
+                    + (f'; {dr["pinned"]["objects"]} dynamic actors pinned in {dr["pinned"]["frames"]} frames'
+                       if dr.get('pinned') else '') +
+                    f'.\nTerms: {tr.get("licence_note")}\nNo gap measured yet.')
             except (OSError, ValueError):
                 self.check_text.setPlainText('')
         else:
@@ -498,7 +512,7 @@ class TranslationTab(QWidget):
         for r in runs:
             out = os.path.join(root, TR.default_name(r, model))
             argv = ['apply', '--model', model, '--run', r, '--out', out, '--threshold', f'{self.threshold.value():g}',
-                    '--on-drift', self.on_drift.currentData()]
+                    '--on-drift', self.on_drift.currentData()] + ([] if self.pin.isChecked() else ['--no-pin-actors'])
             self.submit(TR.job_spec(argv, f'Translate {os.path.basename(r)}', memory_gb=3.0, run_dir=out))
 
     def check(self):

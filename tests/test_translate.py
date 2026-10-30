@@ -4,9 +4,11 @@ size; the generator starts as the identity at any size; PatchNCE prefers aligned
 resumed ends with the weights of one that was not (bit for bit), writes its model card with the data's terms and
 refuses another training in its folder; a translated run keeps every label file (hard links, the same bytes), loads
 as a run, exports to COCO and trains a detector as its source does, refuses or flags frames over the drift threshold;
-tampered weights are refused; the check measures drift and the gap before and after; the translated-against-raw
-experiment runs its arms on the same frames; the command's exit codes; the Training page's tab. One GPU smoke test
-runs only with FALCON_GPU_TESTS=1."""
+tampered weights are refused; foreground pinning leaves inside each actor's mask exactly a colour map of the input and
+the translation everywhere else, deterministically; the inverse-range channel; a depth-conditioned model trains bit for
+bit twice, loads and translates, and a model of the schema before it still loads; the check measures drift and the gap
+before and after; the translated-against-raw experiment runs its arms on the same frames; the command's exit codes;
+the Training page's tab. One GPU smoke test runs only with FALCON_GPU_TESTS=1."""
 import json
 import os
 
@@ -83,6 +85,8 @@ def test_drift_measures_on_transforms_of_known_size():
     local[200:280, 100:220] = np.random.default_rng(2).integers(0, 255, (80, 120, 3))
     loc = TR.frame_drift(im, local, objs)
     assert loc['worst_box'] < 0.5 < loc['structure'] and loc['drift'] > TR.DRIFT_THRESHOLD
+    assert loc['worst_actor'] == loc['worst_box'] and same['actor_edge_recall'] == same['actor_edge_precision'] == 1
+    assert loc['actor_edge_precision'] < 0.9 and tone['worst_actor'] > 0.9
     s = TR.drift_summary([same, tone, sh, loc])
     assert s['frames'] == 4 and s['flagged'] == 2 and s['drift']['max'] == pytest.approx(max(sh['drift'],
                                                                                            loc['drift']))
@@ -193,6 +197,7 @@ def test_a_translated_run_keeps_every_label(drives, model, tmp_path):
     tr = doc['translation']
     assert doc['worker'] == 'translate' and doc['status'] == 'ok' and tr['source'] == os.path.abspath(drives['a'])
     assert tr['drift']['frames'] == 10 and tr['weights_sha256'] and tr['terms'] == [TR.DATA_TERMS['folder']]
+    assert tr['settings']['pin_actors']['cameras'] == tr['settings']['cameras']    # pinned where instance images are
     assert doc['started'] == json.load(open(os.path.join(drives['a'], 'run.json')))['started']
     run = Run(out)                                                     # loads as any drive
     assert run.frames == Run(drives['a']).frames
@@ -208,6 +213,8 @@ def test_a_translated_run_keeps_every_label(drives, model, tmp_path):
     assert TR.translate_run(out_m, drives['a'], out, threshold=1.0)['translation']['key'] == tr['key']
     with pytest.raises(TR.TranslateError):
         TR.translate_run(out_m, drives['a'], out, threshold=0.5)
+    with pytest.raises(TR.TranslateError):
+        TR.translate_run(out_m, drives['a'], out, threshold=1.0, pin=False)        # unpinned: another translation
     with pytest.raises(TR.TranslateError):
         TR.translate_run(out_m, drives['a'], drives['a'])
 
@@ -254,6 +261,131 @@ def test_full_resolution_output_adds_the_networks_change(model):
     assert tr(rgb, sem, native=True).shape == rgb.shape
     with pytest.raises(TR.TranslateError):
         tr(rgb, None)                                                   # conditioned: needs the label
+
+
+# ================================================================================================ foreground pinning
+def _actors(h=120, w=200):
+    """A synthetic frame with a striped car, a shaded pedestrian, a sign (not an actor) and a bicycle of 30 px, their
+    instance image and objects."""
+    rng = np.random.default_rng(5)
+    src = _scene(rng, h, w)
+    inst = np.zeros((h, w), np.uint16)
+    for x in range(30, 110, 6):                                         # stripes: edges inside the car
+        src[40:90, x:x + 3] = rng.integers(20, 235, 3)
+    inst[40:90, 30:110] = 7
+    src[50:100, 140:160] = np.linspace(40, 220, 50)[:, None, None].astype(np.uint8) * np.array([1, 0.8, 0.6])
+    inst[50:100, 140:160] = 9
+    inst[10:30, 170:190] = 11
+    inst[100:105, 10:16] = 13
+    objs = [{'id': 7, 'class': 'car', 'bbox': [30, 40, 110, 90]}, {'id': 9, 'class': 'pedestrian',
+                                                                    'bbox': [140, 50, 160, 100]},
+            {'id': 11, 'class': 'traffic_sign', 'bbox': [170, 10, 190, 30]}, {'id': 13, 'class': 'bicycle',
+                                                                              'bbox': [10, 100, 16, 105]}]
+    return src, inst, objs
+
+
+def test_pinning_keeps_the_inputs_structure_inside_masks():
+    src, inst, objs = _actors()
+    C = np.array([[0.8, 0.1, 0.0], [0.05, 0.85, 0.05], [0.0, 0.1, 0.7]])
+    out = np.clip(np.round(src.astype(np.float64) @ C.T + [12, 8, 20]), 0, 255).astype(np.uint8)  # a colour change
+    noisy = out.copy()                                                  # … and the car's content moved by 1 px
+    noisy[40:90, 30:110] = np.clip(np.roll(out, 1, axis=1)[40:90, 30:110] +
+                                   np.random.default_rng(1).normal(0, 3, (50, 80, 3)), 0, 255).astype(np.uint8)
+    pinned, info = TR.pin_actors(src, noisy, inst, objs, feather=1)
+    assert info['objects'] == 3 and {f['id']: f['kind'] for f in info['fits']} == {7: 'affine', 9: 'affine',
+                                                                                    13: 'offset'}
+    for f in info['fits']:                                             # inside a mask: a colour map of the input
+        m = inst == f['id']
+        assert np.array_equal(pinned[m], TR.apply_colour(src[m], f['map']))
+        cols = {}
+        for a, b in zip(map(tuple, src[m]), map(tuple, pinned[m])):    # one input colour, one output colour
+            assert cols.setdefault(a, b) == b
+    ped = inst == 9                                                     # an exact colour change is followed
+    assert np.abs(pinned[ped].astype(int) - out[ped]).max() <= 2
+    car = inst == 7
+    assert info['fits'][0]['rms'] > 3                                   # the moved content was discarded
+    actors = np.isin(inst, [7, 9, 13])
+    near = cv2.dilate(actors.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    assert np.array_equal(pinned[~near], noisy[~near])                  # elsewhere the translation, untouched
+    assert np.array_equal(pinned[inst == 11], noisy[inst == 11])        # a sign is not an actor
+    ring = near & ~actors
+    assert (pinned[ring] != noisy[ring]).any()
+    hard, _ = TR.pin_actors(src, noisy, inst, objs, feather=0)
+    assert np.array_equal(hard[~actors], noisy[~actors]) and np.array_equal(hard[actors], pinned[actors])
+    again, _ = TR.pin_actors(src, noisy, inst, objs, feather=1)
+    assert np.array_equal(again, pinned)                                # deterministic
+    before, after = TR.frame_drift(src, noisy, objs), TR.frame_drift(src, pinned, objs)
+    assert before['worst_actor'] < 0.6 < 0.95 < after['worst_actor']
+    assert after['actor_edge_recall'] == after['actor_edge_precision'] == 1.0 > before['actor_edge_recall']
+    assert car.sum() and TR.is_actor({'class': 'dynamic'}) and TR.is_actor({'class': 'x', 'category': 'animal'})
+    inv = out.copy()                                                    # content unrelated to the input's (inverted):
+    inv[car] = 255 - src[car]                                           # not followed, the median offset instead
+    p2, i2 = TR.pin_actors(src, inv, inst, objs)
+    assert i2['fits'][0]['kind'] == 'fallback' and np.array_equal(i2['fits'][0]['map'][:3], np.eye(3))
+    with pytest.raises(TR.TranslateError):
+        TR.pin_actors(src, noisy[:-1], inst, objs)
+
+
+def test_inverse_range_channel():
+    from falcon_autonomy.core.groundtruth import RANGE_SCALE
+    r = np.array([[0, 1, 4, 20]], np.float64)                         # metres; 0: nothing within range
+    png = np.round(r * RANGE_SCALE).astype(np.uint16)
+    assert np.allclose(TR.inverse_range(png, png.shape, 2.0), [[0, 1, 0.5, 0.1]])
+    assert not TR.inverse_range(None, (2, 3)).any()                    # no range image: "unknown"
+    sem = np.full(png.shape, 1, np.uint8)
+    c = TR.cond_tensor([sem, None], png.shape, 'cpu', [png, None], 2.0)
+    K = len(TR.GROUPS)
+    assert c.shape == (2, K + 1, 1, 4) and torch.allclose(c[0, K], torch.tensor([[0, 1, 0.5, 0.1]]))
+    assert not c[1].any() and TR.cond_tensor([sem], png.shape, 'cpu').shape[1] == K
+
+
+def test_depth_conditioned_models_and_models_before_them(drives, model, tmp_path):
+    import shutil
+    from falcon_autonomy.core import provenance as PV
+    s = dict(TINY, sim=[drives['a']], real=[f'folder:{drives["real"]}'], depth=True)
+    one, two = str(tmp_path / 'd1'), str(tmp_path / 'd2')
+    doc = TR.train(s, one)
+    assert doc['schema'] == TR.SCHEMA and doc['arch']['cond'][-1] == 'inverse_range' and doc['key'] != model[1]['key']
+    assert doc['arch']['depth_min_m'] == TR.DEPTH_MIN_M
+    assert all(f['range'] for f in json.load(open(os.path.join(one, 'data.json')))['sim'])
+    TR.train(s, two)                                                    # the same settings: bit for bit
+    a = torch.load(os.path.join(one, 'generator.pt'), weights_only=True)
+    b = torch.load(os.path.join(two, 'generator.pt'), weights_only=True)
+    assert all(torch.equal(a['state_dict'][k], b['state_dict'][k]) for k in a['state_dict'])
+    assert a['arch']['cond_ch'] == len(TR.GROUPS) + 1
+    n = TR.normalise(dict(s, depth=False))                              # depth off: the key of before the option
+    assert TR.settings_key(n, 'x') == TR.settings_key({k: v for k, v in n.items() if k != 'depth'}, 'x')
+    with pytest.raises(TR.TranslateError, match='label'):
+        TR.normalise(dict(s, condition=False))
+    tr = TR.Translator(one, 'cpu')
+    rgb = _scene(np.random.default_rng(4), 96, 160)
+    sem = np.full(rgb.shape[:2], 1, np.uint8)
+    rng = np.full(rgb.shape[:2], 10 * 256, np.uint16)
+    assert tr.depth == TR.DEPTH_MIN_M and tr(rgb, sem, rng=rng).shape == rgb.shape
+    assert np.array_equal(tr(rgb, sem, rng=rng), tr(rgb, sem, rng=rng))
+    with pytest.raises(TR.TranslateError, match='range'):
+        tr(rgb, sem)
+    res = TR.translate_run(one, drives['a'], str(tmp_path / 'a-tr'), threshold=1.0, translator=tr, pin=True)
+    t = res['translation']
+    assert t['settings']['pin_actors']['classes'] == list(TR.PIN_CLASSES) and t['drift']['missing'] == {}
+    assert t['drift']['pinned']['objects'] == sum(r.get('pinned', 0) for r in TR._rows(
+        str(tmp_path / 'a-tr' / 'translation.jsonl')))
+    # a model of the schema before the depth option (translator/1, no depth_min_m) loads and translates
+    old = str(tmp_path / 'old')
+    shutil.copytree(model[0], old)
+    st = torch.load(os.path.join(old, 'generator.pt'), weights_only=True)
+    st['arch'].pop('depth_min_m', None)
+    torch.save(st, os.path.join(old, 'generator.pt'))
+    card = PV.read_json(os.path.join(old, 'translator.json'))
+    card['arch'].pop('depth_min_m', None)
+    card.update(schema='falcon.translator/1')
+    card['weights']['sha256'] = PV.sha256_file(os.path.join(old, 'generator.pt'))
+    PV.write_json(os.path.join(old, 'translator.json'), card)
+    o = TR.Translator(old, 'cpu')
+    assert o.depth is None and o.G.cond_ch == len(TR.GROUPS) and o(rgb, sem).shape == rgb.shape
+    PV.write_json(os.path.join(old, 'translator.json'), dict(card, schema='falcon.translator/9'))
+    with pytest.raises(TR.TranslateError, match='schema'):
+        TR.Translator(old, 'cpu')
 
 
 # ================================================================================================ checking
@@ -332,7 +464,8 @@ def test_command_exit_codes(drives, model, tmp_path, capsys):
                               '--device', 'cpu']) == P.FAILED                 # no --sim
     out = str(tmp_path / 'cli-tr')
     assert TR.main_translate(['apply', '--model', out_m, '--run', drives['b'], '--out', out, '--device', 'cpu',
-                              '--copy']) == P.OK
+                              '--copy', '--pin-actors', '--pin-feather', '2']) == P.OK
+    assert json.load(open(os.path.join(out, 'run.json')))['translation']['settings']['pin_actors']['feather_px'] == 2
     assert TR.main_translate(['check', out, '--out', str(tmp_path / 'c')]) == P.OK
     assert os.path.isfile(tmp_path / 'c' / 'check.json')
     from falcon_autonomy.cli import main
@@ -377,6 +510,7 @@ def test_training_page_translation_tab(window, qapp, drives, model, monkeypatch)
     kinds = [s.argv[s.argv.index('translate') + 1] for s in sent]
     assert kinds == ['apply', 'check', 'train'] and all(s.needs_gpu for s in sent)
     assert sent[0].run_dir and '--threshold' in sent[0].argv and '--no-condition' not in sent[2].argv
+    assert not {'--pin-actors', '--no-pin-actors'} & set(sent[0].argv) and '--depth' not in sent[2].argv  # pinned
 
 
 # ================================================================================================ GPU

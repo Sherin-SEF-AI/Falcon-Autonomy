@@ -13,11 +13,14 @@ initialised head, so the untrained generator is the identity. Falcon adds a cond
 semantic label, as one-hot channels of GROUPS (road, sidewalk, structure, pole/sign, vegetation, terrain, sky,
 person, vehicle, other) — the generator only ever translates simulated frames, which always have labels, so it knows
 which pixels are road or car without having to guess (a real image, in the identity pass, gets all-zero channels:
-"unknown"). This is the "label as a conditioning input" form of semantic consistency; the other form, a loss from a
-frozen segmenter on the output (CyCADA, Hoffman et al. 2018), is not implemented (it needs a segmenter trained on
-real data, which Falcon does not download). CycleGAN (Zhu et al. 2017) is not implemented: two generators double the
-cost, and cycle consistency lets a generator hide the input in imperceptible signal instead of keeping it in place
-(Chu, Zhmoginov and Sandler 2017) — the one-sided PatchNCE ties output to input where it is. A diffusion + ControlNet
+"unknown"). Optionally (depth) one channel more: the inverse range, min(1, DEPTH_MIN_M / range) from the run's range
+image, 0 for the sky and for a real image (whose all-zero label tells "unknown" from "sky": depth needs the label;
+the identity pass then differs from the translation pass by eleven zero channels instead of ten — it regularises
+the "unknown" mode either way). This is the "label as a conditioning input" form of semantic consistency; the other
+form, a loss from a frozen segmenter on the output (CyCADA, Hoffman et al. 2018), is not implemented (it needs a
+segmenter trained on real data, which Falcon does not download). CycleGAN (Zhu et al. 2017) is not implemented: two
+generators double the cost, and cycle consistency lets a generator hide the input in imperceptible signal instead of
+keeping it in place (Chu, Zhmoginov and Sandler 2017) — the one-sided PatchNCE ties output to input where it is. A diffusion + ControlNet
 path is not implemented: it needs a model download whose licence the user must accept.
 
 Data. Simulated frames: Falcon runs (one pinhole camera each, its rgb and semantic label; every= n-th frame). Real
@@ -49,18 +52,31 @@ Label preservation (measured, not assumed). Per translated frame, at the work wi
   removed — and the output's light sources found in the input — light precision, lights invented. Measured: at night
   the structure and edge terms see neither (every light removed: drift 0.27; twelve lamps painted into the dark: 0.04
   on the user's night dashcam frames), because the dark areas' local contrast sits under SSIM's constant C3;
-- drift = 1 − min(structure, edge recall, edge precision, worst object's structure[, light recall, light precision]).
+- drift = 1 − min(structure, edge recall, edge precision, worst object's structure[, light recall, light precision]);
+- reported beside the drift, not in it: the dynamic actors' (is_actor: vehicles, two-wheelers, pedestrians, movable
+  objects, animals) worst box structure, and their boxes' edge recall and precision pooled over the frame.
 A frame whose drift exceeds DRIFT_THRESHOLD is flagged; by default its translation is refused and the raw frame kept
 (on_drift "raw"), or kept and listed (on_drift "flag"). The threshold is a heuristic, calibrated on known transforms
 of real CARLA frames (docs/translation.md): JPEG at quality 75 gives drift 0.04, Falcon's appearance matching 0.06,
 a 1.5 px blur 0.23, the whole image shifted by 1 px 0.25 and by 2 px 0.52; DRIFT_THRESHOLD = 0.35 lies between a
 1-px and a 2-px shift. Optionally a registered segmenter (core.models) is run on the input and the output: pixel
-agreement, and mIoU against the frame's semantic label for both.
+agreement, and mIoU against the frame's semantic label for both — a measurement, not a gate, and none is bundled
+(NVIDIA's SegFormer weights, proposed for an IoU gate, allow non-commercial use only).
+
+Foreground pinning (pin_actors, `apply --pin-actors`). After translation, inside each dynamic actor's instance mask
+(the run's instance image, the objects' ids) the translated pixels are replaced by a colour map of the input fitted
+per object from the input's to the translation's pixels there (fit_colour: a gain and an offset per channel, least
+squares with a ridge towards gain 1 and Huber reweighting; an offset only for objects under PIN_MIN_PX pixels or
+when the map would flatten the object's luminance), with a PIN_FEATHER_PX ring blended outside the mask.
+The actor's tone and colour follow the translator; its silhouette and every edge inside it are the input's, because
+each output pixel is a function of the same input pixel alone. What the translator changed there beyond colour
+(texture, structure) is discarded — the fit's residual (rms, 8-bit levels) says how much.
 
 Translated runs. translate_run() makes a new falcon-raw run: every per-frame file of the source is hard-linked (or
 copied across file systems) and the run's own records (frames.jsonl, actors.jsonl, …) copied, except the translated
 cameras' rgb, which are written new at their full resolution (a frame without its semantic label, which a
-conditioned translator needs, is kept raw and said so) — the
+conditioned translator needs — or its range image for a depth-conditioned one, or its instance image and objects
+when pinning — is kept raw and said so) — the
 network runs at the work width and its change (output − input, upsampled) is added to the full-resolution input, so
 the labels' pixel grid is untouched (native=True runs the network at full resolution instead). run.json keeps the
 source's (its start time, rig and settings, so timestamps and calibration are the source's) with worker "translate",
@@ -81,7 +97,8 @@ import time
 
 import numpy as np
 
-SCHEMA = 'falcon.translator/1'
+SCHEMA = 'falcon.translator/2'          # /2: arch.depth_min_m (the inverse-range channel, or None); /1 has none
+SCHEMAS = ('falcon.translator/1', SCHEMA)
 RUN_SCHEMA = 'falcon.translation/1'
 CHECK_SCHEMA = 'falcon.translation_check/1'
 RESULTS_SCHEMA = 'falcon.translation_results/1'
@@ -107,12 +124,29 @@ DATA_TERMS = {
     'dashcam': 'your own dashcam footage (core.dashcam): your terms — it shows where and when you drove; keep the '
                'model and its images private unless you mean to share that',
 }
+DEPTH_MIN_M = 2.0                     # inverse-range channel: min(1, DEPTH_MIN_M / range); 0 where nothing is in range
+# foreground pinning: the objects whose pixels may change only by a colour map of their own (the dynamic actors; a
+# CARLA "dynamic" object is a movable one — Falcon's cattle, cart and vendor proxies, bins, animals)
+PIN_CLASSES = ('car', 'truck', 'bus', 'train', 'motorcycle', 'bicycle', 'rider', 'pedestrian', 'dynamic')
+PIN_FEATHER_PX = 1                    # the blend ring outside each pinned mask (0: a hard edge)
+PIN_MIN_PX = 48                       # fewer pixels than this: a per-channel offset instead of the colour matrix
+PIN_RIDGE = 1e-3                      # per pixel, colours in [0, 1]: pulls a channel's gain to 1 where the object's
+#                                       colours barely spread in it (≈ a spread under 8 grey levels)
+PIN_SAMPLE = 20000                    # pixels per object the fit uses (an even stride over the mask)
+PIN_HUBER = 1.345                     # Huber's constant (× the residuals' robust scale) for the reweighted fit
+PIN_MIN_GAIN = 0.25                   # heuristic: a fitted map whose luminance slope inside the mask is below this (the
+#                                       translator's content there is unrelated to the input's) is not followed: the
+#                                       per-channel median offset instead
+LUMA = np.array([0.299, 0.587, 0.114])
+PIN_DEFAULT = None                    # translate_run / `apply` without --pin-actors or --no-pin-actors: pin every
+#                                       camera that has instance images, translate the others unpinned (measured:
+#                                       pinning lowered the drift and cost no realism, docs/translation.md)
 DEFAULTS = {
     'method': 'cut', 'sim': [], 'real': [], 'camera': None, 'every': 1, 'max_images': 2000,
     'work_width': WORK_WIDTH, 'crop': 192, 'batch': 4, 'iterations': 12000, 'lr': 2e-4, 'beta1': 0.5, 'beta2': 0.999,
     'decay_from': 0.5, 'ngf': 64, 'n_blocks': 9, 'ndf': 64, 'lambda_gan': 1.0, 'lambda_nce': 10.0, 'nce_idt': True,
-    'num_patches': 256, 'tau': 0.07, 'condition': True, 'hflip': True, 'seed': 0, 'device': 'auto', 'amp': True,
-    'log_every': 100, 'ckpt_every': 1000, 'probe_every': 1000, 'probes': 8, 'gpu_memory_fraction': 0.6,
+    'num_patches': 256, 'tau': 0.07, 'condition': True, 'depth': False, 'hflip': True, 'seed': 0, 'device': 'auto',
+    'amp': True, 'log_every': 100, 'ckpt_every': 1000, 'probe_every': 1000, 'probes': 8, 'gpu_memory_fraction': 0.6,
     'keep_checkpoint': False,
 }
 # settings that do not change the result (left out of the key that guards a resume)
@@ -186,9 +220,17 @@ def light_match(ga: np.ndarray, gb: np.ndarray) -> tuple:
     return found(ga, gb), found(gb, ga)
 
 
+def is_actor(o: dict, classes=PIN_CLASSES) -> bool:
+    """A dynamic actor (pinned by pin_actors, measured by the actor terms): its class is one of classes, or its
+    category is an animal's."""
+    return o.get('class') in classes or str(o.get('category') or '').startswith('animal')
+
+
 def frame_drift(src: np.ndarray, out: np.ndarray, objects=None, scale: float = 1.0) -> dict:
     """How far a translated frame moved from its input (both RGB uint8 at the same size, the work width): structure,
-    edge recall and precision, each labelled object's box structure (objects' boxes × scale), the drift."""
+    edge recall and precision, each labelled object's box structure (objects' boxes × scale), the drift. Reported
+    beside it, not in it: the dynamic actors' (is_actor) worst box structure and their boxes' edge recall and
+    precision, pooled over every actor box of the frame (None without an actor box or without strong edges there)."""
     if src.shape != out.shape:
         raise TranslateError(f'input {src.shape} and output {out.shape} differ in size')
     ga, gb = _gray(src), _gray(out)
@@ -199,6 +241,7 @@ def frame_drift(src: np.ndarray, out: np.ndarray, objects=None, scale: float = 1
     precision = float((da[eb] <= EDGE_TOL_PX).mean()) if eb.any() else 1.0
     H, W = ga.shape
     boxes = []
+    hits = np.zeros(4, np.int64)              # actor boxes: input edges, of them found; output edges, of them found
     from .realgap import THINGS
     for o in objects or ():
         if o.get('class') not in THINGS or not o.get('bbox'):
@@ -208,8 +251,15 @@ def frame_drift(src: np.ndarray, out: np.ndarray, objects=None, scale: float = 1
         x1, y1 = min(int(math.ceil(x1)), W), min(int(math.ceil(y1)), H)
         if y1 - y0 < MIN_BOX_PX or x1 - x0 < 2:
             continue
-        boxes.append({'id': o.get('id'), 'class': o['class'], 'structure': float(s[y0:y1, x0:x1].mean())})
+        actor = is_actor(o)
+        boxes.append({'id': o.get('id'), 'class': o['class'], 'actor': actor,
+                      'structure': float(s[y0:y1, x0:x1].mean())})
+        if actor:
+            a_, b_ = ea[y0:y1, x0:x1], eb[y0:y1, x0:x1]
+            hits += (int(a_.sum()), int((db[y0:y1, x0:x1][a_] <= EDGE_TOL_PX).sum()), int(b_.sum()),
+                     int((da[y0:y1, x0:x1][b_] <= EDGE_TOL_PX).sum()))
     worst = min((b['structure'] for b in boxes), default=None)
+    worst_actor = min((b['structure'] for b in boxes if b['actor']), default=None)
     st = float(s.mean())
     l_rec = l_prec = None
     if float(np.median(ga)) < NIGHT_GRAY:                            # a night frame: its lights count too
@@ -217,15 +267,21 @@ def frame_drift(src: np.ndarray, out: np.ndarray, objects=None, scale: float = 1
     drift = 1.0 - min(st, recall, precision, worst if worst is not None else 1.0,
                       *(v for v in (l_rec, l_prec) if v is not None))
     return {'structure': st, 'edge_recall': recall, 'edge_precision': precision, 'worst_box': worst,
-            'light_recall': l_rec, 'light_precision': l_prec,
+            'light_recall': l_rec, 'light_precision': l_prec, 'worst_actor': worst_actor,
+            'actor_edge_recall': float(hits[1] / hits[0]) if hits[0] else None,
+            'actor_edge_precision': float(hits[3] / hits[2]) if hits[2] else None,
             'n_boxes': len(boxes), 'boxes': boxes, 'drift': max(drift, 0.0)}
+
+
+MEASURES = ('drift', 'structure', 'edge_recall', 'edge_precision', 'worst_box', 'light_recall', 'light_precision',
+            'worst_actor', 'actor_edge_recall', 'actor_edge_precision')
 
 
 def drift_summary(rows: list, threshold: float = DRIFT_THRESHOLD) -> dict:
     """Median, 90th percentile and maximum of each measure over frames, and the frames over the threshold."""
     out = {'frames': len(rows), 'threshold': threshold,
            'flagged': sum(1 for r in rows if r.get('drift') is not None and r['drift'] > threshold)}
-    for k in ('drift', 'structure', 'edge_recall', 'edge_precision', 'worst_box', 'light_recall', 'light_precision'):
+    for k in MEASURES:
         v = np.asarray([r[k] for r in rows if r.get(k) is not None], float)
         out[k] = ({'median': float(np.median(v)), 'p10': float(np.percentile(v, 10)),
                    'p90': float(np.percentile(v, 90)), 'min': float(v.min()), 'max': float(v.max()), 'n': len(v)}
@@ -250,7 +306,142 @@ def one_hot(sem: np.ndarray | None, shape: tuple) -> np.ndarray:
     return (np.arange(K, dtype=np.uint8)[:, None, None] == g[None]).astype(np.float32)
 
 
+def inverse_range(rng: np.ndarray | None, shape: tuple, d_min: float = DEPTH_MIN_M) -> np.ndarray:
+    """The depth channel: H × W float32 min(1, d_min / range) from a range PNG (uint16 = round(range_m · 256), 0 =
+    nothing within 256 m, core.groundtruth), so 1 at d_min metres or nearer, 0.1 at 10 d_min, 0 for the sky; all zero
+    when there is no range image (a real image: "unknown", together with its all-zero label channels)."""
+    if rng is None:
+        return np.zeros(tuple(shape), np.float32)
+    from .groundtruth import RANGE_SCALE
+    r = rng.astype(np.float32) / RANGE_SCALE
+    return np.where(r > 0, np.minimum(1.0, d_min / np.maximum(r, 1e-6)), 0.0).astype(np.float32)
+
+
+# ================================================================================================ foreground pinning
+def fit_colour(x: np.ndarray, y: np.ndarray) -> tuple:
+    """A robust per-channel affine colour map y_c ≈ g_c · x_c + o_c (x, y: N × 3 colours in [0, 1]), returned as M
+    (4 × 3: diag(g) over the offsets o) for apply_colour. Per channel: least squares with a ridge pulling the gain (not
+    the offset) to 1 — PIN_RIDGE per pixel, so a channel the object's colours barely spread in keeps its gain —
+    reweighted three times with Huber weights (PIN_HUBER × 1.4826 × the residuals' median), the gain clamped at 0 (no
+    channel inverted). Up to PIN_SAMPLE pixels (an even stride). Fewer than PIN_MIN_PX pixels: gain 1 and the
+    per-channel median offset ('offset'); the same when the fitted map's luminance slope (the regression of the mapped
+    luma on the input's, where the input's luma spreads over more than two grey levels) is below PIN_MIN_GAIN — a map
+    that would flatten the object ('fallback'). A full 3 × 3 colour matrix was measured too: its cross-channel terms
+    fitted to re-textured objects changed their grey structure, and pinned drift was higher (docs/translation.md).
+    Returns (M, 'affine' | 'offset' | 'fallback')."""
+    n = len(x)
+    M = np.vstack([np.eye(3), np.zeros((1, 3))])
+
+    def offset(kind):
+        M[:3] = np.eye(3)
+        M[3] = np.median(y - x, 0) if n else 0.0
+        return M, kind
+    if n < PIN_MIN_PX:
+        return offset('offset')
+    if n > PIN_SAMPLE:
+        idx = np.linspace(0, n - 1, PIN_SAMPLE).astype(np.int64)
+        x, y = x[idx], y[idx]
+    x, y = x.astype(np.float64), y.astype(np.float64)
+    for c in range(3):
+        X = np.stack([x[:, c], np.ones(len(x))], 1)
+        w = np.ones(len(x))
+        for _ in range(4):
+            lam = np.diag([PIN_RIDGE, 0.0]) * w.sum()
+            th = np.linalg.solve(X.T @ (X * w[:, None]) + lam, X.T @ (y[:, c] * w) + lam @ np.array([1.0, 0.0]))
+            r = np.abs(y[:, c] - X @ th)
+            sc = 1.4826 * float(np.median(r))
+            if sc <= 1e-9:
+                break
+            w = np.minimum(1.0, PIN_HUBER * sc / np.maximum(r, 1e-12))
+        if th[0] < 0:                             # no inverted channel: the best offset at gain 0
+            th = np.array([0.0, float(np.sum(w * y[:, c]) / np.sum(w))])
+        M[c, c], M[3, c] = th
+    gi = x @ LUMA
+    gm = (x @ M[:3] + M[3]) @ LUMA
+    v = float(gi.var())
+    if v > (2 / 255) ** 2 and float(((gi - gi.mean()) * (gm - gm.mean())).mean()) / v < PIN_MIN_GAIN:
+        return offset('fallback')
+    return M, 'affine'
+
+
+def apply_colour(rgb: np.ndarray, M: np.ndarray) -> np.ndarray:
+    """uint8 N × 3 (or H × W × 3) colours through the map M (fit_colour), rounded and clipped."""
+    x = rgb.reshape(-1, 3).astype(np.float64) / 255.0
+    y = x @ M[:3] + M[3]
+    return np.clip(np.round(y * 255.0), 0, 255).astype(np.uint8).reshape(rgb.shape)
+
+
+def pin_actors(src: np.ndarray, out: np.ndarray, instance: np.ndarray, objects, feather: int = PIN_FEATHER_PX,
+               classes=PIN_CLASSES) -> tuple:
+    """Foreground pinning: inside each dynamic actor's instance mask (is_actor; instance: H × W ids, an object's
+    'id' at its pixels, the run's instance PNG) the translation is replaced by a colour map of the input fitted from
+    the input's to the translation's pixels there (fit_colour) — the tone and colour follow the translator, every
+    pixel's position and every edge inside the mask is the input's (a pixel is a function of the same pixel of the
+    input alone, one function per object). In a ring of `feather` px outside the masks, the translation is blended
+    towards the nearest mask's map of the input (weight 1 − d / (feather + 1) at distance d px); elsewhere the
+    translation is untouched. src, out: H × W × 3 uint8 at the instance image's size.
+    Returns (pinned frame, {'objects', 'pixels', 'fits': [{'id', 'class', 'pixels', 'kind', 'rms', 'map' (M)}]}),
+    rms the fit's residual in 8-bit levels: how much of the translator's change inside the mask was not a colour map
+    (texture, structure), which pinning discards."""
+    import cv2
+    if src.shape != out.shape or src.shape[:2] != instance.shape[:2]:
+        raise TranslateError(f'pinning: input {src.shape}, translation {out.shape} and instance image '
+                             f'{instance.shape} differ in size')
+    res = out.copy()
+    H, W = instance.shape[:2]
+    best = np.full((H, W), np.inf, np.float32)          # distance to the nearest pinned mask so far (0: inside one;
+    #                                                     masks never overlap: an instance image has one id a pixel)
+    fits = []
+    total = 0
+    for o in objects or ():
+        if not is_actor(o, classes) or o.get('id') is None:
+            continue
+        m = instance == int(o['id'])
+        n = int(m.sum())
+        if not n:
+            continue
+        x, y = src[m], out[m]
+        M, kind = fit_colour(x.astype(np.float64) / 255.0, y.astype(np.float64) / 255.0)
+        mapped = apply_colour(x, M)
+        res[m] = mapped
+        fits.append({'id': o['id'], 'class': o.get('class'), 'pixels': n, 'kind': kind,
+                     'rms': float(np.sqrt(np.mean((mapped.astype(np.float32) - y) ** 2))), 'map': M})
+        total += n
+        best[m] = 0.0
+        if feather <= 0:
+            continue
+        ys, xs = np.nonzero(m)
+        y0, y1 = max(int(ys.min()) - feather - 1, 0), min(int(ys.max()) + feather + 2, H)
+        x0, x1 = max(int(xs.min()) - feather - 1, 0), min(int(xs.max()) + feather + 2, W)
+        d = cv2.distanceTransform((~m[y0:y1, x0:x1]).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+        ring = (d > 0) & (d < feather + 1) & (d < best[y0:y1, x0:x1])
+        if not ring.any():
+            continue
+        best[y0:y1, x0:x1][ring] = d[ring]
+        a = (1.0 - d[ring] / (feather + 1.0))[:, None]
+        win_src, win_out = src[y0:y1, x0:x1], out[y0:y1, x0:x1]
+        blend = a * apply_colour(win_src[ring], M).astype(np.float32) + (1.0 - a) * win_out[ring]
+        res[y0:y1, x0:x1][ring] = np.clip(np.round(blend), 0, 255).astype(np.uint8)
+    return res, {'objects': len(fits), 'pixels': total, 'fits': fits}
+
+
 # ================================================================================================ data
+def load_range(path: str) -> np.ndarray:
+    import cv2
+    im = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if im is None or im.ndim != 2:
+        raise TranslateError(f'cannot read range image {path} (a one-channel uint16 PNG)')
+    return im
+
+
+def load_instance(path: str) -> np.ndarray:
+    import cv2
+    im = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if im is None or im.ndim != 2:
+        raise TranslateError(f'cannot read instance image {path} (a one-channel uint16 PNG)')
+    return im
+
+
 def load_image(path: str) -> np.ndarray:
     from .realgap import load_rgb
     return load_rgb(path)
@@ -295,7 +486,7 @@ def camera_of(run, camera=None) -> str:
 
 
 def sim_frames(src, camera=None, every=1) -> list:
-    """A Falcon run's frames of one camera: [{'image', 'semantic' (or None), 'objects' (path or None), 'step'}]."""
+    """A Falcon run's frames of one camera: [{'image', 'semantic', 'range', 'objects' (paths or None), 'step'}]."""
     from .exporters import ExportError, Run
     s = _parse(src)
     try:
@@ -305,9 +496,10 @@ def sim_frames(src, camera=None, every=1) -> list:
     cid = camera_of(run, s.get('camera') or camera)
     out = []
     for rec in run.camera_steps(cid, int(s.get('every') or every or 1)):
-        sem, obj = run.own(rec, cid, 'semantic'), run.own(rec, cid, 'objects')
+        sem, obj, rng = run.own(rec, cid, 'semantic'), run.own(rec, cid, 'objects'), run.own(rec, cid, 'range')
         out.append({'image': run.p(run.file(rec, cid, 'rgb')), 'semantic': run.p(sem) if sem else None,
-                    'objects': run.p(obj) if obj else None, 'step': rec['step'], 'run': run.dir, 'camera': cid})
+                    'range': run.p(rng) if rng else None, 'objects': run.p(obj) if obj else None, 'step': rec['step'],
+                    'run': run.dir, 'camera': cid})
     if not out:
         raise TranslateError(f'{run.dir}: camera {cid} has no frames')
     return out
@@ -353,12 +545,19 @@ def normalise(settings: dict) -> dict:
         s[k] = int(s[k])
     if s['iterations'] < 1 or s['batch'] < 1 or s['crop'] < 16 or s['work_width'] < 32:
         raise TranslateError('iterations ≥ 1, batch ≥ 1, crop ≥ 16 and work_width ≥ 32')
+    s['depth'] = bool(s['depth'])
+    if s['depth'] and not s['condition']:
+        raise TranslateError('the depth channel needs the label channels (--depth without --no-condition): a real '
+                             'image\'s all-zero label is what tells its zero depth ("unknown") from the sky\'s')
     return s
 
 
 def settings_key(s: dict, data_sha: str) -> str:
+    """The key that guards a resume and a finished folder: the settings that change the result, and the data. depth
+    off is left out, so folders made before the depth option keep their key."""
     from .provenance import sha256_json
-    return sha256_json({'settings': {k: v for k, v in s.items() if k not in VOLATILE}, 'data': data_sha})
+    return sha256_json({'settings': {k: v for k, v in s.items() if k not in VOLATILE and not (k == 'depth' and not v)},
+                        'data': data_sha})
 
 
 def _mix(*xs) -> int:
@@ -367,10 +566,10 @@ def _mix(*xs) -> int:
 
 
 class _Pool:
-    """Images (and labels) at the work width, in memory, with seeded crops."""
+    """Images (and labels, and range images) at the work width, in memory, with seeded crops."""
 
-    def __init__(self, items: list, width: int, labels: bool):
-        self.images, self.labels = [], []
+    def __init__(self, items: list, width: int, labels: bool, depth: bool = False):
+        self.images, self.labels, self.ranges = [], [], []
         for it in items:
             self.images.append(working(load_image(it['image']), width))
             if labels:
@@ -378,11 +577,16 @@ class _Pool:
                     raise TranslateError(f'{it["image"]}: no semantic label (the conditioned generator needs one; '
                                          f'record with the semantic label or use --no-condition)')
                 self.labels.append(working(load_label(it['semantic']), width, nearest=True))
+            if depth:
+                if not it.get('range'):
+                    raise TranslateError(f'{it["image"]}: no range image (the depth channel needs one; record with '
+                                         f'the depth label or train without --depth)')
+                self.ranges.append(working(load_range(it['range']), width, nearest=True))
         self.min_h = min(im.shape[0] for im in self.images)
         self.min_w = min(im.shape[1] for im in self.images)
 
     def crops(self, rng, n: int, ch: int, cw: int, flip: bool):
-        xs, cs = [], []
+        xs, cs, ds = [], [], []
         for _ in range(n):
             k = int(rng.integers(len(self.images)))
             im = self.images[k]
@@ -391,12 +595,15 @@ class _Pool:
             f = flip and bool(rng.integers(2))
             x = im[y0:y0 + ch, x0:x0 + cw]
             lab = self.labels[k][y0:y0 + ch, x0:x0 + cw] if self.labels else None
+            rng_ = self.ranges[k][y0:y0 + ch, x0:x0 + cw] if self.ranges else None
             if f:
                 x = x[:, ::-1]
                 lab = lab[:, ::-1] if lab is not None else None
+                rng_ = rng_[:, ::-1] if rng_ is not None else None
             xs.append(np.ascontiguousarray(x))
             cs.append(lab)
-        return xs, cs
+            ds.append(rng_)
+        return xs, cs, ds
 
 
 def to_tensor(ims: list, dev):
@@ -405,14 +612,20 @@ def to_tensor(ims: list, dev):
     return torch.from_numpy(np.ascontiguousarray(x)).to(dev)
 
 
-def cond_tensor(labels: list, shape: tuple, dev):
+def cond_tensor(labels: list, shape: tuple, dev, ranges: list | None = None, d_min: float | None = None):
     """B × K × H × W one-hot of the labels' semantic groups (as one_hot(), built on the device); a None label is all
-    zero."""
+    zero. With d_min (a depth-conditioned generator) one channel more: inverse_range() of the range images (a None
+    range is all zero)."""
     import torch
     K = len(GROUPS)
     g = np.stack([semantic_ids(lab) if lab is not None else np.full(shape, K, np.uint8) for lab in labels])
     oh = torch.nn.functional.one_hot(torch.from_numpy(g.astype(np.int64)).to(dev), K + 1)[..., :K]
-    return oh.permute(0, 3, 1, 2).float().contiguous()
+    c = oh.permute(0, 3, 1, 2).float()
+    if d_min is not None:
+        rs = ranges if ranges is not None else [None] * len(labels)
+        d = np.stack([inverse_range(r, shape, d_min) for r in rs])[:, None]
+        c = torch.cat([c, torch.from_numpy(d).to(dev)], 1)
+    return c.contiguous()
 
 
 def from_tensor(t) -> np.ndarray:
@@ -429,7 +642,8 @@ def _lr(it: int, total: int, base: float, decay_from: float) -> float:
 
 def _build(s: dict, dev):
     from .translate_net import PatchDiscriminator, PatchSampler, ResnetGenerator
-    G = ResnetGenerator(len(GROUPS) if s['condition'] else 0, s['ngf'], s['n_blocks']).to(dev)
+    G = ResnetGenerator((len(GROUPS) + (1 if s['depth'] else 0)) if s['condition'] else 0, s['ngf'],
+                        s['n_blocks']).to(dev)
     D = PatchDiscriminator(s['ndf']).to(dev)
     Fs = PatchSampler(G.tap_channels()).to(dev)
     return G, D, Fs
@@ -444,7 +658,15 @@ def _device(s: dict):
         raise TranslateError(str(e)) from None
 
 
-def _probe(G, pool: _Pool, idx: list, cond: bool, dev, objects: list) -> dict:
+def _cond_of(pool: _Pool, i: int, cond: bool, d_min, dev):
+    """The condition tensor of one whole pool image (None for an unconditioned generator)."""
+    if not cond:
+        return None
+    return cond_tensor([pool.labels[i]], pool.images[i].shape[:2], dev,
+                       [pool.ranges[i]] if pool.ranges else None, d_min)
+
+
+def _probe(G, pool: _Pool, idx: list, cond: bool, dev, objects: list, d_min=None) -> dict:
     """Translate the probe frames whole (eval mode) and measure their drift. objects: per probe (objects, the
     camera's width their boxes are in)."""
     import torch
@@ -453,8 +675,7 @@ def _probe(G, pool: _Pool, idx: list, cond: bool, dev, objects: list) -> dict:
     with torch.no_grad():
         for (objs, width), i in zip(objects, idx):
             im = pool.images[i]
-            c = cond_tensor([pool.labels[i]], im.shape[:2], dev) if cond else None
-            out = from_tensor(G(to_tensor([im], dev), c))[0]
+            out = from_tensor(G(to_tensor([im], dev), _cond_of(pool, i, cond, d_min, dev)))[0]
             rows.append(frame_drift(im, out, objs, im.shape[1] / width))
     G.train()
     sm = drift_summary(rows)
@@ -518,7 +739,8 @@ def _train(settings, out_dir, emitter, cancel, argv) -> dict:
         sim = [sim[i] for i in np.sort(rng0.choice(len(sim), s['max_images'], replace=False))]
     if len(real) > s['max_images']:
         real = [real[i] for i in np.sort(rng0.choice(len(real), s['max_images'], replace=False))]
-    data_doc = {'sim': [{'image': f['image'], 'semantic': f['semantic']} for f in sim], 'real': real}
+    data_doc = {'sim': [{'image': f['image'], 'semantic': f['semantic'], **({'range': f['range']} if s['depth'] else
+                                                                            {})} for f in sim], 'real': real}
     data_sha = PV.sha256_json(data_doc)
     key = settings_key(s, data_sha)
     if os.path.isfile(tj):
@@ -551,7 +773,8 @@ def _train(settings, out_dir, emitter, cancel, argv) -> dict:
         torch.cuda.reset_peak_memory_stats(dev)
     amp = bool(s['amp']) and dev.type == 'cuda'
     em.progress(0.0, f'loading {len(sim)} simulated and {len(real)} real images', force=True)
-    sp = _Pool(sim, s['work_width'], s['condition'])
+    d_min = DEPTH_MIN_M if s['depth'] else None
+    sp = _Pool(sim, s['work_width'], s['condition'], s['depth'])
     rp = _Pool([{'image': p} for p in real], s['work_width'], False)
     ch = min(s['crop'], sp.min_h, rp.min_h) // 4 * 4
     cw = min(s['crop'], sp.min_w, rp.min_w) // 4 * 4
@@ -602,8 +825,8 @@ def _train(settings, out_dir, emitter, cancel, argv) -> dict:
             raise Cancelled()
         t_it = time.monotonic()
         rng = np.random.default_rng(_mix(s['seed'], 11, it))
-        xs, cs = sp.crops(rng, s['batch'], ch, cw, s['hflip'])
-        ys, _ = rp.crops(rng, s['batch'], ch, cw, s['hflip'])
+        xs, cs, ds = sp.crops(rng, s['batch'], ch, cw, s['hflip'])
+        ys, _, _ = rp.crops(rng, s['batch'], ch, cw, s['hflip'])
         gen.manual_seed(_mix(s['seed'], 13, it))
         torch.manual_seed(_mix(s['seed'], 17, it))
         lr = _lr(it, total, s['lr'], s['decay_from'])
@@ -611,7 +834,7 @@ def _train(settings, out_dir, emitter, cancel, argv) -> dict:
             for g in o.param_groups:
                 g['lr'] = lr
         x, y = to_tensor(xs, dev), to_tensor(ys, dev)
-        c = cond_tensor(cs, (ch, cw), dev) if s['condition'] else None
+        c = cond_tensor(cs, (ch, cw), dev, ds, d_min) if s['condition'] else None
         with torch.autocast(dev.type, torch.bfloat16, enabled=amp):
             fake = G(x, c)
             idt = G(y, None) if s['nce_idt'] else None
@@ -651,7 +874,7 @@ def _train(settings, out_dir, emitter, cancel, argv) -> dict:
             row = {'it': done, 'lr': lr, **{k: v / n_acc for k, v in acc.items()},
                    'images_per_s': imgs_log / dt}
             if done % s['probe_every'] == 0 or done == total:
-                row['probe'] = _probe(G, sp, probe_idx, s['condition'], dev, probe_obj)
+                row['probe'] = _probe(G, sp, probe_idx, s['condition'], dev, probe_obj, d_min)
             rows.append(row)
             em.metric('loss_G', row['loss_G'], step=done)
             em.metric('images_per_s', round(row['images_per_s'], 1), 'images/s', step=done)
@@ -665,15 +888,16 @@ def _train(settings, out_dir, emitter, cancel, argv) -> dict:
     _write_metrics(mpath, rows)
     gp = os.path.join(out_dir, 'generator.pt')
     _save(gp, {'state_dict': {k: v.detach().cpu() for k, v in G.state_dict().items()},
-               'arch': {'cond_ch': G.cond_ch, 'ngf': G.ngf, 'n_blocks': G.n_blocks}})
-    prev = _previews(G, sp, probe_idx[:4], s['condition'], dev, os.path.join(out_dir, 'previews'))
+               'arch': {'cond_ch': G.cond_ch, 'ngf': G.ngf, 'n_blocks': G.n_blocks, 'depth_min_m': d_min}})
+    prev = _previews(G, sp, probe_idx[:4], s['condition'], dev, os.path.join(out_dir, 'previews'), d_min)
     peak = torch.cuda.max_memory_allocated(dev) / 2 ** 20 if dev.type == 'cuda' else None
     speeds = [r['images_per_s'] for r in rows if r.get('images_per_s')]
     doc = {'schema': SCHEMA, 'status': 'ok', 'key': key, 'id': os.path.basename(os.path.normpath(out_dir)),
            'method': s['method'], 'paper': 'Park, Efros, Zhang, Zhu: Contrastive Learning for Unpaired Image-to-Image '
                                             'Translation (ECCV 2020)',
            'arch': {'generator': 'ResNet (Falcon: residual in the input\'s logit, nearest upsampling)',
-                    'cond': [g for g, _ in GROUPS] if s['condition'] else None, 'ngf': s['ngf'],
+                    'cond': ([g for g, _ in GROUPS] + (['inverse_range'] if s['depth'] else [])
+                             if s['condition'] else None), 'depth_min_m': d_min, 'ngf': s['ngf'],
                     'n_blocks': s['n_blocks'], 'discriminator': f'PatchGAN 70 × 70, ndf {s["ndf"]}'},
            'work_width': s['work_width'], 'crop': [ch, cw], 'iterations': total,
            'weights': {'file': 'generator.pt', 'sha256': PV.sha256_file(gp), 'bytes': os.path.getsize(gp)},
@@ -694,7 +918,7 @@ def _train(settings, out_dir, emitter, cancel, argv) -> dict:
     return doc
 
 
-def _previews(G, pool, idx, cond, dev, out) -> list:
+def _previews(G, pool, idx, cond, dev, out, d_min=None) -> list:
     """Before (top) and after (bottom) of a few probe frames at half the work width: JPEGs."""
     import cv2
     import torch
@@ -704,8 +928,7 @@ def _previews(G, pool, idx, cond, dev, out) -> list:
     with torch.no_grad():
         for k, i in enumerate(idx):
             im = pool.images[i]
-            c = cond_tensor([pool.labels[i]], im.shape[:2], dev) if cond else None
-            o = from_tensor(G(to_tensor([im], dev), c))[0]
+            o = from_tensor(G(to_tensor([im], dev), _cond_of(pool, i, cond, d_min, dev)))[0]
             half = lambda a: cv2.resize(a, (a.shape[1] // 2, a.shape[0] // 2), interpolation=cv2.INTER_AREA)  # noqa
             both = np.concatenate([half(im), half(o)], 0)
             n = f'preview{k}.jpg'
@@ -717,7 +940,9 @@ def _previews(G, pool, idx, cond, dev, out) -> list:
 
 # ================================================================================================ applying a model
 class Translator:
-    """A trained translator, loaded once: __call__(rgb, semantic) translates one frame at its own resolution."""
+    """A trained translator, loaded once: __call__(rgb, semantic[, native, range]) translates one frame at its own
+    resolution. Models of either schema load: a falcon.translator/1 model (before the depth option) has no depth
+    channel."""
 
     def __init__(self, model_dir: str, device: str = 'auto'):
         import torch
@@ -727,6 +952,9 @@ class Translator:
         if not os.path.isfile(tj):
             raise TranslateError(f'{model_dir} is not a finished translator (no translator.json)')
         self.doc = PV.read_json(tj)
+        if self.doc.get('schema', SCHEMAS[0]) not in SCHEMAS:
+            raise TranslateError(f'{tj}: schema {self.doc.get("schema")!r} is not one this Falcon reads '
+                                 f'({", ".join(SCHEMAS)})')
         self.dir = os.path.abspath(model_dir)
         gp = os.path.join(model_dir, self.doc['weights']['file'])
         sha = PV.sha256_file(gp)
@@ -740,25 +968,31 @@ class Translator:
         self.dev = _device({'device': device})
         self.G = self.G.eval().to(self.dev)
         self.cond = bool(a['cond_ch'])
+        self.depth = a.get('depth_min_m')          # the inverse-range channel's d_min, None without the channel
         self.width = int(self.doc['work_width'])
         self.torch = torch
 
-    def net(self, rgb: np.ndarray, sem: np.ndarray | None) -> np.ndarray:
+    def net(self, rgb: np.ndarray, sem: np.ndarray | None, rng: np.ndarray | None = None) -> np.ndarray:
         if self.cond and sem is None:
             raise TranslateError('this translator is conditioned on the semantic label; the frame has none')
+        if self.depth is not None and rng is None:
+            raise TranslateError('this translator is conditioned on depth (the range image); the frame has none')
         with self.torch.no_grad():
-            c = cond_tensor([sem], rgb.shape[:2], self.dev) if self.cond else None
+            c = cond_tensor([sem], rgb.shape[:2], self.dev, [rng], self.depth) if self.cond else None
             return from_tensor(self.G(to_tensor([rgb], self.dev), c))[0]
 
-    def __call__(self, rgb: np.ndarray, sem: np.ndarray | None = None, native: bool = False) -> np.ndarray:
+    def __call__(self, rgb: np.ndarray, sem: np.ndarray | None = None, native: bool = False,
+                 rng: np.ndarray | None = None) -> np.ndarray:
         """The translated frame at the input's size. At the work width the network's change is added to the input
-        (upsampled, bicubic); native runs the network at the input's own resolution."""
+        (upsampled, bicubic); native runs the network at the input's own resolution. rng: the range image (uint16
+        PNG values), for a depth-conditioned translator."""
         import cv2
         if native or rgb.shape[1] == self.width:
-            return self.net(rgb, sem)
+            return self.net(rgb, sem, rng)
         small = working(rgb, self.width)
         ssem = working(sem, self.width, nearest=True) if sem is not None else None
-        delta = self.net(small, ssem).astype(np.float32) - small.astype(np.float32)
+        srng = working(rng, self.width, nearest=True) if rng is not None else None
+        delta = self.net(small, ssem, srng).astype(np.float32) - small.astype(np.float32)
         up = cv2.resize(delta, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_CUBIC)
         return np.clip(np.round(rgb.astype(np.float32) + up), 0, 255).astype(np.uint8)
 
@@ -786,8 +1020,11 @@ def _write_image(path: str, rgb: np.ndarray):
 
 def translate_run(model_dir: str, src_dir: str, out_dir: str, cameras=None, threshold: float = DRIFT_THRESHOLD,
                   on_drift: str = 'raw', link: str = 'hard', native: bool = False, device: str = 'auto',
-                  translator: Translator | None = None, emitter=None, cancel=None, argv=None) -> dict:
-    """A translated copy of a recorded run (see the module docstring). Returns its run.json. Raises TranslateError or
+                  translator: Translator | None = None, emitter=None, cancel=None, argv=None,
+                  pin: bool | None = PIN_DEFAULT, feather: int = PIN_FEATHER_PX) -> dict:
+    """A translated copy of a recorded run (see the module docstring). pin: foreground pinning (pin_actors) with the
+    frame's instance image and objects, a ring of feather px — True on every camera (one without instance images is
+    refused), None on the cameras that have them, False nowhere. Returns its run.json. Raises TranslateError or
     training.Cancelled (the partial folder is removed)."""
     from . import provenance as PV
     from .exporters import ExportError, Run, is_pinhole
@@ -812,8 +1049,21 @@ def translate_run(model_dir: str, src_dir: str, out_dir: str, cameras=None, thre
         if tr.cond and not any(run.file(r, c, 'semantic') for r in run.frames):
             raise TranslateError(f'{run.dir}: camera {c} has no semantic label, which this translator is '
                                  f'conditioned on')
+        if tr.depth is not None and not any(run.file(r, c, 'range') for r in run.frames):
+            raise TranslateError(f'{run.dir}: camera {c} has no range image, which this translator is conditioned on')
+        if pin and not any(run.file(r, c, 'instance') for r in run.frames):
+            raise TranslateError(f'{run.dir}: camera {c} has no instance image, which pinning needs (record with the '
+                                 f'instance label, or translate without pinning)')
+    pin_cams = (set() if pin is False else
+                {c for c in cams if any(run.file(r, c, 'instance') for r in run.frames)})
+    for c in cams:
+        if pin is None and c not in pin_cams:
+            em.log(f'camera {c} has no instance image: translated without pinning its actors', 'warning')
     settings = {'model': tr.dir, 'model_sha256': tr.sha256, 'cameras': cams, 'threshold': threshold,
                 'on_drift': on_drift, 'native': bool(native), 'work_width': tr.width}
+    if pin_cams:                                  # (absent when off: the key of a run made before pinning holds)
+        settings['pin_actors'] = {'classes': list(PIN_CLASSES), 'feather_px': int(feather),
+                                  'cameras': sorted(pin_cams)}
     key = PV.sha256_json({'source': PV.sha256_file(run.p('run.json')), **settings})
     rj = os.path.join(out_dir, 'run.json')
     if os.path.isfile(rj):
@@ -853,14 +1103,22 @@ def translate_run(model_dir: str, src_dir: str, out_dir: str, cameras=None, thre
                 raise Cancelled()
             rgb = load_image(run.p(rel))
             srel, orel = run.own(rec, c, 'semantic'), run.own(rec, c, 'objects')
+            rrel, irel = run.own(rec, c, 'range'), run.own(rec, c, 'instance')
             sem = load_label(run.p(srel)) if srel else None
-            if tr.cond and sem is None:                # a frame without its label: kept raw, said so
+            reason = ('no semantic label' if tr.cond and sem is None else
+                      'no range image' if tr.depth is not None and rrel is None else
+                      'no instance image or objects (pinning needs both)' if c in pin_cams and (
+                          irel is None or orel is None) else None)
+            if reason:                                 # a frame without what the translation needs: kept raw, said so
                 _link(run.p(rel), os.path.join(out_dir, rel), link)
                 rows.append({'camera': c, 'step': rec['step'], 'file': rel, 'flagged': False, 'used': 'raw',
-                             'reason': 'no semantic label', 'drift': None})
+                             'reason': reason, 'drift': None})
                 continue
-            out = tr(rgb, sem, native)
+            out = tr(rgb, sem, native, load_range(run.p(rrel)) if tr.depth is not None else None)
             objs = PV.read_json(run.p(orel)).get('objects', []) if orel else []
+            pinned = None
+            if c in pin_cams:
+                out, pinned = pin_actors(rgb, out, load_instance(run.p(irel)), objs, feather)
             a, b = working(rgb, WORK_WIDTH), working(out, WORK_WIDTH)
             m = frame_drift(a, b, objs, WORK_WIDTH / float(width_of[c] or rgb.shape[1]))
             flagged = m['drift'] > threshold
@@ -870,8 +1128,9 @@ def translate_run(model_dir: str, src_dir: str, out_dir: str, cameras=None, thre
             else:
                 _write_image(os.path.join(out_dir, rel), out)
             rows.append({'camera': c, 'step': rec['step'], 'file': rel, 'flagged': flagged, 'used': used,
-                         **{kk: m[kk] for kk in ('drift', 'structure', 'edge_recall', 'edge_precision',
-                                                 'light_recall', 'light_precision', 'worst_box', 'n_boxes')}})
+                         **{kk: m[kk] for kk in MEASURES + ('n_boxes',)},
+                         **({'pinned': pinned['objects'], 'pin_rms_max': max((f['rms'] for f in pinned['fits']),
+                                                                             default=None)} if pinned else {})})
             em.progress((k + 1) / n, f'{k + 1}/{n} frames')
         with open(os.path.join(out_dir, 'translation.jsonl'), 'w', encoding='utf-8') as fh:
             for r in rows:
@@ -879,6 +1138,13 @@ def translate_run(model_dir: str, src_dir: str, out_dir: str, cameras=None, thre
         summ = drift_summary(rows, threshold)
         summ['refused'] = sum(1 for r in rows if r['used'] == 'raw' and r.get('reason') is None)
         summ['unlabelled'] = sum(1 for r in rows if r.get('reason') == 'no semantic label')
+        summ['missing'] = {k: sum(1 for r in rows if r.get('reason') == k)
+                           for k in sorted({r['reason'] for r in rows if r.get('reason')})}
+        if pin_cams:
+            pr = [r['pin_rms_max'] for r in rows if r.get('pin_rms_max') is not None]
+            summ['pinned'] = {'objects': sum(r.get('pinned') or 0 for r in rows),
+                              'frames': sum(1 for r in rows if r.get('pinned')),
+                              'rms_max_median': float(np.median(pr)) if pr else None}
         ds = dict(run.ds)
         ds['name'] = os.path.basename(os.path.normpath(out_dir))
         ds['translation'] = {'source': run.ds.get('name') or run.name, 'model': tr.doc.get('id'),
@@ -972,8 +1238,7 @@ def check_runs(translated: list, real: str | None = None, features: bool = False
                 aw, bw = working(a), working(b)
                 m = frame_drift(aw, bw, objs, WORK_WIDTH / (w or a.shape[1]))
                 rows.append({'run': rt.name, 'camera': c, 'step': rec['step'], 'used': used.get(rel),
-                             **{kk: m[kk] for kk in ('drift', 'structure', 'edge_recall', 'edge_precision',
-                                                     'light_recall', 'light_precision', 'worst_box')}})
+                             **{kk: m[kk] for kk in MEASURES}})
                 if seg is not None and k % max(1, len(recs) // 20) == 0:
                     srel = rs.own(rec, c, 'semantic')
                     lab = load_label(rs.p(srel)) if srel else None
@@ -1309,6 +1574,9 @@ def main_translate(argv) -> int:
         tr.add_argument(f'--{k}', type=t)
     tr.add_argument('--device')
     tr.add_argument('--no-condition', action='store_true', help='do not give the generator the semantic label')
+    tr.add_argument('--depth', action='store_true', help=f'give the generator the inverse range too (min(1, '
+                                                         f'{DEPTH_MIN_M:g} m / range), from the range image; measured '
+                                                         f'not to help, docs/translation.md)')
     tr.add_argument('--no-idt', action='store_true', help='no identity NCE on real images (FastCUT-like)')
     tr.add_argument('--no-amp', action='store_true')
     tr.add_argument('--keep-checkpoint', action='store_true')
@@ -1324,6 +1592,10 @@ def main_translate(argv) -> int:
     a_.add_argument('--on-drift', choices=('raw', 'flag'), default='raw',
                     help='a frame over the threshold: keep the raw frame (default) or keep the translation, listed')
     a_.add_argument('--native', action='store_true', help='run the network at the camera\'s full resolution')
+    a_.add_argument('--pin-actors', action=argparse.BooleanOptionalAction, default=PIN_DEFAULT,
+                    help='foreground pinning: inside each dynamic actor\'s instance mask only a colour map of the '
+                         'input (default: on every camera that has instance images)')
+    a_.add_argument('--pin-feather', type=int, default=PIN_FEATHER_PX, help='the blend ring outside a pinned mask, px')
     a_.add_argument('--copy', action='store_true', help='copy the source\'s files instead of hard-linking them')
     a_.add_argument('--device', default='auto')
     ck = sub.add_parser('check', help='the drift of translated runs and, with --real, the gap before and after')
@@ -1393,6 +1665,8 @@ def main_translate(argv) -> int:
                     s[k] = False
             if a.keep_checkpoint:
                 s['keep_checkpoint'] = True
+            if a.depth:
+                s['depth'] = True
             s = normalise(s)
             out = a.out or (os.path.join(a.workspace, 'translators', a.id or time.strftime('%Y%m%d-%H%M%S-cut'))
                             if a.workspace else '')
@@ -1420,7 +1694,8 @@ def main_translate(argv) -> int:
                 out = a.out or os.path.join(root, default_name(r, a.model))
                 sub_em = _Slice(em, i / len(a.run), (i + 1) / len(a.run))
                 doc = translate_run(a.model, r, out, a.camera, a.threshold, a.on_drift, 'copy' if a.copy else 'hard',
-                                    a.native, a.device, model, sub_em, flag, ['translate'] + list(argv))
+                                    a.native, a.device, model, sub_em, flag, ['translate'] + list(argv),
+                                    pin=a.pin_actors, feather=a.pin_feather)
                 d = doc['translation']['drift']
                 print(f'{out}: {d["frames"]} frames, drift median {d["drift"].get("median", float("nan")):.3f}, '
                       f'{d["flagged"]} over {d["threshold"]} ({d["refused"]} kept raw)', flush=True)
@@ -1507,6 +1782,11 @@ def check_text(doc: dict) -> str:
              f'{d["edge_recall"].get("median", float("nan")):.3f}; edge precision '
              f'{d["edge_precision"].get("median", float("nan")):.3f}; worst object box median '
              f'{_f(d["worst_box"].get("median"))} ({d["worst_box"]["n"]} frames with objects)']
+    if (d.get('worst_actor') or {}).get('n'):
+        lines.append(f'dynamic actors ({d["worst_actor"]["n"]} frames): worst box structure median '
+                     f'{_f(d["worst_actor"].get("median"))}; their boxes\' edge recall '
+                     f'{_f((d.get("actor_edge_recall") or {}).get("median"))}, precision '
+                     f'{_f((d.get("actor_edge_precision") or {}).get("median"))}')
     if doc.get('segmenter'):
         s = doc['segmenter']
         lines.append(f'segmenter {s["model"]}: agreement {s["agreement"]}, mIoU raw {s["miou_raw"]} → translated '
