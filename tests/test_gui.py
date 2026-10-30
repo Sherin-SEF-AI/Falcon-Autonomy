@@ -124,8 +124,8 @@ def test_jobs_panel_collapses_when_idle_and_opens_on_a_job(window, qapp, project
     window.go('home')
     assert window.open_job(job.id) is window.page('data')  # a finished drive opens in Data ▸ Browse
     assert window.page('data').browse.run_dir == job.spec.run_dir
-    it = window.jobs_dock.widget().items[job.id]
-    assert window.jobs_dock.widget().tree.itemWidget(it, 4).text() == 'Open'
+    dock = window.jobs_dock.widget()
+    assert dock.actions(job.id).main.text() == 'Open'
 
 
 def test_empty_states_notes_and_disabled_reasons(window, qapp):
@@ -221,6 +221,38 @@ def test_record_and_browse_a_drive(window, qapp):
     status = window.page('loop').status                 # the Loop page's Status tab (what Home showed)
     status.refresh()
     assert status.runs.topLevelItemCount() == 1
+
+
+def test_jobs_panel_rows(window, qapp, project):
+    """A row says what the job is doing in words of its own (status, step), the progress bar draws no clipped text,
+    elapsed time ticks without a message from the job, a finished job offers Open and Log, and Clear finished
+    empties the list (History keeps them)."""
+    from falcon_autonomy.ui.pages.stack import suite_title
+    assert suite_title({'name': 'suite', 'stack': {'driver': 'ros2'}}) == 'Suite (ros2)'
+    assert suite_title({'name': 'Indian roads', 'stack': {'driver': 'builtin'}}) == 'Suite Indian roads (builtin)'
+    dock = window.jobs_dock.widget()
+    assert not dock.clear_btn.isEnabled()
+    data = window.go('data')
+    data.record.seconds.setValue(3.0)
+    data.record.record()
+    job = window.queue.jobs[-1]
+    it = dock.items[job.id]
+    prog = dock.tree.itemWidget(it, dock.PROGRESS)
+    assert not prog.bar.isTextVisible()
+    assert pump(qapp, lambda: job.state == 'running', 60), job.log
+    assert it.text(dock.STATUS) == 'Running'
+    assert pump(qapp, lambda: it.text(dock.ELAPSED) not in ('', '0 s'), 30)       # ticks on its own
+    assert pump(qapp, lambda: job.state in ('done', 'failed', 'cancelled'), 120), job.log
+    assert it.text(dock.STATUS) == 'Done' and it.text(dock.LEFT) == '' and prog.pct.text() == ''
+    acts = dock.actions(job.id)
+    assert acts.main.text() == 'Open' and acts.log.text() == 'Log'
+    from PyQt6.QtWidgets import QPlainTextEdit
+    d = dock.show_log(job)
+    assert d.findChild(QPlainTextEdit).toPlainText() not in ('', 'Nothing logged yet.')
+    d.close()
+    assert dock.clear_btn.isEnabled()
+    dock.clear_finished()
+    assert job.id not in dock.items and dock.tree.topLevelItemCount() == 0 and not dock.clear_btn.isEnabled()
 
 
 def test_cancel_from_the_jobs_dock(window, qapp, project):
@@ -646,3 +678,40 @@ def test_loop_page_runs_steps_and_shows_them(window, qapp, tmp_path):
     window.set_theme('light')
     assert not page.chart.grab().isNull()
     window.set_theme('dark')
+
+
+def test_record_then_derive_audio_and_the_rasteriser_choice(window, qapp, project):
+    """Data ▸ Record's audio option queues the synthetic-audio job once the drive is done (a rig without a microphone
+    array is told so, nothing recorded); the reconstruction panel passes the chosen rasteriser to its training."""
+    from PyQt6.QtWidgets import QMessageBox
+    from falcon_autonomy.core import rig as R
+    told = []
+    orig = QMessageBox.information
+    QMessageBox.information = staticmethod(lambda *a, **k: told.append(a[2]))
+    data = window.go('data')
+    try:
+        data.record.seconds.setValue(1.0)
+        data.record.audio.setChecked(True)
+        n = len(window.queue.jobs)
+        data.record.record()
+        assert told and 'microphone array' in told[0] and len(window.queue.jobs) == n
+    finally:
+        QMessageBox.information = orig
+    window.project.doc['rigs'][0]['sensors'].append(R.new_sensor('audio_array', 'mics', 'roof mics', {'z': 1.55}))
+    data.record.record()
+    drive = window.queue.jobs[-1]
+    assert pump(qapp, lambda: drive.state in ('done', 'failed', 'cancelled'), 120), drive.log
+    assert drive.state == 'done', drive.log[-10:]
+    assert pump(qapp, lambda: window.queue.jobs[-1].spec.kind == 'derive', 10)
+    audio = window.queue.jobs[-1]
+    assert audio.spec.argv[-3:] == ['derive', 'audio', drive.spec.run_dir]
+    assert pump(qapp, lambda: audio.state in ('done', 'failed', 'cancelled'), 300), audio.log
+    assert audio.state == 'done', audio.log[-10:]
+    assert os.path.isfile(os.path.join(drive.spec.run_dir, 'audio', 'audio.wav'))
+    rp = window.go('replay').recon
+    sent = []
+    rp._submit = lambda which, argv, title: sent.append(argv) or True
+    rp.source, rp.rec_dir = '/nonexistent/run', '/nonexistent/recon'
+    rp.backend.setCurrentIndex(rp.backend.findData('torch'))
+    rp.train()
+    assert sent and sent[0][sent[0].index('--raster-backend') + 1] == 'torch'

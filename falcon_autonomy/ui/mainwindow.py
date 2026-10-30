@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 
 from PyQt6.QtCore import QProcess, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QIcon, QKeySequence, QUndoCommand, QUndoStack
+from PyQt6.QtGui import QAction, QBrush, QColor, QIcon, QKeySequence, QUndoCommand, QUndoStack
 from PyQt6.QtWidgets import (QApplication, QDialog, QDockWidget, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
                              QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
                              QSizePolicy, QStackedWidget, QTabWidget, QToolButton, QTreeWidget, QTreeWidgetItem,
@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (QApplication, QDialog, QDockWidget, QFileDialog, QH
 from .. import APP_NAME, __version__
 from ..core import protocol as P
 from ..core import sysinfo
+from ..core.budget import fmt_duration
 from ..core.jobhistory import JobHistory
 from ..core.jobs import FINAL, RUNNING, WAITING, JobQueue
 from ..core.paths import PROJECT_SUFFIX, tilde
@@ -24,7 +25,7 @@ from ..sim.service import CarlaService
 from . import icons, tasks
 from .qtjobs import JobsBridge, QProcessLauncher
 from .notify import Notifier
-from .theme import THEME, mono, sans
+from .theme import STATUS, THEME, mono, sans
 from .widgets import PlaceholderTree, set_enabled, tidy
 
 
@@ -58,8 +59,70 @@ class EditCommand(QUndoCommand):
         return True
 
 
+class _JobProgress(QWidget):
+    """A job's progress in its row: a thin bar centred in the cell (its own text off: a 3 px bar cannot hold it) and
+    the percentage beside it."""
+
+    def __init__(self):
+        super().__init__()
+        h = QHBoxLayout(self)
+        h.setContentsMargins(4, 0, 6, 0)
+        h.setSpacing(8)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 1000)
+        self.bar.setTextVisible(False)
+        self.bar.setProperty('inline', True)
+        self.pct = QLabel()
+        self.pct.setProperty('muted', True)
+        self.pct.setMinimumWidth(34)
+        self.pct.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        h.addWidget(self.bar, 1, Qt.AlignmentFlag.AlignVCenter)
+        h.addWidget(self.pct)
+
+    def set(self, fraction: float, shown: bool):
+        self.bar.setValue(int(1000 * fraction))
+        self.bar.setVisible(shown)
+        self.pct.setText(f'{100 * fraction:.0f} %' if shown else '')
+
+
+class _JobActions(QWidget):
+    """A job's buttons: Cancel while it is queued or running; Open (where its result is shown) and Log once it ends."""
+
+    def __init__(self, dock, job):
+        super().__init__()
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 4, 0)
+        h.setSpacing(2)
+        self.main = QToolButton()
+        self.main.setText('Cancel')
+        self.main.setProperty('text-button', True)
+        self.main.setToolTip('Cancel this job (it tidies up first)')
+        self.main.clicked.connect(lambda: dock.win.queue.cancel(job) if job.state not in FINAL
+                                  else dock.win.open_job(job.id))
+        self.log = QToolButton()
+        self.log.setText('Log')
+        self.log.setProperty('text-button', True)
+        self.log.setToolTip('This job\'s log')
+        self.log.clicked.connect(lambda: dock.show_log(job))
+        h.addWidget(self.main)
+        h.addWidget(self.log)
+        h.addStretch(1)
+
+    def finished(self):
+        if not self.main.property('open'):
+            self.main.setProperty('open', True)
+            self.main.setText('Open')
+            self.main.setToolTip('Go to where this job\'s result is shown')
+
+
 class JobsDock(QWidget):
-    COLS = ('Job', 'State', 'Progress', 'Time', '')
+    """This session's jobs: what each is, where it is (its state, current step and progress), how long it has run
+    and how long it has left, and what can be done with it. Elapsed time ticks every second while a job runs (a job
+    only reports when it has something to say)."""
+    COLS = ('Job', 'Status', 'Step', 'Progress', 'Elapsed', 'Remaining', '')
+    TITLE, STATUS, STEP, PROGRESS, ELAPSED, LEFT, ACTIONS = range(7)
+    STATUS_TEXT = {'queued': 'Queued', 'waiting': 'Waiting', 'running': 'Running', 'done': 'Done',
+                   'failed': 'Failed', 'cancelled': 'Cancelled'}
 
     def __init__(self, win):
         super().__init__()
@@ -69,57 +132,124 @@ class JobsDock(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         v.addWidget(self.tabs)
-        self.tree = QTreeWidget()
+        self.tree = PlaceholderTree('No jobs in this session yet. Drives, studies, trainings and exports show here '
+                                    'while they run; finished ones stay in History across restarts.')
         self.tree.setHeaderLabels(self.COLS)
         self.tree.setRootIsDecorated(False)
-        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
-        self.tree.setColumnWidth(1, 260)
-        self.tree.setColumnWidth(2, 120)
+        self.tree.setUniformRowHeights(True)
+        hd = self.tree.header()
+        hd.setStretchLastSection(False)
+        hd.setSectionResizeMode(self.STEP, QHeaderView.ResizeMode.Stretch)
+        for c, w in ((self.TITLE, 260), (self.STATUS, 90), (self.PROGRESS, 170), (self.ELAPSED, 76),
+                     (self.LEFT, 90), (self.ACTIONS, 112)):
+            hd.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+            self.tree.setColumnWidth(c, w)
+        hd.setSectionResizeMode(self.ACTIONS, QHeaderView.ResizeMode.Fixed)
+        for c in (self.ELAPSED, self.LEFT):
+            self.tree.headerItem().setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.tree.itemDoubleClicked.connect(lambda it, _c: self.win.open_job(it.data(0, 256)))
+        self.clear_btn = QToolButton()
+        self.clear_btn.setText('Clear finished')
+        self.clear_btn.setProperty('text-button', True)
+        self.clear_btn.setToolTip('Remove finished jobs from this list (History keeps them)')
+        self.clear_btn.clicked.connect(self.clear_finished)
+        self.tabs.setCornerWidget(self.clear_btn, Qt.Corner.TopRightCorner)
         self.tabs.addTab(self.tree, 'This session')
         self.history = HistoryPanel(win)
         self.tabs.addTab(self.history, 'History')
         self.items: dict = {}
+        self.jobs: dict = {}
         b = win.bridge
         b.added.connect(self.update_job)
         b.changed.connect(self.update_job)
         b.finished.connect(self.update_job)
+        self.ticker = QTimer(self)
+        self.ticker.timeout.connect(self._tick)
+        self.ticker.start(1000)
+        self._buttons()
+
+    def actions(self, job_id) -> _JobActions | None:
+        it = self.items.get(job_id)
+        return self.tree.itemWidget(it, self.ACTIONS) if it is not None else None
 
     def update_job(self, job):
         it = self.items.get(job.id)
         if it is None:
-            it = QTreeWidgetItem([job.spec.title, '', '', '', ''])
+            it = QTreeWidgetItem([job.spec.title] + [''] * (len(self.COLS) - 1))
             it.setData(0, 256, job.id)
+            it.setToolTip(self.TITLE, job.spec.title)
+            for c in (self.ELAPSED, self.LEFT):
+                it.setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.tree.insertTopLevelItem(0, it)
-            bar = QProgressBar()
-            bar.setRange(0, 1000)
-            bar.setProperty('inline', True)
-            self.tree.setItemWidget(it, 2, bar)
-            btn = QToolButton()
-            btn.setIcon(icons.icon('close', 12))
-            btn.setToolTip('Cancel this job (it tidies up first)')
-            btn.clicked.connect(lambda _=False, j=job: self.win.queue.cancel(j) if j.state not in FINAL
-                                else self.win.open_job(j.id))
-            self.tree.setItemWidget(it, 4, btn)
+            self.tree.setItemWidget(it, self.PROGRESS, _JobProgress())
+            self.tree.setItemWidget(it, self.ACTIONS, _JobActions(self, job))
             self.items[job.id] = it
-        it.setText(1, job.summary() if job.state in (RUNNING, WAITING) else
-                   (job.state if job.exit_code in (None, 0) else f'{job.state}: {P.describe_exit(job.exit_code)}'))
-        it.setToolTip(1, job.summary())
-        bar = self.tree.itemWidget(it, 2)
-        if bar is not None:
-            bar.setValue(int(1000 * job.progress))
-        el = job.elapsed
-        it.setText(3, f'{el:.0f} s' if el else '')
-        btn = self.tree.itemWidget(it, 4)
-        if btn is not None and job.state in FINAL and not btn.property('open'):
-            btn.setProperty('open', True)
-            btn.setIcon(QIcon())
-            btn.setText('Open')
-            btn.setProperty('text-button', True)
-            btn.setToolTip('Go to where this job\'s result is shown')
-        sev = {'failed': 'critical', 'cancelled': 'warning', 'done': 'good'}.get(job.state)
+            self.jobs[job.id] = job
+        st = job.state
+        it.setText(self.STATUS, self.STATUS_TEXT.get(st, st))
+        col = {'failed': QColor(STATUS['critical']), 'cancelled': QColor(STATUS['warning']),
+               'running': THEME.color('ink')}.get(st, THEME.color('muted'))
+        it.setForeground(self.STATUS, QBrush(col))
+        if st == RUNNING:
+            step = job.text or 'started, no report yet'
+        elif st == WAITING:
+            step = job.wait_reason
+        elif st in FINAL and job.exit_code not in (None, 0):
+            step = P.describe_exit(job.exit_code)
+            said = [t for lvl, t in job.log if lvl == 'error' and t] or \
+                [t for lvl, t in job.log if lvl == 'stderr' and t.strip()]          # what the job itself said last
+            if said and st == 'failed':
+                step = said[-1].strip()
+        else:
+            step = ''
+        it.setText(self.STEP, step)
+        it.setToolTip(self.STEP, step)
+        it.setToolTip(self.STATUS, job.summary())
+        self.tree.itemWidget(it, self.PROGRESS).set(job.progress, st in (RUNNING, WAITING) or
+                                                      (st in FINAL and st != 'done' and job.progress > 0))
+        self._times(it, job)
+        if st in FINAL:
+            self.tree.itemWidget(it, self.ACTIONS).finished()
+        sev = {'failed': 'critical', 'cancelled': 'warning', 'done': 'good'}.get(st)
         it.setIcon(0, icons.status_icon(sev) if sev else icons.icon('history', 12))
+        self._buttons()
+
+    def _times(self, it, job):
+        el = job.elapsed
+        it.setText(self.ELAPSED, fmt_duration(el) if job.started else '')
+        left = job.eta_s if job.state == RUNNING and job.eta_s is not None else None
+        it.setText(self.LEFT, fmt_duration(left) if left is not None else '')
+
+    def _tick(self):
+        for jid, it in self.items.items():
+            job = self.jobs.get(jid)
+            if job is not None and job.state == RUNNING:
+                self._times(it, job)
+
+    def _buttons(self):
+        done = sum(j.state in FINAL for j in self.jobs.values())
+        set_enabled(self.clear_btn, done > 0, 'No finished jobs to clear')
+
+    def clear_finished(self):
+        for jid in [j for j, job in self.jobs.items() if job.state in FINAL]:
+            it = self.items.pop(jid)
+            self.jobs.pop(jid)
+            self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(it))
+        self._buttons()
+
+    def show_log(self, job):
+        """A job's log so far in a window of its own (the Log tab interleaves every job's)."""
+        d = QDialog(self)
+        d.setWindowTitle(f'Log — {job.spec.title}')
+        d.resize(820, 520)
+        lv = QVBoxLayout(d)
+        ed = QPlainTextEdit('\n'.join(t if lvl == 'info' else f'{lvl}: {t}' for lvl, t in job.log if t) or
+                            'Nothing logged yet.')
+        ed.setReadOnly(True)
+        ed.setFont(mono(11))
+        lv.addWidget(ed)
+        d.show()
+        return d
 
 
 class HistoryPanel(QWidget):
@@ -254,6 +384,7 @@ class StatusBarWidgets:
         self.mem = QLabel()
         for w in (self.server, self.server_btn):
             sb.addWidget(w)
+        self.mem.setContentsMargins(0, 0, 10, 0)             # clear of the window's edge and size grip
         sb.addPermanentWidget(self.gpu)
         sb.addPermanentWidget(self.mem)
         self.smi = None
@@ -287,7 +418,7 @@ class StatusBarWidgets:
         self.server_btn.setText('Stop' if own else 'Start')
         self.server_btn.setVisible(st not in ('external', 'fake', 'shared'))
         m = sysinfo.meminfo()
-        self.mem.setText(f'RAM {m["available_gb"]:.1f} GB free of {m["total_gb"]:.0f}')
+        self.mem.setText(f'RAM {m["available_gb"]:.1f}/{m["total_gb"]:.0f} GB free')
         self.mem.setToolTip(f'MemAvailable. Falcon keeps {MEMORY_RESERVE_GB:g} GB free and queues jobs rather than '
                             'overcommit.')
         self.query_gpu()

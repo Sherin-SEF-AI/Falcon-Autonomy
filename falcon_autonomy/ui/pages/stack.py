@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpi
                              QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QSpinBox, QSplitter, QTreeWidget,
                              QTreeWidgetItem, QVBoxLayout, QWidget)
 
+from ...core import faults as FL
 from ...core import scenarios as SC
 from ...core import stack as ST
 from ...core import stackbridge as SB
@@ -27,6 +28,16 @@ DRIVERS = (('ros2', 'ROS 2 stack (Falcon\'s bridge)'), ('follower', 'Falcon\'s l
            ('autopilot', 'CARLA\'s autopilot (baseline)'))
 CONTROLS = (('autoware', 'Autoware Control (autoware_control_msgs)'), ('ackermann', 'AckermannDriveStamped'),
             ('carla', 'CarlaEgoVehicleControl (steer, throttle, brake)'))
+
+
+
+def suite_title(doc) -> str:
+    """The Jobs panel's name for a suite run: "Suite <name> (<driver>)", without saying "suite" twice when the suite
+    is itself named so."""
+    name = str(doc.get('name') or '').strip()
+    if name.lower() == 'suite' or name.lower().startswith('suite '):
+        name = name[5:].strip()
+    return f'Suite {name} ({doc["stack"]["driver"]})' if name else f'Suite ({doc["stack"]["driver"]})'
 
 
 class StackPage(Page):
@@ -94,7 +105,7 @@ class StackPage(Page):
             self.driver.addItem(t, k)
         self.world = QComboBox()
         self.rig = QComboBox()
-        self.rig.currentIndexChanged.connect(lambda _: self.show_topics())
+        self.rig.currentIndexChanged.connect(lambda _: (self.show_topics(), self._fault_sensors()))
         self.motion = QComboBox()
         self.motion.addItem('kinematic (repeatable)', 'kinematic')
         self.motion.addItem('physics', 'physics')
@@ -116,6 +127,44 @@ class StackPage(Page):
         self.scn_list.setMinimumHeight(150)
         sec.add(label('Scenarios', muted=True))
         sec.add(self.scn_list)
+        sec.add(label('Sensor faults during each run', muted=True))
+        sec.add(label('A sensor fails mid-run as the stack receives it (core.faults: mud on a camera, a lidar sector '
+                      'or packets lost, GNSS multipath, a sensor gone). With the minimal-risk check on, each run is '
+                      'judged on what the stack does after the first fault (docs/stack-testing.md).', muted=True,
+                      wrap=True))
+        self.fault_list = QTreeWidget()
+        self.fault_list.setHeaderLabels(['Sensor', 'Fault', 'From s', 'For s', 'Settings'])
+        self.fault_list.setRootIsDecorated(False)
+        self.fault_list.setMaximumHeight(110)
+        sec.add(self.fault_list)
+        fr = QHBoxLayout()
+        self.fault_sensor = QComboBox()
+        self.fault_sensor.currentIndexChanged.connect(lambda _: self._fault_kinds())
+        self.fault_kind = QComboBox()
+        self.fault_onset = QDoubleSpinBox()
+        self.fault_onset.setRange(0.0, 3600.0)
+        self.fault_onset.setValue(3.0)
+        self.fault_onset.setPrefix('from ')
+        self.fault_onset.setSuffix(' s')
+        self.fault_for = QDoubleSpinBox()
+        self.fault_for.setRange(0.0, 3600.0)
+        self.fault_for.setSpecialValueText('to the end')
+        self.fault_for.setPrefix('for ')
+        self.fault_for.setSuffix(' s')
+        self.fault_opts = QLineEdit()
+        self.fault_opts.setPlaceholderText('settings, e.g. from_deg=-60,to_deg=60 or cover=0.6')
+        for wdg in (self.fault_sensor, self.fault_kind, self.fault_onset, self.fault_for):
+            fr.addWidget(wdg)
+        fr.addWidget(self.fault_opts, 1)
+        fr.addWidget(button('Add', self.add_fault))
+        fr.addWidget(button('Remove', self.remove_fault))
+        sec.add(fr)
+        self.mrm = QCheckBox('Judge the minimal-risk manoeuvre after the first fault (standstill in time, '
+                             'deceleration and jerk bounded, in lane, no collision)')
+        self.degraded = QCheckBox('The test stack reacts to sensor failures (degraded mode: it stops in its lane)')
+        self.degraded.setToolTip('Falcon\'s lane follower, or the ROS 2 test stack when it is launched with each run')
+        sec.add(self.mrm)
+        sec.add(self.degraded)
         row = QHBoxLayout()
         self.run_btn = button('Run the suite', self.run_suite, role='primary')
         row.addWidget(self.run_btn)
@@ -167,10 +216,11 @@ class StackPage(Page):
         rv.addWidget(self.topics)
         rv.addWidget(label('Results', h=True))
         self.summary = KeyValues(('Runs', 'Pass rate (Wilson 95 %)', 'Collisions', 'Missed deadlines',
-                                  'Outside the ODD'))
+                                  'Minimal-risk manoeuvre', 'Outside the ODD'))
         rv.addWidget(self.summary)
         self.results = QTreeWidget()
-        self.results.setHeaderLabels(['Scenario', 'Seed', 'Result', 'Criticality', 'Min TTC s', 'Missed', 'Run'])
+        self.results.setHeaderLabels(['Scenario', 'Seed', 'Result', 'Criticality', 'Min TTC s', 'Missed', 'MRM',
+                                      'Run'])
         self.results.setRootIsDecorated(False)
         self.results.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.results.setMinimumHeight(200)
@@ -219,6 +269,7 @@ class StackPage(Page):
             k = combo.findData(c)
             combo.setCurrentIndex(k if k >= 0 else 0)
             combo.blockSignals(False)
+        self._fault_sensors()
         checked = self.checked_scenarios() or ['lead_brake', 'stalled_vehicle']
         self.scn_list.clear()
         for ident, s in self.scenarios():
@@ -295,12 +346,79 @@ class StackPage(Page):
         doc['criteria'] = {'no_collision': self.no_collision.isChecked(),
                            'min_ttc_s': float(self.min_ttc.value()) if self.min_ttc.value() > 0 else None,
                            'max_missed_deadlines': int(self.max_missed.value())}
+        faults = self.faults()
+        for e in doc['entries']:
+            if faults:
+                e['faults'] = [dict(f) for f in faults]
+            if self.mrm.isChecked():
+                e['mrm'] = True
+        if self.degraded.isChecked() and driver == 'follower':
+            doc['degraded_mode'] = True
         if driver == 'ros2':
             doc['stack']['bridge'] = self.bridge_doc()
             if self.test_stack.isChecked():
                 from ...sim.stacksuite import test_stack_launch
-                doc['stack']['launch'] = test_stack_launch(self.control.currentData())
+                doc['stack']['launch'] = test_stack_launch(self.control.currentData(),
+                                                           degraded_mode=self.degraded.isChecked())
         return doc
+
+    # ------------------------------------------------------------------------------------------- sensor faults
+    def _fault_sensors(self):
+        cur = self.fault_sensor.currentData()
+        self.fault_sensor.blockSignals(True)
+        self.fault_sensor.clear()
+        for s in (self.rig_doc() or {}).get('sensors', []):
+            self.fault_sensor.addItem(f'{s["id"]} ({s["type"]})', (s['id'], s['type']))
+        i = self.fault_sensor.findData(cur)
+        self.fault_sensor.setCurrentIndex(max(i, 0))
+        self.fault_sensor.blockSignals(False)
+        self._fault_kinds()
+
+    def _fault_kinds(self):
+        cur = self.fault_kind.currentText()
+        self.fault_kind.clear()
+        d = self.fault_sensor.currentData()
+        if d:
+            self.fault_kind.addItems([k for k in FL.TIMED if FL.applies_to(k, d[1])])
+        i = self.fault_kind.findText(cur)
+        self.fault_kind.setCurrentIndex(max(i, 0))
+
+    def faults(self) -> list:
+        return [self.fault_list.topLevelItem(i).data(0, 256) for i in range(self.fault_list.topLevelItemCount())]
+
+    def add_fault(self):
+        from ...sim.stacksuite import parse_fault
+        d = self.fault_sensor.currentData()
+        if not d or not self.fault_kind.currentText():
+            QMessageBox.information(self, 'Sensor faults', 'Choose a rig with sensors first.')
+            return
+        spec = f'{d[0]}:{self.fault_kind.currentText()}:{self.fault_onset.value():g}'
+        opts = [x.strip() for x in self.fault_opts.text().split(',') if x.strip()]
+        if self.fault_for.value() > 0:
+            opts.append(f'for={self.fault_for.value():g}')
+        if opts:
+            spec += ':' + ','.join(opts)
+        try:
+            f = parse_fault(spec)
+        except ValueError as e:
+            QMessageBox.warning(self, 'Sensor faults', str(e))
+            return
+        errs = FL.validate([f])
+        if errs:
+            QMessageBox.warning(self, 'Sensor faults', '\n'.join(errs))
+            return
+        extra = ', '.join(f'{k}={v:g}' if isinstance(v, float) else f'{k}={v}' for k, v in f.items()
+                          if k not in ('sensor', 'kind', 'onset_s', 'for_s'))
+        it = QTreeWidgetItem([f['sensor'], f['kind'], f'{f["onset_s"]:g}',
+                              f'{f["for_s"]:g}' if 'for_s' in f else 'to the end', extra])
+        it.setData(0, 256, f)
+        self.fault_list.addTopLevelItem(it)
+        self.fault_opts.clear()
+
+    def remove_fault(self):
+        it = self.fault_list.currentItem()
+        if it is not None:
+            self.fault_list.takeTopLevelItem(self.fault_list.indexOfTopLevelItem(it))
 
     def suite_dir(self) -> str:
         ws = self.win.workspace()
@@ -331,7 +449,7 @@ class StackPage(Page):
         argv = [sys.executable, '-m', 'falcon_autonomy', 'stack'] + (['--fake-carla', w.fake_carla] if w.fake_carla
                                                                      else []) + ['suite', 'run', w.project.path,
                                                                                  spath, '--dir', d]
-        self.track(w.queue.submit(JobSpec('stack-suite', f'Suite {doc["name"]} ({doc["stack"]["driver"]})', argv,
+        self.track(w.queue.submit(JobSpec('stack-suite', suite_title(doc), argv,
                                           memory_gb=0.5)), 'suite')
         w.jobs_dock.raise_()
 
@@ -367,13 +485,17 @@ class StackPage(Page):
                                   '' if r.get('criticality') is None else f'{r["criticality"]:.3f}',
                                   '' if r.get('min_ttc_s') is None else f'{r["min_ttc_s"]:.2f}',
                                   '' if r.get('missed_deadlines') is None else str(r['missed_deadlines']),
+                                  '' if not r.get('mrm') else ('passed' if r['mrm'].get('passed') else 'FAILED'),
                                   tilde(r['run'])])
+            if r.get('mrm') and not r['mrm'].get('passed'):
+                it.setToolTip(6, 'failed: ' + ', '.join(c['name'] for c in (r['mrm'].get('checks') or ())
+                                                       if not c.get('ok')))
             it.setData(0, 256, r)
             self.results.addTopLevelItem(it)
             if r['run'] == cur:
                 self.results.setCurrentItem(it)
         if not rows:
-            for k in ('Runs', 'Pass rate (Wilson 95 %)', 'Collisions', 'Missed deadlines'):
+            for k in ('Runs', 'Pass rate (Wilson 95 %)', 'Collisions', 'Missed deadlines', 'Minimal-risk manoeuvre'):
                 self.summary.set(k, '—')
             return
         o = ST.summarise(rows)['overall']
@@ -384,6 +506,15 @@ class StackPage(Page):
                          f'{o["pass_rate"]:.0%} ({ci[0]:.0%}–{ci[1]:.0%})')
         self.summary.set('Collisions', str(o['collisions']))
         self.summary.set('Missed deadlines', str(o['missed_deadlines']))
+        m = ST.mrm_summary(rows)
+        if not m:
+            self.summary.set('Minimal-risk manoeuvre', 'not judged (no sensor faults with the check on)')
+        else:
+            g = m['overall']
+            ci = g['pass_rate_ci95']
+            fails = ', '.join(f'{k} ×{v}' for k, v in sorted(g['failed_checks'].items()))
+            self.summary.set('Minimal-risk manoeuvre', f'{g["passed"]} of {g["runs"]} passed ({ci[0]:.0%}–{ci[1]:.0%})'
+                             + (f'; failed: {fails}' if fails else ''))
         self.odd_summary(rows)
 
     def odd_summary(self, rows):

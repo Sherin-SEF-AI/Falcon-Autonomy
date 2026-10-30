@@ -17,6 +17,7 @@ from ..core import v2x as V
 from ..core.project import Edit
 from .osmimport import RoadGraphView
 from .theme import SEQ, THEME
+from . import tasks
 from .widgets import Form, KeyValues, Section, button, label, set_enabled
 
 ABOUT = ('Roadside units stand in the world, not on the ego: smart-pole cameras and intersection lidars (rig sensor '
@@ -181,6 +182,76 @@ class InfraSection(Section):
         self.add(label('Sensors are rig definitions posed from the mast head (x along the heading); a camera always '
                        'records its ground truth. The map draws fields of view to 60 m.', muted=True, small=True,
                        wrap=True))
+        brow = QHBoxLayout()
+        self.benefit_btn = button('Measure the benefit on recorded drives…', self.measure_benefit,
+                                  tip='Choose a drive recorded with roadside units (or a folder of them): how many of '
+                                      'the road users near the ego its own sensors saw, against its sensors and the '
+                                      'CPMs together (core.v2x.benefit)')
+        brow.addWidget(self.benefit_btn)
+        brow.addStretch(1)
+        self.add(brow)
+        self.benefit_kv = KeyValues(('Drives', 'Road users seen within 50 m', 'While near a pole',
+                                     'Walkers and two-wheelers', 'Out of occlusion'))
+        self.benefit_kv.setVisible(False)
+        self.add(self.benefit_kv)
+
+    # ------------------------------------------------------------------ the benefit, measured
+    @staticmethod
+    def drives_with_cpms(folder: str) -> list:
+        """The folder itself when it is a drive with CPMs, else its drives (one level down) that have them."""
+        has = lambda d: os.path.isfile(os.path.join(d, 'cpm.jsonl')) and os.path.isfile(os.path.join(d, 'run.json'))
+        if has(folder):
+            return [folder]
+        try:
+            subs = sorted(os.path.join(folder, x) for x in os.listdir(folder))
+        except OSError:
+            return []
+        return [d for d in subs if os.path.isdir(d) and has(d)]
+
+    def measure_benefit(self, folder: str = ''):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        if not folder:
+            win = self.page.win
+            start = win.service.runs_dir() if win.workspace() else ''
+            folder = QFileDialog.getExistingDirectory(self, 'A drive with roadside units, or a folder of them', start)
+            if not folder:
+                return None
+        runs = self.drives_with_cpms(folder)
+        if not runs:
+            QMessageBox.information(self, 'V2X benefit', 'No drive there was recorded with roadside units (no '
+                                    'cpm.jsonl): record a drive in a world that has them first.')
+            return None
+        set_enabled(self.benefit_btn, False, 'Measuring…')
+        self.benefit_kv.setVisible(True)
+        self.benefit_kv.set('Drives', f'measuring {len(runs)}…')
+
+        def work():
+            res = [V.benefit(r) for r in runs]
+            return res, V.pooled(res)
+
+        def done(out):
+            res, pl = out
+            set_enabled(self.benefit_btn, True)
+            pc = lambda x: '—' if x is None else f'{100 * x:.1f} %'
+            row = lambda k: (f'{pc(pl[k]["ego_share"])} by the ego alone → {pc(pl[k]["ego_or_rsu_share"])} with the '
+                             f'CPMs ({pl[k]["road_user_steps"]} road-user steps)') if pl.get(k) else '—'
+            t = pl.get('time_to_first_detection') or {}
+            self.benefit_kv.set('Drives', f'{len(res)}: ' + ', '.join(r['run'] for r in res))
+            self.benefit_kv.set('Road users seen within 50 m', row('all'))
+            self.benefit_kv.set('While near a pole', row('near_station'))
+            self.benefit_kv.set('Walkers and two-wheelers', row('vru'))
+            self.benefit_kv.set('Out of occlusion', f'{t.get("cpm_first", 0)} of {t.get("episodes", 0)} episodes '
+                                f'named by a CPM first' + (f', {t["gain_s_mean"]} s earlier on average'
+                                                           if t.get('gain_s_mean') is not None else ''))
+            self.benefit_kv.setToolTip('Ground truth behind real occlusion: an upper bound (a perfect classifier, no '
+                                       'radio). docs/v2x.md')
+
+        def failed(err):
+            set_enabled(self.benefit_btn, True)
+            self.benefit_kv.set('Drives', f'could not measure: {err}')
+
+        tasks.run(self, work, done, failed)
+        return runs
 
     # ------------------------------------------------------------------ view
     def world(self):

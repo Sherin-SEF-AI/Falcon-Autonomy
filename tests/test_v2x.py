@@ -596,3 +596,20 @@ def same_as_ros(f, r, path='cpm'):
             if rk + '_is_present' in r:
                 assert r[rk + '_is_present'], f'{path}.{k} not present'
             same_as_ros(v, r[rk], f'{path}.{k}')
+
+
+@pytest.mark.gui
+def test_worlds_page_measures_the_benefit_of_recorded_drives(window, qapp, rsu_run, tmp_path):
+    """Worlds ▸ Roadside units ▸ Measure the benefit: a drive with CPMs (or a folder of them) measured in the
+    background, the shares and the occlusion episodes shown; a folder without any is said so, not measured."""
+    sec = window.go('worlds').infra
+    assert sec.drives_with_cpms(rsu_run) == [rsu_run]
+    assert sec.drives_with_cpms(os.path.dirname(rsu_run)) == [rsu_run]
+    empty = tmp_path / 'none'
+    empty.mkdir()
+    assert sec.drives_with_cpms(str(empty)) == []
+    assert sec.measure_benefit(rsu_run) == [rsu_run]
+    assert pump(qapp, lambda: sec.benefit_btn.isEnabled() and
+                sec.benefit_kv.vals['Road users seen within 50 m'].text() not in ('', '—'), 60)
+    assert 'with the CPMs' in sec.benefit_kv.vals['Road users seen within 50 m'].text()
+    assert 'episodes' in sec.benefit_kv.vals['Out of occlusion'].text()

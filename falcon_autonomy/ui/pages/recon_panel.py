@@ -73,8 +73,14 @@ class ReconPanel(QWidget):
         self.device = QComboBox()
         for k, text in (('auto', 'The GPU when there is one'), ('cpu', 'The CPU (slow)')):
             self.device.addItem(text, k)
+        self.backend = QComboBox()
+        for k, text in (('auto', 'Triton kernels on the GPU (PyTorch otherwise)'), ('torch', 'Plain PyTorch'),
+                        ('triton', 'Triton kernels (refused without a CUDA GPU)')):
+            self.backend.addItem(text, k)
+        self.backend.setToolTip('Triton trains 6–12× faster on the RTX 5080 at the same quality (docs/reconstruction.md);'
+                                ' PyTorch is the reference implementation')
         for text, w in (('Steps', self.iters), ('Image width', self.width_px), ('Start from', self.init),
-                        ('Device', self.device)):
+                        ('Device', self.device), ('Rasteriser', self.backend)):
             f.row(text, w)
         sec.add(f)
         b = QHBoxLayout()
@@ -357,7 +363,8 @@ class ReconPanel(QWidget):
             return
         argv = ['train', '--source', self.source, '--out', self.rec_dir, '--iterations', str(self.iters.value()),
                 '--width', str(self.width_px.value()), '--init', self.init.currentData(), '--device',
-                self.device.currentData(), '--seed', str(self.page.seed.value())]
+                self.device.currentData(), '--seed', str(self.page.seed.value()),
+                '--raster-backend', self.backend.currentData()]
         if self._submit('train', argv, f'Reconstruct {os.path.basename(self.rec_dir)}'):
             self.info.set('Reconstruction', f'training: {self.rec_dir}')
 

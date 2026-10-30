@@ -9,7 +9,7 @@ import os
 import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
-from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QHeaderView,
+from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QHeaderView,
                              QLabel, QLineEdit, QMessageBox, QSlider, QSpinBox, QSplitter, QStackedWidget, QTabWidget,
                              QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
@@ -301,7 +301,13 @@ class RecordTab(QWidget):
         f.row('Duration', self.seconds, 'simulated time')
         f.row('Step', self.fps, 'fixed_delta_seconds = 1 / rate')
         f.row('Seed', self.seed, 'spawn choices, traffic manager, pedestrians')
+        self.audio = QCheckBox('Then derive synthetic array audio')
+        self.audio.setToolTip('After the drive, a job renders its engines, sirens and horns at the rig\'s microphone '
+                              'array into RUN/audio (synthetic, docs/audio.md); the rig needs an audio_array sensor')
+        f.row('Audio', self.audio, 'synthetic, after the drive (the server is not held for it)')
         sec.add(f)
+        self.audio_after: set = set()             # drives whose audio is derived when they finish
+        self.win.bridge.finished.connect(self._drive_finished)
         self.note = label('', muted=True, wrap=True)
         sec.add(self.note)
         self.cost = KeyValues(('Rendering', 'Budget', 'Estimate'))
@@ -362,11 +368,33 @@ class RecordTab(QWidget):
                 cfg['weather_source'] = {'preset': preset, 'override': 'Data ▸ Record'}
             from ...core.triggers import attach           # the project's trigger rules for drives
             attach(cfg, w.project, 'drives')
-            w.service.submit_drive(cfg)
+            if self.audio.isChecked():
+                rig = w.project.item('rigs', self.rig.currentData())
+                if not any(s.get('type') == 'audio_array' for s in rig.get('sensors', [])):
+                    QMessageBox.information(self, 'Record a drive', 'The rig has no microphone array: add an '
+                                            'audio_array sensor in Rigs, or turn audio off.')
+                    return
+            job = w.service.submit_drive(cfg)
+            if self.audio.isChecked():
+                self.audio_after.add(job.id)
         except (ProjectError, RuntimeError) as e:
             QMessageBox.warning(self, 'Record a drive', str(e))
             return
         w.jobs_dock.raise_()
+
+
+    def _drive_finished(self, job):
+        if job.id not in self.audio_after:
+            return
+        self.audio_after.discard(job.id)
+        if job.state != 'done':
+            return
+        import sys
+        from ...core.jobs import JobSpec
+        run = job.spec.run_dir
+        self.win.queue.submit(JobSpec('derive', f'Synthetic audio of {os.path.basename(run)}',
+                                      [sys.executable, '-m', 'falcon_autonomy', 'derive', 'audio', run],
+                                      memory_gb=2.0))
 
 
 class BrowseTab(QWidget):
