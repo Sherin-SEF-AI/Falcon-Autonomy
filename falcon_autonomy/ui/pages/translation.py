@@ -330,10 +330,11 @@ class TranslationTab(QWidget):
         self.on_drift.addItem('keep the raw frame', 'raw')
         self.on_drift.addItem('keep the translation, flagged', 'flag')
         self.pin = QCheckBox('Pin the dynamic actors (only a colour map of the input inside their masks)')
-        self.pin.setChecked(TR.PIN_DEFAULT)
+        self.pin.setChecked(True)
         self.pin.setToolTip('Vehicles, two-wheelers, pedestrians and movable objects keep the input\'s every pixel '
                             'position and edge inside their instance mask; their tone and colour follow the '
-                            'translation (a colour matrix fitted per object). Needs the instance label.')
+                            'translation (a colour matrix fitted per object). On the cameras recorded with the '
+                            'instance label; measured to lower the drift at no cost in realism (docs/translation.md).')
         f.row('Drift threshold', self.threshold)
         f.row('Over the threshold', self.on_drift)
         f.row('', self.pin)
@@ -516,8 +517,7 @@ class TranslationTab(QWidget):
         for r in runs:
             out = os.path.join(root, TR.default_name(r, model))
             argv = ['apply', '--model', model, '--run', r, '--out', out, '--threshold', f'{self.threshold.value():g}',
-                    '--on-drift', self.on_drift.currentData(),
-                    '--pin-actors' if self.pin.isChecked() else '--no-pin-actors']
+                    '--on-drift', self.on_drift.currentData()] + ([] if self.pin.isChecked() else ['--no-pin-actors'])
             self.submit(TR.job_spec(argv, f'Translate {os.path.basename(r)}', memory_gb=3.0, run_dir=out))
 
     def check(self):

@@ -135,7 +135,9 @@ PIN_MIN_GAIN = 0.25                   # heuristic: a fitted map whose luminance 
 #                                       translator's content there is unrelated to the input's, or inverted) is not
 #                                       followed: the per-channel median offset instead
 LUMA = np.array([0.299, 0.587, 0.114])
-PIN_DEFAULT = False                   # `falcon translate apply` without --pin-actors / --no-pin-actors
+PIN_DEFAULT = None                    # translate_run / `apply` without --pin-actors or --no-pin-actors: pin every
+#                                       camera that has instance images, translate the others unpinned (measured:
+#                                       pinning lowered the drift and cost no realism, docs/translation.md)
 DEFAULTS = {
     'method': 'cut', 'sim': [], 'real': [], 'camera': None, 'every': 1, 'max_images': 2000,
     'work_width': WORK_WIDTH, 'crop': 192, 'batch': 4, 'iterations': 12000, 'lr': 2e-4, 'beta1': 0.5, 'beta2': 0.999,
@@ -1010,9 +1012,10 @@ def _write_image(path: str, rgb: np.ndarray):
 def translate_run(model_dir: str, src_dir: str, out_dir: str, cameras=None, threshold: float = DRIFT_THRESHOLD,
                   on_drift: str = 'raw', link: str = 'hard', native: bool = False, device: str = 'auto',
                   translator: Translator | None = None, emitter=None, cancel=None, argv=None,
-                  pin: bool = False, feather: int = PIN_FEATHER_PX) -> dict:
+                  pin: bool | None = PIN_DEFAULT, feather: int = PIN_FEATHER_PX) -> dict:
     """A translated copy of a recorded run (see the module docstring). pin: foreground pinning (pin_actors) with the
-    frame's instance image and objects, a ring of feather px. Returns its run.json. Raises TranslateError or
+    frame's instance image and objects, a ring of feather px — True on every camera (one without instance images is
+    refused), None on the cameras that have them, False nowhere. Returns its run.json. Raises TranslateError or
     training.Cancelled (the partial folder is removed)."""
     from . import provenance as PV
     from .exporters import ExportError, Run, is_pinhole
@@ -1042,10 +1045,16 @@ def translate_run(model_dir: str, src_dir: str, out_dir: str, cameras=None, thre
         if pin and not any(run.file(r, c, 'instance') for r in run.frames):
             raise TranslateError(f'{run.dir}: camera {c} has no instance image, which pinning needs (record with the '
                                  f'instance label, or translate without pinning)')
+    pin_cams = (set() if pin is False else
+                {c for c in cams if any(run.file(r, c, 'instance') for r in run.frames)})
+    for c in cams:
+        if pin is None and c not in pin_cams:
+            em.log(f'camera {c} has no instance image: translated without pinning its actors', 'warning')
     settings = {'model': tr.dir, 'model_sha256': tr.sha256, 'cameras': cams, 'threshold': threshold,
                 'on_drift': on_drift, 'native': bool(native), 'work_width': tr.width}
-    if pin:                                       # (absent when off: the key of a run made before pinning holds)
-        settings['pin_actors'] = {'classes': list(PIN_CLASSES), 'feather_px': int(feather)}
+    if pin_cams:                                  # (absent when off: the key of a run made before pinning holds)
+        settings['pin_actors'] = {'classes': list(PIN_CLASSES), 'feather_px': int(feather),
+                                  'cameras': sorted(pin_cams)}
     key = PV.sha256_json({'source': PV.sha256_file(run.p('run.json')), **settings})
     rj = os.path.join(out_dir, 'run.json')
     if os.path.isfile(rj):
@@ -1089,8 +1098,8 @@ def translate_run(model_dir: str, src_dir: str, out_dir: str, cameras=None, thre
             sem = load_label(run.p(srel)) if srel else None
             reason = ('no semantic label' if tr.cond and sem is None else
                       'no range image' if tr.depth is not None and rrel is None else
-                      'no instance image or objects (pinning needs both)' if pin and (irel is None or orel is None)
-                      else None)
+                      'no instance image or objects (pinning needs both)' if c in pin_cams and (
+                          irel is None or orel is None) else None)
             if reason:                                 # a frame without what the translation needs: kept raw, said so
                 _link(run.p(rel), os.path.join(out_dir, rel), link)
                 rows.append({'camera': c, 'step': rec['step'], 'file': rel, 'flagged': False, 'used': 'raw',
@@ -1099,7 +1108,7 @@ def translate_run(model_dir: str, src_dir: str, out_dir: str, cameras=None, thre
             out = tr(rgb, sem, native, load_range(run.p(rrel)) if tr.depth is not None else None)
             objs = PV.read_json(run.p(orel)).get('objects', []) if orel else []
             pinned = None
-            if pin:
+            if c in pin_cams:
                 out, pinned = pin_actors(rgb, out, load_instance(run.p(irel)), objs, feather)
             a, b = working(rgb, WORK_WIDTH), working(out, WORK_WIDTH)
             m = frame_drift(a, b, objs, WORK_WIDTH / float(width_of[c] or rgb.shape[1]))
@@ -1122,7 +1131,7 @@ def translate_run(model_dir: str, src_dir: str, out_dir: str, cameras=None, thre
         summ['unlabelled'] = sum(1 for r in rows if r.get('reason') == 'no semantic label')
         summ['missing'] = {k: sum(1 for r in rows if r.get('reason') == k)
                            for k in sorted({r['reason'] for r in rows if r.get('reason')})}
-        if pin:
+        if pin_cams:
             pr = [r['pin_rms_max'] for r in rows if r.get('pin_rms_max') is not None]
             summ['pinned'] = {'objects': sum(r.get('pinned') or 0 for r in rows),
                               'frames': sum(1 for r in rows if r.get('pinned')),
@@ -1575,7 +1584,7 @@ def main_translate(argv) -> int:
     a_.add_argument('--native', action='store_true', help='run the network at the camera\'s full resolution')
     a_.add_argument('--pin-actors', action=argparse.BooleanOptionalAction, default=PIN_DEFAULT,
                     help='foreground pinning: inside each dynamic actor\'s instance mask only a colour map of the '
-                         f'input (default {"on" if PIN_DEFAULT else "off"})')
+                         'input (default: on every camera that has instance images)')
     a_.add_argument('--pin-feather', type=int, default=PIN_FEATHER_PX, help='the blend ring outside a pinned mask, px')
     a_.add_argument('--copy', action='store_true', help='copy the source\'s files instead of hard-linking them')
     a_.add_argument('--device', default='auto')

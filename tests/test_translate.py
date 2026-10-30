@@ -197,6 +197,7 @@ def test_a_translated_run_keeps_every_label(drives, model, tmp_path):
     tr = doc['translation']
     assert doc['worker'] == 'translate' and doc['status'] == 'ok' and tr['source'] == os.path.abspath(drives['a'])
     assert tr['drift']['frames'] == 10 and tr['weights_sha256'] and tr['terms'] == [TR.DATA_TERMS['folder']]
+    assert tr['settings']['pin_actors']['cameras'] == tr['settings']['cameras']    # pinned where instance images are
     assert doc['started'] == json.load(open(os.path.join(drives['a'], 'run.json')))['started']
     run = Run(out)                                                     # loads as any drive
     assert run.frames == Run(drives['a']).frames
@@ -212,6 +213,8 @@ def test_a_translated_run_keeps_every_label(drives, model, tmp_path):
     assert TR.translate_run(out_m, drives['a'], out, threshold=1.0)['translation']['key'] == tr['key']
     with pytest.raises(TR.TranslateError):
         TR.translate_run(out_m, drives['a'], out, threshold=0.5)
+    with pytest.raises(TR.TranslateError):
+        TR.translate_run(out_m, drives['a'], out, threshold=1.0, pin=False)        # unpinned: another translation
     with pytest.raises(TR.TranslateError):
         TR.translate_run(out_m, drives['a'], drives['a'])
 
@@ -507,7 +510,7 @@ def test_training_page_translation_tab(window, qapp, drives, model, monkeypatch)
     kinds = [s.argv[s.argv.index('translate') + 1] for s in sent]
     assert kinds == ['apply', 'check', 'train'] and all(s.needs_gpu for s in sent)
     assert sent[0].run_dir and '--threshold' in sent[0].argv and '--no-condition' not in sent[2].argv
-    assert ('--pin-actors' if TR.PIN_DEFAULT else '--no-pin-actors') in sent[0].argv and '--depth' not in sent[2].argv
+    assert not {'--pin-actors', '--no-pin-actors'} & set(sent[0].argv) and '--depth' not in sent[2].argv  # pinned
 
 
 # ================================================================================================ GPU
