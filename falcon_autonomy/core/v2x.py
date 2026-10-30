@@ -349,10 +349,10 @@ def _jsonl(path):
         return [json.loads(x) for x in fh if x.strip()]
 
 
-def ego_visibility(run_dir: str, min_pixels: int = 20, min_points: int = 3) -> dict:
+def ego_visibility(run_dir: str, min_pixels: int = 20, min_points: int = 3, sensors: str = 'all') -> dict:
     """{step: set of actor ids} the ego's own sensors saw: an ego camera's objects with at least min_pixels pixels,
     an ego lidar's latest sweep's points (at least min_points of an actor). RSU sensors (dataset.json 'station') are
-    left out."""
+    left out. sensors: 'all', 'camera' or 'lidar' — the ego's cameras or lidars only (a rig without the others)."""
     import numpy as np
     ds = json.load(open(os.path.join(run_dir, 'dataset.json'), encoding='utf-8'))
     rsu_ids = {s['id'] for s in ds.get('sensors') or [] if s.get('station')}
@@ -365,12 +365,12 @@ def ego_visibility(run_dir: str, min_pixels: int = 20, min_points: int = 3) -> d
             sid, kind = key.rsplit('/', 1)
             if sid in rsu_ids:
                 continue
-            if kind == 'objects':
+            if kind == 'objects' and sensors in ('all', 'camera'):
                 with open(os.path.join(run_dir, rel), encoding='utf-8') as fh:
                     for o in json.load(fh).get('objects') or []:
                         if isinstance(o.get('track_id'), int) and o.get('pixels', 0) >= min_pixels:
                             seen.add(int(o['track_id']))
-            elif kind == 'lidar':
+            elif kind == 'lidar' and sensors in ('all', 'lidar'):
                 with open(os.path.join(run_dir, rel)[:-4] + '.labels.bin', 'rb') as fh:
                     lab = fh.read()
                 n = len(lab) // 5                       # uint8 tag, then uint32 actor id, per point
@@ -395,7 +395,7 @@ def rsu_visibility(run_dir: str) -> tuple[dict, dict]:
 
 
 def benefit(run_dir: str, radius_m: float = 50.0, near_m: float = 60.0, min_pixels: int = 20, min_points: int = 3,
-            min_occlusion_s: float = 0.5) -> dict:
+            min_occlusion_s: float = 0.5, ego_sensors: str = 'all') -> dict:
     """The share of ground-truth road users within radius_m of the ego that its own sensors see, against its sensors
     and the RSUs' CPMs together, at the steps a CPM was sent (both known then); also only while the ego is within
     near_m of a station; per kind (vehicles, large vehicles, VRUs). And the time to first detection of road users
@@ -410,7 +410,7 @@ def benefit(run_dir: str, radius_m: float = 50.0, near_m: float = 60.0, min_pixe
     ds = json.load(open(os.path.join(run_dir, 'dataset.json'), encoding='utf-8'))
     fps = float(ds.get('fps') or 20.0)
     stations = [(s['x'], s['y']) for s in (ds.get(KEY) or {}).get('stations') or []]
-    ego_vis = ego_visibility(run_dir, min_pixels, min_points)
+    ego_vis = ego_visibility(run_dir, min_pixels, min_points, ego_sensors)
     cpm_vis, _ = rsu_visibility(run_dir)
     frames = {int(f['step']): f for f in _jsonl(os.path.join(run_dir, 'frames.jsonl'))}
     ego_id = (ds.get('ego') or {}).get('actor_id')
@@ -513,7 +513,7 @@ def benefit(run_dir: str, radius_m: float = 50.0, near_m: float = 60.0, min_pixe
     return {'run': os.path.basename(os.path.normpath(run_dir)), 'seed': run.get('provenance', {}).get('seed'),
             'cpm': {'messages': len(sizes), 'bytes_mean': round(sum(sizes) / len(sizes), 1) if sizes else None,
                     'bytes_max': max(sizes) if sizes else None, 'objects_by_evidence': ev},
-            'radius_m': radius_m, 'near_m': near_m, 'min_pixels': min_pixels, 'min_points': min_points,
+            'radius_m': radius_m, 'near_m': near_m, 'ego_sensors': ego_sensors, 'min_pixels': min_pixels, 'min_points': min_points,
             'min_occlusion_s': min_occlusion_s, 'evaluated_steps': tally['all']['steps'], 'shares': shares,
             'time_to_first_detection': ttfd, 'episodes': episodes[:500], 'never_seen_by_ego': never[:500],
             'method': 'ground-truth road users (actors.jsonl, the ego left out) within radius_m of the ego at the '
@@ -620,6 +620,8 @@ def main_v2x(argv: list) -> int:
     be.add_argument('--min-pixels', type=int, default=20)
     be.add_argument('--min-points', type=int, default=3)
     be.add_argument('--min-occlusion', type=float, default=0.5)
+    be.add_argument('--ego-sensors', default='all', choices=('all', 'camera', 'lidar'),
+                    help='the ego\'s cameras or lidars only (what a rig without the others would see)')
     be.add_argument('--out', default='')
     cv = sub.add_parser('converter', help='print the command of etsi_its_messages\' conversion node decoding an RSU\'s '
                                           'CPMs into etsi_its_cpm_ts_msgs (in the bridge image, or --native)')
@@ -631,7 +633,7 @@ def main_v2x(argv: list) -> int:
     de.add_argument('--show', type=int, default=0, help='print this many decoded messages')
     a = ap.parse_args(argv)
     if a.cmd == 'benefit':
-        res = [benefit(r, a.radius, a.near, a.min_pixels, a.min_points, a.min_occlusion) for r in a.runs]
+        res = [benefit(r, a.radius, a.near, a.min_pixels, a.min_points, a.min_occlusion, a.ego_sensors) for r in a.runs]
         for r in res:
             s = r['shares']
             t = r['time_to_first_detection']
