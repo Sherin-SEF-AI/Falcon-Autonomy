@@ -212,6 +212,22 @@ def test_a_drive_fires_spawns_changes_weather_and_starts_a_fault(project, tmp_pa
     assert run['provenance']['settings']['trigger_rules']['rules'][0]['id'] == 'jw'
 
 
+def test_a_spawn_starts_where_it_was_placed_not_where_a_real_server_reports_it(project, tmp_path, monkeypatch):
+    """A real server reports a just-spawned actor at the origin until the next tick: the rule's walker must start at
+    its placement (25 m ahead on the sidewalk), not at (0, 0)."""
+    monkeypatch.setenv('FAKE_CARLA_SPAWN_AT_ORIGIN', '1')
+    rules = [T.new_rule('when time >= 1 -> spawn jaywalker distance=25', 'jw'),
+             T.new_rule('when time >= 1 -> spawn cattle distance=30', 'cow')]
+    r, run, frames = _drive(project, tmp_path, rules, seconds=2.0, seed=0)
+    assert r.returncode == P.OK, r.stderr[-3000:]
+    traj = json.loads((tmp_path / 'run' / 'trajectories.json').read_text())['actors']
+    ego = {round(row[0], 3): row for row in traj['ego']}
+    for aid, near in (('jw-jaywalker-1', 35.0), ('cow-cattle-1', 35.0)):
+        first = traj[aid][0]
+        e = ego[round(first[0], 3)]
+        assert math.hypot(first[1], first[2]) > 1.0 and math.hypot(first[1] - e[1], first[2] - e[2]) < near, aid
+
+
 def test_scenario_runs_with_rules_repeat_bit_for_bit(project, tmp_path):
     rules = [T.new_rule('when actor.nearest_m < 25 -> spawn cattle distance=30', 'cow'),
              T.new_rule('when ego.speed > 20 -> marker fast', 'fast', repeat='every'),

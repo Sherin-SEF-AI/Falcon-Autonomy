@@ -419,6 +419,7 @@ class Director:
                                 'heading': a.get('heading', 'lane'), 'prop': prop, 's': 0.0,
                                 'top': (float(top) / 3.6) if top is not None else None,
                                 'max_accel': spec.get('accel_mps2'), 'class': cls}
+        self.actors[a['id']]['spawn_pose'] = (x, y, yaw)      # where it was placed (add_actor: before any tick)
         self.traj[a['id']] = []
         return self.actors[a['id']]
 
@@ -442,16 +443,19 @@ class Director:
             self.rng = keep
         actor = st['actor']
         if self.started:
+            # the pose it was placed at: a real server reports a just-spawned actor at the origin until the next tick
+            # (measured on CARLA 0.9.16: get_transform() gave (0, 0, 0)), so never read it back here
+            x, y, yaw = st['spawn_pose']
             if st['prop']:
-                tr = actor.get_transform()
                 px = self.w.proxies[actor.id]
-                self.kin[actor.id] = [tr.location.x, tr.location.y, px['z'], tr.rotation.yaw - px['yaw_offset'],
-                                      st['speed']]
+                self.kin[actor.id] = [x, y, px['z'], yaw, st['speed']]
             elif self.kinematic:
-                self.kin_init(actor)
-                self.kin[actor.id][4] = st['speed']
+                actor.set_simulate_physics(False)
+                wp = self.map.get_waypoint(self.carla.Location(x=x, y=y, z=0.0))
+                z = wp.transform.location.z if wp is not None else 0.0
+                self.kin[actor.id] = [x, y, z, yaw, st['speed']]
             elif st['speed'] > 0 and not st['walker']:
-                y = math.radians(actor.get_transform().rotation.yaw)
+                y = math.radians(yaw)
                 actor.set_target_velocity(self.carla.Vector3D(st['speed'] * math.cos(y), st['speed'] * math.sin(y),
                                                               0))
         self.added.append({'id': a['id'], 'kind': a['kind'], 't': round(float(t), 4), 'carla_id': int(actor.id)})
