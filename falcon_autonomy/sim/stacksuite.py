@@ -16,6 +16,8 @@ finish is run again.
     falcon stack bridge --port P [--native] [--domain D]     print the bridge node's command
     falcon stack run PROJECT [--scenario S --seed N] [--driver D] [--test-stack] [--out DIR]   one run
     falcon stack suite new NAME --out SUITE.json [--driver D] [--scenarios a,b] [--seeds 0,1,2] [--test-stack]
+    (run and suite new also take --fault SENSOR:KIND:ONSET[:K=V,...] --mrm --degraded-mode: timed sensor faults and
+    the minimal-risk-manoeuvre check, core.mrm)
     falcon stack suite run PROJECT SUITE.json [--dir DIR]                         a batch (resumable)
     falcon stack replay RUN [--into DIR]        re-run a run with the controls it recorded, compare the trajectories
     falcon stack odd new --out ODD.json         an ODD description to edit (core.safetycase)
@@ -59,11 +61,14 @@ def fill(argv: list, values: dict) -> list:
     return out
 
 
-def test_stack_launch(control: str = 'autoware', speed_mps: float = 8.0, udp_only: bool = True) -> list:
-    """The launch commands of Falcon's test stack: the bridge node and the follower, each in the bridge image."""
+def test_stack_launch(control: str = 'autoware', speed_mps: float = 8.0, udp_only: bool = True,
+                      degraded_mode: bool = False) -> list:
+    """The launch commands of Falcon's test stack: the bridge node and the follower, each in the bridge image
+    (degraded_mode: the follower detects sensor failures and stops in its lane)."""
     from ..core import stackbridge as SB
     b = SB.bridge_command('{port}', name='{name}-bridge', domain_id=0, udp_only=udp_only)
-    f = SB.follower_command(control, speed_mps, name='{name}-follower', domain_id=0, udp_only=udp_only)
+    f = SB.follower_command(control, speed_mps, name='{name}-follower', domain_id=0, udp_only=udp_only,
+                            extra=['--degraded-mode'] if degraded_mode else ())
     for argv in (b, f):
         argv[argv.index('ROS_DOMAIN_ID=0')] = 'ROS_DOMAIN_ID={domain}'
     return [b, f]
@@ -172,6 +177,7 @@ class SuiteRunner:
         summ.update(name=doc['name'], driver=st['driver'], planned=len(plan),
                     finished=sum(1 for r in rows if r.get('status') == 'ok'))
         summ['rules'] = ST.rule_summary(rows, doc.get('rules') or None)
+        summ['mrm'] = ST.mrm_summary(rows)
         write_json(os.path.join(self.dir, 'results.json'), summ)
         ST.write_table(rows, os.path.join(self.dir, 'results.csv'))
         write_json(os.path.join(self.dir, 'run.json'), {
@@ -212,6 +218,35 @@ def compare_trajectories(a_dir: str, b_dir: str) -> dict:
 
 
 # ------------------------------------------------------------------------------------------------------------- CLI
+def fault_args(ap):
+    """Timed sensor faults, the MRM check and the test stack's degraded mode (docs/stack-testing.md)."""
+    ap.add_argument('--fault', action='append', default=[], metavar='SENSOR:KIND:ONSET[:KEY=VALUE,...]',
+                    help='a timed sensor fault, e.g. lid:sector_loss:3:from_deg=-60,to_deg=60 or imu:dropout:2 '
+                         '(core.faults.TIMED; for=S its length)')
+    ap.add_argument('--mrm', action='store_true', help='judge the minimal-risk manoeuvre after the first fault')
+    ap.add_argument('--degraded-mode', action='store_true',
+                    help='the test stack (follower, or the ROS 2 follower with --test-stack) detects sensor failures '
+                         'and stops in its lane')
+
+
+def parse_fault(text: str) -> dict:
+    """'lid:sector_loss:3:from_deg=-60,to_deg=60,for=5' -> {sensor, kind, onset_s, from_deg, to_deg, for_s}."""
+    parts = text.split(':', 3)
+    if len(parts) < 3:
+        raise ValueError(f'--fault {text!r}: SENSOR:KIND:ONSET[:KEY=VALUE,...]')
+    f = {'sensor': parts[0], 'kind': parts[1], 'onset_s': float(parts[2])}
+    for kv in (parts[3].split(',') if len(parts) > 3 and parts[3] else []):
+        k, eq, v = kv.partition('=')
+        if not eq:
+            raise ValueError(f'--fault {text!r}: {kv!r} is not KEY=VALUE')
+        try:
+            val = float(v)
+        except ValueError:
+            val = v
+        f['for_s' if k == 'for' else k] = val
+    return f
+
+
 def main_stack(argv) -> int:
     import argparse
     from ..core import stackbridge as SB
@@ -247,6 +282,7 @@ def main_stack(argv) -> int:
     r.add_argument('--dds-shm', action='store_true', help='the test stack on Fast DDS\'s default transports (shared '
                                                           'memory and UDP) instead of UDP only')
     r.add_argument('--out', default='')
+    fault_args(r)
     s = sub.add_parser('suite')
     s.add_argument('action', choices=('new', 'run'))
     s.add_argument('args', nargs='+', help='new: NAME; run: PROJECT SUITE.json')
@@ -258,6 +294,7 @@ def main_stack(argv) -> int:
     s.add_argument('--test-stack', action='store_true')
     s.add_argument('--control', default='autoware', choices=sorted(SB.CONTROL_TYPES))
     s.add_argument('--speed', type=float, default=8.0)
+    fault_args(s)
     rp = sub.add_parser('replay')
     rp.add_argument('run')
     rp.add_argument('--into', default='')
@@ -340,10 +377,18 @@ def _dispatch(a) -> int:
             raise ValueError('falcon stack suite new NAME --out SUITE.json')
         doc = ST.new_suite(a.args[0], a.driver, [x for x in a.scenarios.split(',') if x],
                            [int(x) for x in a.seeds.split(',') if x])
+        faults = [parse_fault(x) for x in a.fault]
+        for e in doc['entries']:
+            if faults:
+                e['faults'] = faults
+            if a.mrm:
+                e['mrm'] = True
+        if a.degraded_mode and a.driver == 'follower':
+            doc['degraded_mode'] = True
         if a.driver == 'ros2':
             doc['stack']['bridge'] = {'control': a.control}
             if a.test_stack:
-                doc['stack']['launch'] = test_stack_launch(a.control, a.speed)
+                doc['stack']['launch'] = test_stack_launch(a.control, a.speed, degraded_mode=a.degraded_mode)
         write_json(a.out, doc)
         print(a.out)
         return 0
@@ -381,10 +426,12 @@ def _dispatch(a) -> int:
                                   motion=a.motion, bridge={'control': a.control, 'port': a.port,
                                                            'deadline_s': a.deadline},
                                   render_budget_mpx=float(svc.settings.get('render_budget_mpx')),
-                                  workspace=proj.workspace)
+                                  workspace=proj.workspace, faults=[parse_fault(x) for x in a.fault] or None,
+                                  mrm=a.mrm, degraded_mode=a.degraded_mode and a.driver == 'follower')
             launch = []
             if a.driver == 'ros2' and a.test_stack:
-                launch = test_stack_launch(a.control, a.speed, udp_only=not a.dds_shm)
+                launch = test_stack_launch(a.control, a.speed, udp_only=not a.dds_shm,
+                                           degraded_mode=a.degraded_mode)
             elif a.driver == 'ros2':
                 if not a.port:
                     raise ValueError('give --port P to run with your own bridge node and stack (or --test-stack)')

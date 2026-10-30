@@ -102,12 +102,16 @@ def hil_config(project, world_id: str, rig_id: str, out_dir: str, port: int, tm_
                lidar_clock: dict | None = None, sim_device: dict | None = None, stack: dict | None = None,
                sync_timeout_ms: float | None = None, control_timeout_s: float = 0.5,
                traffic_vehicles: int | None = None, gateway_python: str = '', warmup_steps: int = 10,
-               workspace: str = '', host: str = '127.0.0.1', name: str = '') -> dict:
+               workspace: str = '', host: str = '127.0.0.1', name: str = '', faults: list | None = None,
+               mrm=None) -> dict:
     """A session worker's config (falcon.hil_config/1). The world, its weather and traffic come from the project as
     for a drive (core.drive.drive_config); the rig's first pinhole camera and first lidar are streamed (a rig with
     no lidar gets DEFAULT_LIDAR). seconds 0: until stopped. device 'local' runs the device agent on this machine (a
     simulated device; sim_device: {clock_offset_ms, clock_drift_ppm, decoder}); 'remote' connects to the agent at
-    the address in the user's settings, which the config never holds (the worker gets it from its environment)."""
+    the address in the user's settings, which the config never holds (the worker gets it from its environment).
+    faults: timed sensor faults on the streamed camera or lidar [{sensor: 'camera' | 'lidar' | its id, kind,
+    onset_s, for_s, …}] (core.faults.TIMED; seconds from the session's first step); mrm: judge the minimal-risk
+    manoeuvre after the first onset (core.mrm; True or its PARAMS overridden)."""
     import sys
     from .drive import drive_config
     if camera not in CAMERA_TRANSPORTS:
@@ -164,6 +168,18 @@ def hil_config(project, world_id: str, rig_id: str, out_dir: str, port: int, tm_
         'notes': notes,
         'project': dict(d['project']),
     }
+    if faults:                                            # on the streamed camera and lidar (workers.hil)
+        from .mrm import validate_faults
+        fl = [dict(f, sensor={'camera': cam['id'], 'lidar': lid['id']}.get(f.get('sensor'), f.get('sensor')))
+              for f in faults]
+        bad = validate_faults(fl, {'sensors': [cam, lid]})
+        if bad:
+            raise ValueError('; '.join(bad))
+        cfg['faults'] = fl
+    if mrm:
+        if not faults:
+            raise ValueError('an MRM check needs a timed fault to judge it from')
+        cfg['mrm'] = dict(mrm) if isinstance(mrm, dict) else {}
     from .drive import world_keys
     cfg.update(world_keys(d))                             # road limits, traffic kept, the city, vehicle lights
     from .oddmonitor import CFG_KEYS

@@ -165,3 +165,51 @@ def test_closed_loop_over_dds(project, tmp_path, control):
     assert line, logs[1][-3000:]
     summary = json.loads(line)['follower']
     assert summary['steps'] >= n and summary['braking'] > 0
+
+
+@pytest.mark.parametrize('degraded', [False, True], ids=['plain', 'degraded'])
+def test_the_follower_degraded_mode_over_dds(project, tmp_path, degraded):
+    """The ROS 2 follower in its container, over real DDS: the lidar goes silent at 3 s; with --degraded-mode it
+    stops in its lane and the minimal-risk-manoeuvre check passes, without it it drives on and the check fails."""
+    sys.path.insert(0, os.path.join(ROOT, 'tests'))
+    from test_stack import stack_rig
+    stack_rig(project)
+    port = _free_port()
+    domain = 100 + int(uuid.uuid4().int % 100)
+    cfg = ST.stack_config(project, 'world-town10', 'rig-default', str(tmp_path / 'run'), 2310, 8310, 'ros2',
+                          SC.builtin('lead_brake'), seed=3,
+                          values={'speed': 30.0, 'gap': 30.0, 'decel': 3.0, 'brake_at': 100.0},
+                          bridge={'port': port, 'control': 'autoware', 'deadline_s': 2.0, 'start_wait_s': 60.0,
+                                  'connect_wait_s': 90.0},
+                          faults=[{'sensor': 'lid', 'kind': 'dropout', 'onset_s': 3.0}], mrm=True)
+    os.makedirs(cfg['out'])
+    p = os.path.join(cfg['out'], 'stack.json')
+    with open(p, 'w') as fh:
+        json.dump(cfg, fh)
+    tag = uuid.uuid4().hex[:8]
+    names = [f'falcon-test-{tag}-bridge', f'falcon-test-{tag}-follower']
+    bridge = SB.bridge_command(port, name=names[0], domain_id=domain)
+    follower = SB.follower_command('autoware', 30.0 / 3.6, name=names[1], domain_id=domain,
+                                   extra=['--degraded-mode'] if degraded else ())
+    procs = []
+    try:
+        worker = subprocess.Popen([sys.executable, '-m', 'falcon_autonomy.workers', 'stack', p],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=worker_env())
+        for argv in (bridge, follower):
+            procs.append(subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
+        out, err = worker.communicate(timeout=600)
+        time.sleep(1.0)
+    finally:
+        for n in names:
+            subprocess.run(['docker', 'stop', '-t', '5', n], capture_output=True, timeout=60)
+        logs = [pr.communicate(timeout=60)[0] for pr in procs]
+        for n in names:
+            subprocess.run(['docker', 'rm', '-f', n], capture_output=True, timeout=60)
+    assert worker.returncode == P.OK, err[-3000:] + '\n'.join(logs)
+    run = json.load(open(os.path.join(cfg['out'], 'run.json')))
+    assert run['bridge']['missed'] == 0, run['bridge']
+    assert run['mrm']['passed'] is degraded, (run['mrm']['checks'], logs[1][-2000:])
+    summary = json.loads([x for x in logs[1].splitlines() if x.startswith('{"follower"')][-1])['follower']
+    assert ('degraded' in summary) is degraded
+    if degraded:
+        assert summary['degraded']['why'].startswith('lidar') and summary['degraded']['t'] >= 3.0

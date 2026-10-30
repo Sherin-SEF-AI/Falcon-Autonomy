@@ -20,6 +20,17 @@ Kinds (FAULTS):
 * compression     {quality} (1–100) — JPEG at that quality.
 * motion_blur     {intensity, max_distortion} — CARLA's own camera attributes (motion_blur_intensity,
                     motion_blur_max_distortion), set at spawn.
+* occlusion       {cover} (0–0.9) — mud on the lens: one opaque, dark, soft-edged patch covering that share of the
+                    image at a seeded place (camera).
+* sector_loss     {from_deg, to_deg} — a lidar returns nothing in that azimuth sector of its own frame (degrees, CARLA's
+                    x forward = 0, clockwise seen from above = y right positive; from > to wraps through 180).
+* packet_drop     {rate} (0–1) — a lidar loses that share of its 1° azimuth packets, seeded per sweep.
+* multipath       {jump_m, period_s} — GNSS fixes offset by jump_m metres in a seeded direction, a new direction (and a
+                    new offset) every period_s seconds (multipath jumps; heuristic model).
+* dropout         {} — a sensor delivers nothing (an IMU or GNSS receiver, a camera, a lidar going silent).
+
+Where they act: the image faults in recorded drives and stack runs; sector_loss, packet_drop, multipath and dropout on
+the data a stack (workers.stack) and the hardware in the loop (workers.hil) receive — not in a recorded drive's files.
 
 Timed onset. Any fault but the spawn-time ones (mount, clock, motion blur) may carry "onset_s" and "until_s"
 (simulation seconds from the run's first recorded frame): it acts only in [onset_s, until_s) — a sensor that fails
@@ -36,10 +47,15 @@ import math
 import numpy as np
 
 FAULTS = ('mount_rotation', 'mount_translation', 'clock_offset', 'drop', 'freeze', 'noise', 'dirt', 'rain', 'glare',
-          'rolling_shutter', 'compression', 'motion_blur')
-IMAGE_FAULTS = ('noise', 'dirt', 'rain', 'glare', 'rolling_shutter', 'compression')
+          'rolling_shutter', 'compression', 'motion_blur', 'occlusion', 'sector_loss', 'packet_drop', 'multipath',
+          'dropout')
+IMAGE_FAULTS = ('noise', 'dirt', 'rain', 'glare', 'rolling_shutter', 'compression', 'occlusion')
+LIDAR_ONLY = ('sector_loss', 'packet_drop')
+GNSS_ONLY = ('multipath',)
+STREAM_FAULTS = ('sector_loss', 'packet_drop', 'multipath', 'dropout')   # act on a stack's or a device's data only
 SPAWN_TIME = ('mount_rotation', 'mount_translation', 'clock_offset', 'motion_blur')
-TIMED = ('drop', 'freeze', 'noise', 'dirt', 'rain', 'glare', 'rolling_shutter', 'compression')
+TIMED = ('drop', 'freeze', 'noise', 'dirt', 'rain', 'glare', 'rolling_shutter', 'compression', 'occlusion',
+         'sector_loss', 'packet_drop', 'multipath', 'dropout')
 CAMERA_ONLY = IMAGE_FAULTS + ('motion_blur',)
 CAMERAS = ('camera.pinhole', 'camera.fisheye')
 LIMITS = {'deg': 30.0, 'm': 2.0, 'ms': 1000.0, 'rate': 0.9, 'cover': 0.5, 'sigma': 50.0, 'readout_ms': 100.0}
@@ -53,13 +69,22 @@ def validate(faults: list) -> list:
             out.append(f'unknown fault {k!r}')
             continue
         timed = 'onset_s' in f or 'until_s' in f        # a timed drop may lose every frame (the sensor dies)
-        for key, lim in (('rate', 1.0 if timed else LIMITS['rate']), ('cover', LIMITS['cover']),
+        for key, lim in (('rate', 1.0 if timed or k == 'packet_drop' else LIMITS['rate']),
+                         ('cover', 0.9 if k == 'occlusion' else LIMITS['cover']),
                          ('sigma', LIMITS['sigma']), ('ms', LIMITS['ms']), ('readout_ms', LIMITS['readout_ms'])):
             if key in f and not 0 <= abs(float(f[key])) <= lim:
                 out.append(f'{k}: {key} {f[key]} outside 0–{lim}')
         for key, lim in (('deg', LIMITS['deg']), ('m', LIMITS['m'])):
             if key in f and (len(f[key]) != 3 or max(abs(float(v)) for v in f[key]) > lim):
                 out.append(f'{k}: {key} needs three values within ±{lim}')
+        if k == 'occlusion' and not 0 < float(f.get('cover', 0.3)) <= 0.9:
+            out.append('occlusion: cover must be in (0, 0.9]')
+        if k == 'sector_loss':
+            for key in ('from_deg', 'to_deg'):
+                if not isinstance(f.get(key), (int, float)) or not -360 <= f[key] <= 360:
+                    out.append(f'sector_loss: {key} (degrees, −360…360) is needed')
+        if k == 'multipath' and (not 0 < float(f.get('jump_m', 5.0)) <= 100 or float(f.get('period_s', 2.0)) <= 0):
+            out.append('multipath: jump_m in (0, 100] m and period_s > 0')
         if k == 'compression' and not 1 <= int(f.get('quality', 0)) <= 100:
             out.append('compression: quality must be 1–100')
         if ('onset_s' in f or 'until_s' in f) and k in SPAWN_TIME:
@@ -77,6 +102,10 @@ def applies_to(kind: str, sensor_type: str) -> bool:
     """Whether a fault kind can act on a sensor of this type (image faults: cameras only)."""
     if kind in CAMERA_ONLY:
         return sensor_type in CAMERAS
+    if kind in LIDAR_ONLY:
+        return sensor_type == 'lidar'
+    if kind in GNSS_ONLY:
+        return sensor_type == 'gnss'
     return True
 
 
@@ -112,7 +141,9 @@ def delivery(faults: list, step: int, sim_t: float, rng) -> str:
     for f in faults or []:
         if not active(f, sim_t):
             continue                          # a timed fault before its onset or after its end: no draw either
-        if f.get('kind') == 'drop' and rng.random() < float(f.get('rate', 0.0)):
+        if f.get('kind') == 'dropout':
+            d = 'drop'                        # the sensor is silent (no draw: nothing random about it)
+        elif f.get('kind') == 'drop' and rng.random() < float(f.get('rate', 0.0)):
             d = 'drop'
         elif f.get('kind') == 'freeze' and d == 'ok' and (
                 ('from_s' not in f and 'to_s' not in f and ('onset_s' in f or 'until_s' in f))
@@ -125,7 +156,7 @@ def apply_image(img: np.ndarray, faults: list, rng, K=None, omega=None) -> tuple
     """The image faults in a fixed order (optics, then shutter, then sensor noise, then compression). img: H × W × 3
     uint8 BGR. K: the 3 × 3 intrinsics (rolling shutter); omega: the camera's angular velocity, rad/s, in its optical
     frame (x right, y down, z forward). Returns (image, [kinds applied])."""
-    order = ('dirt', 'rain', 'glare', 'rolling_shutter', 'noise', 'compression')
+    order = ('occlusion', 'dirt', 'rain', 'glare', 'rolling_shutter', 'noise', 'compression')
     by = {f['kind']: f for f in faults or [] if f.get('kind') in IMAGE_FAULTS}
     done = []
     out = img
@@ -133,7 +164,9 @@ def apply_image(img: np.ndarray, faults: list, rng, K=None, omega=None) -> tuple
         if k not in by:
             continue
         f = by[k]
-        if k == 'dirt':
+        if k == 'occlusion':
+            out = occlusion(out, float(f.get('cover', 0.3)), rng)
+        elif k == 'dirt':
             out = dirt(out, float(f.get('cover', 0.1)), rng)
         elif k == 'rain':
             out = rain(out, float(f.get('cover', 0.1)), rng)
@@ -248,3 +281,68 @@ def compression(img, quality):
     import cv2
     ok, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
     return cv2.imdecode(buf, cv2.IMREAD_COLOR) if ok else img
+
+
+def occlusion(img, cover, rng):
+    """Mud on the lens: one dark, opaque ellipse with a soft edge covering about `cover` of the image, centred at a
+    seeded place in the image's middle half."""
+    import cv2
+    h, w = img.shape[:2]
+    m = np.zeros((h, w), np.float32)
+    ar = rng.uniform(0.6, 1.6)                                   # its aspect ratio
+    area = cover * h * w
+    a = math.sqrt(area * ar / math.pi)
+    b = area / (math.pi * a)
+    c = (int(rng.uniform(0.25, 0.75) * w), int(rng.uniform(0.25, 0.75) * h))
+    cv2.ellipse(m, c, (max(int(a), 1), max(int(b), 1)), float(rng.uniform(0, 180)), 0, 360, 1.0, -1)
+    m = cv2.GaussianBlur(m, (0, 0), max(min(h, w) * 0.01, 1.0))
+    tint = np.array([22.0, 30.0, 38.0])                          # mud, BGR
+    out = img.astype(np.float32) * (1 - m[..., None]) + tint * m[..., None]
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def active_of(faults: list, sim_t: float, kinds=None) -> list:
+    """The faults acting at sim_t (of the given kinds)."""
+    return [f for f in faults or [] if active(f, sim_t) and (kinds is None or f.get('kind') in kinds)]
+
+
+def silenced(faults: list, sim_t: float) -> bool:
+    """Whether a dropout (or a total drop) silences the sensor at sim_t."""
+    return any(f.get('kind') == 'dropout' or (f.get('kind') == 'drop' and float(f.get('rate', 0.0)) >= 1.0)
+               for f in active_of(faults, sim_t))
+
+
+def apply_points(points: np.ndarray, faults: list, sim_t: float, rng) -> np.ndarray:
+    """A lidar's points (N × ≥ 3 in its frame, CARLA axes) with the sector_loss and packet_drop faults acting at sim_t
+    applied (packet_drop draws one 360-value mask from rng per call: one per sweep)."""
+    P = np.asarray(points)
+    act = active_of(faults, sim_t, ('sector_loss', 'packet_drop'))
+    if not act or not len(P):
+        return P
+    az = (np.degrees(np.arctan2(P[:, 1], P[:, 0])) + 360.0) % 360.0
+    keep = np.ones(len(P), bool)
+    for f in act:
+        if f['kind'] == 'sector_loss':
+            a0, a1 = float(f['from_deg']) % 360.0, float(f['to_deg']) % 360.0
+            inside = (az >= a0) & (az < a1) if a0 <= a1 else (az >= a0) | (az < a1)
+            keep &= ~inside
+        else:
+            lost = rng.random(360) < float(f.get('rate', 0.5))
+            keep &= ~lost[np.floor(az).astype(int) % 360]
+    return P[keep]
+
+
+def gnss_offset(faults: list, sim_t: float, seed: int, sid: str = '') -> tuple:
+    """(north, east) metres a multipath fault adds to a fix at sim_t: jump_m in a direction drawn per period from a
+    generator seeded by (seed, sensor, period index) — the same at every call for the same time."""
+    import zlib
+    n = e = 0.0
+    for f in active_of(faults, sim_t, ('multipath',)):
+        k = int(math.floor((sim_t - float(f.get('onset_s', 0.0))) / float(f.get('period_s', 2.0))))
+        g = np.random.default_rng([int(seed), zlib.crc32(sid.encode()), k])
+        ang = g.uniform(0, 2 * math.pi)
+        r = float(f.get('jump_m', 5.0)) * g.uniform(0.5, 1.0)
+        n += r * math.cos(ang)
+        e += r * math.sin(ang)
+    return n, e
+

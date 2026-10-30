@@ -396,6 +396,9 @@ class RuleRunner:
         from ..core import faults as F
         if not F.applies_to(f['kind'], sensors[sid]['type']):
             raise Failed(f'a {f["kind"]} fault cannot act on {sid} (a {sensors[sid]["type"]})')
+        if f['kind'] in F.STREAM_FAULTS and f['kind'] != 'dropout':
+            raise Failed(f'a {f["kind"]} fault acts on the data a stack or a device receives (stack tests, hardware '
+                         'in the loop), not on a recorded drive\'s files')
         # from the next frame on: this frame is already recorded
         onset = t + 1.0 / float(self.cfg.get('fps', 20.0))
         got = self.faults.start(sid, f, onset, a.get('for_s'))

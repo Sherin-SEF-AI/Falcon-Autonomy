@@ -148,6 +148,7 @@ class Director:
         self.kin = {}                     # actor id -> [x, y, z, yaw_deg, v] when kinematic
         self.ego_control = None           # the control drive_ego applied for the coming tick (None: not driving it)
         self.external = set()             # actor ids driven from outside (workers/adversary.py's learned traffic)
+        self.ego_filter = None            # f(control, observation) -> control: a stack's degraded mode (workers.stack)
         self.attached_only = False        # attach(): a run without a scenario; only actors added during it
         self.added = []                   # actors added during the run (trigger rules): {id, kind, t, carla_id}
         self.extra_timeline = []          # timeline entries added during the run
@@ -762,6 +763,8 @@ class Director:
                'ego': {'x': tr.location.x, 'y': tr.location.y, 'yaw': tr.rotation.yaw,
                        'speed_mps': math.hypot(v.x, v.y)}, 'route': route, 'lead': lead}
         u = self.policy.act(obs)
+        if self.ego_filter is not None:
+            u = self.ego_filter(dict(u), obs)
         self.ego_control = dict(u)
         if self.kinematic:
             self.kin_step(self.ego, u)

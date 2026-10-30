@@ -20,6 +20,12 @@ per step:
 3. sleep until the step's wall-clock time; a step that ran late is counted and pacing restarts from now (never a burst
    to catch up), so the real-time factor falls below 1 rather than steps being skipped.
 
+Timed sensor faults (cfg "faults", core.hil.hil_config) act on what is streamed, from their onset (seconds from the
+first step): the camera's image faults (occlusion, dirt, rain, noise …) on its pixels, a dropped-out camera sends black
+frames (the stream keeps its rate), the lidar's sector_loss, packet_drop and dropout on its points (a dead lidar sends
+empty sweeps); latency.jsonl marks the frames ("faults"). With "mrm" the session is judged from the first onset by
+core.mrm.verify over the recorded speeds (no lane offsets: a free drive has no route) — run.json "mrm".
+
 At the end: the gateway's and the device's files (clock.jsonl, device.json, gateway.json), latency.jsonl (one record
 per frame with every stamp, core.hil's field names), the summary in run.json ("hil") and the report (report.html,
 waterfall.png). A cancelled session keeps what it measured: a latency record is never half a dataset.
@@ -58,6 +64,9 @@ class Hil(Worker):
         self.cfg = cfg
         self.cameras = scene.Cameras(self)
         self.stop_requested = False
+        self.mrm_rows = []                # (sim_t from the first step, speed) for core.mrm
+        self.col_times = []               # the ego's contacts, seconds from the first step (none recorded: no
+                                          # collision sensor in a session)
         self.gw = None                     # the gateway process
         self.gs = None                     # our end of the socket pair
         self.glock = threading.Lock()
@@ -222,6 +231,12 @@ class Hil(Worker):
         lclk = EmulatedClock(**(clocks.get('lidar') or {}), seed=seed * 2 + 2)
         hold = carla.VehicleControl(throttle=0.0, brake=1.0, hand_brake=False)
         ego.apply_control(hold)
+        from ..core import faults as F
+        from ..core.mrm import as_fault_lists
+        import zlib
+        flt = as_fault_lists(cfg.get('faults'))
+        frng = {sid: np.random.default_rng([seed, zlib.crc32(sid.encode())]) for sid in flt}
+        sim_t0 = None
         self.phase('run')
         for _ in range(int(cfg.get('warmup_steps', 10))):
             self.check()
@@ -290,15 +305,24 @@ class Hil(Worker):
             v = ego.get_velocity()
             speed = float((v.x * v.x + v.y * v.y + v.z * v.z) ** 0.5)
             cam_hw, lid_hw = cclk.stamp(sim_t), lclk.stamp(sim_t)
-            npts = memoryview(lm.raw_data).nbytes // 16
+            cb, lb = img.raw_data, lm.raw_data
+            sim_t0 = sim_t if sim_t0 is None else sim_t0
+            t_rel = sim_t - sim_t0
+            acting = {}
+            if flt:                                      # the timed faults on what is streamed (module doc)
+                cb, lb, acting = self.fault_streams(F, flt, frng, cam_s['id'], lid_s['id'], img, cb, lb, t_rel)
+            npts = memoryview(lb).nbytes // 16
             rec = {'frame': int(frame), 'sim_t': round(sim_t, 6), 'speed_mps': round(speed, 4), 'cam_hw_t': cam_hw,
                    'lidar_hw_t': lid_hw, 'tick_start': t0, 'tick_end': t1, 'ready': t_ready, 'lidar_points': npts,
                    'status': 'missing'}
             if self.watch is not None:
                 rec['odd'] = self.watch.step(sim_t, ego, speed)
+            if acting:
+                rec['faults'] = acting
+            if cfg.get('mrm') is not None:
+                self.mrm_rows.append({'sim_t': round(t_rel, 6), 'speed_mps': speed})
             with self.rlock:
                 self.records[int(frame)] = rec
-            cb, lb = img.raw_data, lm.raw_data
             hdr = {'t': 'frame', 'frame': int(frame), 'sim_t': round(sim_t, 6), 'speed_mps': round(speed, 4),
                    'cam': {'w': img.width, 'h': img.height, 'hw_t': cam_hw, 'bytes': memoryview(cb).nbytes},
                    'lidar': {'n': npts, 'hw_t': lid_hw, 'bytes': memoryview(lb).nbytes}}
@@ -341,7 +365,34 @@ class Hil(Worker):
         ego.apply_control(hold)
         self.emit.progress(0.96, 'collecting the device\'s numbers', force=True)
         self.stop_gateway()
+        if cfg.get('mrm') is not None:                   # the minimal-risk manoeuvre after the first fault
+            from ..core import mrm as M
+            self.run['mrm'] = M.verify(self.mrm_rows, M.first_onset(cfg.get('faults')), cfg['mrm'],
+                                       self.col_times)
         return self.finish_session(n, wall, period)
+
+    def fault_streams(self, F, flt, frng, cid, lid, img, cb, lb, t):
+        """(camera bytes, lidar bytes, {sensor: [kinds acting]}) with the timed faults acting at t."""
+        import numpy as np
+        acting = {}
+        cf = flt.get(cid) or []
+        if cf and F.active_of(cf, t):
+            acting[cid] = [f['kind'] for f in F.active_of(cf, t)]
+            arr = np.frombuffer(cb, np.uint8).reshape(img.height, img.width, 4).copy()
+            if F.silenced(cf, t):
+                arr[:, :, :3] = 0                          # a dead camera: black frames, the stream keeps its rate
+            else:
+                act = F.active_of(cf, t, F.IMAGE_FAULTS)
+                if act:
+                    arr[:, :, :3], _ = F.apply_image(np.ascontiguousarray(arr[:, :, :3]), act, frng[cid])
+            cb = arr.tobytes()
+        lf = flt.get(lid) or []
+        if lf and F.active_of(lf, t):
+            acting[lid] = [f['kind'] for f in F.active_of(lf, t)]
+            pts = np.frombuffer(lb, np.float32).reshape(-1, 4)
+            pts = pts[:0] if F.silenced(lf, t) else F.apply_points(pts, lf, t, frng[lid])
+            lb = np.ascontiguousarray(pts, np.float32).tobytes()
+        return cb, lb, acting
 
     def merge_control(self, r: dict, c: dict):
         r.update(ctrl_rx=c.get('ctrl_rx'), ctrl_worker=c.get('ctrl_worker'), missing_inputs=c.get('missing') or [],
@@ -438,7 +489,8 @@ class Hil(Worker):
             files = {}
             self.note(f'the report could not be written: {type(e).__name__}: {e}')
         e2e = summary['measures']['e2e']
-        return {'performance': perf, 'hil': summary, 'report': files,
+        return {'performance': perf, 'hil': summary, 'report': files, **({'mrm': self.run['mrm']}
+                                                                         if self.run.get('mrm') else {}),
                 'summary': {'steps': n, 'realtime_factor': perf['realtime_factor'], 'e2e_median_ms': e2e.get('median'),
                             'e2e_p95_ms': e2e.get('p95'), 'on_time': summary['deadline']['on_time'],
                             'deadline_misses': summary['deadline']['deadline_misses'],

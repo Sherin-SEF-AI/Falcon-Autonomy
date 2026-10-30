@@ -93,7 +93,9 @@ A signal that cannot be read makes its comparison false.
 `weather [Preset] field=value …` changes the weather (and with it the weather signals, the sensor physics and, at
 night, the vehicle lights). `fault <sensor> <kind> key=value … [for=s]` starts a sensor fault from the next frame — a
 timed one of known size ([faults](index.md#rigs): `drop` (default rate 1: the sensor dies), `freeze`,
-`noise`, `dirt`, `rain`, `glare`, `rolling_shutter`, `compression`; mount, clock and motion-blur faults are set at
+`noise`, `dirt`, `rain`, `glare`, `rolling_shutter`, `compression`, `occlusion`, `dropout`; the lidar and GNSS faults
+of [stack tests](stack-testing.md#sensor-faults-mid-run-and-the-minimal-risk-manoeuvre) act on a stack's data, not a
+recording, and are refused here; mount, clock and motion-blur faults are set at
 spawn and refused). `marker [text]` only marks the run.
 
 **Repeat.** `once` (the default) fires the first tick the condition holds. `every` fires each tick the condition

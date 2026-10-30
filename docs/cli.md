@@ -59,7 +59,7 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon stack image` | builds the bridge image `falcon-ros2-bridge:humble` (from the official `ros:humble-ros-base`) with Docker |
 | `falcon stack bridge --port P [--native] [--domain D]` | prints the bridge node's command (in the image, or `--native` on a ROS 2 machine) |
 | `falcon stack run PROJECT [--scenario S --seed N] [--driver ros2\|follower\|autopilot] [--control C] [--test-stack] [--port P] [--deadline S] [--motion M] [--out DIR]` | one stack run: the ego driven through the bridge (or a baseline), closed loop, deadlines recorded |
-| `falcon stack suite new NAME --out FILE [--driver D] [--scenarios a,b] [--seeds 0,1,2] [--test-stack]` | writes a suite (scenarios × seeds, pass/fail criteria) to edit |
+| `falcon stack suite new NAME --out FILE [--driver D] [--scenarios a,b] [--seeds 0,1,2] [--test-stack] [--fault SENSOR:KIND:ONSET[:K=V,…]]… [--mrm] [--degraded-mode]` | writes a suite (scenarios × seeds, pass/fail criteria; timed sensor faults, the minimal-risk-manoeuvre check and the test stack's degraded mode — `falcon stack run` takes them too) to edit |
 | `falcon stack suite run PROJECT SUITE.json [--dir DIR]` | runs a suite (resumable): results.jsonl, results.json with Wilson intervals, results.csv, run.json |
 | `falcon stack replay RUN [--into DIR]` | re-runs a stack run with the controls it recorded and compares the trajectories |
 | `falcon stack odd new --out FILE` · `falcon stack report SUITE_DIR --odd ODD.json --out DIR [--study DIR]...` | an example ODD; the safety-case report (HTML + JSON) of a suite against it |
