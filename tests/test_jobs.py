@@ -259,3 +259,53 @@ def test_a_registered_falcon_server_is_shared_not_restarted(settings, tmp_path):
     assert svc._before_start(job) == ''
     os.remove(S.registry_path(port))
     lst.close()
+
+
+def test_a_gpu_job_stops_the_idle_server_and_only_falcons_own(settings, tmp_path, monkeypatch):
+    """An idle 0.9.16 server holds 5.9 of 16 GB of video memory (measured): a GPU job stops Falcon's own server
+    first. Not with the setting off, not for a CARLA job, never a server the user chose, and not one whose CARLA
+    lock another process holds (its job runs on it)."""
+    from falcon_autonomy.core.jobs import JobQueue, SubprocessLauncher
+    from falcon_autonomy.sim import server as S
+    from falcon_autonomy.sim.service import CarlaService
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'cfg'))
+    locks = str(tmp_path / 'locks')
+    svc = CarlaService(settings, JobQueue(SubprocessLauncher(), locks), str(tmp_path / 'ws'))
+    srv = svc.ensure_server_object()
+    gpu = lambda: type('J', (), {'spec': JobSpec('train', 't', ['x'], needs_gpu=True), 'log': []})()
+    procs = []
+    try:
+        srv.proc = _fake_server(S, srv.port, os.getpid())
+        procs.append(srv.proc)
+        settings.set('free_gpu_for_jobs', False)
+        job = gpu()
+        assert svc._before_start(job) == '' and srv.running and job.log == []
+        settings.set('free_gpu_for_jobs', True)
+        carla = type('J', (), {'spec': JobSpec('drive', 'd', ['x'], needs_carla=True), 'log': []})()
+        monkeypatch.setattr(srv, 'state', lambda: 'ready')
+        assert svc._before_start(carla) == '' and srv.running
+        monkeypatch.undo()
+        monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'cfg'))
+        os.makedirs(locks, exist_ok=True)
+        holder = subprocess.Popen([sys.executable, '-c', 'import fcntl, os, sys, time\n'
+                                   'fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT)\n'
+                                   'fcntl.flock(fd, fcntl.LOCK_EX)\nprint("held", flush=True)\ntime.sleep(60)',
+                                   os.path.join(locks, 'carla-gpu0.lock')], stdout=subprocess.PIPE, text=True)
+        procs.append(holder)
+        assert holder.stdout.readline().strip() == 'held'
+        job = gpu()
+        assert svc._before_start(job) == '' and srv.running
+        assert 'left running' in job.log[-1][1] and svc.server_error == ''
+        holder.kill()
+        holder.wait()
+        job = gpu()
+        assert svc._before_start(job) == '' and not srv.running and S.registered(srv.port) is None
+        assert 'to free the GPU' in job.log[-1][1]
+        srv.external = True                      # a server the user started: never stopped
+        srv.proc = _fake_server(S, srv.port, os.getpid())
+        procs.append(srv.proc)
+        job = gpu()
+        assert svc._before_start(job) == '' and srv.proc.poll() is None and job.log == []
+    finally:
+        for p in procs:
+            p.kill()

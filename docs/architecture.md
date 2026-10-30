@@ -26,7 +26,11 @@ They talk over the [local protocol](protocol.md): JSON lines on stdin/stdout (an
 1. A page (or a CLI command) builds a config with `core` (e.g. `core.drive.drive_config`) and hands it to
    `CarlaService`, which writes it into a new run folder and submits a `JobSpec` (the worker command, what it needs).
 2. `JobQueue.poll()` starts it when what it needs is free: the machine-wide CARLA lock, the GPU lock, memory. Before
-   a CARLA job starts, the service makes sure Falcon's server is up (starting it under its cap).
+   a CARLA job starts, the service makes sure Falcon's server is up (starting it under its cap). Before a GPU job
+   (training, reconstruction, translation, evaluation) it stops Falcon's own server, which is idle then but holds
+   its video memory: 5.9 of 16 GB on an RTX 5080 for CARLA 0.9.16 on its default map, measured 2026-10-30. It
+   stops in 0.7 s; the next CARLA job starts it again (3 s, plus its map). A server the user started, or one
+   another Falcon process is using, is left running. Settings ▸ *GPU jobs* turns this off (`free_gpu_for_jobs`).
 3. The launcher (QProcess in the GUI, subprocess in the CLI) feeds the worker's protocol lines back to the queue;
    the Jobs dock and the CLI show progress, ETA and logs.
 4. The worker writes `run.json` and exits with a [documented code](cli.md#exit-codes). The service indexes the run

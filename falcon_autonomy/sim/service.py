@@ -136,7 +136,10 @@ class CarlaService:
         return True
 
     def _before_start(self, job) -> str:
-        """Before a CARLA job starts: Falcon's server must be up (started here, its memory checked by the queue)."""
+        """Before a CARLA job starts: Falcon's server must be up (started here, its memory checked by the queue).
+        Before a GPU job: Falcon's own idle server is stopped, so the job gets its video memory."""
+        if job.spec.needs_gpu and not job.spec.needs_carla:
+            self._free_gpu(job)
         if not job.spec.needs_carla or self.fake_carla or job.spec.meta.get('no_server'):
             self.queue.extra_memory_gb = 0.0
             return ''
@@ -163,6 +166,24 @@ class CarlaService:
             return f'cannot start the CARLA server: {e}'
         self._emit('server', srv.state())
         return f'starting the CARLA server on port {self.port}'
+
+    def _free_gpu(self, job):
+        """Stop Falcon's own server before a GPU job (training, reconstruction, translation, evaluation). The queue
+        lets a GPU job start only when no CARLA job runs, so the server is idle; it still holds its video memory —
+        measured on an RTX 5080, 5.9 of 16 GB for CARLA 0.9.16 on its default map — which a training run would go
+        without. It stops in under a second; the next CARLA job starts it again (about 3 s, plus loading its map).
+        Never a server the user started, nor one another Falcon process started or is using (that process holds the
+        CARLA lock: the server is left running and the job says so). The setting free_gpu_for_jobs turns this off."""
+        srv = self.server
+        if (self.fake_carla or not self.settings.get('free_gpu_for_jobs') or srv is None or srv.external
+                or srv.proc is None or not srv.running):
+            return
+        if self.stop_server(wait_s=0.0):
+            job.log.append(('info', f'stopped Falcon\'s idle CARLA server (port {srv.port}) to free the GPU; the '
+                                    'next CARLA job starts it again'))
+        else:
+            job.log.append(('info', f'Falcon\'s CARLA server left running: {self.server_error}'))
+            self.server_error = ''
 
     # ---------------------------------------------------------------- jobs
     def worker_spec(self, worker: str, args: list, title: str, kind: str, run_dir: str = '', needs_carla=True,

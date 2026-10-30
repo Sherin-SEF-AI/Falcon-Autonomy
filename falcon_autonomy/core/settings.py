@@ -32,6 +32,7 @@ DEFAULTS = {
     'server_memory_gb': SERVER_MEMORY_GB,
     'server_quality': 'Epic',
     'server_ros2': False,                # start Falcon's server with --ros2 (CARLA's native ROS 2; docs/stack-testing.md)
+    'free_gpu_for_jobs': True,           # stop Falcon's idle server before a GPU job (measured: it holds 5.9 GB idle)
     'render_budget_mpx': 200.0,
     'theme': 'dark',
     'recent_projects': [],
