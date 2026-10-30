@@ -340,6 +340,9 @@ def test_benefit_and_decode_commands(rsu_run, tmp_path):
     s = b['shares']['all']
     assert s['road_user_steps'] > 0 and 0.0 <= s['ego_share'] <= s['ego_or_rsu_share'] <= 1.0
     assert b['evaluated_steps'] == 10
+    for only in ('camera', 'lidar'):                          # a rig with fewer sensors sees no more
+        o = V.benefit(rsu_run, radius_m=60.0, ego_sensors=only)['shares']['all']
+        assert o['ego_share'] <= s['ego_share'] and o['road_user_steps'] == s['road_user_steps']
     vis = V.ego_visibility(rsu_run)
     ds = json.load(open(os.path.join(rsu_run, 'dataset.json')))
     assert all(ds['ego']['actor_id'] not in v for v in vis.values())
