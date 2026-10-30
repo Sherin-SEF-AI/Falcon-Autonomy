@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLineEdit, QListWidget, QLi
 from ...core import weather as W
 from ...core.project import Edit, new_id
 from .. import icons
-from ..widgets import Form, KeyValues, Page, Section, SliderField, button, label, set_enabled
+from ..widgets import Form, KeyValues, Page, clear_layout, Section, SliderField, button, label, set_enabled
 
 # the towns of CARLA 0.9.16's base package (the "_Opt" variants have layers that can be unloaded; Town10HD_Opt is the
 # default map). Town06, 07 and 11–15 come with CARLA's additional-maps package: once a probe has listed the server's
@@ -545,10 +545,7 @@ class TrafficEditor(Section):
         from ...core.traffic import INDIA_MIXED, fleet_label
         self.pid = pid
         self.add_india.setVisible(self.page.win.project.item('traffic_profiles', INDIA_MIXED['id']) is None)
-        while self.form.count():
-            it = self.form.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+        clear_layout(self.form)
         self.form.n = 0
         i, tp = self.profile()
         if tp is None:
@@ -632,7 +629,8 @@ class TrafficEditor(Section):
         self.lateral_on, self.lateral_auto, self.lateral_ctl = on, auto, ctl
         for x in (auto, ctl):
             set_enabled(x, on.isChecked(), 'Turn lateral filtering on first.')
-        self.form.row('Lateral filtering', on, 'off: every vehicle keeps to its lane centre (CARLA\'s traffic manager)')
+        self.form.row('Lateral filtering', on, 'on: they ride towards the kerb and pass between vehicles; off: every '
+                                               'vehicle keeps to its lane centre (CARLA\'s traffic manager)')
         self.form.row('', auto)
         self.form.row('Controller', ctl)
 

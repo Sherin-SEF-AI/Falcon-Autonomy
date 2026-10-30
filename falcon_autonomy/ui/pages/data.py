@@ -18,7 +18,7 @@ from ...core.drive import drive_config, run_dir_name
 from ...core.paths import tilde
 from ...core.project import ProjectError
 from .. import icons, tasks
-from ..widgets import (EmptyState, Form, KeyValues, Note, Page, PlaceholderTree, Section, button, label, scroll,
+from ..widgets import (EmptyState, Form, clear_layout, KeyValues, Note, Page, PlaceholderTree, Section, button, label, scroll,
                        set_enabled)
 
 
@@ -807,10 +807,7 @@ class BrowseTab(QWidget):
         self.view.set_rgb(out)
 
     def show_legend(self, tags):
-        while self.legend_grid.count():
-            it = self.legend_grid.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+        clear_layout(self.legend_grid)
         if tags is None:
             return
         tags = np.minimum(tags, 28)

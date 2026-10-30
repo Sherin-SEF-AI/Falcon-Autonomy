@@ -152,17 +152,22 @@ class StackPage(Page):
         self.fault_for.setPrefix('for ')
         self.fault_for.setSuffix(' s')
         self.fault_opts = QLineEdit()
-        self.fault_opts.setPlaceholderText('settings, e.g. from_deg=-60,to_deg=60 or cover=0.6')
+        self.fault_opts.setPlaceholderText('settings (optional), e.g. from_deg=-60,to_deg=60 or cover=0.6')
         for wdg in (self.fault_sensor, self.fault_kind, self.fault_onset, self.fault_for):
-            fr.addWidget(wdg)
-        fr.addWidget(self.fault_opts, 1)
-        fr.addWidget(button('Add', self.add_fault))
-        fr.addWidget(button('Remove', self.remove_fault))
+            fr.addWidget(wdg, 1)
         sec.add(fr)
-        self.mrm = QCheckBox('Judge the minimal-risk manoeuvre after the first fault (standstill in time, '
-                             'deceleration and jerk bounded, in lane, no collision)')
-        self.degraded = QCheckBox('The test stack reacts to sensor failures (degraded mode: it stops in its lane)')
-        self.degraded.setToolTip('Falcon\'s lane follower, or the ROS 2 test stack when it is launched with each run')
+        fr2 = QHBoxLayout()
+        fr2.addWidget(self.fault_opts, 1)
+        fr2.addWidget(button('Add', self.add_fault))
+        fr2.addWidget(button('Remove', self.remove_fault))
+        sec.add(fr2)
+        self.mrm = QCheckBox('Judge the minimal-risk manoeuvre after the first fault')
+        self.mrm.setToolTip('Each run passes when the stack reacts in time, comes to a standstill, keeps its '
+                            'deceleration and jerk bounded, stays in its lane or moves to the shoulder, and does not '
+                            'collide (core.mrm; the thresholds are heuristic)')
+        self.degraded = QCheckBox('The test stack reacts to sensor failures (degraded mode)')
+        self.degraded.setToolTip('Falcon\'s lane follower, or the ROS 2 test stack when it is launched with each run, '
+                                 'watches its sensors and stops in its lane when one fails')
         sec.add(self.mrm)
         sec.add(self.degraded)
         row = QHBoxLayout()

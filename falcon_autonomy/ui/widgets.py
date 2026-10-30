@@ -248,6 +248,21 @@ class Form(QGridLayout):
                 w.setVisible(on)
 
 
+
+def clear_layout(layout):
+    """Empty a layout, its nested layouts too, and take its widgets off screen at once: deleteLater alone waits for
+    the event loop, and until then the stale widgets draw under the rows that replace them."""
+    while layout.count():
+        it = layout.takeAt(0)
+        w = it.widget()
+        if w is not None:
+            w.hide()
+            w.setParent(None)
+            w.deleteLater()
+        elif it.layout() is not None:
+            clear_layout(it.layout())
+            it.layout().deleteLater()
+
 class KeyValues(QWidget):
     """A grid of key: value labels that can be updated (values selectable)."""
 
@@ -272,10 +287,7 @@ class KeyValues(QWidget):
         self.vals[key].setToolTip(tip)
 
     def clear(self):
-        while self.grid.count():
-            it = self.grid.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+        clear_layout(self.grid)
         self.vals.clear()
 
 
