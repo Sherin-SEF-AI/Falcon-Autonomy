@@ -13,6 +13,8 @@
     falcon runs PROJECT [--rebuild]            the runs in a project's catalogue
     falcon export RUN... --format F --out DIR  COCO, YOLO, KITTI, nuScenes, waymo, bdd_lanes or mcap
     falcon derive worldmodel|language RUN --out DIR   occupancy, BEV, flow, futures, clips / grounded captions & QA
+    falcon derive audio RUN [--out DIR]        synthetic microphone-array audio with ground truth (docs/audio.md)
+    falcon derive audio-check passby           the audio model's Doppler and level against theory (docs/audio.md)
     falcon model fetch PROJECT ID   download a registered model's pinned weights (SHA-256 checked)
     falcon evaluate PROJECT --model M --run RUN... --out DIR   score a model (or --compare A B)
     falcon gap --sim RUN... --real KIND:PATH --out DIR   the sim-to-real gap of camera images
@@ -183,6 +185,7 @@ def cmd_drive(a, smoke=False) -> int:
     from .core.project import ProjectError
     proj = _load_project(a.project)
     svc, st = _service(proj.path, a.fake_carla)
+    audio = False
     try:
         if smoke:
             out = a.out or os.path.join(svc.runs_dir(), run_dir_name('smoke'))
@@ -199,15 +202,23 @@ def cmd_drive(a, smoke=False) -> int:
         code = _run_job(svc, job)
         if code == P.OK:
             print(out)
+            audio = bool(getattr(a, 'audio', False))
             if smoke and not a.fake_carla:
                 print(f'throughput: {svc.throughput().source}')
-        return code
     except (ProjectError, RuntimeError) as e:
         print(f'failed: {e}', file=sys.stderr)
         return P.FAILED
     finally:
         if not a.keep_server:
             svc.shutdown()
+    if audio:                   # synthetic array audio from what the drive recorded; needs no server (stopped above)
+        from .core.audio import derive_audio, summary
+        try:
+            print(f'audio: {os.path.join(out, "audio")}: {summary(derive_audio(out))}')
+        except (OSError, ValueError) as e:
+            print(f'failed: audio: {e}', file=sys.stderr)
+            return P.FAILED
+    return code
 
 
 def cmd_probe(a) -> int:
@@ -298,6 +309,8 @@ def parser() -> argparse.ArgumentParser:
         d.add_argument('--keep-server', action='store_true', help='leave Falcon\'s server running afterwards')
         d.add_argument('--max-wall', type=float, default=0.0, help='stop after this many wall-clock seconds')
         if name == 'drive':
+            d.add_argument('--audio', action='store_true', help='then derive synthetic array audio into RUN/audio '
+                                                                '(docs/audio.md)')
             d.add_argument('--world', default='')
             d.add_argument('--rig', default='')
             d.add_argument('--seconds', type=float, default=10.0)
@@ -317,8 +330,8 @@ def parser() -> argparse.ArgumentParser:
     ru.add_argument('--rebuild', action='store_true')
     sub.add_parser('schema', help='print the project schema\'s path')
     sub.add_parser('export', help='export runs: falcon export RUN... --format F --out DIR (see docs/cli.md)')
-    sub.add_parser('derive', help='world-model or language data from a drive: falcon derive worldmodel|language RUN '
-                                  '--out DIR')
+    sub.add_parser('derive', help='world-model, language or synthetic audio data from a drive: falcon derive '
+                                  'worldmodel|language|audio RUN --out DIR')
     sub.add_parser('model', help='download a registered model\'s pinned weights: falcon model fetch PROJECT ID')
     sub.add_parser('evaluate', help='score a registered model on recorded drives, or compare two evaluations '
                                     '(see docs/cli.md)')
@@ -368,19 +381,24 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main_derive(argv) -> int:
-    """`falcon derive worldmodel|language RUN --out DIR [--option KEY=VALUE]...`: world-model data (core.worldmodel)
-    or grounded language data (core.language) from a recorded drive. 0 ok, 2 failed."""
+    """`falcon derive worldmodel|language|audio RUN --out DIR [--option KEY=VALUE]...`: world-model data
+    (core.worldmodel), grounded language data (core.language) or synthetic microphone-array audio (core.audio; --out
+    defaults to RUN/audio) from a recorded drive; `falcon derive audio-check passby` checks the audio model against
+    theory. 0 ok, 2 failed."""
     import argparse
     import json
     ap = argparse.ArgumentParser(prog='falcon derive', description='derive training data from a recorded drive')
-    ap.add_argument('what', choices=('worldmodel', 'language'))
-    ap.add_argument('run')
-    ap.add_argument('--out', '-o', required=True)
+    ap.add_argument('what', choices=('worldmodel', 'language', 'audio', 'audio-check'))
+    ap.add_argument('run', help='the run folder (audio-check: passby)')
+    ap.add_argument('--out', '-o', default='')
     ap.add_argument('--option', action='append', default=[], metavar='KEY=VALUE')
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:
         return 0 if e.code == 0 else 2
+    if not a.out and a.what in ('worldmodel', 'language'):
+        print('failed: --out DIR is needed', flush=True)
+        return 2
     opts = {}
     for kv in a.option:
         k, eq, v = kv.partition('=')
@@ -392,13 +410,25 @@ def main_derive(argv) -> int:
         except ValueError:
             opts[k] = v
     try:
+        if a.what == 'audio-check':
+            if a.run != 'passby':
+                print('failed: audio-check knows: passby', flush=True)
+                return 2
+            from .core.audio import passby_check
+            print(json.dumps(passby_check(**opts), indent=2), flush=True)
+            return 0
         if a.what == 'worldmodel':
             from .core.worldmodel import derive
             doc = derive(a.run, a.out, opts)
-        else:
+        elif a.what == 'language':
             from .core.language import derive_language
             doc = derive_language(a.run, a.out, opts)      # no paraphrase client: template text only
-    except (OSError, ValueError, KeyError) as e:
+        else:
+            from .core.audio import derive_audio, summary
+            doc = derive_audio(a.run, a.out or None, opts)
+            a.out = a.out or os.path.join(a.run, 'audio')
+            print(summary(doc), flush=True)
+    except (OSError, ValueError, KeyError, TypeError) as e:
         print(f'failed: {e}', flush=True)
         return 2
     skipped = doc.get('skipped') or {}
@@ -410,7 +440,7 @@ def main(argv=None) -> int:
     if argv[:1] == ['export']:                    # its own parser (core.exporters.main_export)
         from .core.exporters import main_export
         return main_export(argv[1:])
-    if argv[:1] == ['derive']:                    # world-model and language data (core.worldmodel, core.language)
+    if argv[:1] == ['derive']:                    # world-model, language, audio (core.worldmodel, language, audio)
         return main_derive(argv[1:])
     if argv[:1] == ['model']:                     # registered models (core.models)
         from .core.models import main_model

@@ -456,6 +456,10 @@ class BrowseTab(QWidget):
         xb = QHBoxLayout()                    # the chosen run's files: under the run list, with the hand-offs
         xb.addWidget(self.export_fmt)
         xb.addWidget(button('Export…', self.export))
+        xb.addWidget(button('Derive audio', self.derive_audio,
+                            tip='Synthetic microphone-array audio of the selected runs (engines, sirens, horns heard '
+                                'by the rig\'s audio array, with per-frame ground truth) into RUN/audio — procedural, '
+                                'not recorded sound (docs/audio.md)'))
         xb.addWidget(self.open_btn)
         xb.addStretch(1)
         sv.addLayout(xb)
@@ -564,6 +568,8 @@ class BrowseTab(QWidget):
         m.addAction('Compare', self.compare_selected)
         m.addAction('Evaluate on these', self.evaluate_selected)
         m.addAction('Train on these', self.train_selected)
+        m.addSeparator()
+        m.addAction('Derive synthetic audio', self.derive_audio)
         m.exec(self.runs.viewport().mapToGlobal(pos))
 
     def edit_tags(self):
@@ -803,6 +809,20 @@ class BrowseTab(QWidget):
         argv = [sys.executable, '-m', 'falcon_autonomy', 'export', self.run_dir, '--format', fmt, '--out', out]
         self.win.queue.submit(JobSpec('export', f'Export {os.path.basename(self.run_dir)} as {fmt}', argv,
                                       memory_gb=1.0))
+        self.win.jobs_dock.raise_()
+
+    def derive_audio(self):
+        """Synthetic array audio of each selected run: a background job running `falcon derive audio` (core.audio)
+        into RUN/audio."""
+        import sys
+        from ...core.jobs import JobSpec
+        for run in self.selected_runs():
+            if not os.path.isfile(os.path.join(run, 'actors.jsonl')):
+                self.query_state.setText(f'{os.path.basename(run)}: no actors.jsonl, so no audio can be derived')
+                continue
+            argv = [sys.executable, '-m', 'falcon_autonomy', 'derive', 'audio', run]
+            self.win.queue.submit(JobSpec('derive', f'Synthetic audio of {os.path.basename(run)}', argv,
+                                          memory_gb=2.0))
         self.win.jobs_dock.raise_()
 
     def open_folder(self):

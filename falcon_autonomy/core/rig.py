@@ -27,7 +27,7 @@ import numpy as np
 from . import budget
 
 RIG_SCHEMA = 'falcon.rig/1'
-SENSOR_TYPES = ('camera.pinhole', 'camera.fisheye', 'lidar', 'radar', 'gnss', 'imu')
+SENSOR_TYPES = ('camera.pinhole', 'camera.fisheye', 'lidar', 'radar', 'gnss', 'imu', 'audio_array')
 POSE0 = {'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0}
 
 # per-type defaults (CARLA 0.9.16 blueprint attributes where they exist; typical values labelled)
@@ -43,6 +43,11 @@ DEFAULTS = {
               'rate_hz': 20.0},
     'gnss': {'rate_hz': 10.0, 'noise_lat_stddev': 0.0, 'noise_lon_stddev': 0.0, 'noise_alt_stddev': 0.0},
     'imu': {'rate_hz': 100.0, 'noise_accel_stddev': 0.0, 'noise_gyro_stddev': 0.0},
+    # a SYNTHETIC microphone array (core.audio, docs/audio.md): not a CARLA sensor — nothing is spawned; its audio is
+    # derived from the recorded actors after the drive. A uniform circle of `mics` microphones of `radius` m in the
+    # array's x-y plane (mic 0 ahead, then clockwise seen from above, i.e. towards +y), or explicit `mic_positions`
+    # ([[x, y, z], ...] m in the array's frame); a typical roof array, not a product
+    'audio_array': {'mics': 8, 'radius': 0.2, 'mic_positions': None, 'sample_rate': 48000},
 }
 LIMITS = {'pose_m': 10.0, 'size_px': 8192, 'lidar_channels': 256, 'lidar_pps': 5_000_000}
 
@@ -92,6 +97,13 @@ def validate_rig(rig: dict) -> list:
                 out.append(f'{s["name"]}: a pinhole camera\'s field of view must be in 1–180°')
             if t == 'camera.fisheye' and not 60.0 <= float((s.get('lens') or {}).get('fov', 0)) <= 270.0:
                 out.append(f'{s["name"]}: a fisheye\'s field of view must be in 60–270°')
+        if t == 'audio_array':
+            a = with_defaults(s)
+            n = len(a['mic_positions']) if a.get('mic_positions') else int(a.get('mics') or 0)
+            if not 2 <= n <= 64:
+                out.append(f'{s["name"]}: an audio array needs 2–64 microphones')
+            if not a.get('mic_positions') and not 0.01 <= float(a.get('radius') or 0) <= 2.0:
+                out.append(f'{s["name"]}: the audio array\'s radius must be in 0.01–2 m')
         if t == 'lidar':
             if not 1 <= int(s.get('channels', 0)) <= LIMITS['lidar_channels']:
                 out.append(f'{s["name"]}: lidar channels out of 1–{LIMITS["lidar_channels"]}')
@@ -117,6 +129,9 @@ def sensor_cost(s: dict) -> dict:
         pts = int(s.get('points_per_second', 0)) / max(float(s.get('rotation_frequency', 10.0)), 1e-6)
         return {'mpx': 0.0, 'note': f'ray-cast, not rendered: about {pts / 1000:.0f} k points per rotation (+ the '
                                     'semantic lidar beside it for labels)'}
+    if t == 'audio_array':
+        return {'mpx': 0.0, 'note': 'synthetic audio derived after the drive (falcon derive audio): nothing rendered '
+                                    'or spawned'}
     return {'mpx': 0.0, 'note': 'computed by the server, not rendered'}
 
 

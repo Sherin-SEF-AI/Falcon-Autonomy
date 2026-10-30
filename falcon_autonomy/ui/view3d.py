@@ -194,6 +194,12 @@ class SceneMixin:
                     for a in np.linspace(0, 2 * math.pi, 25)]
             for a, b in zip(ring, ring[1:]):
                 self.line(p, a, b)
+        elif t == 'audio_array':              # the microphones joined in order, and the array's forward axis
+            from ..core.audio import array_geometry
+            mics = [o + R @ m for m in array_geometry(s)[1]]
+            for a, b in zip(mics, mics[1:] + mics[:1]):
+                self.line(p, a, b)
+            self.line(p, o, o + R @ np.array([0.3, 0.0, 0.0]))
         else:
             self.line(p, o, o + R @ np.array([0.4, 0.0, 0.0]))
         uv, ok = self.project([o])
