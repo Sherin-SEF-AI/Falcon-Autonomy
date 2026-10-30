@@ -1,7 +1,7 @@
 # Dataset format (falcon-raw)
 
 Every recorded drive (and every live recording) is a folder in this layout. Exports to COCO, YOLO, KITTI, nuScenes,
-Waymo-style, BDD lanes and ROS 2 MCAP are made from it (Data ▸ Export, `falcon export`).
+Waymo-style, BDD lanes, ROS 2 MCAP and semantic occupancy (Occ3D-nuScenes, OpenOcc v2, SurroundOcc: [below](#semantic-occupancy-exports-occ3d-openocc-surroundocc)) are made from it (Data ▸ Export, `falcon export`).
 
 ```
 run/
@@ -101,3 +101,72 @@ proxies for what their size, place and motion are real for: tracking and predict
 occupancy and free space, planning around an obstacle of a cow's footprint, lidar returns of an object that size.
 Real imagery (or real meshes, the source-build path) is needed to learn their look.
 
+## Semantic occupancy exports (Occ3D, OpenOcc, SurroundOcc)
+`falcon export RUN --format occ3d [--option variant=occ3d|openocc|surroundocc] [--option every=N] [--option
+aggregate=K] [--option camera_ray_step=S] [--option lidar=ID]` (or Data ▸ Browse ▸ Export) writes one occupancy sample
+per lidar sweep of a run with a labelled lidar (`core/occexport.py`). The layouts, as checked against the public
+loaders and metrics on 2026-10-30:
+
+| variant | file | arrays | grid | classes |
+|---|---|---|---|---|
+| `occ3d` — Occ3D-nuScenes ([Tsinghua-MARS-Lab/Occ3D](https://github.com/Tsinghua-MARS-Lab/Occ3D); the CVPR 2023 challenge's `LoadOccGTFromFile`, `Metric_mIoU`, `evaluate_miou`) | `gts/<scene>/<token>/labels.npz` | `semantics`, `mask_lidar`, `mask_camera`: uint8 (200, 200, 16), masks 0/1 (read with `.astype(bool)`) | 0.4 m over [−40, −40, −1, 40, 40, 5.4] m | 0–16 the nuScenes-lidarseg 16-class mapping (0 `others`), 17 `free` |
+| `openocc` — OpenOcc v2 ([OpenDriveLab/OccNet](https://github.com/OpenDriveLab/OccNet), its loader and `ray_metrics.py`) | `openocc_v2/<scene>/<token>/labels.npz` | `semantics` uint8 (200, 200, 16); `flow` float32 (200, 200, 16, 2), m/s; the two masks too | as Occ3D | car, truck, trailer, bus, construction_vehicle, bicycle, motorcycle, pedestrian, traffic_cone, barrier, driveable_surface, other_flat, sidewalk, terrain, manmade, vegetation, 16 `free` |
+| `surroundocc` — SurroundOcc ([weiyithu/SurroundOcc](https://github.com/weiyithu/SurroundOcc), `LoadOccupancy`) | `gts/<scene>__<token>.npy` | float32 (N, 4) `[ix, iy, iz, label]` of the occupied voxels | 0.5 m over [−50, −50, −5, 50, 50, 3] m (200 × 200 × 16) | 1–16 barrier … vegetation, 0 ignored |
+
+`annotations.json` follows Occ3D's: `train_split`, `val_split` (and `test_split`), `scene_infos[scene][token]` with
+`timestamp` (µs), `camera_sensor[CAM_*]` (`img_path` into `samples/`, OpenCV `intrinsic`, camera → ego `extrinsic` and
+`ego_pose` as translation + quaternion w, x, y, z), `ego_pose`, `gt_path`, `prev`, `next`. A scene is a run; a token
+is md5(run, step). Axes are nuScenes' (x forward, y **left**, z up): Falcon mirrors y. The origin is Falcon's vehicle
+origin (CARLA's: the box centre at ground height), not nuScenes' rear axle.
+
+How a voxel gets its class: the labelled lidar points vote (majority; with `aggregate=K` the static points of K sweeps
+either side join, moved into the sample's ego frame — Occ3D's multi-frame densification for the static scene), then
+every actor's 3D box fills its voxels by its nuScenes category (two-wheelers whole, rider included); the ego is left
+out. `mask_lidar`: the voxels each return's ray (Amanatides & Woo traversal from its sweep's sensor origin) passes and
+ends in. `mask_camera`: from each pinhole camera, rays through the pixel grid (one every ⌊camera_ray_step · 0.4 m /
+56.6 m · f⌋ pixels — the far corner's voxel angle) up to and including the first occupied voxel (Occ3D Section 3.3.2).
+
+| Falcon (CARLA tag or actor category) | Occ3D / devkit coarse class |
+|---|---|
+| road, road line | driveable_surface |
+| sidewalk | sidewalk |
+| terrain | terrain |
+| ground, water, rail track | other_flat |
+| building, wall, fence, pole, traffic light, traffic sign, static, bridge, guard rail | manmade |
+| vegetation | vegetation |
+| car (and the autorickshaw / cycle-rickshaw stand-ins), truck, bus, motorcycle, bicycle (with rider), pedestrian | car, truck, bus, motorcycle, bicycle, pedestrian |
+| ambulance, police car, train, CARLA's dynamic and other, the cattle / handcart / vendor proxies (`movable_object.pushable_pullable`) | the devkit's ignore class: Occ3D `others`, SurroundOcc 0; **OpenOcc has no such class: written as free**, counted in the manifest |
+| unlabelled, sky, weather noise (lidar) | no vote (their rays still count for `mask_lidar`) |
+
+The mapping is the nuScenes devkit's own (`LidarsegClassMapper.get_fine2coarse`), compared with it by the tests.
+**Never produced**: construction_vehicle, trailer, traffic_cone, barrier — CARLA has no such actor (and no tarpaulin,
+debris or bicycle rack); the manifest lists them under `left_out`.
+
+**Flow** (OpenOcc only): the actor's velocity in the world, expressed in the sample's ego frame (x forward, y left),
+in every voxel of its box; 0 for the static scene. Its shape and unit (m/s, the challenge's AVE) were verified; its
+frame is not stated in OpenOcc's code — Falcon's choice follows nuScenes box velocities. **Not written**:
+OpenOccupancy / nuScenes-Occupancy (its layout was not verified), OpenOcc's mmdet3d `.pkl` infos (annotations.json
+carries the same facts), Occ3D-Waymo.
+
+Read back (2026-10-30, the 24-thread reference machine under other agents' load) from two recorded 15 s drives of the demo
+project (32-channel lidar, 20 Hz), 300
+samples each, independently of the exporter — numpy only, as the Occ3D loaders read it, and a second visibility test
+by a fixed-step (2 cm) march from the camera to a 3 × 3 × 3 lattice of points in each sampled voxel: every sample had
+the shapes, dtypes and value ranges above.
+
+| drive | aggregate | export | occupied | observed (lidar / camera) | visible but every sight line blocked | hidden but a sight line clear |
+|---|---|---|---|---|---|---|
+| Town10 | 0 | 190 s | 1.08 % | 25.9 % / 17.9 % | 887 of 60 000 (1.5 %) | 791 of 60 000 (1.3 %) |
+| Town10 | 5 | 698 s | 1.94 % | 30.7 % / 16.7 % | 1 259 (2.1 %) | 3 223 (5.4 %) |
+| Central Bengaluru (imported) | 0 | 128 s | 0.43 % | 8.6 % / 16.4 % | 523 (0.9 %) | 28 (0.05 %) |
+
+The disagreements are the two methods' differences at voxel edges and between camera rays (a voxel seen through a
+sliver only; one the ray spacing skipped), most where aggregation makes the scene denser: `camera_ray_step` below 1
+casts more rays. Aggregating 5 sweeps either side more than doubled the driveable surface voxels on Town10
+(463 636 → 1 101 570) at 3.7 × the time. The Bengaluru drive's classes were manmade 735 k, sidewalk 58 k, driveable
+surface 35 k, motorcycles 4 k, bicycles 108 voxels (no car near its lidar in that drive).
+
+Limits: one sweep — or K static ones — is far sparser than Occ3D's whole-sequence aggregation and mesh-based
+densification; free space is known only along rays that hit something; a moving actor's points lie where it was in its
+slice of the sweep, its box where it is at the step; a far voxel narrower than the ray spacing can fall between camera
+rays (`camera_ray_step` < 1 casts more).

@@ -1,6 +1,7 @@
 """Dataset exporters: recorded drives (falcon-raw run folders, workers.drive) written out in the formats training and
 robotics tools read — COCO, YOLO, KITTI object, nuScenes (with nuScenes-lidarseg and nuScenes-panoptic when a lidar
-was recorded), a Waymo-style JSON layout, BDD100K lane markings and ROS 2 bags (MCAP). numpy and OpenCV; core.mcap_bag
+was recorded), a Waymo-style JSON layout, BDD100K lane markings, ROS 2 bags (MCAP) and semantic occupancy (Occ3D-
+nuScenes, OpenOcc v2, SurroundOcc: core.occexport). numpy and OpenCV; core.mcap_bag
 writes the bags. Ported in part from Vantage (vantage.sim.record's nuScenes tables and COCO files, its bag topics).
 
     export([run_dir, ...], 'nuscenes', out_dir, {'splits': {'train': [...], 'val': [...]}}) -> report
@@ -45,7 +46,7 @@ from .rig import CAM_OPTICAL, VEHICLES, carla_rotation, matrix_of, quat_of, tf_l
 
 EXPORT_SCHEMA = 'falcon.export/1'
 MANIFEST = 'falcon_export.json'
-FORMATS = ('coco', 'yolo', 'kitti', 'nuscenes', 'waymo', 'bdd_lanes', 'mcap')
+FORMATS = ('coco', 'yolo', 'kitti', 'nuscenes', 'waymo', 'bdd_lanes', 'mcap', 'occ3d')
 SPLITS = ('train', 'val', 'test')
 S4 = np.diag([1.0, -1.0, 1.0, 1.0])
 CARLA_TO_OPTICAL = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]])
@@ -1448,8 +1449,15 @@ def _camera_info_model(cam: dict):
 
 
 # =========================================================================================================== export
+def _occ3d(ctx: Ctx):
+    """Semantic occupancy: Occ3D-nuScenes, OpenOcc v2 or SurroundOcc (core.occexport; option variant)."""
+    from .occexport import export_occ
+    export_occ(ctx, Run, {'rh': rh, 'quat_of': quat_of, 'camera_T': camera_T, 'K_opencv': K_opencv, 'token': token,
+                          'ExportError': ExportError})
+
+
 _EXPORTERS = {'coco': _coco, 'yolo': _yolo, 'kitti': _kitti, 'nuscenes': _nuscenes, 'waymo': _waymo,
-              'bdd_lanes': _bdd_lanes, 'mcap': _mcap}
+              'bdd_lanes': _bdd_lanes, 'mcap': _mcap, 'occ3d': _occ3d}
 
 
 def _resolve_splits(run_dirs, options) -> list:
@@ -1496,7 +1504,9 @@ def export(run_dirs: list, fmt: str, out_dir: str, options: dict | None = None, 
     'link' copy | hardlink | symlink (images); 'overwrite' (replace an earlier export in out_dir); nuscenes:
     'version' (default v1.0-falcon), 'keyframe_hz'; kitti: 'camera'; bdd_lanes: 'lane_max_m'; mcap: 'image'
     compressed | raw, 'compression' none | zstd, 'objects' true (every actor's box per step as a
-    vision_msgs/Detection3DArray on /falcon/objects, frame 'map'). Raises ExportError."""
+    vision_msgs/Detection3DArray on /falcon/objects, frame 'map'); occ3d: 'variant' occ3d | openocc | surroundocc,
+    'lidar', 'every', 'aggregate' (static sweeps either side), 'camera_ray_step' (core.occexport). Raises
+    ExportError."""
     options = dict(options or {})
     if fmt not in _EXPORTERS:
         raise ExportError(f'unknown format {fmt!r}: one of {", ".join(FORMATS)}')

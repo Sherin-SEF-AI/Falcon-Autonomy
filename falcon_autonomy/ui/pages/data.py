@@ -454,7 +454,10 @@ class BrowseTab(QWidget):
         self.open_btn = button('Open folder', self.open_folder)
         self.export_fmt = QComboBox()
         self.export_fmt.addItems(['coco', 'yolo', 'kitti', 'nuscenes', 'waymo', 'bdd_lanes', 'mcap'])
-        self.export_fmt.setToolTip('waymo: a documented Waymo-style JSON layout, not TFRecords')
+        for v in ('occ3d', 'openocc', 'surroundocc'):          # semantic occupancy (core.occexport): from the lidar
+            self.export_fmt.addItem(v, ('occ3d', v))
+        self.export_fmt.setToolTip('waymo: a documented Waymo-style JSON layout, not TFRecords; occ3d, openocc, '
+                                   'surroundocc: semantic occupancy from a run with a labelled lidar')
         xb = QHBoxLayout()                    # the chosen run's files: under the run list, with the hand-offs
         xb.addWidget(self.export_fmt)
         xb.addWidget(button('Export…', self.export))
@@ -802,7 +805,9 @@ class BrowseTab(QWidget):
         out = QFileDialog.getExistingDirectory(self, f'Folder for the {fmt} export')
         if not out:
             return
-        argv = [sys.executable, '-m', 'falcon_autonomy', 'export', self.run_dir, '--format', fmt, '--out', out]
+        variant = self.export_fmt.currentData()
+        argv = [sys.executable, '-m', 'falcon_autonomy', 'export', self.run_dir, '--format',
+                variant[0] if variant else fmt, '--out', out] + (['--option', f'variant={variant[1]}'] if variant else [])
         self.win.queue.submit(JobSpec('export', f'Export {os.path.basename(self.run_dir)} as {fmt}', argv,
                                       memory_gb=1.0))
         self.win.jobs_dock.raise_()
