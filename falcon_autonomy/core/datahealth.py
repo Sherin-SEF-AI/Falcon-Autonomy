@@ -164,7 +164,38 @@ def analyse(run_dirs: list, workspace: str = '', project_doc: dict | None = None
                                            'bits': int(dist[j])})
                         continue
                 hashes.append((h, {'run': d, 'step': f.get('step')}))
-    # coverage grid over the project's worlds (or the ones seen)
+    cov = coverage(grid, project_doc)
+    hist = []
+    for (scn, name), vs in sorted(values.items()):
+        lo, hi = min(vs), max(vs)
+        pr = _param_range(project_doc, scn, name)
+        if pr is not None:
+            lo, hi = pr
+        counts = np.histogram(vs, bins=VALUE_BINS, range=(lo, hi if hi > lo else lo + 1e-9))[0].tolist()
+        hist.append({'scenario': scn, 'param': name, 'lo': lo, 'hi': hi, 'counts': counts, 'runs': len(vs),
+                     'empty_bins': sum(1 for c in counts if c == 0), 'range_from': 'the scenario' if pr else
+                     'the values seen'})
+    return {
+        'schema': SCHEMA, 'runs': [d for d, _ in runs], 'frames': total, 'frames_read': read, 'every': step,
+        'classes': dict(sorted(classes.items(), key=lambda kv: -kv[1])), 'objects': n_obj,
+        'labelled_frames': n_lab_frames, 'empty_frames': n_empty, 'empty_examples': empty_ex,
+        'labels': {'tiny': tiny, 'degenerate': degenerate, 'outside': outside, 'tiny_examples': tiny_ex,
+                   'tiny_rule': f'height < {TINY_H:g} px or area < {TINY_AREA:g} px²'},
+        'duplicates': {'hashed': n_hashed, 'near_duplicates': n_dup,
+                       'share': (n_dup / n_hashed) if n_hashed else None, 'bits': dup_bits, 'examples': dup_ex},
+        'coverage': {k: cov[k] for k in ('cells', 'empty', 'of')},
+        'values': hist, 'suggestions': cov['suggestions'],
+        'method': 'docs/runs.md, "Dataset health"; frames sampled evenly, every '
+                  f'{step}{"st" if step == 1 else "th"} frame',
+    }
+
+
+def coverage(grid: dict, project_doc: dict | None = None) -> dict:
+    """The condition-coverage grid of {(world, tod, weather kind): frames} over the project's worlds (or the ones
+    seen): {'cells': every cell with its frames and the preset that gives it (then any cell outside the grid, preset
+    None), 'empty': how many grid cells have no frame, 'of': the grid's size, 'suggestions': the empty cells (worlds
+    with frames first, then by time of day and weather) and the three thinnest, at most 8, as "record more of" items}.
+    analyse() fills it from the frames it reads; the assistant's suggestions from the run index (no image read)."""
     worlds = [w['id'] for w in (project_doc or {}).get('worlds') or ()] or sorted({c[0] for c in grid})
     cells = []
     for w in worlds:
@@ -187,29 +218,7 @@ def analyse(run_dirs: list, workspace: str = '', project_doc: dict | None = None
                      'weather': c['weather'], 'preset': c['preset'], 'frames': c['frames'],
                      'text': f'{names.get(c["world"], c["world"])}: {c["tod"]}, {c["weather"]} — '
                              + ('no frames' if c['frames'] == 0 else f'only {c["frames"]} frames')})
-    hist = []
-    for (scn, name), vs in sorted(values.items()):
-        lo, hi = min(vs), max(vs)
-        pr = _param_range(project_doc, scn, name)
-        if pr is not None:
-            lo, hi = pr
-        counts = np.histogram(vs, bins=VALUE_BINS, range=(lo, hi if hi > lo else lo + 1e-9))[0].tolist()
-        hist.append({'scenario': scn, 'param': name, 'lo': lo, 'hi': hi, 'counts': counts, 'runs': len(vs),
-                     'empty_bins': sum(1 for c in counts if c == 0), 'range_from': 'the scenario' if pr else
-                     'the values seen'})
-    return {
-        'schema': SCHEMA, 'runs': [d for d, _ in runs], 'frames': total, 'frames_read': read, 'every': step,
-        'classes': dict(sorted(classes.items(), key=lambda kv: -kv[1])), 'objects': n_obj,
-        'labelled_frames': n_lab_frames, 'empty_frames': n_empty, 'empty_examples': empty_ex,
-        'labels': {'tiny': tiny, 'degenerate': degenerate, 'outside': outside, 'tiny_examples': tiny_ex,
-                   'tiny_rule': f'height < {TINY_H:g} px or area < {TINY_AREA:g} px²'},
-        'duplicates': {'hashed': n_hashed, 'near_duplicates': n_dup,
-                       'share': (n_dup / n_hashed) if n_hashed else None, 'bits': dup_bits, 'examples': dup_ex},
-        'coverage': {'cells': cells + extra, 'empty': len(empty), 'of': len(cells)},
-        'values': hist, 'suggestions': sugg,
-        'method': 'docs/runs.md, "Dataset health"; frames sampled evenly, every '
-                  f'{step}{"st" if step == 1 else "th"} frame',
-    }
+    return {'cells': cells + extra, 'empty': len(empty), 'of': len(cells), 'suggestions': sugg}
 
 
 def _param_range(doc, scn_id, name):

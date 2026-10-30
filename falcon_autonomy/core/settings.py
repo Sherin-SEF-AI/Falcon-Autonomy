@@ -37,6 +37,9 @@ ASSISTANT_DEFAULTS = {
     'reasoning_effort': 'medium',
     'mode': 'ask',
     'preview': False,                    # show what will be sent before each message goes
+    'suggestions': True,                 # next-step chips on the pages and Home (deterministic offline; worded by the
+                                         # fast model when the assistant is on)
+    'show_me': False,                    # the agent points at what it explains (opens pages, outlines controls)
     'prices': {'openai/gpt-oss-120b': [0.15, 0.60], 'openai/gpt-oss-20b': [0.075, 0.30],
                'qwen/qwen3.8-27b': [0.80, 4.00]},
     'models': [],                        # the server's last model list ({id, context_window}), from Refresh
@@ -101,6 +104,10 @@ EXPLAIN = {
                     'when a job of 20 s or more ends while Falcon is in the background; nothing leaves the machine'),
     'hil_device': ('Hardware page', 'the hardware-in-the-loop device: address, ports, SSH user and key path (private: '
                    'never in a project; no password here)'),
+    'assistant': ('Settings ▸ Assistant (and the Assistant panel)', 'the assistant: on or off, the notice accepted, '
+                  'the server, the main and fast models, the token limit, temperature, reasoning effort, permission '
+                  'mode, the price table, next-step suggestions on or off, show-me mode; never the key (keyring or '
+                  'secrets file)'),
 }
 PRIVATE_SETTINGS = ('recent_projects', 'hil_device', 'cloud_llm')
 

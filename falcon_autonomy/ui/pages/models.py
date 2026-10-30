@@ -370,6 +370,9 @@ class ModelsPage(Page):
         self.table = QTreeWidget()
         self.table.setHeaderLabels(['Metric', 'Value', '95 % CI', 'n'])
         self.table.setRootIsDecorated(False)
+        from ..assistant_dock import add_ask_menu
+        add_ask_menu(self.table, self.win, lambda it: ('evaluation', {'evaluation': self.ev.currentData()})
+                     if self.ev.currentData() else None)
         v.addWidget(self.table, 1)
         return w
 

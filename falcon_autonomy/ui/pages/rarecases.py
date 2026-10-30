@@ -237,6 +237,10 @@ class RareCasesPage(Page):
                                        'Run'])
         self.failures.setRootIsDecorated(False)
         self.failures.setMinimumHeight(160)
+        from ..assistant_dock import add_ask_menu
+        add_ask_menu(self.failures, win, lambda it: ('case', {'study': self.study(), 'index': it.data(0, 256)['i'],
+                                                              'run': it.data(0, 256).get('run') or ''})
+                     if it.data(0, 256) else None)
         rv.addWidget(self.failures)
         fb = QHBoxLayout()
         fb.addWidget(button('Replay the selected case', self.replay))

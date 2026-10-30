@@ -177,6 +177,13 @@ class SettingsPage(Page):
             self.as_mode.addItem(MODE_TEXT[m], m)
         self.as_mode.setCurrentIndex(MODES.index(c['mode']) if c['mode'] in MODES else 0)
         self._row(f, 'Permission mode', self.as_mode, 'Ask: every change waits for you; trash always asks')
+        self.as_suggest = QCheckBox('Suggest next steps')
+        self.as_suggest.setChecked(bool(c.get('suggestions', True)))
+        self.as_suggest.setToolTip('One-click chips on the pages and the next best action on Home, found from the '
+                                   'project\'s own state and files; worded by the fast model when the assistant is on '
+                                   '(every number checked), else in Falcon\'s own words — they work offline')
+        self._row(f, 'Suggestions', self.as_suggest, 'at most three per page; dismissed ones stay dismissed for the '
+                  'project')
         self.as_prices = QPlainTextEdit(format_prices(c.get('prices') or {}))
         self.as_prices.setFixedHeight(64)
         self.as_prices.setToolTip('One line per model: the model, then $ per million input and output tokens. Your '
@@ -286,6 +293,8 @@ class SettingsPage(Page):
         if hasattr(self.win, 'assistant_panel'):
             self.win.assistant_panel.refresh_state()
             self.win.refresh_assistant_badge()
+        if getattr(self.win, 'suggestions', None) is not None:
+            self.win.suggestions.refresh(forced=True)
 
     def _assistant_values(self):
         """The section's values, checked: (dict, None) or (None, why)."""
@@ -302,7 +311,8 @@ class SettingsPage(Page):
             return None, 'Choose a main and a fast model.'
         return {'base_url': url, 'main_model': main, 'fast_model': fast, 'temperature': self.as_temp.value(),
                 'reasoning_effort': self.as_effort.currentText(), 'mode': self.as_mode.currentData(),
-                'prices': prices, 'tpm_limit': self.as_tpm.value()}, None
+                'prices': prices, 'tpm_limit': self.as_tpm.value(),
+                'suggestions': self.as_suggest.isChecked()}, None
 
     def _assistant_apply(self, vals) -> bool:
         svc = self.win.assistant

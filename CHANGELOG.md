@@ -14,12 +14,33 @@
   pickers from /models, the user's price table); Ctrl+Shift+A, Ctrl+K ▸ Ask Falcon…, a status-bar badge with tokens
   and estimated cost. Groq's API verified against its documentation on 2026-10-30: the fast lane is
   `qwen/qwen3.8-27b` (Preview), falling back to `openai/gpt-oss-20b` — said once — when the server does not list it or
-  says it is gone; `parallel_tool_calls` per model (false for gpt-oss). Falcon's 92 tools on demand: the runtime's
+  says it is gone; `parallel_tool_calls` per model (false for gpt-oss). Falcon's 99 tools on demand: the runtime's
   four meta-tools (kept out of the registry) with the knowledge and system groups always, single tools found by
   `tools_find` (its best three callable) or named in `tools_load`, and loaded groups — the most recent always, older
   ones while the step fits the limit (one large group at 8,000 tokens a minute); each step estimated and trimmed or
   paced to the user's tokens-per-minute limit (default 8,000); trash undone through `runs_restore`. Tested against a
   fake server only.
+
+- **The assistant in the pages** (`assistant/suggest.py`, `assistant/explain.py`, `ui/suggestions.py`; docs/assistant.md):
+  **suggestions** — fourteen fixed rules over the app's state and the workspace's files (a crashed server, a failed or
+  finished job, avoidable failures in a study by RSS, failed MRM checks in a suite, CARLA jobs waiting on an idle GPU,
+  imported worlds whose traffic lights control no lane, empty condition cells in the recorded drives, near-duplicate
+  frames, translation drift refusals, a project without drives, evaluations, scenarios or rules), each with the exact
+  tool call that acts on it and its numbers from the files; one-click chips on seven pages (at most three) and Home's
+  *Next best action*; a click goes through `propose` — an approval card in Ask, at once in Auto; dismissals kept per
+  project; Falcon's own wording offline, the fast model's ranking and wording when the assistant is on, kept only when
+  its numbers pass the grounding check; paced (rules every 30 s at most, the model every two minutes, only for what is
+  new); private items never suggested. **Ask about this** on runs, failing cases, suite results, evaluation scores, job
+  rows and logs: the object by its id, private ones refused. **Explain this error** on failed jobs (the Jobs panel's
+  *Explain*, its menu, the log windows): the fast model's cause and fix from the exit, the redacted log tail and the
+  manual's matching sections, or Falcon's own from the log offline, with the obvious next step as a button (server,
+  memory, GPU lock, a rig without a microphone array, CARLA's Python, weights). **Show-me mode**: the agent narrates
+  and navigates (pages, tabs, runs, frames, outlined controls) one step at a time with a pause, moving the view without
+  a card; "How do I…?" questions are shown. The **lab** tools (seven: hardware in the loop on the simulated device,
+  deployment, CI mode, log replay, adversarial traffic, experiments, VLM evaluation) with their results in
+  `analysis_outputs`, within the schema budget (9,960 tokens). `falcon assistant eval`: 23 scripted tasks end to end on
+  a throw-away project with the fake carla, per model success, steps, tokens, time, estimated cost and grounding flags
+  (no results published). The notice is version 2 (what suggestions and Explain send): asked again.
 
 - **Lateral filtering for two-wheelers** (`workers/lateral.py`, a traffic profile's `lateral_filtering`, Worlds ▸
   traffic profile): background two-wheelers choose their own lateral position over the same-direction lanes every

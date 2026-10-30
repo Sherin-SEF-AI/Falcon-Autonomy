@@ -9,7 +9,8 @@ API key** (Groq by default) and sends **text only**. It is off until you turn it
 
 1. Get an API key at [console.groq.com](https://console.groq.com) (API Keys; a key starts with `gsk_`).
 2. In Falcon: **Settings ▸ Assistant** — tick *Use the assistant*, paste the key, press **Apply**. The first time, a
-   notice says exactly what is sent and what never is; nothing leaves the machine until you accept it.
+   notice says exactly what is sent and what never is; nothing leaves the machine until you accept it (it is asked
+   again when what is sent grows: its version 2 added suggestions and *Explain this error*).
 3. **Test connection** asks the server for its model list (one request) and says whether your main and fast models
    are offered. **Refresh** fills the model pickers from that list.
 4. Open the panel: **Ctrl+Shift+A**, *View ▸ Assistant panel*, the **Assistant** badge in the status bar, or
@@ -101,8 +102,8 @@ The status bar badge's tooltip shows the last minute's tokens against the limit.
 
 ## The panel
 
-- **Chat**: the mode and the main model at the top; the **plan** — the short checklist the model keeps while it
-  works; the messages, streamed as Markdown; **tool cards** (collapsed: the tool, how long it took, how it was
+- **Chat**: the mode, the main model and **Show me** ([below](#show-me-mode)) at the top; the **plan** — the short
+  checklist the model keeps while it works; the messages, streamed as Markdown; **tool cards** (collapsed: the tool, how long it took, how it was
   approved, what it returned; expanded: the arguments and the result as sent to the model); **approval cards**; the
   **jobs it queued** with their progress (*Jobs* opens the Jobs panel on that row); Falcon's own events (a job
   finished, Autopilot going on). Run names, job numbers of this session and scenario ids are links to where they are
@@ -121,14 +122,91 @@ Each project has its own conversation, saved in its workspace (`WORKSPACE/assist
 step and resumed after a restart; *Clear* empties it. It holds the messages, the plan, the tools you approved for the
 whole conversation, the activity log and the tokens used — never the key.
 
+## Suggestions
+
+Falcon watches the project for next steps worth taking and shows them as one-click **chips** under the heading of the
+page they concern (Worlds, Scenarios, Live, Data, Rare cases, Training, Stack testing; at most three a page) and the
+best of all as the **Next best action** on Home (the work's own *Next step* when there is none). Each is found by a
+fixed rule from the app's state and the workspace's files (`assistant.suggest`), carries the exact tool call that acts
+on it, and says why with numbers read from the files:
+
+| Trigger | When | The call |
+|---|---|---|
+| server crashed | Falcon's CARLA server is in the crashed state | `system_server` (its state and log tail) |
+| job failed | a job of this session failed (its exit and last error) | `jobs_get` with 30 log lines |
+| avoidable failures | the newest study with failures at its threshold that RSS labels *avoidable* | `jobs_replay_failure` of the worst |
+| failed MRM checks | a stack suite's runs failed the minimal-risk-manoeuvre check (the check failing most) | `jobs_why` on the worst run |
+| GPU idle | CARLA jobs wait, none runs, and the GPU is under 10 % | `system_queue` (who holds the CARLA lock) |
+| traffic lights | an imported world's signal records control no lane, or a left-hand world was converted before the left-hand fix | `jobs_apply_map_edits` (a re-import: a new world) |
+| coverage gap | the recorded drives leave world × time of day × weather cells empty (from the run index, no image read) | `jobs_drive` with the preset that fills the first |
+| near-duplicates | the last *Data ▸ Health* report found 20 % or more near-duplicate frames | `runs_tag` them `near-duplicates` |
+| drift refusals | a translated run kept raw frames its drift check refused | `ui_show_run` |
+| job finished | a job of this session finished in the last 15 minutes | `ui_open_job` |
+| first drive | worlds and rigs, nothing recorded | `jobs_drive` (10 s) |
+| no evaluation | models and drives, no evaluation | `jobs_evaluate` on the newest drives |
+| no scenarios | no scenario of the project's own | `project_scenario_create` (a copy of lead_brake) |
+| no rules | no trigger rules | `project_trigger_add` (an example rule, checked when added) |
+
+**A click** opens the Assistant panel with that call, as your permission mode says: in Ask an approval card with the
+call's exact preview and estimate (nothing runs until you approve); in Auto and Autopilot a change runs at once (and is
+in the activity log with Undo); a read tool runs in every mode; moving runs to the trash always asks. It is noted in
+the conversation, so the assistant knows what you did. **×** (or *Not now* on Home) dismisses a suggestion for this
+project — kept in `WORKSPACE/assistant/suggestions.json`, so it does not come back after a restart.
+
+**Wording.** Without a key or the notice accepted, suggestions keep Falcon's own wording: they always work offline.
+With the assistant on, the **fast model** ranks the top four and words each in one short sentence; its wording is
+kept only when every number in it is one of that suggestion's own facts (the grounding check), else Falcon's is
+shown; Home says when a wording is the assistant's. What it is sent: the candidates' titles and their one-line facts
+(names, ids and numbers of your runs, studies, suites, worlds and jobs), the project's name and the page — never a
+private item: runs, studies and worlds from your dashcam footage never become suggestions.
+
+**Never noisy.** The rules run at most every 30 s (a job ending or the project being replaced brings the next run
+forward, at least 3 s apart), on a background thread; the model is asked at most every two minutes and only about
+suggestions it has not worded yet (a suggestion whose numbers changed is new). Settings ▸ Assistant ▸ *Suggestions*
+turns them all off.
+
+## Ask about this and Explain this error
+
+**Ask about this** is in the context menu of the runs in *Data ▸ Browse* (the run search's results) and on Home, the
+failing cases in *Rare cases*, the results of a stack suite, an evaluation's scores in *Models*, a job's row in the
+Jobs panel and its log window. It opens the panel with a request about that one object, named by its id — a run by
+`runs/<folder>`, a job by its number, a case by study and row, a suite result by suite, scenario and seed, an
+evaluation by its folder — and the assistant reads it through its tools. Nothing is pasted: no image, no log text, no
+path outside the workspace; a private object (anything from the dashcam footage) is refused before anything is asked.
+When the assistant is not set up, the request waits in the message box (with what it is about) until you send it.
+
+**Explain this error** is the *Explain* button of a failed job's row in the Jobs panel, its context menu, and a
+failed job's log window (in *This session* and in *History*). A card in the panel says why it most likely failed and
+how to fix it. With the assistant on, the **fast model** gets the job's title and kind, what its exit code means and
+the last 30 lines of its log (redacted: your home folder shortened to `~`, credentials replaced), with the manual's
+sections that match the error (searched offline); numbers in its answer that are not in what it was given are marked.
+Without a key — or for a job that worked on private data, whose log is never read — the card is worded from the exit
+and the last error line alone. When the log matches a failure with an obvious next step, the card has a button for it
+(an approval card as above): the server not answering → `system_server`; refused for memory → `system_machine`; the
+GPU taken → `system_queue`; a rig without a microphone array → `project_sensor_add` of an `audio_array`; CARLA's Python
+missing → what that setting does; weights not fetched → the manual's section (fetching weights and accepting their
+licence is yours). The model chooses among these or none; it never starts a server or changes a setting.
+
+## Show-me mode
+
+**Show me** (the toggle at the top of the panel; kept as a setting) asks the assistant to point at what it explains:
+before each step it writes one short sentence of what it is showing, then opens the page and tab (`ui_open_page`),
+outlines the control you would use (`ui_controls`, `ui_highlight`), or shows the run or frame it talks about
+(`ui_show_run`, `ui_show_frame`) — one step at a time, with a pause after each (1.6 s; a highlight's own time, at most
+3 s) so you can follow; Stop ends a pause. A *How do I…?*, *Where is…?* or *Show me…* question is answered this way.
+With show-me on, the window group is loaded with your message, and moving the view runs without an approval card
+(the cards say *show me*); everything else asks as your permission mode says, and the assistant clicks nothing for
+you.
+
 ## What is sent, and what never is
 
 Sent, as text, to the server you configured: your messages and the text files you attach; the conversation so far,
 including the tools' results (names, ids, settings and measured numbers of your project, runs, jobs, scenarios, models
 and evaluations, passages of the manual); the tools' descriptions and argument schemas; the name of the project and
-the page that is open. Before anything leaves the machine every string is redacted: your home folder becomes `~`, and
-anything shaped like a credential (a `gsk_…` or `sk-…` key, a bearer token, a `password=`/`token=`/`api_key=` value)
-becomes `[secret]`.
+the page that is open; with suggestions on, the candidate next steps and their facts (to be ranked and worded); when
+you press *Explain*, a failed job's title, exit and log tail with passages of the manual. Before anything leaves the
+machine every string is redacted: your home folder becomes `~`, and anything shaped like a credential (a `gsk_…` or
+`sk-…` key, a bearer token, a `password=`/`token=`/`api_key=` value) becomes `[secret]`.
 
 Never sent: images, video, lidar, radar, audio, or anything from your dashcam footage. The tools refuse those sources
 (`assistant.privacy`: anything under `~/Videos`, and any run, reconstruction, image set, translator or world whose own
@@ -188,6 +266,11 @@ it as an error to correct; one the server itself could not parse (`tool_use_fail
 
 ## Limits
 
+- Suggestions are rules, not judgement: each looks at one kind of evidence (the newest study, the newest suite, the
+  last health report this session) and suggests one call; the model only ranks and words them. The coverage rule
+  counts frames from the run index by world, time of day and weather kind — not labels, not object classes.
+- Explain this error reads the log the job wrote; a job that failed before logging anything is explained from its
+  exit code alone, and a known fix is matched by words in the log (a heuristic).
 - The per-minute limit is paced from an estimate (characters / 4) and the server's own counts of the last minute's
   responses; the server's count can differ, and a 429 then waits for its `retry-after`. Requests per minute and per
   day are not paced (a 429 says when they are reached).
@@ -292,8 +375,16 @@ the day.
 - `assistant.service.AssistantService` (`win.assistant`) — what the rest of Falcon calls:
   `quick(prompt, context) -> str` (fast model, blocking: call it from a task), `explain_error(text, where)`,
   `ask(text, context=None)` (opens the panel with a request; sent at once when the assistant is ready),
-  `propose({'tool', 'args', 'why'})` (an approval card for a suggested action; approved, it runs like a tool call and
-  is noted in the conversation).
+  `propose({'tool', 'args', 'why'})` (a suggested action: an approval card in Ask — or at once when the permission
+  mode lets it; it runs like a tool call and is noted in the conversation).
+- `assistant.suggest` — the suggestion triggers (`TRIGGERS`, each `fn(State) -> [Suggestion]`), `phrase()` (the fast
+  model's ranking and wording, grounding-checked), `Store` (dismissals) and `Pacer`; `ui.suggestions` — the engine
+  (`win.suggestions`), the chips and Home's card. `assistant.explain` — `job_context`, `known_fixes`, `manual_for`,
+  `explain`/`offline` (Explain this error) and `about()` (Ask about this: ids only, `Refused` for private objects);
+  the window's `explain_job(job)` and `ask_about(kind, **ids)`.
+- Show-me: `Agent.show_me` (the panel's toggle) adds `agent.SHOW_ME` to the system prompt, loads the ui group, runs ui
+  act calls without a card (approval `show_me`) and pauses after each (`SHOW_ME_PAUSE_S`, the host's `show_me`
+  event).
 - `runs_trash` returns `{'trashed': [{'from', 'to', 'item'}]}` (and emits each move as `ctx.emit('trashed', …)`);
   the activity log keeps the item and its Undo calls `runs_restore` with it, which puts the catalogue back too.
   Project edits and queued jobs are found by the agent itself (the undo stack's index and the queue's job ids before

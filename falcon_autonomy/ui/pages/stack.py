@@ -229,6 +229,10 @@ class StackPage(Page):
         self.results.setRootIsDecorated(False)
         self.results.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.results.setMinimumHeight(200)
+        from ..assistant_dock import add_ask_menu
+        add_ask_menu(self.results, win, lambda it: ('suite_result', {
+            'suite': self.suite_dir(), 'scenario': it.data(0, 256).get('scenario'), 'seed': it.data(0, 256).get('seed'),
+            'run': it.data(0, 256).get('run') or ''}) if it.data(0, 256) and self.suite_dir() else None)
         rv.addWidget(self.results, 1)
         row = QHBoxLayout()
         row.addWidget(button('Replay the selected run', self.replay))

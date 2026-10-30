@@ -95,8 +95,10 @@ def test_home_next_step_and_links(window, qapp, project):
     assert next_step({'worlds': [1], 'rigs': [1], 'models': [1]}, 2, 0)[0] == 'Evaluate a model'
     assert next_step({'worlds': [1], 'rigs': [1], 'models': [1]}, 2, 1)[3] == 'rarecases'
     home = window.go('home')
+    window.assistant.set_cfg(suggestions=False)             # the work's order alone (the suggestions' card: below)
+    window.suggestions.refresh()
     home.refresh()
-    assert home.next_head.text() == 'Record a first dataset'           # the test project: a world and a rig, no runs
+    assert home.next_kind.text() == 'Next step' and home.next_head.text() == 'Record a first dataset'           # the test project: a world and a rig, no runs
     assert home.runs_empty.isVisibleTo(home) and not home.runs.isVisibleTo(home)
     n = len(project.doc['worlds'])
     assert home.count_btns['worlds'][0].text().startswith(f'{n} ')

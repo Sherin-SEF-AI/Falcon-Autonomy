@@ -2,9 +2,10 @@
 usage and cost, and the hooks the next features call (docs/assistant.md).
 
 Two models: the main model (cfg main_model) runs the agent — planning, tool calls, reasoning over results; the fast
-model (cfg fast_model, Qwen by default) answers one-shot helpers through quick(): a summary, "explain this error",
-phrasing a suggestion. Qwen is a Preview model on Groq: when the server's model list lacks it, or a call says it is
-gone, the fast lane falls back to FAST_FALLBACK and says so once (notice_listeners).
+model (cfg fast_model, Qwen by default) answers one-shot helpers through quick(): a summary, "explain this error"
+(assistant.explain), wording suggestions (assistant.suggest). Qwen is a Preview model on Groq: when the server's model
+list lacks it, or a call says it is gone, the fast lane falls back to FAST_FALLBACK and says so once
+(notice_listeners).
 
 Tokens per minute: the responses of the last 60 s are counted (tpm_used) against the user's limit (cfg tpm_limit);
 tpm_wait says how long a request must wait to fit.
@@ -28,7 +29,7 @@ from .keystore import KeyStore
 from .provider import CancelToken, ProviderError, Usage, cost, model_params
 from .session import Audit
 
-NOTICE_VERSION = 1
+NOTICE_VERSION = 2                        # 2: suggestions and Explain this error added to what is sent
 FAST_FALLBACK = 'openai/gpt-oss-20b'      # production on Groq: used while the (Preview) fast model is not offered
 NOTICE = """Falcon's assistant sends text to the model server you configure — Groq (api.groq.com) unless you set another \
 — using your own API key. Groq's terms and privacy policy apply to what it receives.
@@ -37,7 +38,11 @@ What is sent, as text only:
 • your messages, and text files you attach yourself;
 • the conversation so far, including the results of the tools the assistant used: names, ids, settings and measured \
 numbers of your project, runs, jobs, scenarios, models and evaluations, and passages of Falcon's manual;
-• the descriptions of the tools it can use, and which page of Falcon is open.
+• the descriptions of the tools it can use, and which page of Falcon is open;
+• with suggestions on, the next steps Falcon found in your project — their titles and the facts behind them (names, \
+ids and numbers of your runs, studies, suites, worlds and jobs) — for the fast model to rank and word;
+• when you press Explain on a failed job: its title, what its exit means and the tail of its log, with passages of \
+Falcon's manual.
 Before anything is sent, your home folder is shortened to ~ and anything shaped like a password, token or key is \
 replaced by [secret].
 

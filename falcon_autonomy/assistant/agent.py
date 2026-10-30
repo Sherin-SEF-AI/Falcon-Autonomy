@@ -87,6 +87,15 @@ MODE_RULES = {
                  'the plan current; moving runs to the trash still asks. Stop when the goal is met or you are blocked, '
                  'and say which.',
 }
+SHOW_ME = ('Show-me mode is on: the user wants to SEE where things are in Falcon\'s window. When you explain how to do '
+           'something in Falcon, and for every "How do I…?" or "Where is…?" question, walk them through it: before '
+           'each step write one short sentence saying what you are showing, then call one ui tool — ui_open_page (the '
+           'page and tab), ui_controls then ui_highlight (outline the control they use), ui_show_run or ui_show_frame '
+           '(the run or frame you are talking about). One ui call per step; Falcon pauses after each so the user can '
+           'follow. Moving the view needs no approval in this mode; you still change nothing else unless asked.')
+SHOW_ME_PAUSE_S = 1.6               # after each step of show-me (ui_highlight: its outline's time, at most SHOW_ME_MAX_S)
+SHOW_ME_MAX_S = 3.0
+HOWTO = re.compile(r'^\W*(how (do|can|should|would) (i|we|you)|how to|where (is|are|do|can)|show me)\b', re.I)
 
 
 # --------------------------------------------------------------------------------------------- meta-tools
@@ -405,6 +414,7 @@ class Agent:
         self.session = session
         self.host = host or Host()
         self.mode = mode if mode in MODES else 'ask'
+        self.show_me = False                    # show-me mode (SHOW_ME): the panel's toggle
         self.cancel = CancelToken()
         self.thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -559,7 +569,21 @@ class Agent:
         if left:
             ctx['tools callable now']['loaded but left out this step (token limit)'] = left
         extra = ('\n\nNow: ' + json.dumps(ctx, ensure_ascii=False, default=str)) if ctx else ''
-        return {'role': 'system', 'content': SYSTEM + '\n\n' + MODE_RULES[self.mode] + extra}
+        show = ''
+        if self.showing():
+            show = '\n\n' + SHOW_ME
+            if HOWTO.search(self._last_user_text()):
+                show += ' The user\'s last message is such a question: show it.'
+        return {'role': 'system', 'content': SYSTEM + '\n\n' + MODE_RULES[self.mode] + show + extra}
+
+    def showing(self) -> bool:
+        """Show-me mode: on, with a window to point at (the ui tools need it)."""
+        return bool(self.show_me) and self.host.has_window
+
+    def _last_user_text(self) -> str:
+        last = next((m for m in reversed(self.session.snapshot()) if m.get('role') == 'user' and not m.get('_event')),
+                    None)
+        return (last.get('_display') or last.get('content') or '') if last else ''
 
     def _loop(self):
         nudged_at = None                        # tool calls made when the last Autopilot nudge went out
@@ -609,6 +633,8 @@ class Agent:
                if g not in self.session.loaded]
         if new:
             self.load_groups(new, why='your message')
+        if self.showing() and 'ui' not in self.session.loaded:
+            self.load_groups(['ui'], why='show-me mode')
 
     def load_groups(self, groups, why: str = ''):
         """Load groups (a group loaded again moves to the end: the most recent is sent first when not all fit)."""
@@ -907,9 +933,22 @@ class Agent:
         self._finish(tc, res, ms, approval, tier)
         if before is not None and not (isinstance(res, dict) and res.get('error')):
             self._record_changes(tc.name, args, res, before, sink)
+        if approval == 'show_me' and not (isinstance(res, dict) and res.get('error')):
+            self._show_pause(tc.name, args)
+
+    def _show_pause(self, name: str, args: dict):
+        """Show-me: hold still after a step so the user can follow (Stop ends the pause)."""
+        p = SHOW_ME_PAUSE_S
+        if name == 'ui_highlight':
+            p = min(float((args or {}).get('seconds') or 4.0), SHOW_ME_MAX_S)
+        self.host.event('show_me', {'tool': name, 'pause_s': p})
+        if self.cancel.wait(p):
+            raise Cancelled()
 
     def _permit(self, tc, tool, args) -> str:
         if tool.tier == 'act':
+            if self.showing() and tool.group == 'ui':
+                return 'show_me'                # moving the view is what show-me mode is for
             if self.mode in ('auto', 'autopilot'):
                 return 'auto'
             if tool.name in self.session.allowed:

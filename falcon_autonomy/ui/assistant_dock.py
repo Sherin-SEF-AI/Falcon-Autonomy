@@ -259,7 +259,8 @@ class ToolCard(QFrame):
     def _update(self):
         when = '…' if self.ms is None else (f'{self.ms:.0f} ms' if self.ms < 1000 else f'{self.ms / 1000:.1f} s')
         how = {'approved': 'approved', 'approved_all': 'approved (all of this kind)', 'allowed': 'approved earlier',
-               'auto': 'ran without asking', 'rejected': 'declined', 'stopped': 'stopped'}.get(self.approval, '')
+               'auto': 'ran without asking', 'rejected': 'declined', 'stopped': 'stopped',
+               'show_me': 'show me', 'read': 'looked'}.get(self.approval, '')
         bits = [self.name, when] + ([how] if how else []) + ([self.summary] if self.summary else [])
         self.head.setText('  ' + ' · '.join(bits))
         self.head.setToolTip(' · '.join(bits))
@@ -540,12 +541,73 @@ class PayloadPreview(QDialog):
 
 
 # --------------------------------------------------------------------------------------------- the panel
+class ExplainCard(QFrame):
+    """"Explain this error": the job, then the cause and fix (Markdown, numbers no context holds marked), who worded it,
+    and the obvious next step as a button (AssistantService.propose)."""
+
+    def __init__(self, panel, ctx: dict):
+        super().__init__()
+        self.setObjectName('card')
+        self.panel, self.ctx, self.cta = panel, ctx, None
+        v = QVBoxLayout(self)
+        v.setContentsMargins(10, 8, 10, 8)
+        v.setSpacing(6)
+        what = f'job {ctx["job"]}' if ctx.get('job') is not None else 'this job'
+        title = label(f'Why {what} failed', h=True)
+        title.setWordWrap(True)
+        v.addWidget(title)
+        sub = label(str(ctx.get('title') or ''), muted=True, small=True, wrap=True)
+        sub.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        v.addWidget(sub)
+        self.body = Bubble('assistant', '', panel.win)
+        self.body.set_text('Reading the log…', False)
+        v.addWidget(self.body)
+        self.btn = QPushButton()
+        self.btn.setProperty('role', 'primary')
+        self.btn.hide()
+        self.btn.clicked.connect(self._act)
+        row = QHBoxLayout()
+        row.addWidget(self.btn)
+        row.addStretch(1)
+        v.addLayout(row)
+        self.foot = label('', muted=True, small=True, wrap=True)
+        self.foot.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        v.addWidget(self.foot)
+        self.result = None
+
+    def show_result(self, res: dict):
+        self.result = res
+        t = res.get('text') or ''
+        if '\n\n' not in t:
+            t = t.replace('\n', '  \n')                  # "Cause: …" and "Fix: …" on lines of their own
+        self.body.set_text(t, True, res.get('ungrounded') or [])
+        self.cta = res.get('cta')
+        if self.cta:
+            self.btn.setText(self.cta['label'] + '…')
+            self.btn.setToolTip(f'{self.cta["tool"]} {json.dumps(self.cta["args"], ensure_ascii=False)} — an '
+                                'approval card when it changes something')
+            self.btn.show()
+        who = (f'Worded by {res["model"]} from the job\'s log tail and the manual' if res.get('model') else
+               'From the job\'s exit and log (the assistant is off or not set up: no model was asked)')
+        if res.get('note'):
+            who = f'The model could not be asked ({res["note"]}): from the job\'s exit and log'
+        if res.get('ungrounded'):
+            who += ' · marked numbers are not in the log or the manual'
+        self.foot.setText(who + '.')
+
+    def _act(self):
+        if self.cta:
+            self.panel.propose({'tool': self.cta['tool'], 'args': dict(self.cta['args']),
+                                'why': f'{self.cta["label"]} (from "Explain this error").'})
+
+
 class AssistantPanel(QWidget):
     def __init__(self, win):
         super().__init__()
         self.win = win
         self.svc = win.assistant
         self.attachments: list = []
+        self.pending_context = None         # what an "Ask about this" request is about, while it waits in the box
         self.cards: dict = {}               # tool call id -> ToolCard
         self.approvals: dict = {}           # tool call id -> ApprovalCard
         self.stream: Bubble | None = None
@@ -588,8 +650,18 @@ class AssistantPanel(QWidget):
         m.addSeparator()
         m.addAction('Settings ▸ Assistant…', self.open_settings)
         self.menu_btn.setMenu(m)
+        self.show_btn = QToolButton()
+        self.show_btn.setText('Show me')
+        self.show_btn.setCheckable(True)
+        self.show_btn.setProperty('text-button', True)
+        self.show_btn.setToolTip('Show-me mode: while it explains, the assistant opens pages, shows runs and outlines '
+                                 'the controls it talks about, pausing after each step so you can follow; moving the '
+                                 'view needs no approval, everything else still does')
+        self.show_btn.setAccessibleName('Show-me mode')
+        self.show_btn.toggled.connect(self._show_me_changed)
         top.addWidget(self.mode)
         top.addWidget(self.model, 1)
+        top.addWidget(self.show_btn)
         top.addWidget(self.menu_btn)
         v.addLayout(top)
 
@@ -714,6 +786,7 @@ class AssistantPanel(QWidget):
         self.session = Session(self.win.workspace())
         cfg = self.svc.cfg()
         self.agent = A.Agent(self.svc, self.session, self.host, cfg.get('mode', 'ask'))
+        self.agent.show_me = bool(cfg.get('show_me'))
         self.host.cancelled = lambda: self.agent.cancel.is_set()
         self.mode.blockSignals(True)
         self.mode.setCurrentIndex(max(0, A.MODES.index(self.agent.mode)))
@@ -758,6 +831,9 @@ class AssistantPanel(QWidget):
         self.preview_act.blockSignals(True)
         self.preview_act.setChecked(bool(cfg.get('preview')))
         self.preview_act.blockSignals(False)
+        self.show_btn.blockSignals(True)
+        self.show_btn.setChecked(bool(cfg.get('show_me')))
+        self.show_btn.blockSignals(False)
         ids = [m['id'] for m in cfg.get('models') or [] if isinstance(m, dict) and m.get('id')]
         if cfg['main_model'] not in ids:
             ids.insert(0, cfg['main_model'])
@@ -813,6 +889,13 @@ class AssistantPanel(QWidget):
         if self.agent is not None:
             self.agent.mode = m
         self.svc.set_cfg(mode=m)
+
+    def _show_me_changed(self, on):
+        if self.agent is not None:
+            self.agent.show_me = bool(on)
+        self.svc.set_cfg(show_me=bool(on))
+        self.status.setText('Show-me mode on: the assistant points at what it explains.' if on else
+                            'Show-me mode off.')
 
     def _model_changed(self, _i):
         t = self.model.currentText().strip()
@@ -909,9 +992,13 @@ class AssistantPanel(QWidget):
             return False
         if self.session.workspace != self.win.workspace():
             self.load_session()
+        typed = text is None
         text = (self.composer.toPlainText() if text is None else text).strip()
         if not text and not self.attachments:
             return False
+        if typed and context is None and self.pending_context is not None:
+            context = self.pending_context            # an "Ask about this" left in the box until the assistant was ready
+        self.pending_context = None
         ok, why = self.svc.ready()
         if not ok:
             if self.svc.cfg()['enabled'] and not self.svc.consented() and ensure_consent(self, self.svc):
@@ -967,8 +1054,50 @@ class AssistantPanel(QWidget):
         if self.svc.ready()[0] and not self.agent.busy:
             return self.send(text, context)
         self.composer.setPlainText(text)
+        self.pending_context = context
         self.composer.setFocus()
         return False
+
+    def ask_about(self, kind: str, **ids):
+        """"Ask about this": the request about one object, named by its id (assistant.explain.about); a private
+        object or one outside the workspace is refused here and nothing is asked."""
+        from ..assistant.explain import Refused, about
+        try:
+            text, ctx = about(kind, self.win.workspace(), **ids)
+        except Refused as e:
+            self.win.show_assistant(True)
+            self.pages.setCurrentIndex(1)
+            self._bubble('error', f'Not asked: {e}.')
+            self.win.log.append_line(f'assistant: not asked — {e}')
+            return False
+        return self.ask(text, ctx)
+
+    def explain(self, job):
+        """"Explain this error" for a failed job (a core.jobs.Job or a job-history record with log_text): a card in the
+        chat with the cause and fix — the fast model's when the assistant is ready, else worded from the log — and a
+        button for the obvious next step when there is one (an approval card, per the permission mode)."""
+        from ..assistant import explain as X
+        from . import tasks
+        self.win.show_assistant(True)
+        self.pages.setCurrentIndex(1)
+        ctx = X.job_context(job, self.win.workspace())
+        fixes = X.known_fixes(ctx, self.win.project.doc)
+        card = self._add(ExplainCard(self, ctx))
+        self._at_bottom = True
+        ready = self.svc.ready()[0] and not ctx.get('private')
+
+        def work():
+            manual = X.manual_for(ctx)
+            if not ready:
+                return X.offline(ctx, fixes, manual)
+            try:
+                return X.explain(self.svc, ctx, fixes, manual)
+            except Exception as e:              # noqa: BLE001 (a provider error: the offline wording, said why)
+                out = X.offline(ctx, fixes, manual)
+                out['note'] = getattr(e, 'message', None) or type(e).__name__
+                return out
+        tasks.run(self, work, card.show_result, lambda e: card.show_result(X.offline(ctx, fixes, [])))
+        return card
 
     def propose(self, action: dict):
         """AssistantService.propose: an approval card for a suggested action; approved, it runs like any tool call."""
@@ -980,6 +1109,18 @@ class AssistantPanel(QWidget):
             self._bubble('error', f'Suggested action {action["tool"]!r} is not a tool Falcon has.')
             return None
         args = action.get('args') or {}
+        mode = self.agent.mode
+        direct = 'read' if t.tier == 'read' else ('auto' if mode in ('auto', 'autopilot') else 'allowed'
+                                                  if t.name in self.session.allowed else '') if t.tier == 'act' else ''
+        if direct:                               # reads run in every mode; changes as the permission mode says
+            from . import tasks
+            card = self._add(ToolCard(t.name, json.dumps(args), t.tier))
+            if action.get('why'):
+                card.setToolTip(action['why'])
+            tasks.run(self, lambda: self.agent.run_proposed(t.name, args, direct),
+                      lambda res: card.done(json.dumps(res, default=str), 0.0, A.summarize(res),
+                                            bool(res.get('error')), direct))
+            return card
         req = A.Approval(f'proposal-{id(action)}', t.name, t.tier, args, description=action.get('why') or
                          t.description)
         req.allow_all = False
@@ -1062,6 +1203,8 @@ class AssistantPanel(QWidget):
             self.win.log.append_line(f'assistant: {p}')
         elif kind == 'tools':
             self.status.setText(f'Tools loaded: {", ".join(p["added"])}' + (f' ({p["why"]})' if p.get('why') else ''))
+        elif kind == 'show_me':
+            self.status.setText(f'Showing ({p["tool"]}) — pausing {p["pause_s"]:.1f} s so you can follow')
         elif kind == 'tpm_wait':
             self.status.setText(f'Waiting {p["wait_s"]:.0f} s for your per-minute token limit ({p["limit"]}; this '
                                 f'step is about {p["tokens"]} tokens)')
@@ -1237,3 +1380,23 @@ def install(win):
     win._act('ask', 'Ask Falcon…', lambda: win.show_assistant(True, focus=True), menu=view,
              tip='Ask the assistant to do something in Falcon')
     return panel
+
+
+def add_ask_menu(view, win, target):
+    """"Ask about this" in a results view's context menu: target(item) gives (kind, ids) for the row under the pointer
+    (assistant.explain.about), or None for a row with nothing to ask about. For a view without a menu of its own."""
+    from PyQt6.QtWidgets import QMenu
+
+    def menu(pos):
+        it = view.itemAt(pos)
+        t = target(it) if it is not None else None
+        if not t:
+            return
+        kind, ids = t
+        m = QMenu(view)
+        m.addAction('Ask about this', lambda: win.ask_about(kind, **ids))
+        m.popup(view.viewport().mapToGlobal(pos))
+        view._ask_menu = m                       # kept for the tests (and alive while shown)
+    view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    view.customContextMenuRequested.connect(menu)
+    view._ask_target = target

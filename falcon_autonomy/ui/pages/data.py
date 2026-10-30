@@ -603,6 +603,10 @@ class BrowseTab(QWidget):
         m.addAction('Train on these', self.train_selected)
         m.addSeparator()
         m.addAction('Derive synthetic audio', self.derive_audio)
+        it = self.runs.itemAt(pos)
+        if it is not None and it.data(0, 256):
+            m.addSeparator()
+            m.addAction('Ask about this', lambda p=it.data(0, 256): self.win.ask_about('run', run=p))
         m.exec(self.runs.viewport().mapToGlobal(pos))
 
     def edit_tags(self):

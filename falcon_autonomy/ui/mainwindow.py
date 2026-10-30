@@ -86,7 +86,8 @@ class _JobProgress(QWidget):
 
 
 class _JobActions(QWidget):
-    """A job's buttons: Cancel while it is queued or running; Open (where its result is shown) and Log once it ends."""
+    """A job's buttons: Cancel while it is queued or running; Open (where its result is shown) and Log once it ends;
+    Explain when it failed (the Assistant panel's "Explain this error")."""
 
     def __init__(self, dock, job):
         super().__init__()
@@ -104,15 +105,24 @@ class _JobActions(QWidget):
         self.log.setProperty('text-button', True)
         self.log.setToolTip('This job\'s log')
         self.log.clicked.connect(lambda: dock.show_log(job))
+        self.explain = QToolButton()
+        self.explain.setText('Explain')
+        self.explain.setProperty('text-button', True)
+        self.explain.setToolTip('Explain this error: the likely cause and fix from the job\'s log and the manual (the '
+                                'assistant\'s fast model when it is set up, else from the log alone)')
+        self.explain.clicked.connect(lambda: dock.win.explain_job(job))
+        self.explain.hide()
         h.addWidget(self.main)
         h.addWidget(self.log)
+        h.addWidget(self.explain)
         h.addStretch(1)
 
-    def finished(self):
+    def finished(self, failed: bool = False):
         if not self.main.property('open'):
             self.main.setProperty('open', True)
             self.main.setText('Open')
             self.main.setToolTip('Go to where this job\'s result is shown')
+        self.explain.setVisible(failed)
 
 
 class JobsDock(QWidget):
@@ -141,13 +151,15 @@ class JobsDock(QWidget):
         hd.setStretchLastSection(False)
         hd.setSectionResizeMode(self.STEP, QHeaderView.ResizeMode.Stretch)
         for c, w in ((self.TITLE, 260), (self.STATUS, 90), (self.PROGRESS, 170), (self.ELAPSED, 76),
-                     (self.LEFT, 90), (self.ACTIONS, 112)):
+                     (self.LEFT, 90), (self.ACTIONS, 168)):
             hd.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
             self.tree.setColumnWidth(c, w)
         hd.setSectionResizeMode(self.ACTIONS, QHeaderView.ResizeMode.Fixed)
         for c in (self.ELAPSED, self.LEFT):
             self.tree.headerItem().setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.tree.itemDoubleClicked.connect(lambda it, _c: self.win.open_job(it.data(0, 256)))
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._menu)
         self.clear_btn = QToolButton()
         self.clear_btn.setText('Clear finished')
         self.clear_btn.setProperty('text-button', True)
@@ -209,7 +221,7 @@ class JobsDock(QWidget):
                                                       (st in FINAL and st != 'done' and job.progress > 0))
         self._times(it, job)
         if st in FINAL:
-            self.tree.itemWidget(it, self.ACTIONS).finished()
+            self.tree.itemWidget(it, self.ACTIONS).finished(st == 'failed')
         sev = {'failed': 'critical', 'cancelled': 'warning', 'done': 'good'}.get(st)
         it.setIcon(0, icons.status_icon(sev) if sev else icons.icon('history', 12))
         self._buttons()
@@ -237,8 +249,27 @@ class JobsDock(QWidget):
             self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(it))
         self._buttons()
 
+    def _menu(self, pos):
+        """A row's menu: open, its log, Ask about this, and Explain this error for a failed job."""
+        from PyQt6.QtWidgets import QMenu
+        it = self.tree.itemAt(pos)
+        job = self.jobs.get(it.data(0, 256)) if it is not None else None
+        if job is None:
+            return None
+        m = QMenu(self)
+        if job.state in FINAL:
+            m.addAction('Open', lambda: self.win.open_job(job.id))
+        m.addAction('Log', lambda: self.show_log(job))
+        m.addSeparator()
+        m.addAction('Ask about this', lambda: self.win.ask_about('job', job=job.id, run_dir=job.spec.run_dir))
+        if job.state == 'failed':
+            m.addAction('Explain this error', lambda: self.win.explain_job(job))
+        m.popup(self.tree.viewport().mapToGlobal(pos))
+        return m
+
     def show_log(self, job):
-        """A job's log so far in a window of its own (the Log tab interleaves every job's)."""
+        """A job's log so far in a window of its own (the Log tab interleaves every job's), with Ask about this and,
+        for a failed job, Explain this error."""
         d = QDialog(self)
         d.setWindowTitle(f'Log — {job.spec.title}')
         d.resize(820, 520)
@@ -248,8 +279,29 @@ class JobsDock(QWidget):
         ed.setReadOnly(True)
         ed.setFont(mono(11))
         lv.addWidget(ed)
+        lv.addLayout(_log_buttons(d, ask=lambda: self.win.ask_about('log', job=job.id, run_dir=job.spec.run_dir),
+                                  explain=(lambda: self.win.explain_job(job)) if job.state == 'failed' else None))
         d.show()
         return d
+
+
+def _log_buttons(d, ask=None, explain=None) -> QHBoxLayout:
+    """A log window's buttons: Explain this error (a failed job) and Ask about this, each closing the window and
+    opening the Assistant panel."""
+    h = QHBoxLayout()
+    h.addStretch(1)
+    for text, fn, tip in (('Explain this error', explain, 'The likely cause and fix, from this log and the manual'),
+                          ('Ask about this', ask, 'Ask the assistant about this job (it reads the log through its '
+                                                  'tools, by the job\'s number)')):
+        if fn is None:
+            continue
+        b = QToolButton()
+        b.setText(text)
+        b.setProperty('text-button', True)
+        b.setToolTip(tip)
+        b.clicked.connect(lambda _=False, f=fn: (d.close(), f()))
+        h.addWidget(b)
+    return h
 
 
 class HistoryPanel(QWidget):
@@ -332,10 +384,13 @@ class HistoryPanel(QWidget):
         d.setWindowTitle(f'Log — {rec.get("title", "")}')
         d.resize(820, 520)
         lv = QVBoxLayout(d)
-        ed = QPlainTextEdit(self.win.history.log_text(rec))
+        text = self.win.history.log_text(rec)
+        ed = QPlainTextEdit(text)
         ed.setReadOnly(True)
         ed.setFont(mono(11))
         lv.addWidget(ed)
+        if rec.get('status') == 'failed':
+            lv.addLayout(_log_buttons(d, explain=lambda: self.win.explain_job(dict(rec, log_text=text))))
         d.show()
         return d
 
@@ -537,6 +592,8 @@ class MainWindow(QMainWindow):
         self._build_actions()
         from .assistant_dock import install as install_assistant
         install_assistant(self)                          # the Assistant dock (right, hidden), its badge, Ctrl+Shift+A
+        from .suggestions import install as install_suggestions
+        install_suggestions(self)                        # next-step chips on the pages and Home's next best action
         self.projectChanged.connect(self._on_project_changed)
         self.undo.cleanChanged.connect(lambda _: self._update_title())
         self.service.subscribe(self._on_service)
@@ -636,6 +693,16 @@ class MainWindow(QMainWindow):
             self.assistant_panel.refresh_state()
             if focus:
                 self.assistant_panel.composer.setFocus()
+
+    def explain_job(self, job):
+        """"Explain this error" for a failed job (or a job-history record with its log_text): in the Assistant
+        panel."""
+        return self.assistant_panel.explain(job)
+
+    def ask_about(self, kind: str, **ids):
+        """"Ask about this": the Assistant panel with a request about one object, named by its id
+        (assistant.explain.about; private objects are refused)."""
+        return self.assistant_panel.ask_about(kind, **ids)
 
     def open_job(self, job_id):
         """Go to where a job's result is shown: a recorded drive in Data, anything else on the page it was started
@@ -922,6 +989,7 @@ class MainWindow(QMainWindow):
         for p in self.pages:
             if hasattr(p, 'shutdown'):
                 p.shutdown()
+        self.suggestions.stop()
         self.assistant_panel.shutdown()
         for j in self.queue.active():
             self.queue.cancel(j)

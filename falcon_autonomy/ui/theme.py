@@ -170,6 +170,11 @@ QToolButton#navFoot:hover { color: @ink; }
 QToolButton#jobsBadge { padding: 0 6px; color: @ink2; }
 QToolButton#jobsBadge[busy="true"] { color: @ink; font-weight: 600; }
 QWidget#homeCard { background: @panel; border: 1px solid @hair; border-radius: 4px; }
+QFrame#suggestChip { background: @raised; border: 1px solid @hair; border-radius: 11px; }
+QFrame#suggestChip:hover { border-color: @strong; }
+QToolButton#suggestAct { border: none; background: transparent; color: @ink; padding: 2px 4px; min-height: 20px; }
+QToolButton#suggestDismiss { border: none; background: transparent; color: @muted; padding: 0 6px; }
+QToolButton#suggestDismiss:hover { color: @ink; }
 QLabel[stat="true"] { font-family: "IBM Plex Mono"; font-size: @fs13px; font-weight: 600; }
 QLineEdit#paletteInput { min-height: 30px; max-height: 32px; font-size: @fs13px; }
 QLabel#bubbleUser { background: @raised; border: 1px solid @hair; border-radius: 4px; }

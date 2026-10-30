@@ -1,6 +1,8 @@
 """Home, the start page: where the project stands (worlds, rigs, scenarios, models; the recent runs, evaluations and
-jobs; the server and the machine) and the next step it suggests — every item a link to where it is done. Also the
-Status panel, the Loop page's Status tab: the server, the machine, the measured throughput and the latest runs."""
+jobs; the server and the machine) and the next step it suggests — every item a link to where it is done. The card on
+top is the "Next best action" when the assistant's suggestions have one (assistant.suggest: a tool call, reviewed in
+the Assistant panel), else the next step of the work's order (next_step). Also the Status panel, the Loop page's
+Status tab: the server, the machine, the measured throughput and the latest runs."""
 from __future__ import annotations
 
 import os
@@ -53,13 +55,21 @@ class HomePage(Page):
         col = QVBoxLayout()
         self.next_head = label('', title=True)
         self.next_why = label('', muted=True, wrap=True)
-        col.addWidget(label('Next step', muted=True, small=True))
+        self.next_kind = label('Next step', muted=True, small=True)
+        col.addWidget(self.next_kind)
         col.addWidget(self.next_head)
         col.addWidget(self.next_why)
         nc.addLayout(col, 1)
         self.next_btn = button('', self._go_next, role='primary')
+        self.next_dismiss = button('Not now', self._dismiss, role='ghost',
+                                   tip='Dismiss this suggestion for this project (Settings ▸ Assistant turns '
+                                       'suggestions off)')
+        self.next_dismiss.hide()
+        nc.addWidget(self.next_dismiss, 0, Qt.AlignmentFlag.AlignVCenter)
         nc.addWidget(self.next_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         self._next_key = ''
+        self.suggestion = None                       # the "Next best action" shown (assistant.suggest.Suggestion)
+        self._step = ('', '', '', '')
         v.addWidget(self.next_card)
         # ---- project, server, machine
         row = QHBoxLayout()
@@ -105,6 +115,8 @@ class HomePage(Page):
             self.runs.header().setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
         self.runs.setMinimumHeight(200)
         self.runs.itemDoubleClicked.connect(lambda it, _c: self.open_run(it))
+        from ..assistant_dock import add_ask_menu
+        add_ask_menu(self.runs, win, lambda it: ('run', {'run': it.data(0, 256)}) if it.data(0, 256) else None)
         self.runs_empty = EmptyState('No runs yet.', 'Record a dataset', lambda: win.go('data'))
         runs.add(self.runs)
         runs.add(self.runs_empty)
@@ -179,11 +191,8 @@ class HomePage(Page):
         self.evals.setVisible(bool(evs))
         self.evals_empty.setVisible(not evs)
         n_runs = sum(r['status'] == 'ok' for r in rows)           # a cancelled or failed run gives nothing to use
-        head, why, text, key = next_step(doc, n_runs, len(evs))
-        self.next_head.setText(head)
-        self.next_why.setText(why)
-        self.next_btn.setText(text)
-        self._next_key = key
+        self._step = next_step(doc, n_runs, len(evs))
+        self._show_next()
         self.refresh_jobs()
         self.refresh_machine()
 
@@ -217,10 +226,41 @@ class HomePage(Page):
         super().showEvent(ev)
         self.refresh()
 
+    def show_suggestion(self, s):
+        """The suggestions' best (or None: the work's next step again)."""
+        self.suggestion = s
+        self._show_next()
+
+    def _show_next(self):
+        s = self.suggestion
+        if s is not None:
+            self.next_kind.setText('Next best action' + (' · worded by the assistant' if s.phrased else ''))
+            self.next_head.setText(s.title)
+            self.next_why.setText(s.shown())
+            self.next_btn.setText('Review…')
+            self.next_btn.setToolTip(f'Open the Assistant panel with {s.tool} — an approval card when it changes '
+                                     'something and your permission mode asks')
+            self.next_dismiss.show()
+            return
+        head, why, text, key = self._step
+        self.next_kind.setText('Next step')
+        self.next_head.setText(head)
+        self.next_why.setText(why)
+        self.next_btn.setText(text)
+        self.next_btn.setToolTip('')
+        self.next_dismiss.hide()
+        self._next_key = key
+
     # ------------------------------------------------------------------ links
     def _go_next(self):
-        if self._next_key:
+        if self.suggestion is not None and getattr(self.win, 'suggestions', None) is not None:
+            self.win.suggestions.act(self.suggestion)
+        elif self._next_key:
             self.win.go(self._next_key)
+
+    def _dismiss(self):
+        if self.suggestion is not None and getattr(self.win, 'suggestions', None) is not None:
+            self.win.suggestions.dismiss(self.suggestion)
 
     def open_run(self, it):
         data = self.win.go('data')
