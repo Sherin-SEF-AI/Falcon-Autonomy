@@ -21,9 +21,8 @@ Not available, and said in dataset.json, run.json and docs/reconstruction.md: in
 flow, lidar, radar, actors.jsonl. The reconstruction is of the **static scene**: moving actors were masked out of
 training, so none is drawn (where a mask missed one, a blurred ghost of it may be). A detector therefore cannot be
 scored on these runs (the harness needs objects); a segmenter can be, against the voted semantic classes, and any
-model can be run on them for its predictions. Compositing CARLA's actors back in (rendered by CARLA at the replayed
-poses over these images, with the reconstruction's depth for occlusion) is the way to get objects; it is described in
-docs/reconstruction.md and not implemented.
+model can be run on them for its predictions. A run with objects is a hybrid world (core.recon.hybrid): CARLA drives
+and renders the actors at the camera's poses and they are composited over the reconstruction, CARLA's labels kept.
 """
 from __future__ import annotations
 
