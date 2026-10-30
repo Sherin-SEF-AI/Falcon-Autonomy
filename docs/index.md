@@ -238,6 +238,12 @@ drives against real images and writes translated runs whose labels stay valid, w
 new viewpoints ([reconstruction](reconstruction.md)). Your own dashcam footage — its GPS, frames (by day, at night
 or at twilight), translation targets and reconstructions — is read in place ([dashcam](dashcam.md)).
 
+**Synthetic audio**: *Derive audio* (Data ▸ Browse, or `falcon derive audio RUN`) makes a multi-channel recording
+of the rig's microphone array from a recorded drive — engines and tyres by CNOSSOS-EU, sirens on CARLA's emergency
+vehicles, horns from a labelled Indian rule set — propagated with retarded time (the Doppler shift emerges), spreading,
+ISO 9613-1 air absorption, a ground reflection and occlusion by vehicles, with per-step ground truth (direction,
+distance, level, Doppler factor) and an SRP-PHAT check. Procedural, never recorded sound ([audio](audio.md)).
+
 **Learned worlds**: the Training page's *World model* tab trains a latent dynamics model on drives and episodes and
 scores it per horizon against simple baselines, learns policies in its imagination and clones camera-to-control
 policies ([world-model training](world-model-training.md)); the Rare cases page trains **adversarial traffic** that

@@ -74,6 +74,10 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
   end-to-end camera policies; adversarial traffic that learns to make the ego fail within realism limits;
   vision-language driving answers scored against the simulator's truth ([world-model training](docs/world-model-training.md),
   [adversarial traffic](docs/adversarial-traffic.md), [vision-language](docs/vlm.md)).
+- **Synthetic audio**: a microphone array on the ego hears the drive's engines, sirens and horns — CNOSSOS-EU vehicle
+  emission, documented siren patterns, a labelled Indian horn rule set, retarded-time propagation (Doppler emerges),
+  ISO 9613-1 air absorption, a ground reflection, occlusion by vehicles — as a 48 kHz multi-channel WAV with per-step
+  ground truth, checked against theory and with SRP-PHAT; procedural, labelled synthetic ([audio](docs/audio.md)).
 - **Deployment** (2.0): TensorRT engines built, profiled (latency, power, energy) and accuracy-checked on the Jetson
   AGX Orin with a release gate; CI mode with gates, JUnit/Markdown/HTML outputs and a GitHub Actions template
   ([deploy](docs/deploy.md), [CI](docs/ci.md)).
@@ -130,7 +134,7 @@ FALCON_REAL_CARLA=1 python3 -m pytest -m real_server     # also against a real C
 [The manual](docs/index.md) · [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
 [project format](docs/project-format.md) · [CLI and exit codes](docs/cli.md) · [methods](docs/methods.md) ·
 [CARLA lessons](docs/carla-lessons.md) · [models](docs/models.md) · [sim-to-real](docs/sim-to-real.md) ·
-[world model](docs/world-model.md) · [training](docs/training.md) · [policies](docs/policies.md) · [loop](docs/loop.md) · [reports](docs/reports.md) ·
+[world model](docs/world-model.md) · [audio](docs/audio.md) · [training](docs/training.md) · [policies](docs/policies.md) · [loop](docs/loop.md) · [reports](docs/reports.md) ·
 [stack testing](docs/stack-testing.md) · [log replay](docs/log-replay.md) · [hardware](docs/hardware.md) ·
 [packaging](docs/packaging.md) · [deploy](docs/deploy.md) · [CI](docs/ci.md) · [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
 

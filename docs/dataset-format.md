@@ -11,7 +11,9 @@ run/
                       from the file's limits ("map") or CARLA's own ("carla"), see worlds.md, and keeper — the
                       traffic moved away from roads that end (counts, events); lights: vehicle lights set and read
                       back (drives, live, stack, gym, HIL); city: an imported
-                      world's buildings, trees and lamps placed (the plan's SHA-256, spawned, failed, seconds)
+                      world's buildings, trees and lamps placed (the plan's SHA-256, spawned, failed, seconds);
+                      derived: products made from the run afterwards into its folder (audio: path, schema, the
+                      parameters and their SHA-256, created)
   dataset.json        sensors (K, lens, views, planned pose, streams), label encodings and classes, provenance
   frames.jsonl        one line per simulation step (below)
   lanes.json          the map's driving lanes and lane graph (labelled drives)
@@ -28,6 +30,8 @@ run/
   radar/<radar>/<n>.npy          float32 velocity, azimuth, altitude, depth (CARLA's order)
   radar/<radar>/<n>.flags.npy    uint8 per row: 1 = weather clutter (only frames the sensor physics touched)
   odd-monitor.json               the ODD monitor's timeline (runs with an ODD, or `falcon odd monitor`)
+  audio/                         SYNTHETIC array audio derived after the drive (`falcon derive audio`, below):
+                                 audio.wav, ground_truth.jsonl, events.jsonl, audio.json, doa.json
   gnss/<gnss>.jsonl  imu/<imu>.jsonl
 ```
 
@@ -79,6 +83,30 @@ sensor CARLA spawns, not the calibration (as on a real faulty rig).
   pixel's motion in pixels from the previous frame, u right and v down — CARLA's optical-flow camera decoded as
   measured on 0.9.16 (pixels = x × W/2, −y × H/2; median error 0.4 px against the flow predicted from depth and the
   camera's motion). Fisheye flow is not recorded.
+
+## Synthetic audio (derived)
+`falcon derive audio RUN` (or Data ▸ Browse ▸ *Derive audio*, or `falcon drive … --audio`) writes `RUN/audio/`
+(schema `falcon.audio/1`; the model, its sources and its validation are in [audio](audio.md)). **Every sound is
+synthetic** — CARLA has no audio; nothing here was recorded.
+
+- `audio.wav`: WAVE_FORMAT_EXTENSIBLE, one channel per microphone of the rig's `audio_array` sensor (channel k = mic k),
+  48 kHz; float32 samples are **sound pressure in pascals** (dB SPL = 20·lg(rms / 20 µPa)), or 24-bit PCM with
+  `full_scale_pa` (default 200 Pa) as full scale. Sample 0 is `sim_t` 0, the first recorded step.
+- `ground_truth.jsonl`: one line per simulation step — `step`, `sim_t`, `sources`, loudest first: every source received
+  at `audible_db` (default 30 dB SPL) or more — `id` (the actor id of actors.jsonl), `type_id`, `class` (car, van,
+  bus, truck, two_wheeler, autorickshaw), `kind` (engine, siren, horn), `az_deg` and `el_deg` in the **array's frame**
+  (azimuth 0° ahead, positive to the right, CARLA's sense; elevation up) and `distance_m` of the source's retarded
+  position (where the sound arriving now was emitted), `spl_db` (its received mean-square pressure over the step, mean
+  of the microphones, direct + ground path), `spl_dba` (an A-weighted estimate), `doppler` (dτ/dt at the array's
+  centre: received / emitted frequency), `speed_mps`.
+- `events.jsonl`: horn events (`actor`, `class`, `rule` — the heuristic rule that fired, or `explicit` — `start_s`,
+  `end_s`) and siren spans (`actor`, `pattern`: wail, yelp or wail_yelp), in time order.
+- `audio.json`: the array (pose in the vehicle frame, mic positions in the array and vehicle frames), every parameter
+  (temperature, humidity, ground reflection, occlusion, horn profile, seed, …), the models and their sources, the
+  limits, the cost and the provenance (SHA-256 of run.json, frames.jsonl, actors.jsonl, drive.json). When the folder is
+  inside the run, run.json gets `derived.audio` with the same parameters.
+- `doa.json`: SRP-PHAT direction-of-arrival estimates on the array output against the ground truth (median and 90th
+  percentile azimuth error; per frame samples).
 
 ## Indian stand-ins and proxies
 CARLA 0.9.16 has no autorickshaw, cycle-rickshaw, cattle or handcart; Falcon drives a CARLA vehicle of the nearest
