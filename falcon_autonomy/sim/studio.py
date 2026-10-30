@@ -69,6 +69,20 @@ def objective(result: dict) -> float:
     return float(c.get('criticality', 0.0))
 
 
+def rss_summary(lab: dict | None) -> dict | None:
+    """The compact RSS label kept in results.jsonl (core.rss.label_run): label, reason, actor, event, times."""
+    if lab is None:
+        return None
+    keep = ('label', 'reason', 'actor', 'event', 't_event', 't_b', 'response', 'relation', 'counted', 'walker')
+    out = {k: lab.get(k) for k in keep if k in lab}
+    out['ego_violations'] = [v['what'] for v in lab.get('ego_violations') or ()]
+    out['actor_violations'] = [v['what'] for v in lab.get('actor_violations') or ()]
+    feas = lab.get('actor_feasible') or {}
+    if feas.get('over_s'):
+        out['actor_over_limits'] = feas['over_s']
+    return out
+
+
 def perception_summary(sc: dict) -> dict:
     """The compact perception record kept in results.jsonl (the full score is in perception/<run>-<key>.json)."""
     keep = ('value', 'metric', 'perception', 'window_miss', 'lost_lead', 'miss_rate', 'worst_actor', 'note',
@@ -129,12 +143,21 @@ class Study:
         write_json(os.path.join(self.dir, 'study.json'),
                    dict({'name': self.name, 'scenario': self.scn, 'world': self.world, 'rig': self.rig,
                          'seed': self.seed, 'search_seed': self.search_seed, 'traffic': self.traffic,
-                         'objective': self.objective_doc(),
+                         'objective': self.objective_doc(), 'feasibility': self.feasibility_notes(),
                          'space': self.space()}, **extra))
 
     def space(self) -> list:
-        """The search space: the scenario's parameters and the extra dimensions."""
-        return SC.search_space(self.scn) + list(self.extra)
+        """The search space: the scenario's parameters (narrowed to the kinematically feasible, core.rss.feasible_space,
+        unless the objective turns it off) and the extra dimensions."""
+        base = SC.search_space(self.scn)
+        if self.spec.get('feasibility', True):
+            from ..core.rss import feasible_space
+            base, _ = feasible_space(self.scn, base)
+        return base + list(self.extra)
+
+    def feasibility_notes(self) -> list:
+        from ..core.rss import feasible_space
+        return feasible_space(self.scn, SC.search_space(self.scn))[1] if self.spec.get('feasibility', True) else []
 
     def results(self) -> list:
         p = os.path.join(self.dir, 'results.jsonl')
@@ -180,16 +203,18 @@ class Study:
             except MS.MilError as e:
                 raise RuntimeError(f'scoring the runs with the model failed: {e}') from None
             os.makedirs(os.path.join(self.dir, 'perception'), exist_ok=True)
+        from ..core.rss import label_run_dir
         for r in rows:
             r['criticality'] = objective(r)
             r['objective_kind'] = self.spec['objective']
             r['perception'] = None
+            r['rss'] = rss_summary(label_run_dir(r['run']))
             if need:
                 sc = scores[r['run']]
                 write_json(os.path.join(self.dir, 'perception', f'{os.path.basename(r["run"])}-{self.okey}.json'),
                            sc)
                 r['perception'] = perception_summary(sc)
-            r['objective'] = MS.objective_value(self.spec, r['criticality'], r['perception'])
+            r['objective'] = MS.objective_value(self.spec, r['criticality'], r['perception'], r['rss'])
             r['objective_key'] = self.okey
 
     def _ensure_scored(self, rows: list):
@@ -334,13 +359,18 @@ def objective_args(ap):
     ap.add_argument('--camera', default=None)
     ap.add_argument('--weather', action='append', default=[], metavar='FIELD[:LO:HI]',
                     help='also search a CARLA weather field (e.g. fog_density, or fog_density:20:100)')
+    ap.add_argument('--count', default='avoidable', choices=MS.COUNTS,
+                    help='the criticality objective counts avoidable failures only (RSS, core.rss; default) or all')
+    ap.add_argument('--no-feasibility', action='store_true',
+                    help='search the scenario\'s full parameter ranges, not only the kinematically feasible part')
 
 
 def objective_from_args(a, proj) -> tuple:
     """(the objective spec, the extra search dimensions) from objective_args' options; ValueError when unusable."""
     from ..core import milsearch as MS
     spec = {'objective': a.objective, 'metric': a.metric, 'target_classes': a.target_class, 'window_s': a.window,
-            'lead_s': a.lead, 'iou': a.iou, 'min_score': a.min_score, 'every': a.every, 'camera': a.camera}
+            'lead_s': a.lead, 'iou': a.iou, 'min_score': a.min_score, 'every': a.every, 'camera': a.camera,
+            'count': a.count, 'feasibility': not a.no_feasibility}
     if a.range:
         spec['range_m'] = [float(x) for x in a.range.split(',')]
     if a.objective != 'criticality':

@@ -155,7 +155,64 @@ resumes after a cancel and never runs the same parameters twice; a search starts
 OpenSCENARIO) and a map of the failure region over any two parameters. The objective can instead be a registered
 model's **perception failure** on the run's labelled frames, or both, with weather fields searched beside the
 scenario's parameters ([model-in-the-loop](rare-cases-mil.md)); *Why did this fail?* attributes a failing case to its
-factors by re-runs ([root cause](root-cause.md)).
+factors by re-runs ([root cause](root-cause.md)). Failures are labelled by Responsibility-Sensitive Safety and, by
+default, only those the ego could have avoided are counted ([below](#avoidable-failures-responsibility-sensitive-safety)).
+
+## Avoidable failures: Responsibility-Sensitive Safety
+A rare-case search used to count any failure — including the lead car that brakes beyond any tyre's grip, or the
+pedestrian who steps out a metre in front of the bumper. Those find nothing about the planner. Falcon now labels
+every study run by **Responsibility-Sensitive Safety** (Shalev-Shwartz, Shammah & Shashua 2017, *On a Formal Model of
+Safe and Scalable Self-driving Cars*, arXiv:1708.06374 v6; `core/rss.py`), and the criticality objective counts
+**avoidable** failures by default.
+
+The formulas (lemma numbers of that version; unit-tested against hand computations and the paper's own numbers — its
+pedestrian example, ρ 0.5 s and 2 m/s² giving 50 cm, and its highway braking distance, 45 m from 30 m/s at 10 m/s²):
+
+- same direction (Lemma 2): `d_min = [v_r ρ + ½ a_max,accel ρ² + (v_r + ρ a_max,accel)²/(2 a_min,brake) − v_f²/(2 a_max,brake)]+`
+- opposite directions (Lemma 3): `d_min = (v1 + v1,ρ)/2 ρ + v1,ρ²/(2 a_min,brake,correct) + (|v2| + v2,ρ)/2 ρ + v2,ρ²/(2 a_min,brake)`
+- lateral (Lemma 4): `d_min = μ + [(v1 + v1,ρ)/2 ρ + v1,ρ|v1,ρ|/(2 a_lat,brake) − ((v2 + v2,ρ)/2 ρ + v2,ρ|v2,ρ|/(2 a_lat,brake))]+`
+  — the paper writes v1,ρ² and −v2,ρ², its case of both cars moving towards each other; the signed form, equal there,
+  keeps a car still drifting away after ρ from being counted as approaching. Each road user has its own ρ and limits.
+
+A time is **dangerous** when both distances are unsafe (Definitions 3, 7, 9); its Danger Threshold is the later of the
+two unsafe runs' starts, and it says which **proper response** applies (Definition 10): longitudinal — the rear car
+brakes at least a_min,brake after ρ, the front car at most a_max,brake, against the direction both brake — or lateral —
+lateral braking to a μ-lateral velocity of 0 — or both. Whoever did not comply is responsible (Section 3.10).
+
+| parameter | default | source |
+|---|---|---|
+| ρ ego / other | 1 s / 2 s | ad-rss-lib parameter discussion (conservative starting values; heuristic) |
+| a_max,accel · a_min,brake · a_max,brake · a_min,brake,correct | 3.5 · 4 · 8 · 3 m/s² | same (4 and 8: a German driving-school rule of thumb) |
+| lateral a_max,accel · a_min,brake · μ | 0.2 · 0.8 m/s² · 0.1 m | same |
+| walkers: ρ · acceleration · braking | 0.5 s · 2 · 2 m/s² | the paper's example (Section 3.8) |
+| compliance tolerance | 0.5 m/s², 0.1 m/s lateral | heuristic (differences of recorded velocities) |
+
+**Labels** (the run's critical event: its first contact with the critical actor, else its minimum TTC, else its
+minimum distance): **avoidable** — the ego did not give its proper response between the Danger Threshold and the event
+(a real planner blind spot); **other** — the ego complied, the other did not (a cut-in inside the safe distance, a lead
+braking harder than a_max,brake, a wrong-way rider who did not brake); **unavoidable** — the danger began with the other
+already inside the ego's braking distance at a_max,brake (it appeared there: a pedestrian stepping out in front, a
+cut-in a few metres ahead), or the other exceeded its kinematic feasibility limits, or both complied by these checks;
+**safe** — the event was never dangerous in RSS's sense (a near miss by the criticality scalar only). With RSS
+counting on (`--count avoidable`, the default; *Count* on the Rare cases page) a run whose label is not avoidable has
+its objective capped at **0.45** (heuristic, below the default threshold 0.5; continuous, so the search keeps its
+gradient) — keep the threshold above 0.45, or count all (`--count all`). Its criticality is kept. The ranked list
+shows every failure with its label and why, the ones not counted after the counted; the failure-region map shows the
+counted share; the study report lists both. Switching the count re-scores a study's runs; nothing is driven again.
+
+**Kinematic feasibility.** A search also narrows the parameters that set an adversary's dynamics directly to what is
+feasible (`core.rss.FEASIBILITY`, heuristic, labelled): a brake's deceleration ≤ 9 m/s² (≈ 0.9 g, a dry road's tyre
+limit), a speed action's acceleration ≤ 4 m/s², a lane change's duration ≥ 2·√(lane / a_lat) = 1.87 s for a 3.5 m lane
+at 4 m/s² lateral (accelerating then braking sideways) — so the built-in cut-in's 1.0–3.0 s becomes 1.87–3.0 s and the
+autorickshaw's 0.8–2.5 s becomes 1.87–2.5 s; study.json lists what was narrowed (`--no-feasibility` searches the full
+ranges). After each run the other's measured dynamics (longitudinal and lateral acceleration, jerk ≤ 8 m/s³, each
+tolerated for 0.5 s — Falcon's adversarial-traffic realism bounds) decide the "exceeded its limits" label.
+
+Limits: the road axis is the ego's heading (its mean over the run on the director's straight starts, else over the
+previous 2 s), and the ego is taken to drive in its lane's direction; junction geometry and priority (Definitions
+14–17), occlusion (Section 3.9) and evasive manoeuvres (Definitions 11–13) are not evaluated — an unprotected turn is
+judged on a straight axis. Accelerations are differences of the recorded velocities. The parameters are not a
+regulation: the paper asks for them to be set by one.
 
 ## OpenSCENARIO
 CARLA's ScenarioRunner is not part of a CARLA 0.9.16 install and is not on the reference machine (it was not

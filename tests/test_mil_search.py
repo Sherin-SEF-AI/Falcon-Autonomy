@@ -111,7 +111,9 @@ def test_spec_weather_dimensions_and_evaluability(tmp_path):
         MS.normalise_spec({'objective': 'perception', 'model': SYN, 'metric': 'AP'})
     s = MS.normalise_spec({'objective': 'both', 'model': SYN, 'target_classes': ['car', 'car', 'bus']})
     assert s['target_classes'] == ['bus', 'car'] and s['range_m'] == [0.0, 50.0]
-    assert MS.spec_key({'objective': 'criticality'}) == 'criticality'
+    assert MS.spec_key({'objective': 'criticality'}) == 'criticality-rss'          # avoidable failures (core.rss)
+    assert MS.spec_key({'objective': 'criticality', 'count': 'all'}) == 'criticality'
+    assert MS.spec_key(dict(s, count='all')) == MS.spec_key(s)      # RSS counting leaves perception keys alone
     assert MS.spec_key(s) != MS.spec_key(dict(s, window_s=2.0)) != MS.spec_key(dict(s, model=dict(SYN, params={})))
     sp = MS.weather_space(['fog_density', 'sun_altitude_angle:-5:10'])
     assert sp == [{'name': 'weather.fog_density', 'lo': 0.0, 'hi': 100.0},
@@ -209,6 +211,10 @@ def test_a_perception_search_scores_resumes_and_rescores(mil):
     # back to the criticality: the drives are the same (same rig, same weather), so no new run either
     crit = _study(mil, None)
     rows = crit.current_results()
+    from falcon_autonomy.core.rss import rss_objective           # by default only avoidable failures count
+    assert len(rows) == 3 and len(runs()) == 3
+    assert all(r['rss'] and r['objective'] == rss_objective(r['criticality'], r['rss']) for r in rows)
+    rows = _study(mil, {'objective': 'criticality', 'count': 'all'}).current_results()
     assert len(rows) == 3 and all(r['objective'] == r['criticality'] for r in rows) and len(runs()) == 3
 
 
