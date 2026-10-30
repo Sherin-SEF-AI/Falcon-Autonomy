@@ -402,7 +402,8 @@ def benefit(run_dir: str, radius_m: float = 50.0, near_m: float = 60.0, min_pixe
     emerging from occlusion: an occlusion episode is a stretch of at least min_occlusion_s (heuristic) during which a
     road user within radius_m is not seen by the ego, ending when the ego sees it; the gain is how much earlier a CPM
     named it within the episode (0 when no CPM did). Road users never seen by the ego while within radius_m but named
-    in a CPM are counted apart. Only recorded steps count (record_every: the ego's camera labels exist there). Everything from the recorded files (frames.jsonl, objects, lidar labels, actors.jsonl,
+    in a CPM are counted apart. Only recorded steps count (record_every: the ego's camera labels exist there).
+    Everything from the recorded files (frames.jsonl, objects, lidar labels, actors.jsonl,
     cpm.jsonl): the ego's thresholds are the stations' (min_pixels, min_points)."""
     import numpy as np
     run = json.load(open(os.path.join(run_dir, 'run.json'), encoding='utf-8'))
@@ -498,7 +499,20 @@ def benefit(run_dir: str, radius_m: float = 50.0, near_m: float = 60.0, min_pixe
             'gain_s_median_when_earlier': round(float(np.median(covered)), 3) if len(covered) else None,
             'gain_s_max': round(float(gains.max()), 3) if len(gains) else None,
             'never_seen_by_ego': len(never), 'never_seen_by_ego_but_in_a_cpm': sum(1 for n in never if n['cpm_named'])}
+    ev = {'camera_only': 0, 'lidar_only': 0, 'both': 0}
+    kinds = {}
+    for st in (ds.get(KEY) or {}).get('stations') or []:
+        for x in st.get('sensors') or []:
+            kinds[(st['id'], str(x['cpm_sensor_id']))] = 'lidar' if x['type'] == 'lidar' else 'camera'
+    sizes = []
+    for m in _jsonl(os.path.join(run_dir, 'cpm.jsonl')):
+        sizes.append(m.get('bytes', 0))
+        for o in m.get('objects') or []:
+            ks = {kinds.get((m['station'], k)) for k in o.get('evidence') or {}}
+            ev['both' if ks >= {'camera', 'lidar'} else 'camera_only' if 'camera' in ks else 'lidar_only'] += 1
     return {'run': os.path.basename(os.path.normpath(run_dir)), 'seed': run.get('provenance', {}).get('seed'),
+            'cpm': {'messages': len(sizes), 'bytes_mean': round(sum(sizes) / len(sizes), 1) if sizes else None,
+                    'bytes_max': max(sizes) if sizes else None, 'objects_by_evidence': ev},
             'radius_m': radius_m, 'near_m': near_m, 'min_pixels': min_pixels, 'min_points': min_points,
             'min_occlusion_s': min_occlusion_s, 'evaluated_steps': tally['all']['steps'], 'shares': shares,
             'time_to_first_detection': ttfd, 'episodes': episodes[:500], 'never_seen_by_ego': never[:500],
@@ -591,6 +605,7 @@ def main_v2x(argv: list) -> int:
     dr.add_argument('--seconds', type=float, default=30.0)
     dr.add_argument('--fps', type=float, default=20.0)
     dr.add_argument('--seed', type=int, default=0)
+    dr.add_argument('--seeds', default='', help='several drives, one per seed (N,N,…), into OUT/s<seed>, in one queue')
     dr.add_argument('--vehicles', type=int, default=-1, help='traffic vehicles (default: the profile\'s)')
     dr.add_argument('--walkers', type=int, default=-1)
     dr.add_argument('--start-min', type=float, default=50.0)
@@ -725,21 +740,27 @@ def _drive(proj, a) -> int:
         return 2
     from ..cli import _run_job, _service
     svc, st = _service(proj.path, a.fake_carla)
+    seeds = [int(x) for x in a.seeds.split(',') if x.strip()] if a.seeds else [a.seed]
+    base = a.out or os.path.join(svc.runs_dir(), run_dir_name(f'v2x-{r["id"]}'))
+    code = P.OK
     try:
-        out = a.out or os.path.join(svc.runs_dir(), run_dir_name(f'v2x-{r["id"]}'))
-        rig = a.rig or proj.doc['rigs'][0]['id']
-        cfg = drive_config(proj, r['world'], rig, out, svc.port, svc.tm_port, a.seconds, a.fps, a.seed,
-                           render_budget_mpx=float(st.get('render_budget_mpx')), name=f'V2X {r["name"]} (seed {a.seed})')
-        if a.vehicles >= 0:
-            cfg['traffic']['vehicles'] = a.vehicles
-        if a.walkers >= 0:
-            cfg['traffic']['walkers'] = a.walkers
-        start_near(cfg, r, a.start_min, a.start_max)
-        if a.record_every > 1:
-            cfg['record_every'] = int(a.record_every)
-        code = _run_job(svc, svc.submit_drive(cfg, kind='drive'))
-        if code == P.OK:
-            print(out)
+        for seed in seeds:
+            out = os.path.join(base, f's{seed}') if a.seeds else base
+            rig = a.rig or proj.doc['rigs'][0]['id']
+            cfg = drive_config(proj, r['world'], rig, out, svc.port, svc.tm_port, a.seconds, a.fps, seed,
+                               render_budget_mpx=float(st.get('render_budget_mpx')),
+                               name=f'V2X {r["name"]} (seed {seed})')
+            if a.vehicles >= 0:
+                cfg['traffic']['vehicles'] = a.vehicles
+            if a.walkers >= 0:
+                cfg['traffic']['walkers'] = a.walkers
+            start_near(cfg, r, a.start_min, a.start_max)
+            if a.record_every > 1:
+                cfg['record_every'] = int(a.record_every)
+            c = _run_job(svc, svc.submit_drive(cfg, kind='drive'))
+            if c == P.OK:
+                print(out)
+            code = code if code != P.OK else c
         return code
     except (ProjectError, RuntimeError) as e:
         print(f'failed: {e}', file=sys.stderr)
