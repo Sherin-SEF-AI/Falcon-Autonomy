@@ -43,7 +43,9 @@ Measured (when the reconstruction is of a CARLA run of the same world: CARLA's o
 then the ground truth of the hybrid; JPEG-decoded, as recorded): PSNR and SSIM (core.recon.metrics, masked as
 core.recon.evaluate.compare does) of the composite before JPEG encoding over the whole frame, the background pixels
 (not A), the actor pixels (A; exact by construction under 'mask', so measured for the 'depth' alternative), and the
-background within near_px of an actor (where missing shadows and the actor's edge show); the voted classes against
+background within near_px of an actor (where missing shadows and the actor's edge show) — and, for a camera wider
+than the reconstruction's working width, the whole frame and the background again at that width (both images
+area-resampled, as its training images were); the voted classes against
 CARLA's semantic labels on background pixels (accuracy, and the IoU of each class over 0.1 % of them, summed over the
 frames); the reconstruction's range against CARLA's on background pixels within 80 m (median absolute relative error)
 and the residual image shift between the reconstruction and CARLA's frame (phase correlation of the background, actor
@@ -239,6 +241,10 @@ def _summ(rows: list, conf: _Conf, names: dict) -> dict:
     out = {'frames': len(rows)}
     for reg in ('whole', 'background', 'actors', 'near_actors'):
         out[reg] = region('metrics', reg)
+    if any((r.get('metrics') or {}).get('work') for r in rows):
+        out['work'] = {'size': next(r['metrics']['work']['size'] for r in rows if (r.get('metrics') or {}).get('work')),
+                       'whole': region('metrics', 'work', 'whole'),
+                       'background': region('metrics', 'work', 'background')}
     alts = sorted({k for r in rows for k in (r.get('alternative') or {})})
     out['alternative'] = {m: {'whole': region('alternative', m, 'whole'), 'actors': region('alternative', m, 'actors'),
                               'hidden_share': mean(('alternative', m, 'hidden_share'))} for m in alts}
@@ -379,7 +385,7 @@ def hybrid_run(recon, drive_dir: str, out_dir: str, cameras=None, method: str = 
                    'composite_ms': round(out['composite_ms'], 2)}
             vm = comp.view(f.viewmat)
             row['offset'] = _offset(rec, vm)
-            row['split'], row['view_m'] = _nearest_view(views, vm)
+            row['split'], row['view_m'] = _nearest_view(views, vm, step)
             hidden = out['actor'] & ~out['win']
             row['hidden_px'] = int(hidden.sum())
             row['hidden_share'] = round(row['hidden_px'] / max(int(actor.sum()), 1), 5) if actor.any() else None
@@ -459,14 +465,18 @@ def hybrid_run(recon, drive_dir: str, out_dir: str, cameras=None, method: str = 
 
 def _views(rec) -> tuple:
     V = [np.asarray(f['viewmat'], float).reshape(4, 4) for f in rec.frames]
-    return np.array([-v[:3, :3].T @ v[:3, 3] for v in V]), [f['split'] for f in rec.frames]
+    return (np.array([-v[:3, :3].T @ v[:3, 3] for v in V]), [f['split'] for f in rec.frames],
+            [f['index'] for f in rec.frames])
 
 
-def _nearest_view(views, vm: np.ndarray) -> tuple:
-    """(the split of the reconstruction's view whose camera is nearest — 'test': a held-out pose —, its distance)."""
-    C, splits = views
+def _nearest_view(views, vm: np.ndarray, step: int | None = None) -> tuple:
+    """(the split of the reconstruction's view whose camera is nearest — 'test': a held-out pose —, its distance).
+    Views within 1 cm of the nearest (a vehicle standing still) are a tie, which the view of the same step wins (a
+    re-drive's step k is the source's step k)."""
+    C, splits, idx = views
     d = np.linalg.norm(C - (-vm[:3, :3].T @ vm[:3, 3]), axis=1)
-    j = int(np.argmin(d))
+    ties = np.flatnonzero(d <= d.min() + 0.01)
+    j = next((int(t) for t in ties if idx[t] == step), int(ties[0]))
     return splits[j], round(float(d[j]), 4)
 
 
@@ -488,6 +498,16 @@ def _measure(row, out, comp, alt, s, kernel, f, conf_all, conf_split):
     near = cv2.dilate(an.astype(np.uint8), kernel) > 0
     near_t = torch.as_tensor(near & ~an, device=comp.dev)
     m['near_actors'] = _region(img, car, near_t, s['min_actor_px'])
+    h, w = an.shape
+    ws = D.working_size((w, h), comp.rec.work_size[0])
+    if ws != (w, h):                       # also at the reconstruction's working size (area-resampled, as trained)
+        import torch.nn.functional as F
+
+        def area(x):
+            return F.interpolate(x.permute(2, 0, 1)[None], size=(ws[1], ws[0]), mode='area')[0].permute(1, 2, 0)
+        bg_s = torch.as_tensor(D.resize_mask(~an, ws), device=comp.dev)
+        m['work'] = {'size': list(ws), 'whole': _region(area(img), area(car), None),
+                     'background': _region(area(img), area(car), bg_s)}
     row['metrics'] = m
     row['alternative'] = {}
     for meth in alt:

@@ -82,9 +82,13 @@ def test_hybrid_of_the_source_drive_keeps_carlas_actors_and_labels(trained, tmp_
 def test_a_drive_beside_the_path_with_other_traffic(trained, tmp_path):
     from falcon_autonomy.core.recon.hybrid import hybrid_run
     _, rec_dir, root = trained
+    from falcon_autonomy.core.recon.scene import Recon
     other = make_falcon_run(str(tmp_path / 'other'), n=10, lateral=0.5)
-    res = hybrid_run(rec_dir, other, str(tmp_path / 'h'), device='cpu')
+    rec = Recon.load(rec_dir, 'cpu')
+    rec.work_size = (48, 27)                    # a camera wider than the working width: measured at both
+    res = hybrid_run(rec, other, str(tmp_path / 'h'))
     a = res['summary']['all']
+    assert a['work']['size'] == [48, 27] and a['work']['background']['psnr'] > a['background']['psnr'] - 3
     assert {'all', 'train', 'heldout'} <= set(res['summary']) and abs(a['lateral_m'] - 0.5) < 0.05
     assert a['background']['psnr'] > 15 and a['actors']['identical']
 
