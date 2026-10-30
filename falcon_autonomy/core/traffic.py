@@ -18,8 +18,10 @@ Limits, stated wherever the Indian profile is chosen:
   autorickshaw (a source build of CARLA).
 * The fleet shares are a heuristic from registration statistics (two-wheelers are about two thirds of vehicles
   registered in Bengaluru), not a measured on-road count.
-* CARLA's traffic manager keeps vehicles in lanes: lane-splitting by two-wheelers is not reproduced by the profile
-  (the scenario studio's "two-wheeler filtering" scenario scripts it explicitly).
+* CARLA's traffic manager keeps vehicles on their lane centres. A profile's 'lateral_filtering' (lateral_settings)
+  gives its two-wheelers (and, when named, the autorickshaw stand-ins) a lateral position of their own —
+  workers.lateral; docs/indian-assets.md has the measurements and its limits. The scenario studio's "two-wheeler
+  filtering" scenario scripts one rider on the lane line explicitly.
 """
 from __future__ import annotations
 
@@ -39,9 +41,34 @@ INDIA_MIXED = {
                   'ignore_lights_pct': 15.0, 'ignore_signs_pct': 25.0, 'ignore_walkers_pct': 0.0,
                   'auto_lane_change': True, 'random_left_lanechange_pct': 10.0, 'random_right_lanechange_pct': 10.0,
                   'walker_crossing_factor': 0.35},
+    # on for two-wheelers: measured on central Bengaluru (docs/indian-assets.md, 2026-10-30) with no more contacts or
+    # put-backs than without at the profile's 60 vehicles; autorickshaws are not in it (their contacts rose by half)
+    'lateral_filtering': {'enabled': True, 'vehicles': ['motorcycle', 'bicycle'], 'controller': 'tm'},
 }
 
 PRESETS = {'tp-default': None, 'tp-india-mixed': INDIA_MIXED}
+
+# lateral filtering (workers.lateral): a profile's 'lateral_filtering'; absent or enabled false: off
+LATERAL_KEY = 'lateral_filtering'
+LATERAL_KINDS = ('motorcycle', 'bicycle', 'autorickshaw')
+LATERAL_CONTROLLERS = ('tm', 'own')
+LATERAL_DEFAULTS = {'enabled': False, 'vehicles': ['motorcycle', 'bicycle'], 'controller': 'tm'}
+
+
+def lateral_settings(prof: dict | None) -> dict | None:
+    """The profile's lateral filtering filled with LATERAL_DEFAULTS, or None when it is off; ValueError when it
+    names an unknown vehicle kind or controller."""
+    s = (prof or {}).get(LATERAL_KEY)
+    if not s or not s.get('enabled'):
+        return None
+    out = dict(LATERAL_DEFAULTS, **s)
+    bad = [k for k in out['vehicles'] if k not in LATERAL_KINDS]
+    if bad or not out['vehicles']:
+        raise ValueError(f'lateral_filtering.vehicles: {bad or "none"} (choose from {", ".join(LATERAL_KINDS)})')
+    if out['controller'] not in LATERAL_CONTROLLERS:
+        raise ValueError(f'lateral_filtering.controller {out["controller"]!r} (choose from '
+                         f'{", ".join(LATERAL_CONTROLLERS)})')
+    return out
 
 
 def preset(ident: str) -> dict:

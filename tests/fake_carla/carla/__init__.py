@@ -608,6 +608,9 @@ class Vehicle(Actor):
         self.physics = True
         self.desired = None                 # the traffic manager's desired speed (m/s), when set
         self.lat_target = None              # a forced lane change: the target offset along the vehicle's right (m)
+        self.lane_offset = None             # TrafficManager.vehicle_lane_offset (m, + right of its lane's centre)
+        self.lane_y = None                  # … of the lane it had when the offset was first set (the TM's lane)
+        self.ignore_vehicles = 0.0          # TrafficManager.ignore_vehicles_percentage
 
     def open_door(self, door):
         LOG.append(('open_door', self.id, str(door)))
@@ -668,14 +671,21 @@ class Vehicle(Actor):
         return self.light_state
 
     def _lead_gap(self):
-        """The gap (m) to the nearest actor ahead in this vehicle's lane (within 1.6 m of its path), or None."""
+        """The gap (m) to the nearest actor ahead in this vehicle's lane (within 1.6 m of its path), or None. Like
+        CARLA 0.9.16's traffic manager (measured, docs/indian-assets.md): the path is the lane's centre whatever the
+        vehicle's lane offset, and with ignore_vehicles_percentage 100 only walkers and props count."""
         M = self._m_world
         fwd, right = M[:3, 0], np.array([-M[1, 0], M[0, 0], 0.0])
+        origin = M[:3, 3].copy()
+        if self.lane_offset is not None:
+            origin[1] = self.lane_y
         best = None
         for a in self._w._actors.values():
             if a is self or not isinstance(a, (Vehicle, Walker, Prop)) or not a.is_alive:
                 continue
-            q = a.world_matrix()[:3, 3] - M[:3, 3]
+            if isinstance(a, Vehicle) and self.ignore_vehicles >= 100.0:
+                continue
+            q = a.world_matrix()[:3, 3] - origin
             lon, lat = float(q @ fwd), float(q @ right)
             ext = a.bounding_box.extent
             if lon > 0 and abs(lat) < 1.6 + 0.5 * ext.y and lon < 60.0:
@@ -726,6 +736,10 @@ class Vehicle(Actor):
         mid = (yaw + yaw2) / 2
         d = np.array([math.cos(mid), math.sin(mid), 0.0]) * self._speed * dt
         lat_v = np.zeros(3)
+        if self.lane_offset is not None and self.lat_target is None:     # the lane offset: 1 m/s sideways towards it
+            right = np.array([-math.sin(yaw2), math.cos(yaw2), 0.0])
+            off = float((M[1, 3] - self.lane_y) * right[1])
+            lat_v = right * float(np.clip(self.lane_offset - off, -1.0 * dt, 1.0 * dt))
         if self.lat_target is not None:                    # a forced lane change: 1.75 m/s sideways
             step = float(np.clip(self.lat_target, -1.75 * dt, 1.75 * dt))
             self.lat_target -= step
@@ -1174,7 +1188,17 @@ class TrafficManager:
         pass
 
     def ignore_vehicles_percentage(self, actor, p):
-        pass
+        actor.ignore_vehicles = float(p)
+        LOG.append(('tm_ignore_vehicles', actor.id, float(p)))
+
+    def vehicle_lane_offset(self, actor, offset):
+        """The offset from the centre of the lane the vehicle is on when it is first set (the fake's TM keeps that
+        lane), + right; reached at 1 m/s sideways."""
+        if actor.lane_offset is None:
+            y = actor.get_transform().location.y
+            actor.lane_y = min((l[1] for l in LANES), key=lambda ly: abs(ly - y))
+        actor.lane_offset = float(offset)
+        LOG.append(('tm_lane_offset', actor.id, round(float(offset), 3)))
 
     def distance_to_leading_vehicle(self, actor, d):
         pass

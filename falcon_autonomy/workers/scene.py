@@ -29,6 +29,7 @@ def load_map(w, cfg: dict):
     w.speed_control = None
     w.traffic_keeper = None
     w.road_look = None
+    w.lateral = None
     if cfg.get('xodr'):
         with open(cfg['xodr'], encoding='utf-8') as fh:
             text = fh.read()
@@ -252,7 +253,9 @@ def blueprints_by_type(lib) -> dict:
 
 def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
     """prof['vehicles'] vehicles drawn by prof['fleet'] weights per CARLA base type (seeded), on the autopilot with
-    prof['behaviour']. A fleet entry may name blueprints directly ('blueprint:vehicle.micro.microlino')."""
+    prof['behaviour']. A fleet entry may name blueprints directly ('blueprint:vehicle.micro.microlino'). With
+    prof['lateral_filtering'] on, the two-wheelers (and stand-ins) it names filter laterally (workers.lateral,
+    w.lateral); it draws nothing from rng, so the same seed places the same traffic with it on or off."""
     import numpy as np
     n = int(prof.get('vehicles', 0))
     if n <= 0:
@@ -278,6 +281,7 @@ def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
     placed = []
     from ..core import assets as AS
     classes = AS.fleet_classes(prof)
+    lateral = lateral_for(w, world, prof)
     labels = prof.get('fleet_labels') or {}
     for k in list(order):
         if len(placed) >= n:
@@ -305,6 +309,8 @@ def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
         if getattr(w, 'traffic_keeper', None) is not None:    # an imported world: kept in it at roads that end
             w.traffic_keeper.add(a, beh, diff if diff or beh.get('speed_spread_pct') else None, kind,
                                  classes.get(kind), labels.get(kind))
+        if lateral is not None:                           # two-wheelers (stand-ins) that use the road's width
+            lateral.add(a, kind, classes.get(kind), diff)
         placed.append((a, kind))
     w.alive()
     if len(placed) < n:
@@ -314,6 +320,25 @@ def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
         counts[kind] = counts.get(kind, 0) + 1
     w.run.setdefault('traffic', {})['placed'] = counts
     return placed
+
+
+def lateral_for(w, world, prof: dict):
+    """The run's LateralFilter (workers.lateral) when the profile turns lateral filtering on, else None. Its seed is
+    the run's; its near side the profile's handedness (else the map's rule, cfg['handedness'])."""
+    from . import lateral as LAT
+    try:
+        st = LAT.settings_of(prof)
+    except ValueError as e:
+        raise Failed(f'traffic profile: {e}') from None
+    if st is None:
+        return None
+    cfg = getattr(w, 'cfg', None) or {}
+    hand = (prof or {}).get('handedness', 'map')
+    left = hand == 'left' or (hand == 'map' and cfg.get('handedness') == 'LHT')
+    w.lateral = LAT.LateralFilter(w, world, st, int(cfg.get('seed', 0)), left, prof.get('behaviour'))
+    if not w.lateral.ok:                                  # (it said why)
+        w.lateral = None
+    return w.lateral
 
 
 def spawn_walkers(w, world, lib, rng, prof: dict) -> list:
@@ -395,6 +420,17 @@ class ClassLimits:
         self.rows = {}                    # actor id → (actor, class id, diff %, top km/h)
         self.last = -1e9
         self.applied = {}
+        self.caps = {}                    # actor id → a cap on the desired speed (km/h): workers.lateral's clearance
+
+    def apply_cap(self, aid, cap_kmh):
+        """A cap on the stand-in's desired speed (None: none), applied at once."""
+        if aid not in self.rows or (cap_kmh is None and aid not in self.caps):
+            return
+        if cap_kmh is None:
+            self.caps.pop(aid, None)
+        else:
+            self.caps[aid] = max(0.0, float(cap_kmh))
+        self.update(aid, force=True)
 
     def add(self, a, cls, diff_pct=0.0, label=None):
         from ..core import assets as AS
@@ -432,7 +468,10 @@ class ClassLimits:
             return                        # removed by the server (a dead end)
         if lim <= 0:
             lim = top
-        tm.set_desired_speed(a, AS.desired_speed_kmh(lim, diff, top))
+        want = AS.desired_speed_kmh(lim, diff, top)
+        if aid in self.caps:
+            want = min(want, self.caps[aid])
+        tm.set_desired_speed(a, want)
         self.applied.setdefault(cls, {})['top_kmh'] = top
 
     def step(self, sim_t: float):
@@ -467,9 +506,10 @@ def speed_control_for(w, cfg: dict, xodr_text: str):
 
 
 def speeds_step(w, sim_t: float) -> list:
-    """Re-read the vehicles' desired speeds (the stand-ins' class limits, an imported world's road limits), and keep
-    an imported world's traffic in it (workers.trafficguard). Returns the traffic moved this step, as events."""
-    for c in (getattr(w, 'class_limits', None), getattr(w, 'speed_control', None)):
+    """Re-read the vehicles' desired speeds (the stand-ins' class limits, an imported world's road limits), move the
+    vehicles that filter laterally (workers.lateral), and keep an imported world's traffic in it (workers.trafficguard).
+    Returns the traffic moved this step, as events."""
+    for c in (getattr(w, 'class_limits', None), getattr(w, 'speed_control', None), getattr(w, 'lateral', None)):
         if c is not None:
             c.step(sim_t)
     k = getattr(w, 'traffic_keeper', None)
@@ -477,7 +517,8 @@ def speeds_step(w, sim_t: float) -> list:
 
 
 def speeds_report(w):
-    """run.json traffic: the stand-ins' limits, the speed source and the traffic kept in an imported world."""
+    """run.json traffic: the stand-ins' limits, the speed source, the traffic kept in an imported world and the
+    lateral filtering."""
     t = w.run.setdefault('traffic', {})
     if getattr(w, 'class_limits', None) is not None:
         t.update(w.class_limits.report())
@@ -485,6 +526,8 @@ def speeds_report(w):
         t['speed_source'] = w.speed_control.report()
     if getattr(w, 'traffic_keeper', None) is not None:
         t['keeper'] = w.traffic_keeper.report()
+    if getattr(w, 'lateral', None) is not None:
+        t['lateral_filtering'] = w.lateral.report()
 
 
 def light_vehicles(w, cfg: dict, weather: dict | None = None, actors: list | None = None) -> dict:
@@ -901,8 +944,9 @@ class ActorLog:
     """actors.jsonl: every vehicle and walker (and every proxy prop a scenario placed, core.assets) at every recorded
     step, in CARLA's world frame, from the world snapshot of that frame — {step, frame, sim_t, actors: [{id, type_id,
     category, role, x, y, z, roll, pitch, yaw, vx, vy, vz, extent [ex, ey, ez], bbox_center [cx, cy, cz] (in the
-    actor's frame), subclass (a stand-in's or proxy's Falcon subclass, when it has one)}]}. Boxes and categories are
-    read once per actor (they do not change). Actors a kinematic director moves (physics off: CARLA reports them still)
+    actor's frame), subclass (a stand-in's or proxy's Falcon subclass, when it has one), lateral (a vehicle that
+    filters laterally: workers.lateral.LateralFilter.log_rows)}]}. Boxes and categories are read once per actor (they
+    do not change). Actors a kinematic director moves (physics off: CARLA reports them still)
     take the director's own velocity. path None: no file (rows() only; the gym worker's observations use the same rows)."""
 
     def __init__(self, w, path):
@@ -926,6 +970,8 @@ class ActorLog:
         exact = getattr(director, 'exact_tf', None) if director is not None else None
         subclass = getattr(self.w, 'subclass', None) or {}
         proxies = getattr(self.w, 'proxies', None) or {}
+        lat = getattr(self.w, 'lateral', None)
+        lateral = lat.log_rows() if lat is not None else {}
         for a in world.get_actors():
             tid = a.type_id
             if (not tid.startswith(('vehicle.', 'walker.')) and a.id not in proxies) or a.id in hidden:
@@ -958,6 +1004,8 @@ class ActorLog:
                               'z': round(t.location.z, 4), 'roll': round(t.rotation.roll, 4),
                               'pitch': round(t.rotation.pitch, 4), 'yaw': round(t.rotation.yaw, 4),
                               'vx': round(v.x, 4), 'vy': round(v.y, 4), 'vz': round(v.z, 4)}, **st))
+            if a.id in lateral:
+                rows[-1]['lateral'] = lateral[a.id]
         return rows
 
     def close(self):
