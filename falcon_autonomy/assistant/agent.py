@@ -16,8 +16,9 @@ Permission modes (MODES):
                and continues with what happened
 In every mode the model can ask to be resumed when given jobs finish (plan_wait_jobs).
 
-Meta-tools the agent registers itself (tool_api tier read; they change nothing but the panel): plan_update — the short
-checklist the system prompt asks the model to keep, shown live; plan_wait_jobs — resume when a job finishes.
+Meta-tools of the runtime (tier read; kept out of tool_api.REGISTRY, which holds Falcon's tools; call_tool runs them
+with the same checks): plan_update — the short checklist the system prompt asks the model to keep, shown live;
+plan_wait_jobs — resume when a job finishes; tools_find and tools_load — Falcon's tools on demand (CORE, ALWAYS).
 
 After each answer the grounding check (assistant.grounding) marks the numbers no tool returned. Read calls run off the
 GUI thread (a small pool, side by side); Tool.gui calls, and with a window every act and trash call (project edits
@@ -36,6 +37,11 @@ import time
 
 from . import grounding, privacy
 from . import tool_api as T
+
+try:
+    from . import tools as _tools  # noqa: F401 (registers Falcon's tools; the agent loads them on demand)
+except ImportError:                 # pragma: no cover
+    _tools = None
 from .provider import Cancelled, CancelToken, ProviderError, estimate_tokens, model_params, parallel_tools
 from .session import Session, wire
 
@@ -62,9 +68,10 @@ which tool or job would measure it. Falcon marks any number in your answer that 
 - Prefer the user's project: its worlds, rigs, scenarios, runs and models, before built-ins or generic advice.
 - Plan: for any request needing more than one step, call plan_update first with a short checklist (a few items, \
 imperative), and update it as items are done. Skip it for a single question.
-- Tools: you start with a few. tools_find searches all of Falcon's tools by what you need (names and one line
-each); tools_load makes a group's tools callable from your next step. Load only the groups you need — every loaded
-schema is sent with each step and counts against the user's tokens-per-minute limit.
+- Tools: you start with the core, the knowledge and the system tools. tools_find searches all of Falcon's tools \
+by what you need and makes its best few callable; tools_load makes more callable by name or by group. Prefer single \
+tools to whole groups: every schema sent counts against the user's tokens-per-minute limit, and when it is tight \
+only the most recent large group is sent.
 - Long jobs: when you queue a job you need the result of, call plan_wait_jobs with its id and end your turn; Falcon \
 resumes you when it finishes. Do not poll.
 - Refusals from tools are final: a private source, an action that is never allowed, or the user declining. Explain \
@@ -112,20 +119,40 @@ def _plan_wait_jobs(ctx, job_ids, note=''):
 
 
 GROUP_ABOUT = {
-    'project': 'the project: worlds, rigs, scenarios, models, drive sets — read them, edit them (undoable)',
-    'runs': 'recorded runs: search, summaries, statistics, tags, moving runs to the trash',
-    'jobs': 'the job queue: queue drives, sweeps, trainings, evaluations, exports; their state, logs, cancel, wait',
-    'analysis': 'evaluations, metrics, comparisons, rare-case search results, root causes, dataset health',
-    'ui': 'Falcon\'s window: go to a page, select and show things',
-    'knowledge': 'Falcon\'s manual: how-to, methods, CARLA lessons',
-    'system': 'the machine and Falcon\'s CARLA server: state, memory, GPU (read only)',
+    'project': 'worlds, rigs, sensors, scenarios, traffic, trigger rules, roadside units, ODDs: read and edit',
+    'runs': 'recorded runs: search, summaries, frames as numbers, events, compare, health, tags, trash',
+    'jobs': 'queue drives, scenario runs, sweeps, searches, trainings, evaluations, exports, reports; list, cancel, wait',
+    'analysis': 'studies, failure maps, criticality, root causes, evaluations, the gap, suites, V2X, traffic rules',
+    'ui': 'Falcon\'s window: the open page, go to a page, show a run or frame, outline a control',
+    'knowledge': 'the manual (search), the command line, settings, the tools themselves',
+    'system': 'the CARLA server, the machine, the queue\'s locks, versions',
 }
-CORE = ('plan_update', 'plan_wait_jobs', 'tools_find', 'tools_load')     # always sent; the rest by group, on demand
+CORE = ('plan_update', 'plan_wait_jobs', 'tools_find', 'tools_load')     # always sent
+ALWAYS = ('knowledge', 'system')        # small groups sent with the core (about 500 tokens); the rest on demand
+FIND_LOADS = 3                          # tools_find makes its best few matches callable on their own
+
+
+def _detail(t) -> str:
+    """A tool's full description where the tools package keeps it (tools._compact.DETAILS), else its own."""
+    try:
+        from .tools._compact import DETAILS
+    except ImportError:                     # pragma: no cover (the package is part of Falcon)
+        DETAILS = {}
+    return (DETAILS.get(t.name) or {}).get('description') or t.description or ''
 
 
 def _about(t) -> str:
     first = (t.description or '').split('. ')[0].strip().rstrip('.')
     return first[:140] + ('…' if len(first) > 140 else '')
+
+
+def group_tools(group: str) -> list:
+    return [t.name for t in T.REGISTRY.values() if t.group == group and t.name not in CORE]
+
+
+def group_tokens(group: str) -> int:
+    from .provider import estimate_tokens
+    return estimate_tokens(T.schemas(names=set(group_tools(group))))
 
 
 def _tools_find(ctx, query, limit=12):
@@ -134,39 +161,53 @@ def _tools_find(ctx, query, limit=12):
     for t in T.REGISTRY.values():
         if t.name in CORE:
             continue
-        hay = f'{t.name.replace("_", " ")} {t.group} {t.description}'.lower()
-        sc = sum((3 if w in t.name else 1) for w in words if w in hay)
+        name = t.name.replace('_', ' ')
+        hay = f'{name} {t.group} {t.description} {_detail(t)}'.lower()
+        sc = sum((4 if w in name else 1) for w in words if w in hay)
         if sc:
             scored.append((-sc, t.name, t))
     scored.sort()
-    out = {'tools': [{'name': t.name, 'group': t.group, 'tier': t.tier, 'about': _about(t)}
-                     for _s, _n, t in scored[:limit]]}
-    counts = {}
-    for t in T.REGISTRY.values():
-        if t.name not in CORE:
-            counts[t.group] = counts.get(t.group, 0) + 1
-    out['groups'] = {g: {'tools': counts.get(g, 0), 'about': GROUP_ABOUT[g]} for g in T.GROUPS}
-    out['next'] = 'call tools_load with the groups whose tools you need'
+    best = [t for _s, _n, t in scored[:limit]]
+    load = [t.name for t in best[:FIND_LOADS]]
+    if load:
+        ctx.emit('load_tools', load)
+    out = {'tools': [{'name': t.name, 'group': t.group, 'tier': t.tier, 'about': _about(t),
+                      **({'callable': True} if t.name in load else {})} for t in best]}
+    out['groups'] = {g: {'tools': len(group_tools(g)), 'tokens': group_tokens(g), 'about': GROUP_ABOUT[g]}
+                     for g in T.GROUPS}
+    out['next'] = (f'{", ".join(load)} can be called from your next step; ' if load else '') + \
+        'tools_load makes other tools (by name) or whole groups callable'
     return out
 
 
-def _tools_load(ctx, groups):
+def _tools_load(ctx, groups=(), tools=()):
     groups = [g for g in dict.fromkeys(groups)]
-    ctx.emit('load_groups', groups)
-    tools = [{'name': t.name, 'about': _about(t)} for t in T.REGISTRY.values()
-             if t.group in groups and t.name not in CORE]
-    out = {'loaded': groups, 'tools': tools[:60], 'next': 'their schemas come with your next step'}
-    empty = [g for g in groups if not any(t.group == g and t.name not in CORE for t in T.REGISTRY.values())]
-    if empty:
-        out['empty'] = empty
+    names = [n for n in dict.fromkeys(tools) if n in T.REGISTRY and n not in CORE]
+    unknown = [n for n in tools if n not in T.REGISTRY]
+    if not groups and not names:
+        raise T.ToolError('name groups or tools to load' + (f' (no tool named {", ".join(unknown)})'
+                                                            if unknown else ''))
+    if groups:
+        ctx.emit('load_groups', groups)
+    if names:
+        ctx.emit('load_tools', names)
+    listed = [{'name': t.name, 'about': _about(t)} for t in T.REGISTRY.values()
+              if t.group in groups and t.name not in CORE]
+    out = {'loaded': {'groups': groups, 'tools': names}, 'tools': listed[:60],
+           'next': 'their schemas come with your next step'}
+    if groups:
+        out['tokens'] = {g: group_tokens(g) for g in groups}
+    if unknown:
+        out['unknown'] = unknown
     return out
 
 
 FIND_PARAMS = {'type': 'object', 'additionalProperties': False, 'required': ['query'], 'properties': {
     'query': {'type': 'string', 'minLength': 1, 'maxLength': 200},
     'limit': {'type': 'integer', 'minimum': 1, 'maximum': 30}}}
-LOAD_PARAMS = {'type': 'object', 'additionalProperties': False, 'required': ['groups'], 'properties': {
-    'groups': {'type': 'array', 'minItems': 1, 'items': {'type': 'string', 'enum': list(T.GROUPS)}}}}
+LOAD_PARAMS = {'type': 'object', 'additionalProperties': False, 'properties': {
+    'groups': {'type': 'array', 'items': {'type': 'string', 'enum': list(T.GROUPS)}},
+    'tools': {'type': 'array', 'items': {'type': 'string'}, 'description': 'single tools by name'}}}
 
 # a user's words or page that make a group obviously relevant (loaded with the message; at most two, best first)
 GUESS = {
@@ -197,20 +238,43 @@ META = (
     T.Tool('plan_wait_jobs', 'jobs', 'read', 'Resume this conversation when one of these queued jobs finishes (you get '
            'its outcome as a message). Call it after queueing a job whose result you need, then end your turn — do not '
            'poll. Returns the ids it will wait for.', WAIT_PARAMS, _plan_wait_jobs),
-    T.Tool('tools_find', 'system', 'read', 'Search all of Falcon\'s tools by what you need: returns matching tool '
-           'names with their group and one line each, and every group with its number of tools. Load a group with '
-           'tools_load to call its tools.', FIND_PARAMS, _tools_find),
-    T.Tool('tools_load', 'system', 'read', 'Make every tool of these groups callable from your next step (their '
-           'schemas are sent from then on). Groups: ' + '; '.join(f'{g}: {a}' for g, a in GROUP_ABOUT.items()) + '.',
-           LOAD_PARAMS, _tools_load),
+    T.Tool('tools_find', 'system', 'read', 'Search all of Falcon\'s tools by what you need. Returns the best matches '
+           '(name, group, one line) — the first few become callable from your next step — and each group\'s size in '
+           'tools and tokens.', FIND_PARAMS, _tools_find),
+    T.Tool('tools_load', 'system', 'read', 'Make single tools (by name) or whole groups callable from your next step. '
+           'Prefer single tools: a large group (project, jobs) costs about 3,500 tokens a step. Groups: '
+           + '; '.join(f'{g}: {a}' for g, a in GROUP_ABOUT.items()) + '.', LOAD_PARAMS, _tools_load),
 )
 
 
-def ensure_meta():
-    for t in META:
-        if T.REGISTRY.get(t.name) is not t:
-            T.REGISTRY.pop(t.name, None)
-            T.register(t)
+META_BY_NAME = {t.name: t for t in META}  # the runtime's own: never in tool_api.REGISTRY (Falcon's tools are)
+
+
+def lookup(name: str):
+    """A tool by name: a meta-tool of the runtime, else one of Falcon's (tool_api.REGISTRY)."""
+    return META_BY_NAME.get(name) or T.REGISTRY.get(name)
+
+
+def call_tool(ctx: T.ToolContext, name: str, args) -> dict:
+    """tool_api.call for Falcon's tools; the same checks, containment and redaction for the meta-tools."""
+    t = META_BY_NAME.get(name)
+    if t is None:
+        return T.call(ctx, name, args)
+    errs = T.check_args(t, args if args is not None else {})
+    if errs:
+        return {'error': 'invalid arguments', 'problems': errs}
+    try:
+        res = t.fn(ctx, **(args or {}))
+    except T.ToolError as e:
+        return {'error': str(e)}
+    except Exception as e:                    # noqa: BLE001 (reported to the model, without a traceback)
+        return {'error': f'{type(e).__name__} in {name}', 'internal': True}
+    return ctx.redact(res if isinstance(res, dict) else {'result': res})
+
+
+def meta_schemas() -> list:
+    return [{'type': 'function', 'function': {'name': t.name, 'description': t.description, 'parameters': t.params}}
+            for t in META]
 
 
 # --------------------------------------------------------------------------------------------- the user's message
@@ -333,7 +397,6 @@ def summarize(result: dict) -> str:
 # --------------------------------------------------------------------------------------------- the agent
 class Agent:
     def __init__(self, service, session: Session, host: Host | None = None, mode: str = 'ask'):
-        ensure_meta()
         self.service = service
         self.session = session
         self.host = host or Host()
@@ -482,9 +545,15 @@ class Agent:
             except OSError as e:
                 self.host.event('error', {'kind': 'save', 'message': f'Could not save the conversation: {e}'})
 
-    def system_message(self) -> dict:
+    def system_message(self, sent=None) -> dict:
         ctx = dict(self.host.context_summary())
-        ctx['tool groups loaded'] = list(self.session.loaded) or 'none yet'
+        groups, single = sent if sent is not None else (list(self.session.loaded), list(self.session.loaded_tools))
+        ctx['tools callable now'] = {'core': list(CORE), 'groups': list(ALWAYS) + [g for g in groups
+                                                                                   if g not in ALWAYS],
+                                     'single tools': single}
+        left = [g for g in self.session.loaded if g not in groups]
+        if left:
+            ctx['tools callable now']['loaded but left out this step (token limit)'] = left
         extra = ('\n\nNow: ' + json.dumps(ctx, ensure_ascii=False, default=str)) if ctx else ''
         return {'role': 'system', 'content': SYSTEM + '\n\n' + MODE_RULES[self.mode] + extra}
 
@@ -538,27 +607,66 @@ class Agent:
             self.load_groups(new, why='your message')
 
     def load_groups(self, groups, why: str = ''):
+        """Load groups (a group loaded again moves to the end: the most recent is sent first when not all fit)."""
+        groups = [g for g in groups if g in T.GROUPS and g not in ALWAYS]
         with self.session.lock:
-            add = [g for g in groups if g in T.GROUPS and g not in self.session.loaded]
-            self.session.loaded.extend(add)
+            add = [g for g in groups if g not in self.session.loaded]
+            self.session.loaded[:] = [g for g in self.session.loaded if g not in groups] + groups
         if add:
             self.host.event('tools', {'loaded': list(self.session.loaded), 'added': add, 'why': why})
 
-    def tool_schemas(self, groups=None) -> list:
-        """The schemas sent: the core, and the tools of the loaded groups (or of `groups`)."""
-        groups = self.session.loaded if groups is None else groups
-        names = set(CORE) | {t.name for t in T.REGISTRY.values() if t.group in groups}
-        return T.schemas(names=names, gui=self.host.has_window)
+    def load_tools(self, names, why: str = ''):
+        with self.session.lock:
+            add = [n for n in names if n in T.REGISTRY and n not in CORE and n not in self.session.loaded_tools]
+            self.session.loaded_tools.extend(add)
+        if add:
+            self.host.event('tools', {'loaded': list(self.session.loaded), 'added': add, 'why': why})
 
-    def _recent_groups(self) -> list:
-        """The groups of the tools called in the last two steps (what trimming keeps)."""
-        out = []
+    def _always(self) -> set:
+        return set(CORE) | {t.name for t in T.REGISTRY.values() if t.group in ALWAYS}
+
+    def tool_schemas(self, groups=None, single=None) -> list:
+        """The schemas sent: the core (with the small groups ALWAYS), the single tools loaded and the loaded groups'
+        tools (or `groups` and `single`)."""
+        groups = self.session.loaded if groups is None else groups
+        single = self.session.loaded_tools if single is None else single
+        names = self._always() | set(single) | {n for g in groups for n in group_tools(g)}
+        return meta_schemas() + T.schemas(names=names - set(CORE), gui=self.host.has_window)
+
+    def select_tools(self, which: str, rest_tokens: int, limit: int) -> tuple:
+        """(schemas, (groups sent, single tools sent)) for a trimming level: 'loaded' — the single tools, then the
+        loaded groups most recent first while the step fits the per-minute limit (the most recent always; so under
+        Groq's base limit of 8,000 only one large group goes at a time); 'recent' — what the last two steps called;
+        'core' — the core alone."""
+        if which == 'core':
+            return self.tool_schemas([], []), ([], [])
+        if which == 'recent':
+            groups, single = self._recent()
+        else:
+            groups, single = list(reversed(self.session.loaded)), list(self.session.loaded_tools)
+        from .provider import estimate_tokens
+        sent: list = []
+        for g in groups:
+            if sent and limit and rest_tokens + estimate_tokens(self.tool_schemas(sent + [g], single)) > limit:
+                continue
+            sent.append(g)
+        return self.tool_schemas(sent, single), (sent, single)
+
+    def _recent(self) -> tuple:
+        """The single tools called in the last two steps, and the loaded groups they belong to (what trimming
+        keeps)."""
+        groups, single = [], []
         for m in [m for m in self.session.snapshot() if m.get('role') == 'assistant'][-2:]:
             for tc in m.get('tool_calls') or []:
-                t = T.REGISTRY.get((tc.get('function') or {}).get('name'))
-                if t is not None and t.name not in CORE and t.group not in out:
-                    out.append(t.group)
-        return out
+                t = lookup((tc.get('function') or {}).get('name'))
+                if t is None or t.name in CORE or t.group in ALWAYS:
+                    continue
+                if t.group in self.session.loaded:
+                    if t.group not in groups:
+                        groups.append(t.group)
+                elif t.name not in single:
+                    single.append(t.name)
+        return groups, single
 
     def _add_event(self, text: str):
         idx = self.session.add({'role': 'user', 'content': text, '_event': True})
@@ -580,9 +688,9 @@ class Agent:
         refused = None                          # (the server's too-large error, the size it refused)
         while True:
             keep, which = self.LEVELS[level]
-            groups = {'loaded': self.session.loaded, 'recent': self._recent_groups(), 'core': []}[which]
-            tools = self.tool_schemas(groups)
-            msgs = self.fit([self.system_message()] + wire(self.session.snapshot()), tools, model, keep)
+            convo = self.fit(wire(self.session.snapshot()), [], model, keep)
+            tools, sent = self.select_tools(which, estimate_tokens(convo) + estimate_tokens(SYSTEM) + 200, limit)
+            msgs = [self.system_message(sent)] + convo
             est = estimate_tokens(msgs, tools)
             if refused is not None and est >= refused[1]:
                 if level + 1 < len(self.LEVELS):
@@ -674,6 +782,8 @@ class Agent:
                     self._wait_ids |= {int(j) for j in payload}
             elif kind == 'load_groups':
                 self.load_groups(payload, why='the model asked')
+            elif kind == 'load_tools':
+                self.load_tools(payload, why='the model asked')
             else:
                 self.host.event('tool_event', {'kind': kind, 'payload': payload})
         ctx.emit = emit
@@ -696,9 +806,9 @@ class Agent:
         plan = []                                # (tc, tool, args, parse error)
         for tc in calls:
             args, err = self._parse(tc)
-            tool = T.REGISTRY.get(tc.name)
-            if tool is not None and tool.name not in CORE and tool.group not in self.session.loaded:
-                self.load_groups([tool.group], why=f'{tool.name} was called')    # found by name: its group now
+            tool = lookup(tc.name)
+            if tool is not None and tool.name not in self._always() and tool.group not in self.session.loaded:
+                self.load_tools([tool.name], why=f'{tool.name} was called')      # found by name: callable from now
             plan.append((tc, tool, args, err))
         i = 0
         while i < len(plan):
@@ -750,7 +860,7 @@ class Agent:
     @staticmethod
     def _timed(ctx, name, args):
         t0 = time.perf_counter()
-        res = T.call(ctx, name, args)
+        res = call_tool(ctx, name, args)
         return res, (time.perf_counter() - t0) * 1000
 
     def on_gui(self, tool) -> bool:
@@ -846,14 +956,17 @@ class Agent:
             with self._lock:
                 self.my_jobs.add(jid)
             self.host.event('job', jid)
-        moved = [p for k, p in sink if k == 'trashed']
-        if isinstance(res, dict) and isinstance(res.get('trashed'), list) and not moved:
-            moved = res['trashed']
+        # runs_trash returns {'trashed': [{'from', 'to', 'item'}]} (item: what runs_restore takes) and emits each
+        # move; the result is preferred (it has the item), the emitted moves otherwise
+        moved = res.get('trashed') if isinstance(res, dict) and isinstance(res.get('trashed'), list) else []
+        moved = moved or [p for k, p in sink if k == 'trashed']
         for m in moved:
             if isinstance(m, dict) and m.get('from') and m.get('to'):
-                entries.append({'kind': 'trash', 'from': os.path.expanduser(m['from']),
-                                'to': os.path.expanduser(m['to']),
-                                'text': f'{name}: moved {os.path.basename(m["from"])} to the workspace trash'})
+                e = {'kind': 'trash', 'from': os.path.expanduser(m['from']), 'to': os.path.expanduser(m['to']),
+                     'text': f'{name}: moved {os.path.basename(m["from"])} to the workspace trash'}
+                if m.get('item'):
+                    e['item'] = m['item']
+                entries.append(e)
         if not entries:
             entries.append({'kind': 'other', 'text': f'{name}: {summarize(res) or "done"}'})
         for e in entries:
@@ -864,7 +977,7 @@ class Agent:
         """Run a suggested action the user approved on a card outside a turn (AssistantService.propose): the same
         checks, the same activity log, and a note in the conversation so the model knows. Blocking: call it off the
         GUI thread (gui tools are run on it by the host)."""
-        tool = T.REGISTRY.get(tool_name)
+        tool = lookup(tool_name)
         sink: list = []
         ctx = self._ctx(sink)
         before = self._snapshot() if tool is not None and tool.tier in ('act', 'trash') else None
@@ -906,9 +1019,11 @@ def close_dangling(session: Session) -> int:
     return n
 
 
-def undo_activity(entry: dict, win=None, queue=None, workspace: str = '') -> str:
+def undo_activity(entry: dict, win=None, queue=None, workspace: str = '', ctx=None) -> str:
     """Undo one activity entry; returns what happened (a sentence). Project edits through the window's undo stack (only
-    while they are the newest steps on it), jobs by cancelling them, runs moved to the trash by moving them back."""
+    while they are the newest steps on it), jobs by cancelling them, runs moved to the trash by moving them back —
+    through runs_restore with the trash item when there is one (it restores the catalogue too; ctx: a ToolContext),
+    else by moving the folder back within the workspace."""
     kind = entry.get('kind')
     if entry.get('undone'):
         return 'Already undone.'
@@ -930,6 +1045,11 @@ def undo_activity(entry: dict, win=None, queue=None, workspace: str = '') -> str
             return f'Job {j.id} already {j.state}; its result stays (Jobs ▸ History).'
         queue.cancel(j)
         return f'Cancelled job {j.id}.'
+    if kind == 'trash' and entry.get('item') and ctx is not None and 'runs_restore' in T.REGISTRY:
+        res = T.call(ctx, 'runs_restore', {'item': entry['item']})
+        if res.get('error'):
+            return f'Not restored: {res["error"]}'
+        return f'Restored {os.path.basename(entry.get("from") or entry["item"])}.'
     if kind == 'trash':
         src, dst = entry.get('to', ''), entry.get('from', '')
         trash = os.path.realpath(os.path.join(workspace, 'trash')) if workspace else ''

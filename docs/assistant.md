@@ -67,22 +67,31 @@ mode the model can ask to be resumed when a job it queued finishes (`plan_wait_j
 
 ## Tools on demand, and the per-minute token limit
 
-Falcon has some fifty to seventy tools in seven groups (project, runs, jobs, analysis, ui, knowledge, system); their
-schemas would make every step large. So each step sends a small **core** — `plan_update`, `plan_wait_jobs`,
-`tools_find` (searches every tool by what is needed: names, groups and one line each) and `tools_load` (makes groups'
-tools callable from the next step) — plus the groups loaded so far in this conversation. A group is also loaded when
-your message (or the page you are on) makes it obviously relevant — "runs", "recorded" load runs; "evaluation", "mAP"
-analysis; "how do I" knowledge; Data loads runs, Models analysis (a heuristic, at most two groups per message) — and
-when the model calls a tool by name whose group is not loaded yet. The loaded groups are kept with the conversation.
+Falcon's 92 tools ([the list](assistant-tools.md)) are in seven groups whose compact schemas weigh, in tokens
+(characters / 4), about: project 3,100 (25 tools), jobs 3,300 (29), analysis 900 (11), runs 860 (11), ui 650 (8),
+knowledge 310 (4), system 180 (4) — 9,300 in all, more than Groq's base per-minute limit. So each step sends:
+
+- the **core**: the runtime's own `plan_update`, `plan_wait_jobs`, `tools_find` and `tools_load`, with the two small
+  groups knowledge and system (about 1,200 tokens together);
+- the **single tools** loaded: `tools_find` searches every tool's name and full description and makes its best three
+  matches callable on their own (so the model can call `jobs_drive` without the other 28 jobs tools); `tools_load`
+  loads more by name; a tool the model calls by name before it was loaded is run, and loaded on its own;
+- the **groups** loaded — by `tools_load`, or with your message when its words (or the page you are on) make a group
+  obviously relevant: "runs", "recorded" load runs; "evaluation", "mAP" analysis; Data loads runs, Models analysis (a
+  heuristic, at most two groups per message). The most recently loaded group is always sent; older ones only while the
+  step stays within your per-minute limit — so at 8,000 tokens a minute one large group (project or jobs) goes at a
+  time; a larger limit sends more.
+
+What is loaded is kept with the conversation.
 
 Groq's rate-limits page gives the base developer plan 30 requests, 8,000 tokens per minute and 200,000 per day for
 `openai/gpt-oss-120b`, `openai/gpt-oss-20b` and `qwen/qwen3.8-27b` (its models page says 250,000 tokens per minute;
 **your account's limits page at console.groq.com is authoritative**). Settings ▸ Assistant ▸ *Token limit* is that
 number for your plan (default 8,000; 0: no limit). Before each step Falcon estimates its tokens (characters / 4):
 
-- a step larger than the limit is trimmed — older tool results left out first (the last four kept), then the schemas
-  of the groups not used in the last two steps, then all but the last result and the core tools only; one that still
-  does not fit is not sent, and you are told why;
+- a step larger than the limit is trimmed — older tool results left out first (the last four kept), then every tool
+  not called in the last two steps, then all but the last result and the core alone; one that still does not fit is
+  not sent, and you are told why;
 - a step that fits, but not on top of the tokens the last minute's responses used (as the server counted them), waits
   until enough of them age out (the panel says how long; Stop ends the wait);
 - a 413 from the server is trimmed the same way and sent again, smaller; a 429 waits for its `retry-after`.
@@ -226,14 +235,18 @@ Nothing was sent to Groq while building this: the tests run against a fake serve
 - `assistant.groq.GroqClient` — the HTTP client (standard library); `assistant.provider` — results, errors, model
   parameters, cost; `assistant.keystore` — the key.
 - `assistant.agent.Agent` — the loop, Qt-free, driven by a `Host` (the panel's `QtHost`, or a headless one in tests
-  and on the command line). Meta-tools it registers, always sent (`agent.CORE`): `plan_update`, `plan_wait_jobs`,
-  `tools_find`, `tools_load`; every other tool's schema is sent once its group is loaded. A tool's `group` and the
-  first sentence of its `description` are what `tools_find` shows, so both should say what it is for.
+  and on the command line). It imports `assistant.tools` (which registers Falcon's tools in `tool_api.REGISTRY`). Its
+  own meta-tools (`agent.CORE`: `plan_update`, `plan_wait_jobs`, `tools_find`, `tools_load`) are kept out of the
+  registry and run by `agent.call_tool` with the same checks; `agent.ALWAYS` (knowledge, system) is sent with them;
+  everything else once loaded, singly or by group. `tools_find` searches names and the full texts
+  (`tools._compact.DETAILS`) and shows the compact first sentence.
 - `assistant.service.AssistantService` (`win.assistant`) — what the rest of Falcon calls:
   `quick(prompt, context) -> str` (fast model, blocking: call it from a task), `explain_error(text, where)`,
   `ask(text, context=None)` (opens the panel with a request; sent at once when the assistant is ready),
   `propose({'tool', 'args', 'why'})` (an approval card for a suggested action; approved, it runs like a tool call and
   is noted in the conversation).
-- A tool that moves runs to the trash reports each move with `ctx.emit('trashed', {'from': path, 'to': path})` (or
-  returns `{'trashed': [...]}`) so the activity log can restore it; project edits and queued jobs are found by the
-  agent itself (the undo stack's index and the queue's job ids before and after the call).
+- `runs_trash` returns `{'trashed': [{'from', 'to', 'item'}]}` (and emits each move as `ctx.emit('trashed', …)`);
+  the activity log keeps the item and its Undo calls `runs_restore` with it, which puts the catalogue back too.
+  Project edits and queued jobs are found by the agent itself (the undo stack's index and the queue's job ids before
+  and after the call). Act and trash tools must be quick (they run on the GUI thread); `jobs_wait` is a read tool
+  and waits off it (a Stop leaves it waiting until its own timeout, at most 600 s, its result dropped).

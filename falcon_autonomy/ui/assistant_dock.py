@@ -1116,7 +1116,9 @@ class AssistantPanel(QWidget):
         e = next((a for a in self.session.activity if a.get('id') == ident), None)
         if e is None:
             return ''
-        msg = A.undo_activity(e, self.win, self.win.queue, self.win.workspace())
+        ctx = self.host.tool_context()
+        ctx.redact = privacy.redact
+        msg = A.undo_activity(e, self.win, self.win.queue, self.win.workspace(), ctx)
         if msg.startswith(('Undid', 'Cancelled', 'Restored')):
             self.session.update_activity(ident, undone=True)
             self.session.save()

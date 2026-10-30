@@ -45,6 +45,7 @@ class Session:
         self.plan: list = []                 # [{'text', 'done'}]
         self.allowed: list = []              # tool names approved for the whole conversation
         self.loaded: list = []               # tool groups whose schemas are sent (tools_load, or the user's words)
+        self.loaded_tools: list = []         # single tools loaded (tools_find's best, tools_load by name)
         self.activity: list = []             # [{'id', 'time', 'tool', 'kind', 'text', ...undo data}]
         self.usage = {'prompt': 0, 'completion': 0, 'cost': 0.0, 'requests': 0}
         self.created = utc()
@@ -72,6 +73,7 @@ class Session:
         self.plan = [p for p in d.get('plan') or [] if isinstance(p, dict)]
         self.allowed = [str(x) for x in d.get('allowed') or []]
         self.loaded = [str(x) for x in d.get('loaded') or []]
+        self.loaded_tools = [str(x) for x in d.get('loaded_tools') or []]
         self.activity = [a for a in d.get('activity') or [] if isinstance(a, dict)]
         self.usage.update({k: v for k, v in (d.get('usage') or {}).items() if k in self.usage})
         self.created = d.get('created') or self.created
@@ -80,7 +82,7 @@ class Session:
         with self.lock:
             return {'version': VERSION, 'created': self.created, 'saved': utc(), 'messages': copy.deepcopy(self.messages),
                     'plan': copy.deepcopy(self.plan), 'allowed': list(self.allowed),
-                    'loaded': list(self.loaded),
+                    'loaded': list(self.loaded), 'loaded_tools': list(self.loaded_tools),
                     'activity': copy.deepcopy(self.activity), 'usage': dict(self.usage)}
 
     def save(self):
@@ -91,6 +93,7 @@ class Session:
     def clear(self):
         with self.lock:
             self.messages, self.plan, self.allowed, self.activity, self.loaded = [], [], [], [], []
+            self.loaded_tools = []
             self.usage = {'prompt': 0, 'completion': 0, 'cost': 0.0, 'requests': 0}
             self.created = utc()
         self.save()

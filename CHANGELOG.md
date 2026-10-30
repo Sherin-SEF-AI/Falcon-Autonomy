@@ -14,9 +14,12 @@
   pickers from /models, the user's price table); Ctrl+Shift+A, Ctrl+K ▸ Ask Falcon…, a status-bar badge with tokens
   and estimated cost. Groq's API verified against its documentation on 2026-10-30: the fast lane is
   `qwen/qwen3.8-27b` (Preview), falling back to `openai/gpt-oss-20b` — said once — when the server does not list it or
-  says it is gone; `parallel_tool_calls` per model (false for gpt-oss). Tool schemas on demand: a core of four
-  meta-tools (`tools_find`, `tools_load`) and the groups loaded; each step estimated and trimmed or paced to the
-  user's tokens-per-minute limit (default 8,000). Tested against a fake server only.
+  says it is gone; `parallel_tool_calls` per model (false for gpt-oss). Falcon's 92 tools on demand: the runtime's
+  four meta-tools (kept out of the registry) with the knowledge and system groups always, single tools found by
+  `tools_find` (its best three callable) or named in `tools_load`, and loaded groups — the most recent always, older
+  ones while the step fits the limit (one large group at 8,000 tokens a minute); each step estimated and trimmed or
+  paced to the user's tokens-per-minute limit (default 8,000); trash undone through `runs_restore`. Tested against a
+  fake server only.
 
 - **Lateral filtering for two-wheelers** (`workers/lateral.py`, a traffic profile's `lateral_filtering`, Worlds ▸
   traffic profile): background two-wheelers choose their own lateral position over the same-direction lanes every

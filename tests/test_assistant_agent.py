@@ -450,22 +450,57 @@ def test_tool_schemas_on_demand(tmp_path, srv, reg):
              tools(('analysis_metrics', {})), text('Metric 0.5.'))
     run(ag, 'hello there')
     b = bodies(srv)
-    assert _sent_tools(b[0]) == core and _sent_tools(b[1]) == core                 # only the core until loaded
+    assert _sent_tools(b[0]) == core                                                # only the core at first
     found = json.loads([m for m in ag.session.messages if m.get('_name') == 'tools_find'][0]['content'])
-    assert found['tools'][0]['name'] == 'analysis_metrics' and found['groups']['runs']['tools'] == 2
-    assert _sent_tools(b[2]) == sorted(core + ['analysis_metrics']) and ag.session.loaded == ['analysis']
-    assert 'analysis' in b[2]['messages'][0]['content']                              # the system prompt says so
-    assert Session(ws).loaded == ['analysis']                                        # kept with the conversation
+    assert found['tools'][0] == {'name': 'analysis_metrics', 'group': 'analysis', 'tier': 'read', 'callable': True,
+                                 'about': 'Evaluation metrics of a model on a drive set'}
+    assert found['groups']['runs']['tools'] == 2 and found['groups']['runs']['tokens'] > 0
+    assert _sent_tools(b[1]) == sorted(core + ['analysis_metrics'])                 # find's best, on its own
+    assert ag.session.loaded_tools == ['analysis_metrics'] and ag.session.loaded == ['analysis']
+    assert _sent_tools(b[2]) == sorted(core + ['analysis_metrics'])
+    assert '"groups": ["knowledge", "system", "analysis"]' in b[2]['messages'][0]['content']  # the prompt says so
+    again = Session(ws)
+    assert again.loaded == ['analysis'] and again.loaded_tools == ['analysis_metrics']   # kept with the conversation
     # the user's words make a group obviously relevant: loaded with the message
     srv.push(text('Two runs.'))
     run(ag, 'search my recorded runs')
     assert set(_sent_tools(bodies(srv)[-1])) >= {'runs_search', 'runs_get'}
-    # a tool called by name before its group was loaded runs, and its group comes with the next step
-    ag.session.loaded = []
+    # a tool called by name before it was loaded runs, and from the next step it is callable on its own
     srv.push(tools(('project_worlds', {})), text('One world.'))
     run(ag, 'next')
-    assert 'project_worlds' in _sent_tools(bodies(srv)[-1]) and 'project' in ag.session.loaded
-    assert any(k == 'tools' for k, _p in host.events)
+    assert 'project_worlds' in _sent_tools(bodies(srv)[-1]) and 'project' not in ag.session.loaded
+    assert 'project_worlds' in ag.session.loaded_tools and any(k == 'tools' for k, _p in host.events)
+    # tools_load by name; nothing named: refused
+    srv.push(tools(('tools_load', {'tools': ['runs_get', 'nope']})), tools(('tools_load', {})), text('ok'))
+    run(ag, 'more')
+    res = [json.loads(m['content']) for m in ag.session.messages if m.get('_name') == 'tools_load'][-2:]
+    assert res[0]['loaded'] == {'groups': [], 'tools': ['runs_get']} and res[0]['unknown'] == ['nope']
+    assert 'name groups or tools' in res[1]['error']
+
+
+def test_real_tools_under_the_token_limit(tmp_path, srv):
+    """Falcon's own tools (the tools package): the core sends the small groups; under 8,000 tokens a minute only the
+    most recent large group goes; with a larger limit both; tools_find finds jobs_drive and makes it callable alone."""
+    from falcon_autonomy.assistant.provider import estimate_tokens
+    svc, ag, host, ws = make(tmp_path, srv, tpm=8000)
+    assert len(T.REGISTRY) >= 90 and A.group_tokens('jobs') > 2500 and A.group_tokens('project') > 2500
+    names = {t['function']['name'] for t in ag.tool_schemas([], [])}
+    assert set(A.CORE) <= names and 'knowledge_manual' in names and 'system_server' in names
+    assert not any(n.startswith(('jobs_', 'project_')) for n in names)
+    assert estimate_tokens(ag.tool_schemas([], [])) < 1500
+    ag.load_groups(['project', 'jobs'])
+    schemas, (groups, single) = ag.select_tools('loaded', 1500, 8000)
+    assert groups == ['jobs'] and estimate_tokens(schemas) < 5000                   # the most recent large one
+    svc.set_cfg(tpm_limit=30000)
+    schemas, (groups, single) = ag.select_tools('loaded', 1500, 30000)
+    assert sorted(groups) == ['jobs', 'project']
+    ag.session.loaded.clear()
+    srv.push(tools(('tools_find', {'query': 'queue a recorded drive'})), text('Found it.'))
+    run(ag, 'hello')
+    found = json.loads([m for m in ag.session.messages if m.get('_name') == 'tools_find'][-1]['content'])
+    assert found['tools'][0]['name'] == 'jobs_drive' and found['tools'][0].get('callable')
+    sent = _sent_tools(bodies(srv)[-1])
+    assert 'jobs_drive' in sent and 'jobs_sweep' not in sent and ag.session.loaded == []
 
 
 def test_tokens_per_minute_trimming_pacing_and_refusal(tmp_path, srv, reg, monkeypatch):
@@ -505,3 +540,22 @@ def test_tokens_per_minute_trimming_pacing_and_refusal(tmp_path, srv, reg, monke
     n = len(srv.chats())
     run(ag, 'y ' * 1500)
     assert host.kinds('error')[-1]['kind'] == 'too_large' and len(srv.chats()) == n
+
+
+def test_trash_undo_goes_through_runs_restore(tmp_path, srv, reg):
+    restored = []
+
+    def trash(ctx, runs):
+        ctx.emit('trashed', {'from': '/ws/runs/a', 'to': '/ws/trash/T1-a/a'})
+        return {'trashed': [{'from': '/ws/runs/a', 'to': '/ws/trash/T1-a/a', 'item': 'T1-a'}]}
+    T.register(T.Tool('runs_trash', 'runs', 'trash', 'Move runs into the trash.', {'type': 'object', 'properties': {
+        'runs': {'type': 'array', 'items': {'type': 'string'}}}, 'required': ['runs']}, trash))
+    T.register(T.Tool('runs_restore', 'runs', 'act', 'Put a trashed run back.', {'type': 'object', 'properties': {
+        'item': {'type': 'string'}}, 'required': ['item']},
+        lambda ctx, item: restored.append(item) or {'restored': 'runs/a'}))
+    svc, ag, host, ws = make(tmp_path, srv, mode='auto')
+    srv.push(tools(('runs_trash', {'runs': ['a']})), text('Moved.'))
+    run(ag)
+    e = ag.session.activity[-1]
+    assert e['kind'] == 'trash' and e['item'] == 'T1-a' and len(host.cards) == 1      # trash asked, in Auto too
+    assert A.undo_activity(e, ctx=T.ToolContext(workspace=ws)) == 'Restored a.' and restored == ['T1-a']
