@@ -209,6 +209,17 @@ on and **fails** (never slowed, no standstill); the ROS 2 follower's own decisio
 containers, the worker against the fake carla; `tests/test_stack_ros2.py`, 2026-10-30), the lidar dropping out at 3 s:
 with `--degraded-mode` the follower slowed 0.55 s after the onset and stood still at 3.95 s (window 7.1 s), peak
 deceleration 2.5 m/s², peak jerk 8.6 m/s³, no missed deadline — **passed**; without it, it never slowed — **failed**.
+On the real server (CARLA 0.9.16, the demo project's Central Bengaluru, 2026-10-30; the built-in follower behind a
+lead that never brakes, 30 km/h, a front camera 640 × 360, a 32-channel lidar at 10 Hz, IMU and GNSS, real sensor
+data into the monitor), a fault at 4 s:
+
+| fault | degraded mode | detected | reaction | standstill (window 7.1 s) | peak decel / jerk | MRM |
+|---|---|---|---|---|---|---|
+| lidar sector loss −60…60° | off | — | never slowed | none | — | **failed** |
+| lidar sector loss −60…60° | on | 4.05 s: an empty sector of 120° | 0.25 s | 3.65 s | 2.5 m/s² / 8.6 m/s³ | **passed** |
+| camera occlusion, 60 % | off | — | never slowed | none | — | **failed** |
+| camera occlusion, 60 % | on | 4.00 s: 56 % of the image dark and texture-less | 0.20 s | 3.60 s | 2.5 m/s² / 8.6 m/s³ | **passed** |
+
 Limits: the monitor's thresholds were chosen on Falcon's simulated sensors; a
 frozen-image check needs motion (a standing car in a still scene sees identical images); the verifier has no lane
 offsets without a scenario route (free drives, HIL sessions) and judges those on the other checks.

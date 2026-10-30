@@ -105,7 +105,7 @@ becomes true, skipped within `cooldown_s` of the last firing. `cooldown` fires e
 **Determinism.** Rules read only simulation state and time; their random choices (a walker's blueprint) draw from a
 generator seeded by the run's seed and the rule's id, never the run's own. An actor a rule spawns is driven by the
 scenario director — kinematic in scenario runs, so **a scenario run with rules still repeats bit for bit** (tested
-against the fake; measured on the real server below); a drive without a scenario attaches a director that drives
+against the fake, measured on the real server: below); a drive without a scenario attaches a director that drives
 only those actors (the ego stays on the traffic manager, whose physics is not bit-for-bit, so such drives repeat as
 closely as drives do — `falcon reproduce` measures it).
 
@@ -115,6 +115,26 @@ condition read, what each action did — or why it could not, e.g. *the map has 
 on), the counts and the actors spawned; a drive whose rules spawned actors also writes `trajectories.json` and their
 criticality. The run index tags such runs `events:trigger`. In Live, firings are events (shown and recorded), a rule's
 `dirt`/`drop`/`freeze` fault is shown as Live's black, dropped or frozen view, other faults are refused there.
+
+**Measured** on CARLA 0.9.16 (the demo project's Central Bengaluru, Falcon's server on the reference machine,
+2026-10-30):
+
+- *A scenario run with rules, twice* (the autorickshaw cut-in, seed 11, 12 s; rules spawning a cow when an actor is
+  within 40 m, a jaywalker at 5 s, fog at 4 s, a TTC marker with a 1 s cooldown): every trajectory identical —
+  the ego, the autorickshaw, the cow and the jaywalker the rules added — the same firings at the same steps with the
+  same signal values (cow 1.0 s, TTC 3.4 / 4.4 / 5.4 s, fog 4.0 s, jaywalker 5.0 s) and the same criticality.
+- *A 25 s drive with seven rules* (the traffic manager driving, 500 steps; `junction`, `light`, `jay`, `fog`, `mud`,
+  `ttc`, `cow`): 13 firings — the junction 1.6 m ahead at 0 s, a light's stop line 21.4 m ahead, the jaywalker at
+  3.05 s (the ego at 30.9 km/h; placed 23.5 m from the ego, it came within 15.0 m), five TTC markers (minimum 0.42 s,
+  with the traffic), fog 60 at 10 s and so visibility 117 m, which started the `mud` fault on the camera from 10.10 to
+  15.10 s, the cow at 18 s. `falcon reproduce` re-ran it from its drive.json: the ego's trajectory identical
+  (largest difference 0 m), the same 13 firings at the same times, RGB within tolerance (worst mean difference 1.99
+  levels); the labels and objects differed (81.8 % worst label agreement) from step 10 on — before any rule fired —
+  in the background traffic, whose physics is not bit-for-bit (the traffic keeper put 12 vehicles back on the road in
+  one run, 13 in the other).
+- A first version read a spawned actor's pose back from the server, which reports a just-spawned actor at the world's
+  origin until its next tick: that drive's jaywalker started 88 m away. Spawns now start where they were placed (the
+  fake can report the origin too, FAKE_CARLA_SPAWN_AT_ORIGIN, and a test holds it).
 
 Limits: the lane look-ahead follows the straight-most branch at a fork (not the route a traffic-manager ego will
 take); `ego.accel` is a one-step difference (noisy under physics); a rule spawn placed where something already stands
@@ -209,6 +229,18 @@ at 4 m/s² lateral (accelerating then braking sideways) — so the built-in cut-
 autorickshaw's 0.8–2.5 s becomes 1.87–2.5 s; study.json lists what was narrowed (`--no-feasibility` searches the full
 ranges). After each run the other's measured dynamics (longitudinal and lateral acceleration, jerk ≤ 8 m/s³, each
 tolerated for 0.5 s — Falcon's adversarial-traffic realism bounds) decide the "exceeded its limits" label.
+
+**Measured** on CARLA 0.9.16 (the demo project's Central Bengaluru, the built-in lane follower as the ego, seeded random
+sweeps of 8, 2026-10-30): *lead brakes* — all 8 runs labelled **avoidable** (the follower brakes less than
+a_min,brake = 4 m/s² one response time after the Danger Threshold; criticality 0.46–0.77, no collision): RSS counts
+them all, as it should for a follower that keeps no RSS distance. *Autorickshaw cut-in* — all 8 labelled **safe**:
+their critical moment was the start, the autorickshaw alongside at a box distance of 1.69 m (0.15–0.65 s), which the
+criticality scalar's distance term scores high (3 runs reached 0.54–0.57, over the 0.5 threshold) while RSS finds it
+laterally safe (1.69 m against a safe 0.69–0.73 m): those 3 are listed and not counted (objective 0.45).
+Re-scoring the lead-brake study with `--count all` re-keyed its 8 rows (all avoidable: the same values) and drove
+nothing again. Note: a sweep's *random* samples come from
+the scenario's own distributions (the cut-in's `cut_time` drew 0.98 s and 1.25 s); the feasibility narrowing applies to
+the searches' space and to grids — study.json lists it either way.
 
 Limits: the road axis is the ego's heading (its mean over the run on the director's straight starts, else over the
 previous 2 s), and the ego is taken to drive in its lane's direction; junction geometry and priority (Definitions
