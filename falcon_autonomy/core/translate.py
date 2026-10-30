@@ -13,11 +13,14 @@ initialised head, so the untrained generator is the identity. Falcon adds a cond
 semantic label, as one-hot channels of GROUPS (road, sidewalk, structure, pole/sign, vegetation, terrain, sky,
 person, vehicle, other) — the generator only ever translates simulated frames, which always have labels, so it knows
 which pixels are road or car without having to guess (a real image, in the identity pass, gets all-zero channels:
-"unknown"). This is the "label as a conditioning input" form of semantic consistency; the other form, a loss from a
-frozen segmenter on the output (CyCADA, Hoffman et al. 2018), is not implemented (it needs a segmenter trained on
-real data, which Falcon does not download). CycleGAN (Zhu et al. 2017) is not implemented: two generators double the
-cost, and cycle consistency lets a generator hide the input in imperceptible signal instead of keeping it in place
-(Chu, Zhmoginov and Sandler 2017) — the one-sided PatchNCE ties output to input where it is. A diffusion + ControlNet
+"unknown"). Optionally (depth) one channel more: the inverse range, min(1, DEPTH_MIN_M / range) from the run's range
+image, 0 for the sky and for a real image (whose all-zero label tells "unknown" from "sky": depth needs the label;
+the identity pass then differs from the translation pass by eleven zero channels instead of ten — it regularises
+the "unknown" mode either way). This is the "label as a conditioning input" form of semantic consistency; the other
+form, a loss from a frozen segmenter on the output (CyCADA, Hoffman et al. 2018), is not implemented (it needs a
+segmenter trained on real data, which Falcon does not download). CycleGAN (Zhu et al. 2017) is not implemented: two
+generators double the cost, and cycle consistency lets a generator hide the input in imperceptible signal instead of
+keeping it in place (Chu, Zhmoginov and Sandler 2017) — the one-sided PatchNCE ties output to input where it is. A diffusion + ControlNet
 path is not implemented: it needs a model download whose licence the user must accept.
 
 Data. Simulated frames: Falcon runs (one pinhole camera each, its rgb and semantic label; every= n-th frame). Real
@@ -62,9 +65,9 @@ agreement, and mIoU against the frame's semantic label for both — a measuremen
 
 Foreground pinning (pin_actors, `apply --pin-actors`). After translation, inside each dynamic actor's instance mask
 (the run's instance image, the objects' ids) the translated pixels are replaced by a colour map of the input fitted
-per object from the input's to the translation's pixels there (fit_colour: a 3 × 3 matrix and an offset, least
-squares with a ridge towards the identity and Huber reweighting; an offset only for objects under PIN_MIN_PX pixels
-or when the map would flatten or invert the object's luminance), with a PIN_FEATHER_PX ring blended outside the mask.
+per object from the input's to the translation's pixels there (fit_colour: a gain and an offset per channel, least
+squares with a ridge towards gain 1 and Huber reweighting; an offset only for objects under PIN_MIN_PX pixels or
+when the map would flatten the object's luminance), with a PIN_FEATHER_PX ring blended outside the mask.
 The actor's tone and colour follow the translator; its silhouette and every edge inside it are the input's, because
 each output pixel is a function of the same input pixel alone. What the translator changed there beyond colour
 (texture, structure) is discarded — the fit's residual (rms, 8-bit levels) says how much.
@@ -127,13 +130,13 @@ DEPTH_MIN_M = 2.0                     # inverse-range channel: min(1, DEPTH_MIN_
 PIN_CLASSES = ('car', 'truck', 'bus', 'train', 'motorcycle', 'bicycle', 'rider', 'pedestrian', 'dynamic')
 PIN_FEATHER_PX = 1                    # the blend ring outside each pinned mask (0: a hard edge)
 PIN_MIN_PX = 48                       # fewer pixels than this: a per-channel offset instead of the colour matrix
-PIN_RIDGE = 1e-3                      # per pixel, colours in [0, 1]: pulls the matrix to the identity where the
-#                                       object's colours do not span (≈ a channel spread under 8 grey levels)
+PIN_RIDGE = 1e-3                      # per pixel, colours in [0, 1]: pulls a channel's gain to 1 where the object's
+#                                       colours barely spread in it (≈ a spread under 8 grey levels)
 PIN_SAMPLE = 20000                    # pixels per object the fit uses (an even stride over the mask)
 PIN_HUBER = 1.345                     # Huber's constant (× the residuals' robust scale) for the reweighted fit
 PIN_MIN_GAIN = 0.25                   # heuristic: a fitted map whose luminance slope inside the mask is below this (the
-#                                       translator's content there is unrelated to the input's, or inverted) is not
-#                                       followed: the per-channel median offset instead
+#                                       translator's content there is unrelated to the input's) is not followed: the
+#                                       per-channel median offset instead
 LUMA = np.array([0.299, 0.587, 0.114])
 PIN_DEFAULT = None                    # translate_run / `apply` without --pin-actors or --no-pin-actors: pin every
 #                                       camera that has instance images, translate the others unpinned (measured:
@@ -316,39 +319,45 @@ def inverse_range(rng: np.ndarray | None, shape: tuple, d_min: float = DEPTH_MIN
 
 # ================================================================================================ foreground pinning
 def fit_colour(x: np.ndarray, y: np.ndarray) -> tuple:
-    """A robust affine colour map y ≈ [x, 1] · M (x, y: N × 3 colours in [0, 1]; M: 4 × 3, a 3 × 3 colour matrix and
-    an offset). Least squares with a ridge pulling the matrix (not the offset) to the identity — PIN_RIDGE per pixel,
-    so the directions the object's own colours do not span keep the identity — reweighted three times with Huber
-    weights (PIN_HUBER × 1.4826 × the residuals' median norm). Up to PIN_SAMPLE pixels (an even stride). Fewer than
-    PIN_MIN_PX pixels: the identity plus the per-channel median offset ('offset'); the same when the fitted map's
-    luminance slope (the regression of the mapped luma on the input's, where the input's luma spreads over more than
-    two grey levels) is below PIN_MIN_GAIN — a map that would flatten or invert the object ('fallback'). Returns (M,
-    'affine' | 'offset' | 'fallback')."""
+    """A robust per-channel affine colour map y_c ≈ g_c · x_c + o_c (x, y: N × 3 colours in [0, 1]), returned as M
+    (4 × 3: diag(g) over the offsets o) for apply_colour. Per channel: least squares with a ridge pulling the gain (not
+    the offset) to 1 — PIN_RIDGE per pixel, so a channel the object's colours barely spread in keeps its gain —
+    reweighted three times with Huber weights (PIN_HUBER × 1.4826 × the residuals' median), the gain clamped at 0 (no
+    channel inverted). Up to PIN_SAMPLE pixels (an even stride). Fewer than PIN_MIN_PX pixels: gain 1 and the
+    per-channel median offset ('offset'); the same when the fitted map's luminance slope (the regression of the mapped
+    luma on the input's, where the input's luma spreads over more than two grey levels) is below PIN_MIN_GAIN — a map
+    that would flatten the object ('fallback'). A full 3 × 3 colour matrix was measured too: its cross-channel terms
+    fitted to re-textured objects changed their grey structure, and pinned drift was higher (docs/translation.md).
+    Returns (M, 'affine' | 'offset' | 'fallback')."""
     n = len(x)
-    M0 = np.vstack([np.eye(3), np.zeros((1, 3))])
+    M = np.vstack([np.eye(3), np.zeros((1, 3))])
 
     def offset(kind):
-        M0[3] = np.median(y - x, 0) if n else 0.0
-        return M0, kind
+        M[:3] = np.eye(3)
+        M[3] = np.median(y - x, 0) if n else 0.0
+        return M, kind
     if n < PIN_MIN_PX:
         return offset('offset')
     if n > PIN_SAMPLE:
         idx = np.linspace(0, n - 1, PIN_SAMPLE).astype(np.int64)
         x, y = x[idx], y[idx]
-    X = np.hstack([x, np.ones((len(x), 1))]).astype(np.float64)
-    y = y.astype(np.float64)
-    R = np.diag([PIN_RIDGE] * 3 + [0.0])
-    w = np.ones(len(X))
-    for _ in range(4):
-        lam = R * w.sum()
-        M = np.linalg.solve(X.T @ (X * w[:, None]) + lam, X.T @ (y * w[:, None]) + lam @ M0)
-        r = np.linalg.norm(y - X @ M, axis=1)
-        sc = 1.4826 * float(np.median(r))
-        if sc <= 1e-9:
-            break
-        w = np.minimum(1.0, PIN_HUBER * sc / np.maximum(r, 1e-12))
+    x, y = x.astype(np.float64), y.astype(np.float64)
+    for c in range(3):
+        X = np.stack([x[:, c], np.ones(len(x))], 1)
+        w = np.ones(len(x))
+        for _ in range(4):
+            lam = np.diag([PIN_RIDGE, 0.0]) * w.sum()
+            th = np.linalg.solve(X.T @ (X * w[:, None]) + lam, X.T @ (y[:, c] * w) + lam @ np.array([1.0, 0.0]))
+            r = np.abs(y[:, c] - X @ th)
+            sc = 1.4826 * float(np.median(r))
+            if sc <= 1e-9:
+                break
+            w = np.minimum(1.0, PIN_HUBER * sc / np.maximum(r, 1e-12))
+        if th[0] < 0:                             # no inverted channel: the best offset at gain 0
+            th = np.array([0.0, float(np.sum(w * y[:, c]) / np.sum(w))])
+        M[c, c], M[3, c] = th
     gi = x @ LUMA
-    gm = (X @ M) @ LUMA
+    gm = (x @ M[:3] + M[3]) @ LUMA
     v = float(gi.var())
     if v > (2 / 255) ** 2 and float(((gi - gi.mean()) * (gm - gm.mean())).mean()) / v < PIN_MIN_GAIN:
         return offset('fallback')
@@ -1566,7 +1575,8 @@ def main_translate(argv) -> int:
     tr.add_argument('--device')
     tr.add_argument('--no-condition', action='store_true', help='do not give the generator the semantic label')
     tr.add_argument('--depth', action='store_true', help=f'give the generator the inverse range too (min(1, '
-                                                         f'{DEPTH_MIN_M:g} m / range), from the range image)')
+                                                         f'{DEPTH_MIN_M:g} m / range), from the range image; measured '
+                                                         f'not to help, docs/translation.md)')
     tr.add_argument('--no-idt', action='store_true', help='no identity NCE on real images (FastCUT-like)')
     tr.add_argument('--no-amp', action='store_true')
     tr.add_argument('--keep-checkpoint', action='store_true')

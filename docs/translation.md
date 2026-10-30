@@ -34,6 +34,20 @@ Falcon's semantic label, so it is given the frame's label as ten one-hot channel
 pole/sign, vegetation, terrain, sky, person, vehicle, other — CARLA's 29 tags grouped). It need not guess which pixels
 are road or car. A real image in the identity pass gets all-zero channels ("unknown"). `--no-condition` turns this off.
 
+**Depth, optionally** (`--depth`). One input channel more: the normalised inverse range from the frame's range image,
+`min(1, 2 m / range)` — 1 at 2 m or nearer, 0.1 at 20 m, 0.02 at 100 m, 0 where nothing is within 256 m (the sky).
+The range image is the distance along each pixel's ray (`core.groundtruth`), resized to the work width by nearest
+neighbour as the label is. A real image in the identity pass gets a zero channel, as its label channels are: "unknown"
+is told from "the sky" by the all-zero label, which is why `--depth` needs the label (it is refused with
+`--no-condition`). That makes the identity pass differ more from the translation pass than before — eleven channels of
+zeros against a label and a depth map — but the label alone already made the two inputs distinguishable, so the
+identity NCE regularises the generator's behaviour on "unknown" inputs in both cases, not directly its behaviour on
+simulated ones; whether depth helps is measured, not assumed — on one training it did not
+([measured](#foreground-pinning-and-depth-measured)), so it is off by default and not offered on the page.
+Models record it: `translator.json` is `falcon.translator/2` with `arch.depth_min_m` (null without the channel) and
+`inverse_range` in `arch.cond`; a `falcon.translator/1` model (made before the option) loads and translates as
+before, and a training folder made before it keeps its resume key.
+
 **Not implemented, and why.**
 - *A semantic-consistency loss from a frozen segmenter on the output* (CyCADA, Hoffman et al. 2018): it needs a
   segmenter trained on real data, which Falcon does not download. The label as an input is the form used.
@@ -97,7 +111,7 @@ translators/<id>/
 
 ```sh
 falcon translate apply --model W/translators/kitti-cut --run RUN [--run RUN…] --workspace W \
-    [--threshold 0.35] [--on-drift raw|flag] [--camera C] [--native] [--copy]
+    [--threshold 0.35] [--on-drift raw|flag] [--camera C] [--native] [--copy] [--pin-actors] [--pin-feather 1]
 ```
 
 A new run per drive, `W/runs/<drive>-tr-<translator>`:
@@ -118,6 +132,36 @@ Exporters, the harness, `falcon gap`, `falcon train` and the experiments read it
 classes and ignore flags as the source; a COCO export). The Data, Models and Training pages list it with the drives.
 `falcon reproduce` does not apply (it re-runs a drive).
 
+### Foreground pinning
+
+`--pin-actors` (the page's *Pin the dynamic actors*) restricts what the translator may do to the **dynamic actors** —
+cars, trucks, buses, trains, motorcycles, bicycles, riders, pedestrians and CARLA's *dynamic* objects (Falcon's
+cattle, handcart and vendor proxies, movable props), and anything whose category is an animal's — to a **photometric
+change**. After the network, inside each such object's instance mask (the run's instance image, matched to the
+objects by id), the translated pixels are replaced by a colour map of the *input*:
+
+- per object and per channel, a gain and an offset (`out_c = g_c · in_c + o_c`) are fitted from the input's to the
+  translation's pixels inside the mask: least squares on colours in [0, 1], up to 20 000 pixels (an even stride), with
+  a ridge (10⁻³ per pixel) pulling the gain — not the offset — towards 1, so a channel the object's colours barely
+  spread in (a one-colour car) keeps its gain, three Huber reweightings (1.345 × the residuals' robust scale), so
+  pixels the translator repainted do not drag the fit, and the gain clamped at 0 (no channel inverted);
+- an object under 48 pixels gets gain 1 and the per-channel median offset; so does one whose fitted map would keep
+  less than a quarter of its luminance contrast (the regression slope of mapped on input luma below 0.25 — a
+  heuristic: the translator's content there is then unrelated to the input's);
+- in a ring of 1 px outside the masks (`--pin-feather`, 0 for a hard edge) the translation is blended towards the
+  nearest object's map of the input (weight 1 − d / (feather + 1)); everywhere else the translation is untouched.
+
+**What it guarantees.** Inside a pinned mask every output pixel is a function of the same input pixel alone — one
+function per object — so the silhouette cannot move and no edge can be added, moved or blurred there (tested: the
+output equals the map applied to the input, two pixels of one input colour have one output colour, and pinning is
+deterministic). An edge between two colours the map sends to one grey could lose contrast (a pointwise map is still a
+map); the slope rule catches the flattening of a whole object, not of one edge. The actor's tone and colour follow the
+translator; its texture is the simulator's. The fit's residual (`pin_rms_max` per frame in `translation.jsonl`, in
+8-bit levels) says how much of the translator's change inside the masks was not a colour map and was discarded.
+**What it does not do**: the translator's change *around* an actor — a glow or a smear painted into the background next
+to it — is outside the mask and stays (measured below); a frame without its instance image or objects is kept raw.
+Stuff classes (road, buildings, vegetation, sky) and traffic lights and signs are translated as before.
+
 ## Label preservation, measured
 
 Per translated frame, at 640 px wide, on grayscale:
@@ -130,6 +174,7 @@ Per translated frame, at 640 px wide, on grayscale:
 | worst object box | each labelled object (car … pedestrian, at least 16 px tall at this width): its box's mean structure; the frame keeps the worst |
 | light recall, light precision | night frames only (median grey < 60): the input's light sources found in the output, and the output's in the input ([at night](#at-night)) |
 | **drift** | 1 − min(structure, edge recall, edge precision, worst object box[, light recall, light precision]) |
+| worst actor box, actor edge recall / precision | reported beside the drift, not in it: the worst box structure among the dynamic actors ([pinning](#foreground-pinning)'s classes), and the edge recall and precision pooled over all their boxes in the frame |
 
 Thresholds come from each image's own gradients, so a tone change alone does not move the edges.
 
@@ -198,7 +243,12 @@ recomputes every frame's drift against its source (refused if the source's run.j
 measures the gap of the source frames and of the translated frames against the real set — the same frames on both
 sides, the [gap](sim-to-real.md)'s statistics, FD and KD with their real-vs-real floor. With a registered segmenter
 (any [model](models.md) of kind segmenter) it adds the pixel agreement of its output on the raw and translated
-frames and its mIoU against the labels on both — none is bundled, so none was measured here.
+frames and its mIoU against the labels on both — none is bundled, so none was measured here. It is a measurement,
+not a gate. A segmenter IoU gate (refuse a frame whose segmentation IoU against the label falls under e.g. 0.92) was
+proposed with SegFormer; NVIDIA's official SegFormer code and weights are released under NVIDIA's own source-code
+licence, which permits **non-commercial use only**, so they are not acceptable as a default in a GPL-3.0-or-later tool
+meant for commercial use, and Falcon does not download them. Register a segmenter whose weights' terms suit you (any
+[model](models.md) of kind segmenter) and read the agreement and mIoU it gives here; a gate on it is not implemented.
 
 ## Measured
 
@@ -252,6 +302,83 @@ the training noise of the numbers is not measured.
 
 **Cost of applying**: 120 frames of 1280 × 720 in 69–80 s on the CPU (the network at 640 × 360, the full-resolution
 composite, the drift measures and linking the labels), about 1.6 frames/s (the GPU was busy; not measured there).
+
+### Foreground pinning and depth, measured
+
+2026-10-30, the same machine. The translators of the table above were not kept, so a new baseline was trained at the
+default settings (λ_NCE 10, 12 000 iterations, seed 0): **simulated** 560 frames — all 300 of a Town10HD recording and
+every third of 780 frames of a recording in the imported central Bengaluru with traffic (1280 × 720 and 1920 × 1080,
+labels, instance and range images) — and **real** the same 451 KITTI raw images (drives 0005 and 0015). 1917 s,
+23.8 images/s (the GPU shared with another job), peak 1927 MiB; probe drift 0.02 at the end. **Held out**: another
+Town10HD recording (240 frames, a different route, 1280 × 720), a Bengaluru junction with pedestrians, motorcycles,
+riders, trucks and cars (660 frames, 1920 × 1080) and a rainy Town10HD night (600 frames, 1920 × 1080); KITTI drive 0027
+for the gap. Each held-out drive translated twice by the same model, with and without pinning (the CPU, the drift
+threshold 0.35):
+
+| drive | pinning | refused | drift median / p90 | worst object box | worst actor box (median / p10) | actor edge recall / precision | fit residual, worst object per frame (median) |
+|---|---|---|---|---|---|---|---|
+| Town10HD, 240 | off | 0 | 0.075 / 0.189 | 0.925 | 0.975 / 0.961 (217 frames) | 0.999 / 0.996 | — |
+| | on (1062 objects) | 0 | 0.075 / 0.189 | 0.925 | **0.985 / 0.976** | 1.000 / 1.000 | 13.1 levels |
+| Bengaluru junction, 660 | off | 0 | 0.049 / 0.076 | 0.950 | 0.950 / 0.918 (482 frames) | 0.980 / 0.973 | — |
+| | on (9145 objects) | 0 | **0.022** / 0.067 | **0.978** | **0.978 / 0.927** | **0.991 / 0.990** | 31.8 levels |
+| Town10HD night, 600 | off | 0 | 0.119 / 0.160 | 0.881 | 0.958 / 0.945 (88 frames) | 0.848 / 1.000 | — |
+| | on (3924 objects) | 0 | 0.119 / 0.160 | 0.881 | 0.960 / 0.946 | 0.865 / 1.000 | 12.9 levels |
+
+Drift distribution of the junction (frames per bin, edges 0, 0.05, 0.10, 0.15): unpinned 421, 226, 13; pinned 545,
+109, 6; pinning lowered 449 of its 660 frames' drift by more than 0.005 and raised 9 (none by more than 0.03). In
+Town10HD the worst box of a frame is mostly a traffic sign or light (not pinned), so the drift does not move there; at
+the junction the actors are the worst boxes, and pinning lowers the drift. No frame was refused either way: this
+translator stays well under the threshold on these drives (unlike setting B above, which refused 119 of 120 Bengaluru
+frames, it saw Bengaluru frames in training; the cause is not isolated), so **the share of refused frames could not
+show a difference** — for a translator that repaints actors, pinning should refuse fewer frames (the worst box is often
+an actor's), but none was at hand to measure it. The actor boxes' measures stay under 1 with pinning because a box
+holds background pixels around the actor, which are translated. The fit residual says what pinning discards: at the
+junction a median 32 grey levels (RMS) of the worst-fitted object's change was not a colour map — the translator
+re-textures the small pedestrians and riders of the 1920 × 1080 frames (in the frame of the largest residual, a red
+glow painted over a scooter's rider; pinned, the rider keeps the source's look in the translator's tone, while the
+glow **next to** the scooter, outside its mask, stays).
+
+**The colour map: per channel, not a 3 × 3 matrix.** The first implementation fitted a full 3 × 3 colour matrix (the
+same ridge and reweighting). Re-pinning the unpinned frames offline (every 6th junction frame, every 2nd Town10HD
+frame, decoded from the written JPEGs): baseline junction drift median 0.049 unpinned → 0.028 with the matrix → 0.022
+per channel; depth model (below) junction 0.060 → 0.062 → 0.054, Town10HD 0.112 → 0.103 → 0.103. Fitted to an object
+the translator re-textured, the matrix's cross-channel terms (one motorcycle: red out = 0.66 R − 0.43 G − 0.38 B …)
+change its grey structure; per-channel gains cannot mix channels. The tables are the per-channel method's, applied for
+real.
+
+**What pinning costs in realism — nothing measurable** (`falcon translate check … --real kitti_raw:…/drive_0027
+--features`, Town10HD and junction, 94 against 94 images, seed 0; the feature network on the CPU):
+
+| | FD (floor 19.0) | KD (floor 0.0002) | CIELAB lightness (KITTI 39.3) | lightness s.d. (KITTI 30.3) |
+|---|---|---|---|---|
+| raw | 241.3 | 0.2515 | 45.4 | 23.2 |
+| translated, unpinned | 233.4 | 0.2378 | 40.6 | 24.4 |
+| translated, pinned | 233.2 | 0.2376 | 40.6 | 24.3 |
+
+The actors are a small share of the pixels, and the colour map carries the translator's tone onto them. One model,
+one seed, one sampling of frames: differences of this size are not resolved. Pinning costs about 0.1 s per
+1920 × 1080 frame on the CPU (12–17 objects). **Default: on** — `apply` pins every camera recorded with the instance
+label and translates the others unpinned with a warning (`--no-pin-actors` turns it off; `--pin-actors` refuses a
+camera without instance images).
+
+**Depth conditioning — not kept as a default.** The same data and settings with `--depth` (the range images of the
+same 560 frames): 2020 s, 29.0 images/s, peak 1930 MiB, probe drift 0.03 at the end (the baseline's: 0.02). On the same
+held-out frames:
+
+| | Town10HD drift median / p90 | structure | worst actor box | junction drift median / p90 | worst actor box | refused | FD → (raw 241.3) | KD → (raw 0.2515) | lightness (KITTI 39.3) |
+|---|---|---|---|---|---|---|---|---|---|
+| baseline | 0.075 / 0.189 | 0.976 | 0.975 | 0.049 / 0.076 | 0.950 | 0 of 900 | 233.4 | 0.2378 | 40.6 |
+| `--depth` | 0.112 / 0.161 | 0.940 | 0.915 | 0.060 / 0.097 | 0.938 | 0 of 900 | 237.7 | 0.2407 | 37.0 |
+| `--depth`, pinned | 0.103 / 0.161 | 0.940 | 0.951 | 0.054 / 0.086 | 0.944 | 0 of 900 | — | — | — |
+
+The depth-conditioned translator changes more (higher drift, lower structure on both drives) and lands no nearer the
+real set in features (FD 237.7 against 233.4, KD 0.2407 against 0.2378); it moves the global tone further (lightness
+37.0, nearer KITTI's 39.3 than the source's 45.4 but past it, where the baseline's 40.6 stops short). That is no
+measurable help, so `--depth` stays an option (off; not offered on the page) — one training of one seed each, so the
+GAN's seed-to-seed noise is not separated from the effect. With it, pinning raised 15 junction frames' drift by more
+than 0.03 (to 0.15–0.16): one motorcycle whose translated surroundings carry the translator's displaced copy of it —
+inside its mask the pinned luma correlates 0.9995 with the input's (0.85 unpinned), but the box's background keeps the
+ghost, which the drift then sees.
 
 ## The downstream experiment
 
@@ -314,4 +441,8 @@ on KITTI.
   resolution is the source's (`--native` runs at full resolution, outside the training scale).
 - The GAN is not bit-for-bit reproducible on CUDA, and its quality varies along training (the probe curve shows it);
   the final iteration is kept, not a selected one.
+- Pinning keeps the actors' geometry and texture the simulator's: a CARLA car stays a CARLA car in the translator's
+  tone, which is the point (its labels stay true) and also what remains of the gap on it. It needs the instance image
+  (a camera without one is translated unpinned, said so), and it cannot remove what the translator paints *around*
+  an actor. Its fit is a heuristic (a ridge, Huber weights, the 0.25 slope rule), measured on one translator.
 - Terms: a translator and its images carry the real data's terms (KITTI: non-commercial).

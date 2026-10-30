@@ -294,12 +294,8 @@ class TranslationTab(QWidget):
         self.seed.setRange(0, 2 ** 31 - 1)
         self.cond = QCheckBox('Give the generator the semantic label')
         self.cond.setChecked(True)
-        self.depth = QCheckBox('… and the inverse range (from the range image)')
-        self.depth.setToolTip(f'One input channel more: min(1, {TR.DEPTH_MIN_M:g} m / range). Needs the semantic label '
-                              f'and drives recorded with the depth label (docs/translation.md: measured).')
-        self.cond.toggled.connect(self.depth.setEnabled)
         for text, w in (('Translator', self.tr_id), ('Real images', self.real), ('Iterations', self.iters),
-                        ('Crop', self.crop), ('Seed', self.seed), ('', self.cond), ('', self.depth)):
+                        ('Crop', self.crop), ('Seed', self.seed), ('', self.cond)):
             f.row(text, w)
         sec.add(f)
         sec.add(label('A translator inherits the terms of the real images it learns from — KITTI\'s are CC BY-NC-SA '
@@ -333,8 +329,9 @@ class TranslationTab(QWidget):
         self.pin.setChecked(True)
         self.pin.setToolTip('Vehicles, two-wheelers, pedestrians and movable objects keep the input\'s every pixel '
                             'position and edge inside their instance mask; their tone and colour follow the '
-                            'translation (a colour matrix fitted per object). On the cameras recorded with the '
-                            'instance label; measured to lower the drift at no cost in realism (docs/translation.md).')
+                            'translation (a gain and an offset per channel, fitted per object). On the cameras '
+                            'recorded with the instance label; measured to lower the drift at no cost in realism '
+                            '(docs/translation.md).')
         f.row('Drift threshold', self.threshold)
         f.row('Over the threshold', self.on_drift)
         f.row('', self.pin)
@@ -501,8 +498,6 @@ class TranslationTab(QWidget):
             argv += ['--sim', r]
         if not self.cond.isChecked():
             argv.append('--no-condition')
-        elif self.depth.isChecked():
-            argv.append('--depth')
         self.submit(TR.job_spec(argv, f'Train translator {tid}'))
 
     def apply(self):
