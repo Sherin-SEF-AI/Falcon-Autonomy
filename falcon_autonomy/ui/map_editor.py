@@ -665,17 +665,12 @@ class MapEditorDialog(QDialog):
             self.state.setText(f'⚠ {job.state}: {tail}')
             self.refresh()
             return
-        from ..core import roadfeatures as RF
+        from ..core.worlds import edited_world
         rep = read_report(self.cfg['out'])
         i, w = self.world()
         if w is None:
             return
-        nw = copy.deepcopy(w)
-        nw['xodr'] = os.path.relpath(os.path.join(self.cfg['out'], 'world.xodr'), self.win.workspace())
-        nw['osm']['edits'] = list(self.cfg['edits'])
-        nw['osm']['applied_edits'] = ME.edits_hash(self.cfg['edits'])
-        nw['osm']['handedness'] = rep.get('handedness', nw['osm'].get('handedness'))
-        nw['osm']['mesh'] = RF.mesh_for(nw['osm'].get('mesh'), bool((rep.get('road_features') or {}).get('placed')))
+        nw = edited_world(w, self.cfg, rep, self.win.workspace())
         self.win.edit(Edit('set', ['worlds', i], nw, text=f'Apply map edits to {w["name"]}'))
         self.show_results(rep, self.prev)
 

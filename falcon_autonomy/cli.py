@@ -45,6 +45,7 @@
     falcon assets inventory|list|show ID|verify   Indian road assets within the packaged CARLA (docs/indian-assets.md)
     falcon v2x junctions|place|list|remove|drive|benefit|decode|converter ...   roadside units, CPMs (docs/v2x.md)
     falcon ci run CONFIG [--out DIR] | validate | init [TARGET] [--github] | post | lint   CI mode (docs/ci.md)
+    falcon assistant tools|call NAME JSON      the assistant's tools from the command line (docs/assistant-tools.md)
     falcon schema                              print the project schema's path
 
 Exit codes: 0 ok; otherwise the worker's code (falcon_autonomy.core.protocol: 2 failed, 3 cancelled, 4 server lost,
@@ -383,6 +384,8 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser('why', help='why did it fail: falcon why case|evaluation|episode (see docs/root-cause.md)')
     sub.add_parser('ci', help='CI mode: a suite headless with gates, JUnit, Markdown and HTML: falcon ci '
                               'run|validate|init|summary|post|lint (see docs/ci.md)')
+    sub.add_parser('assistant', help='the assistant\'s tools: falcon assistant tools [--json] | call NAME JSON '
+                                     '[--project P] [--allow-act] (see docs/assistant-tools.md)')
     sub.add_parser('assets', help='Indian road assets: falcon assets inventory|list|show ID|verify (see '
                                   'docs/indian-assets.md)')
     return ap
@@ -508,6 +511,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['v2x']:                       # cooperative roadside units and their CPMs (core.v2x)
         from .core.v2x import main_v2x
         return main_v2x(argv[1:])
+    if argv[:1] == ['assistant']:                 # the assistant's tools from the command line (assistant.cli)
+        from .assistant.cli import main_assistant
+        return main_assistant(argv[1:])
     if argv[:1] == ['assets']:                    # Indian road assets within the packaged CARLA (core.assets)
         from .core.assets import main_assets
         return main_assets(argv[1:])

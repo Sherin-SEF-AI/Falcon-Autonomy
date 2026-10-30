@@ -305,6 +305,13 @@ server already running there and never starts or stops it.
 ### Help
 This manual. The search box filters the pages and highlights the first match.
 
+### The assistant's tools
+Everything Falcon's assistant can do is a typed tool on the code paths the pages and the command line use — read the
+project and the runs, edit the project (one undoable edit per call), queue the jobs the pages queue, read analyses,
+search this manual, point at a control on a page ("show me") — listed with their tiers in the
+[tool reference](assistant-tools.md). Runs are never deleted: the trash tool moves them into the workspace's `trash/`
+folder with a manifest, and they can be restored. Anything derived from your own dashcam footage is never read.
+
 ## The CARLA server
 
 Falcon starts CARLA headless (`-RenderOffScreen`) in its own systemd user scope capped at the memory you set (12 GB by

@@ -1570,6 +1570,21 @@ def export(run_dirs: list, fmt: str, out_dir: str, options: dict | None = None, 
     return doc
 
 
+
+OCC_VARIANTS = ('occ3d', 'openocc', 'surroundocc')
+CHOICES = FORMATS[:-1] + OCC_VARIANTS          # what Data ▸ Browse ▸ Export offers: the occupancy variants by name
+
+
+def export_argv(run_dir: str, choice: str, out: str) -> list:
+    """`falcon export …` for one of CHOICES (an occupancy variant becomes --format occ3d --option variant=V), as
+    Data ▸ Browse ▸ Export queues it (the arguments after `python -m falcon_autonomy`)."""
+    if choice in OCC_VARIANTS:
+        return ['export', run_dir, '--format', 'occ3d', '--out', out, '--option', f'variant={choice}']
+    if choice not in FORMATS:
+        raise ValueError(f'unknown export format {choice!r}: one of {", ".join(CHOICES)}')
+    return ['export', run_dir, '--format', choice, '--out', out]
+
+
 def main_export(argv) -> int:
     """`falcon export RUN... --format F --out DIR [--split-json FILE] [--option KEY=VALUE]... [--overwrite]`:
     0 on success, 2 on failure."""

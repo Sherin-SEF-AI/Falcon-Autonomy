@@ -639,11 +639,10 @@ class ScenariosPage(Page):
         if not w.project.path or w.project.dirty:
             if not w.save():
                 return
-        argv = [sys.executable, '-m', 'falcon_autonomy', 'sweep', w.project.path, '--scenario', ident, '--name',
-                self.study_name(), '--samples', str(self.samples.value()), '--seed', str(self.seed.value()),
-                '--world', self.world.currentData(), '--rig', self.rig.currentData()]
-        if w.fake_carla:
-            argv += ['--fake-carla', w.fake_carla]
+        from ...sim.studio import sweep_argv
+        argv = [sys.executable, '-m', 'falcon_autonomy'] + sweep_argv(
+            w.project.path, ident, self.study_name(), self.samples.value(), self.seed.value(),
+            self.world.currentData(), self.rig.currentData(), w.fake_carla)
         w.queue.submit(JobSpec('study', f'Sweep {s["name"]} ({self.samples.value()})', argv, memory_gb=0.5))
         w.jobs_dock.raise_()
 

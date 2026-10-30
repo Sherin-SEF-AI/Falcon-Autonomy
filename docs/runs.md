@@ -121,3 +121,12 @@ which is what the measure is for.
   because CARLA's night presets carry a fog density of 60.
 - Near duplicates are found against every kept frame of the set (quadratic in the kept frames: 3000 frames take
   under a second), and only by appearance.
+
+## The trash
+
+Falcon never deletes a run. The assistant's `runs_trash` (always asked for) moves a recorded run's folder, unchanged,
+into `WORKSPACE/trash/<UTC stamp>-<run>/` beside a `manifest.json` — where it came from, when, its catalogue entry and
+links, its tags — and the catalogue and run index forget it; `runs_restore` puts it back where it was (refused when
+something is there now) and indexes it again with its links. Tags and drive sets refer to runs by their path, so they
+apply again after a restore. A study's runs stay with their study. Emptying the trash is up to you, in your file
+manager (core.trash).

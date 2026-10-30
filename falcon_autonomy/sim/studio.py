@@ -42,6 +42,46 @@ def method_class(name: str):
             'bayes-pof': S.BayesFailure}[name]
 
 
+WEATHER_TAGS = {'fog_density': 'fog', 'sun_altitude_angle': 'sun', 'precipitation': 'rain'}
+
+
+def search_name(scenario: str, objective: str = 'criticality', model: str = '', weather=(), fps: float = 20) -> str:
+    """A rare-case search's study name (Rare cases): one per scenario, objective (and model), searched weather and
+    rate — a study's runs and objective values only compare among themselves."""
+    parts = ['search', scenario] if objective == 'criticality' else ['mil', scenario, model or 'none', objective]
+    parts += [WEATHER_TAGS[k] for k in weather]
+    if fps != 20:
+        parts.append(f'{fps}hz')
+    return '-'.join(parts)
+
+
+def sweep_argv(project_path: str, scenario: str, name: str, samples: int, seed: int, world: str, rig: str,
+               fake_carla: str = '') -> list:
+    """`falcon sweep …` as Scenarios ▸ Sweep queues it (the arguments after `python -m falcon_autonomy`)."""
+    argv = ['sweep', project_path, '--scenario', scenario, '--name', name, '--samples', str(samples), '--seed',
+            str(seed), '--world', world, '--rig', rig]
+    return argv + (['--fake-carla', fake_carla] if fake_carla else [])
+
+
+def search_argv(project_path: str, scenario: str, name: str, method: str, budget: int, batch: int,
+                threshold: float, seed: int, world: str, rig: str, objective: str = 'criticality',
+                count: str = 'avoidable', feasibility: bool = True, model: str = '', weather=(), fps: float = 20,
+                fake_carla: str = '') -> list:
+    """`falcon search …` as Rare cases ▸ Search queues it (the arguments after `python -m falcon_autonomy`)."""
+    argv = ['search', project_path, '--scenario', scenario, '--name', name, '--method', method, '--budget',
+            str(budget), '--batch', str(batch), '--threshold', str(threshold), '--seed', str(seed), '--world', world,
+            '--rig', rig, '--objective', objective, '--count', count]
+    if not feasibility:
+        argv.append('--no-feasibility')
+    if objective != 'criticality':
+        argv += ['--model', model]
+    for k in weather:
+        argv += ['--weather', k]
+    if fps != 20:
+        argv += ['--fps', str(fps)]
+    return argv + (['--fake-carla', fake_carla] if fake_carla else [])
+
+
 def study_dir(workspace, name):
     return os.path.join(workspace, 'studies', name)
 

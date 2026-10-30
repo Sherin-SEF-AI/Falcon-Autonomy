@@ -460,6 +460,38 @@ def describe_set(ds: dict) -> str:
     return f'{len(ds.get("runs") or ())} runs'
 
 
+
+def drive_set_edit(doc: dict, workspace: str, name: str, kind: str, runs=(), query: str = '') -> tuple:
+    """(the project Edit adding a drive set, the set): a fixed list of runs (kept by their keys) or a saved query
+    (checked: QueryError when malformed). The GUI's drive-set bar and the assistant both add sets through it."""
+    from .project import Edit, new_id
+    ds = {'id': new_id('ds'), 'name': name, 'kind': kind, 'created': utc_now()}
+    if kind == 'query':
+        parse(query)                         # raises QueryError on a malformed query
+        ds['query'] = query
+    else:
+        ds['runs'] = [key_of(p, workspace) for p in runs]
+    if 'drive_sets' in doc:
+        return Edit('insert', ['drive_sets'], ds, text=f'Add the drive set {name}'), ds
+    return Edit('set', ['drive_sets'], [ds], text=f'Add the drive set {name}'), ds
+
+
+def tags_edit(doc: dict, workspace: str, paths, tags: list):
+    """The project Edit giving these runs exactly these tags (an empty list removes them): one undoable edit of
+    run_tags."""
+    from .project import Edit
+    cur = dict(doc.get('run_tags') or {})
+    clean = sorted({t.strip() for t in tags if t.strip()})
+    paths = list(paths)
+    for p in paths:
+        k = key_of(p, workspace)
+        if clean:
+            cur[k] = clean
+        else:
+            cur.pop(k, None)
+    n = len(paths)
+    return Edit('set', ['run_tags'], cur, text=f'Tag {n} run{"s" if n != 1 else ""}')
+
 def main_runs(argv) -> int:
     """falcon runs search PROJECT|WORKSPACE [QUERY…] [--sort KEY] [--json]: search the runs."""
     import argparse

@@ -2,36 +2,12 @@
 from __future__ import annotations
 
 import os
-import re
 
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QTextBrowser, QVBoxLayout
 
+from ...core.manual import DOCS_DIRS, docs_dir, load_docs  # noqa: F401 (the manual's files: core.manual)
 from ..widgets import Page, label
-
-DOCS_DIRS = (os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
-    __file__))))), 'docs'), os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                                         'docs'))
-
-
-def docs_dir() -> str:
-    return next((d for d in DOCS_DIRS if os.path.isdir(d)), '')
-
-
-def load_docs() -> list:
-    """[(title, filename, markdown)] in the manual's order (index.md first, then by name)."""
-    d = docs_dir()
-    out = []
-    if not d:
-        return out
-    for fn in sorted(os.listdir(d), key=lambda f: (f != 'index.md', f)):
-        if not fn.endswith('.md'):
-            continue
-        with open(os.path.join(d, fn), encoding='utf-8') as fh:
-            text = fh.read()
-        m = re.search(r'^#\s+(.+)$', text, re.M)
-        out.append((m.group(1).strip() if m else fn, fn, text))
-    return out
 
 
 class HelpPage(Page):

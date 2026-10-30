@@ -356,3 +356,10 @@ def write_table(rows: list, path: str):
         for r in sorted(rows, key=lambda r: (r['scenario'], r['seed'])):
             row = dict(r, mrm_passed=(r.get('mrm') or {}).get('passed'))
             w.writerow(['' if row.get(c) is None else row.get(c) for c in TABLE_COLUMNS])
+
+
+def suite_run_argv(project_path: str, suite_path: str, out_dir: str, fake_carla: str = '') -> list:
+    """`falcon stack suite run …` as Stack testing ▸ Run queues it (after `python -m falcon_autonomy`; --fake-carla is
+    an option of `stack` itself, before `suite`)."""
+    return ['stack'] + (['--fake-carla', fake_carla] if fake_carla else []) + ['suite', 'run', project_path,
+                                                                               suite_path, '--dir', out_dir]

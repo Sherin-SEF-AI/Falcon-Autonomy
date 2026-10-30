@@ -451,9 +451,7 @@ class StackPage(Page):
         os.makedirs(d, exist_ok=True)
         spath = os.path.join(d, 'suite-request.json')
         write_json(spath, doc)
-        argv = [sys.executable, '-m', 'falcon_autonomy', 'stack'] + (['--fake-carla', w.fake_carla] if w.fake_carla
-                                                                     else []) + ['suite', 'run', w.project.path,
-                                                                                 spath, '--dir', d]
+        argv = [sys.executable, '-m', 'falcon_autonomy'] + ST.suite_run_argv(w.project.path, spath, d, w.fake_carla)
         self.track(w.queue.submit(JobSpec('stack-suite', suite_title(doc), argv,
                                           memory_gb=0.5)), 'suite')
         w.jobs_dock.raise_()

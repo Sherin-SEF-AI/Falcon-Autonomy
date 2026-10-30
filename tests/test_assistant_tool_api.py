@@ -82,11 +82,13 @@ def test_redaction_and_the_private_footage(tmp_path, monkeypatch):
         return str(d)
     plain = run('plain', {'worker': 'drive', 'settings': {'seed': 1}})
     route = run('route', {'worker': 'drive', 'settings': {'dashcam_route': {'route_sha256': 'x'}}})
+    replayed = run('replayed', {'worker': 'replay',
+                                'provenance': {'settings': {'dashcam_route': {'route_sha256': 'y'}}}})
     extract = run('extract', {'worker': 'dashcam-extract'})
     recon = run('recon', {'worker': 'recon'}, extra='dashcam.json')
     real = run('trans', {'worker': 'translate', 'real': ['dashcam:/somewhere']})
     assert PV.private_reason(plain) is None
-    for d in (route, extract, recon, real):
+    for d in (route, replayed, extract, recon, real):
         assert PV.private_reason(d), d
     os.makedirs(os.path.join(route, 'rgb', 'front'))
     assert PV.private_reason(os.path.join(route, 'rgb', 'front', '000001.jpg'))     # a file inside one: too

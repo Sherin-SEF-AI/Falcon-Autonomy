@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QDialog, QHBoxLayout, QTreeWidget, QTreeWidgetItem, 
 
 from ..core.jobs import JobSpec
 from ..core.provenance import read_json
+from ..core.rootcause import out_dir  # noqa: F401 (the folder of a why-job: core.rootcause.out_dir)
 from .theme import STATUS
 from .widgets import KeyValues, button, label
 
@@ -23,18 +24,6 @@ def submit(win, argv: list, title: str):
                                    memory_gb=1.0))
     win.jobs_dock.raise_()
     return job
-
-
-def out_dir(ws: str, label_: str) -> str:
-    import re
-    import time
-    base = os.path.join(ws, 'rootcause', f'{time.strftime("%Y%m%d-%H%M%S")}-'
-                        f'{re.sub(r"[^A-Za-z0-9_.-]+", "-", label_)[:40]}')
-    p, k = base, 2
-    while os.path.exists(p):
-        p, k = f'{base}-{k}', k + 1
-    os.makedirs(p)
-    return p
 
 
 class RootCauseView(QWidget):
