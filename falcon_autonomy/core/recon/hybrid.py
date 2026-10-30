@@ -13,7 +13,9 @@ states), the reconstruction gives everything else.
 Per camera and tick (Compositor.frame): CARLA's camera gives the actors' colours, its instance label (objects with an
 actor id: actor_object_ids, and the ego class) the actor mask A, its range label the actors' range r_a; the
 reconstruction rendered at the camera's pose (scene.render_views) gives the background's colour and range r_s (the
-median depth's; 0: nothing or sky). Methods:
+median depth's; 0: nothing or sky) — rendered at the reconstruction's working width and upsampled for a wider camera
+(render_width; a reconstruction fitted at 640 px and rendered at 1280 × 720 shows gaps between its Gaussians: 27.3
+against 30.0 dB on the Town 10 reconstruction's held-out frames). Methods:
 
 * 'mask' — a pixel is CARLA's where A. CARLA's own render has already decided, exactly, which surface is nearest at
   every pixel against CARLA's static geometry — and that geometry is the reconstruction's scene when it is a
