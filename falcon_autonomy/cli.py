@@ -40,6 +40,7 @@
     falcon why case|evaluation|episode ...   root-cause attribution of a failure (docs/root-cause.md)
     falcon odd monitor RUN... --odd FILE [--reference REF] | calibrate --in RUN... --out FILE   runtime ODD monitoring
     falcon assets inventory|list|show ID|verify   Indian road assets within the packaged CARLA (docs/indian-assets.md)
+    falcon v2x junctions|place|list|remove|drive|benefit|decode|converter ...   roadside units, CPMs (docs/v2x.md)
     falcon ci run CONFIG [--out DIR] | validate | init [TARGET] [--github] | post | lint   CI mode (docs/ci.md)
     falcon schema                              print the project schema's path
 
@@ -463,6 +464,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['ci']:                        # CI mode: suites headless, gates, JUnit and Markdown (core.ci)
         from .core.ci import main_ci
         return main_ci(argv[1:])
+    if argv[:1] == ['v2x']:                       # cooperative roadside units and their CPMs (core.v2x)
+        from .core.v2x import main_v2x
+        return main_v2x(argv[1:])
     if argv[:1] == ['assets']:                    # Indian road assets within the packaged CARLA (core.assets)
         from .core.assets import main_assets
         return main_assets(argv[1:])

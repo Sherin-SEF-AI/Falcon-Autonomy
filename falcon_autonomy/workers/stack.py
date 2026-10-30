@@ -28,7 +28,8 @@ Topics (stackbridge.topic_plan; messages stamped with the simulation time of the
 elapsed_seconds, and /clock the same): /clock, /tf_static (once, latched), each camera's image (bgr8 by default) and
 camera_info, each lidar's points (a full sweep: the steps of one rotation gathered, published at the step completing it;
 points are in the lidar's frame at each slice's step, not motion-compensated), each IMU and GNSS (every step:
-sensor_tick 0, the rig's rate is not applied), then /tf (map -> base_link), the odometry and Autoware's
+sensor_tick 0, the rig's rate is not applied), each roadside unit's CPM when it sends one (/falcon/v2x/<rsu>/cpm as
+udp_msgs/UdpPacket, BTP-B + UPER, and cpm_json; workers.rsu, docs/v2x.md), then /tf (map -> base_link), the odometry and Autoware's
 /vehicle/status/* (each can be turned off: ego_tf, odometry, autoware_status). In kinematic motion the ego's pose and velocity are the director's (CARLA reports a physics-off
 actor as still).
 
@@ -217,8 +218,12 @@ class Stack(Worker):
         max_steer = SB.KINEMATIC_MAX_STEER_DEG if kinematic else self.max_steer_deg(ego)
         mapper = SB.ControlMapper(max_steer)
         plan, control = [], None
+        self.stations = []
+        if driver == 'ros2' and bridge.get('v2x', True) and (cfg.get('infrastructure') or {}).get('rsus'):
+            from . import rsu as RSU                   # roadside units: their CPMs published (docs/v2x.md)
+            self.stations = RSU.stations(self, world, lib, cfg, self.cameras, record=False)
         if driver == 'ros2':
-            plan = SB.topic_plan(cfg['rig'], bridge)
+            plan = SB.topic_plan(cfg['rig'], bridge, [st.id for st in self.stations])
             control = SB.control_spec(bridge)
             self.phase('bridge')
             self.emit.progress(0.02, f'waiting for the bridge node on {bridge["host"]}:{bridge["port"]}', force=True)
@@ -234,6 +239,12 @@ class Stack(Worker):
                 raise Failed(f'the bridge node cannot subscribe {control["topic"]} ({control["type"]}): '
                              f'{ctl.get("why") or "no reason given"}')
             self.run['bridge_node'] = {k: ready.get(k) for k in ('node', 'ros_distro', 'rmw')}
+            gone = {m['topic'] for m in ready.get('missing') or []}
+            if gone:                                   # e.g. an image built before udp_msgs was added
+                self.note('the bridge node cannot publish ' + ', '.join(f'{m["topic"]} ({m["type"]})' for m in
+                                                                      ready['missing'])
+                          + ': its ROS lacks the message package (rebuild the image: falcon stack image)')
+                plan = [e for e in plan if e['topic'] not in gone]
             self.emit.log(f'bridge node ready ({ready.get("ros_distro") or "?"}, {ready.get("rmw") or "?"}); control '
                           f'from {control["topic"]} ({control["type"]})')
             self.phase('setup')
@@ -263,6 +274,7 @@ class Stack(Worker):
         costs = {k: [] for k in ('tick_ms', 'sensors_ms', 'encode_ms', 'send_ms', 'publish_ms', 'wait_ms', 'step_ms')}
         sweeps = {s['id']: [] for s in sensors if s['kind'] == 'lidar'}
         index = open(os.path.join(self.out_dir, 'frames.jsonl'), 'w', encoding='utf-8')
+        cpm_log = RSU.CpmLog(os.path.join(self.out_dir, 'cpm.jsonl')) if self.stations else None
         sim_t0 = None
         prev_yaw = None
         t_run = time.monotonic()
@@ -301,10 +313,16 @@ class Stack(Worker):
                     t_ns = int(round(sim_abs * 1e9))
                     t0 = time.monotonic()
                     data = self.collect(sensors, frame)
+                    cpms = {}
+                    for st in self.stations:
+                        line = st.step(i, frame, rec['sim_t'], {'files': {}}, record_frame=False, director=director)
+                        if line is not None:
+                            cpms[st.id] = line
+                            cpm_log.write(line)
                     costs['sensors_ms'].append((time.monotonic() - t0) * 1e3)
                     t0 = time.monotonic()
                     msgs = self.encode(plan, sensors, data, sweeps, i, t_ns, ego_doc, vel, ang, applied, mapper,
-                                       bridge, cfg['rig'], first=(i == 0))
+                                       bridge, cfg['rig'], first=(i == 0), cpms=cpms)
                     costs['encode_ms'].append((time.monotonic() - t0) * 1e3)
                     t0 = time.monotonic()
                     self.link.send({'t': 'step', 'step': i, 'stamp_ns': t_ns, 'control': True,
@@ -337,6 +355,8 @@ class Stack(Worker):
                                                                  f'({(i + 1) / max(wall, 1e-6):.1f} steps/s)')
         finally:
             index.close()
+            if cpm_log is not None:
+                cpm_log.close()
             if self.link is not None and self.link.sock is not None:
                 try:
                     self.link.send({'t': 'bye', 'reason': 'the run ended'})
@@ -373,6 +393,8 @@ class Stack(Worker):
             from .oddwatch import write as write_watch
             write_watch(self, self.out_dir, watch)
             out['odd_monitor'] = watch.report()
+        if self.stations:
+            out['infrastructure'] = {'stations': [st.report() for st in self.stations]}
         out['summary'] = {'steps': n, 'driver': driver, 'steps_per_s': perf['steps_per_s'],
                           'passed': None if scenario is None else scenario['passed'],
                           'missed_deadlines': dl.missed if driver == 'ros2' else None}
@@ -469,7 +491,8 @@ class Stack(Worker):
     def collect(self, sensors, frame) -> dict:
         return {x['id']: self.cameras.get(x['actor'].id, frame) for x in sensors}
 
-    def encode(self, plan, sensors, data, sweeps, i, t_ns, ego, vel, ang, applied, mapper, bridge, rig, first):
+    def encode(self, plan, sensors, data, sweeps, i, t_ns, ego, vel, ang, applied, mapper, bridge, rig, first,
+               cpms=None):
         """[(topic, CDR bytes)] of a step, in the plan's kinds: sensors first, then /tf, the odometry and the
         vehicle status (the follower and similar stacks act on the odometry, which comes last)."""
         np = self.np
@@ -513,6 +536,16 @@ class Stack(Worker):
                 x = by[e['sensor']]
                 d = data[x['id']]
                 m = R.navsatfix(d.latitude, d.longitude, d.altitude, t_ns, f'{R.link_name(x["s"])}_link', x['s'])
+            elif k in ('cpm', 'cpm_json'):            # a roadside unit's CPM of this step, when it sent one
+                line = (cpms or {}).get(e['station'])
+                if line is not None:
+                    from ..core import cpm as CPM
+                    if k == 'cpm':
+                        import base64
+                        m = R.udp_packet(CPM.btp_payload(base64.b64decode(line['uper'])), t_ns)
+                    else:
+                        m = {'data': json.dumps({x: line[x] for x in ('step', 'sim_t', 'station', 'station_id', 'cpm',
+                                                                       'objects')}, separators=(',', ':'))}
             elif k == 'tf':
                 tail.append((e, R.ego_tf(ego, t_ns)))
                 continue

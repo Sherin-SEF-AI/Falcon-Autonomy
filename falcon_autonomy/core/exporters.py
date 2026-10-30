@@ -1406,6 +1406,8 @@ def _mcap(ctx: Ctx):
                         'latitude': row['lat'], 'longitude': row['lon'], 'altitude': row['alt'],
                         'position_covariance': [sl * sl, 0, 0, 0, so * so, 0, 0, 0, sa * sa],
                         'position_covariance_type': 2})
+            from .v2x import mcap_cpm                    # roadside units' CPMs (docs/v2x.md)
+            mcap_cpm(bag, run.dir, t0)
             res = bag.close()
             ctx.bags = getattr(ctx, 'bags', {})
             ctx.bags[rel] = {'messages': res['messages'], 'topics': res['topics'], 'types': res['types'],

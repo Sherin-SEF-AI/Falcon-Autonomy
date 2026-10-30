@@ -73,6 +73,8 @@ def drive_config(project: Project, world_id: str, rig_id: str, out_dir: str, por
         city_attach(cfg, world, workspace or getattr(project, 'workspace', '') or '')
     from .oddmonitor import attach                              # the workspace's ODD, monitored by the worker
     attach(cfg, workspace or getattr(project, 'workspace', '') or '', project)
+    from .v2x import attach as v2x_attach                       # the world's roadside units (docs/v2x.md); absent
+    v2x_attach(cfg, project, world_id)                          # otherwise: cache keys unchanged
     return cfg
 
 

@@ -118,6 +118,9 @@ class WorldsPage(Page):
         from ..city_panel import CitySection
         self.city = CitySection(self)
         ev.addWidget(self.city)
+        from ..infra_panel import InfraSection             # roadside units (docs/v2x.md)
+        self.infra = InfraSection(self)
+        ev.addWidget(self.infra)
         self.verify_job = None
         win.bridge.finished.connect(self.on_verify)
 
@@ -200,6 +203,7 @@ class WorldsPage(Page):
         self.town.setCurrentText(w.get('town', ''))
         self.form.set_row_visible(self.town, w['kind'] == 'town')     # an imported place has no town to choose
         self.show_place(w)
+        self.infra.show_world(w)
         k = self.traffic.findData(w.get('traffic_profile'))
         self.traffic.setCurrentIndex(max(k, 0))
         wt = w.get('weather') or {}

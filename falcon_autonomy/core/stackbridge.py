@@ -19,7 +19,8 @@ Framing is the live link's (core.livelink.pack: >II header length, payload lengt
             payload: the messages' CDR bytes in that order; the node publishes /clock first, then the rest in order
       {"t": "bye", "reason": "..."}
     node -> worker
-      {"t": "ready", "node": "falcon_bridge", "ros_distro", "rmw", "control": {"topic", "type", "ok", "why"}}
+      {"t": "ready", "node": "falcon_bridge", "ros_distro", "rmw", "control": {"topic", "type", "ok", "why"},
+       "missing": [{"topic", "type", "why"}]}   topics whose message package the node's ROS lacks (not published)
       {"t": "published", "step": i, "publish_us": µs}   after publishing step i (the node's own cost)
       {"t": "control", "step": i, "topic", "type", "recv_ns": node clock}   payload: the control message's CDR
             every control message the stack sends, tagged with the last step the node published
@@ -52,6 +53,12 @@ DEFAULT_PORT = 0                # 0: a free port, chosen when the run starts (fr
 IMAGE = 'falcon-ros2-bridge:humble'
 BASE_IMAGE = 'ros:humble-ros-base'
 NS = '/falcon/ego'
+V2X_NS = '/falcon/v2x'
+
+
+def ros_name(s: str) -> str:
+    """An id as a ROS name token (letters, digits, underscores)."""
+    return ''.join(c if c.isalnum() or c == '_' else '_' for c in s) or '_'
 
 CONTROL_TYPES = {
     'autoware': ('autoware_control_msgs/msg/Control', '/control/command/control_cmd'),
@@ -74,12 +81,14 @@ def bridge_defaults() -> dict:
             'qos': 'reliable', 'ego_tf': True, 'odometry': True}
 
 
-def topic_plan(rig: dict, bridge: dict) -> list:
+def topic_plan(rig: dict, bridge: dict, rsus=()) -> list:
     """[{'topic', 'type', 'qos', 'kind', 'sensor'}] the worker publishes for a rig: /clock, /tf_static (latched), /tf
     (map -> base_link, ground truth; unless ego_tf is false — a stack that localises publishes it), the odometry
     (ground truth; unless odometry is false), each pinhole camera's image and camera_info, each lidar's points, each
-    IMU's and GNSS's readings, and Autoware's vehicle status topics when autoware_status. bridge['topics'] renames any
-    of them ({default topic: new topic})."""
+    IMU's and GNSS's readings, each roadside unit's CPM (rsus: their ids; bridge v2x false drops them) as
+    udp_msgs/UdpPacket (BTP-B + UPER, what the etsi_its_messages conversion node decodes) and as JSON
+    (std_msgs/String), and Autoware's vehicle status topics when autoware_status. bridge['topics'] renames any of them
+    ({default topic: new topic})."""
     ns = (bridge.get('namespace') or NS).rstrip('/')
     qos = bridge.get('qos', 'reliable')
     out = [{'topic': '/clock', 'type': 'rosgraph_msgs/msg/Clock', 'qos': qos, 'kind': 'clock'},
@@ -105,6 +114,13 @@ def topic_plan(rig: dict, bridge: dict) -> list:
         elif t == 'gnss':
             out.append({'topic': f'{ns}/{name}/fix', 'type': 'sensor_msgs/msg/NavSatFix', 'qos': qos,
                         'kind': 'fix', 'sensor': s['id']})
+    if bridge.get('v2x', True):
+        for rid in rsus or ():
+            n = ros_name(rid)
+            out += [{'topic': f'{V2X_NS}/{n}/cpm', 'type': 'udp_msgs/msg/UdpPacket', 'qos': qos, 'kind': 'cpm',
+                     'station': rid},
+                    {'topic': f'{V2X_NS}/{n}/cpm_json', 'type': 'std_msgs/msg/String', 'qos': qos, 'kind': 'cpm_json',
+                     'station': rid}]
     if bridge.get('autoware_status', True):
         out += [{'topic': '/vehicle/status/velocity_status', 'type': 'autoware_vehicle_msgs/msg/VelocityReport',
                  'qos': qos, 'kind': 'velocity_status'},
@@ -258,6 +274,19 @@ def follower_command(control: str = 'autoware', speed_mps: float = 8.0, name: st
     args = ['python3', '/falcon/ros2/follower_stack.py' if docker else os.path.join(ros_source(),
                                                                                     'follower_stack.py'),
             '--control', control, '--speed', f'{float(speed_mps):g}'] + [str(a) for a in extra]
+    return docker_run(name, args, domain_id, udp_only=udp_only) if docker else args
+
+
+def cpm_converter_command(rsu_id: str, name: str = 'falcon-cpm-converter', domain_id: int = 0, udp_only: bool = True,
+                          docker: bool = True) -> list:
+    """The etsi_its_messages conversion node (ika-rwth-aachen, MIT; in the bridge image) decoding one roadside unit's
+    UPER CPMs into etsi_its_cpm_ts_msgs/CollectivePerceptionMessage on /falcon/v2x/<rsu>/cpm_ts: its UDP input is
+    remapped to Falcon's /falcon/v2x/<rsu>/cpm (a BTP-B header, then the CPM: the node's defaults)."""
+    n = ros_name(rsu_id)
+    args = ['ros2', 'run', 'etsi_its_conversion', 'etsi_its_conversion_node', '--ros-args',
+            '-r', f'__node:={ros_name(name)}', '-r', f'~/udp/in:={V2X_NS}/{n}/cpm',
+            '-r', f'~/cpm_ts/out:={V2X_NS}/{n}/cpm_ts', '-p', 'udp2ros_etsi_types:=[cpm_ts]',
+            '-p', 'ros2udp_etsi_types:=[cpm_ts]', '-r', f'~/udp/out:={V2X_NS}/{n}/cpm_echo']
     return docker_run(name, args, domain_id, udp_only=udp_only) if docker else args
 
 

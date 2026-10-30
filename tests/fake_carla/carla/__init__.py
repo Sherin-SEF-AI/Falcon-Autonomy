@@ -119,6 +119,11 @@ def _euler(M):
     return pitch, yaw, roll
 
 
+class GeoLocation:
+    def __init__(self, latitude=0.0, longitude=0.0, altitude=0.0):
+        self.latitude, self.longitude, self.altitude = float(latitude), float(longitude), float(altitude)
+
+
 class Transform:
     def __init__(self, location=None, rotation=None):
         self.location = location if location is not None else Location()
@@ -1102,6 +1107,10 @@ class Map:
 
     def to_opendrive(self):
         return getattr(self, '_xodr', f'<OpenDRIVE><!-- {self.name} --></OpenDRIVE>')
+
+    def transform_to_geolocation(self, location):
+        # the flat-earth geo-reference at (0, 0) the fake GNSS uses: +x east, +y south
+        return GeoLocation(math.degrees(-location.y / EARTH_R), math.degrees(location.x / EARTH_R), location.z)
 
     def get_spawn_points(self):
         out = []
