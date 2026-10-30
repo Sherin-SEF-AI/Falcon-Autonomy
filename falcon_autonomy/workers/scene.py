@@ -866,15 +866,32 @@ class Others:
 
 class FaultState:
     """Per-sensor fault bookkeeping in a run: a seeded generator per sensor, the last delivered files (freeze), what
-    was applied (run.json "faults_applied")."""
+    was applied (run.json "faults_applied"). Faults started mid-run (start(): a trigger rule's fault action, a stack
+    test's timed fault) join the planned ones with their [onset_s, until_s) window (core.faults.active)."""
 
     def __init__(self, sensors, seed: int):
-        import zlib
-        import numpy as np
+        self.seed = int(seed)
         self.f = {s['id']: list(s.get('faults') or []) for s in sensors if s.get('faults')}
-        self.rng = {sid: np.random.default_rng([int(seed), zlib.crc32(sid.encode())]) for sid in self.f}
+        self.rng = {sid: self._rng(sid) for sid in self.f}
         self.last = {}
         self.applied = {sid: {} for sid in self.f}
+        self.started = []                 # [{sensor, fault, onset_s, until_s}] faults started during the run
+
+    def _rng(self, sid):
+        import zlib
+        import numpy as np
+        return np.random.default_rng([self.seed, zlib.crc32(sid.encode())])
+
+    def start(self, sid, fault: dict, onset_s: float, for_s: float | None = None) -> dict:
+        """Start a fault on a sensor from onset_s (for for_s seconds, or to the end of the run)."""
+        f = dict(fault, onset_s=round(float(onset_s), 6))
+        if for_s:
+            f['until_s'] = round(float(onset_s) + float(for_s), 6)
+        if sid not in self.f:
+            self.f[sid], self.rng[sid], self.applied[sid] = [], self._rng(sid), {}
+        self.f[sid].append(f)
+        self.started.append({'sensor': sid, 'fault': f})
+        return f
 
     def count(self, sid, kind):
         self.applied[sid][kind] = self.applied[sid].get(kind, 0) + 1
@@ -888,9 +905,10 @@ class FaultState:
             self.count(sid, d)
         return d
 
-    def image(self, sid, K, omega):
+    def image(self, sid, K, omega, sim_t=None):
         from ..core import faults as F
-        fl = [f for f in self.f.get(sid, []) if f.get('kind') in F.IMAGE_FAULTS]
+        fl = [f for f in self.f.get(sid, []) if f.get('kind') in F.IMAGE_FAULTS and
+              (sim_t is None or F.active(f, sim_t))]
         if not fl:
             return None
         for f in fl:
@@ -902,7 +920,11 @@ class FaultState:
         return sim_t + F.clock_offset_s(self.f.get(sid))
 
     def report(self) -> dict:
-        return {sid: {'planned': self.f[sid], 'frames': self.applied[sid]} for sid in self.f}
+        out = {sid: {'planned': [f for f in self.f[sid] if not any(f is x['fault'] for x in self.started)],
+                     'frames': self.applied[sid]} for sid in self.f}
+        for x in self.started:
+            out[x['sensor']].setdefault('started', []).append(x['fault'])
+        return out
 
 
 def write_lanes(w, cmap, out_dir, step: float = 2.0):

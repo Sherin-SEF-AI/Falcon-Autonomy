@@ -25,6 +25,7 @@
       "properties": {"id": {"$ref": "#/$defs/id"}, "name": {"type": "string", "minLength": 1},
                      "kind": {"enum": ["list", "query"]}, "runs": {"type": "array", "items": {"type": "string"}},
                      "query": {"type": "string"}, "created": {"type": "string"}}}},
+    "trigger_rules": {"type": "array", "items": {"$ref": "#/$defs/trigger_rule"}},
     "run_tags": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string", "minLength": 1}}},
     "infrastructure": {"type": "object", "description": "Roadside units standing in the worlds (docs/v2x.md).",
                        "properties": {"rsus": {"type": "array", "items": {"$ref": "#/$defs/rsu"}}},
@@ -41,6 +42,22 @@
   },
   "$defs": {
     "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"},
+    "trigger_rule": {
+      "type": "object",
+      "description": "A live trigger rule: 'when <condition> -> <action>[; <action>]', evaluated every tick (core.triggers, docs/scenarios.md).",
+      "required": ["id", "rule"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string"},
+        "rule": {"type": "string", "minLength": 1},
+        "repeat": {"enum": ["once", "every", "cooldown"]},
+        "cooldown_s": {"type": "number", "minimum": 0},
+        "enabled": {"type": "boolean"},
+        "applies": {"type": "array", "items": {"enum": ["drives", "scenarios", "live"]}, "uniqueItems": true},
+        "about": {"type": "string"}
+      }
+    },
     "named": {
       "type": "object",
       "required": ["id", "name"],

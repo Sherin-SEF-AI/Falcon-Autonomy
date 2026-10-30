@@ -33,6 +33,17 @@ udp_msgs/UdpPacket, BTP-B + UPER, and cpm_json; workers.rsu, docs/v2x.md), then 
 /vehicle/status/* (each can be turned off: ego_tf, odometry, autoware_status). In kinematic motion the ego's pose and velocity are the director's (CARLA reports a physics-off
 actor as still).
 
+Timed sensor faults (cfg "faults": [{sensor, kind, onset_s, for_s, …}], core.faults.TIMED, core.mrm.as_fault_lists)
+act on the data the stack receives from their onset: a camera's image faults (occlusion — mud —, dirt, rain, noise …)
+and dropout, a lidar's sector_loss, packet_drop and dropout (a rotation with every slice silenced publishes no cloud),
+an IMU's dropout, a GNSS receiver's multipath jumps and dropout; frames.jsonl "faults" lists the kinds acting per
+sensor. With "mrm" the run is judged from the first onset by core.mrm.verify — frames.jsonl then carries the ego's
+lane offset from its scenario route (lane_offset_m, lane_width_m, ego_width_m, kerb_sign) — and the result is a check
+of the scenario (run.json "mrm"). "degraded_mode" (driver follower): the rig's sensors are spawned and their data,
+with the faults, feed the test stack's health monitor (falcon_autonomy/ros2/degraded.py, the same as the ROS 2
+follower's --degraded-mode); once it detects a failure the follower's commands become the minimal-risk manoeuvre
+(a jerk-limited stop in the lane, held) — run.json "degraded" says when and why.
+
 Outputs: frames.jsonl (per step: step, frame, sim_t, ego, speed_mps, control in effect during the tick, and for ros2
 "bridge": wait_ms, missed, stale), trajectories.json and the scenario's criticality and checks (a scenario), run.json
 ("bridge": the deadlines, the per-step costs — tick, sensors, encode, send, the node's publish, the wait — measured;
@@ -213,7 +224,25 @@ class Stack(Worker):
         scene.spawn_walkers(self, world, lib, rng, cfg.get('traffic') or {})
         self.run['lights'] = scene.light_vehicles(self, cfg)      # headlights at night (workers.lights)
         self.ego, self.director, self.world_ = ego, director, world
-        sensors = self.spawn_sensors(world, lib, ego, cfg['rig']) if driver == 'ros2' else []
+        from ..core import faults as F
+        from ..core.mrm import as_fault_lists
+        import zlib
+        self.F = F
+        self.faults = as_fault_lists(cfg.get('faults'))
+        self.fault_rng = {sid: np.random.default_rng([seed, zlib.crc32(sid.encode())]) for sid in self.faults}
+        self.seed = seed
+        degraded = bool(cfg.get('degraded_mode')) and driver == 'follower' and director is not None
+        sensors = self.spawn_sensors(world, lib, ego, cfg['rig']) if driver == 'ros2' or degraded else []
+        self.monitor = None
+        if degraded:
+            from ..ros2.degraded import MRM, Monitor
+            kinds = {'camera': 'camera', 'lidar': 'lidar', 'imu': 'imu', 'gnss': 'gnss'}
+            self.monitor = Monitor(cfg.get('degraded_params'), {kinds[x['kind']] for x in sensors})
+            self.mrm_ctl = MRM(cfg.get('degraded_params'))
+            self.t_now = 0.0
+            director.ego_filter = self.degraded_filter
+        self.mon_sweeps = {s['id']: [] for s in sensors if s['kind'] == 'lidar'}
+        self.gnss0 = None
         kinematic = director is not None and director.kinematic and driver != 'autopilot'
         max_steer = SB.KINEMATIC_MAX_STEER_DEG if kinematic else self.max_steer_deg(ego)
         mapper = SB.ControlMapper(max_steer)
@@ -277,6 +306,7 @@ class Stack(Worker):
         cpm_log = RSU.CpmLog(os.path.join(self.out_dir, 'cpm.jsonl')) if self.stations else None
         sim_t0 = None
         prev_yaw = None
+        kept = []                                       # the rows the MRM verifier reads
         t_run = time.monotonic()
         n = 0
         try:
@@ -305,6 +335,26 @@ class Stack(Worker):
                 applied = u if driver in ('ros2', 'replay') else self.director_control(director)
                 rec = {'step': i, 'frame': int(frame), 'sim_t': round(sim_abs - sim_t0, 6), 'ego': ego_doc,
                        'speed_mps': round(speed, 4), 'control': _round_control(applied)}
+                if self.faults:
+                    act = {sid: [f['kind'] for f in F.active_of(fl, rec['sim_t'])] for sid, fl in self.faults.items()}
+                    act = {k: v for k, v in act.items() if v}
+                    if act:
+                        rec['faults'] = act
+                if cfg.get('mrm') is not None and director is not None:
+                    rec.update(self.lane_offset(director, ego_doc))
+                data = None
+                if sensors:
+                    t0 = time.monotonic()
+                    data = self.fault_data(sensors, self.collect(sensors, frame), i, rec['sim_t'])
+                    costs['sensors_ms'].append((time.monotonic() - t0) * 1e3)
+                if self.monitor is not None:
+                    self.t_now = rec['sim_t']
+                    self.feed_monitor(sensors, data, i, rec['sim_t'], ego_doc, speed)
+                    bad, why = self.monitor.check(rec['sim_t'])
+                    if bad and 'degraded' not in self.run:
+                        self.run['degraded'] = {'t': self.monitor.degraded[0], 'why': why}
+                        self.emit.log(f'degraded at {self.monitor.degraded[0]:.2f} s: {why}', 'warning')
+                    rec['health'] = 'degraded' if bad else 'ok'
                 if driver == 'ros2':
                     if kinematic:
                         dyaw = 0.0 if prev_yaw is None else ((ego_doc['yaw'] - prev_yaw + 180.0) % 360.0 - 180.0)
@@ -312,15 +362,21 @@ class Stack(Worker):
                     prev_yaw = ego_doc['yaw']
                     t_ns = int(round(sim_abs * 1e9))
                     t0 = time.monotonic()
-                    data = self.collect(sensors, frame)
                     cpms = {}
-                    for st in self.stations:
-                        line = st.step(i, frame, rec['sim_t'], {'files': {}}, record_frame=False, director=director)
-                        if line is not None:
-                            cpms[st.id] = line
-                            cpm_log.write(line)
-                    costs['sensors_ms'].append((time.monotonic() - t0) * 1e3)
-                    t0 = time.monotonic()
+                    if self.stations:
+                        t1 = time.monotonic()
+                        for st in self.stations:
+                            line = st.step(i, frame, rec['sim_t'], {'files': {}}, record_frame=False,
+                                           director=director)
+                            if line is not None:
+                                cpms[st.id] = line
+                                cpm_log.write(line)
+                        dt_ms = (time.monotonic() - t1) * 1e3          # counted with the sensors, as one step's cost
+                        if sensors:
+                            costs['sensors_ms'][-1] += dt_ms
+                        else:
+                            costs['sensors_ms'].append(dt_ms)
+                        t0 = time.monotonic()
                     msgs = self.encode(plan, sensors, data, sweeps, i, t_ns, ego_doc, vel, ang, applied, mapper,
                                        bridge, cfg['rig'], first=(i == 0), cpms=cpms)
                     costs['encode_ms'].append((time.monotonic() - t0) * 1e3)
@@ -344,10 +400,13 @@ class Stack(Worker):
                         u = mapper(cmd, speed)
                     rec['bridge'] = {'wait_ms': round(wait, 3), 'missed': cmd is None}
                 if watch is not None:
-                    rgb = scene.rgb_of(data[watch_cam]) if driver == 'ros2' and watch_cam and watch.wants_frame() \
-                        else None
+                    rgb = np.ascontiguousarray(data[watch_cam]['image'][:, :, ::-1]) if data and watch_cam and \
+                        data.get(watch_cam) and watch.wants_frame() else None          # BGR -> RGB
                     rec['odd'] = watch.step(rec['sim_t'], ego, speed, rgb)
                 index.write(json.dumps(rec, separators=(',', ':')) + '\n')
+                if cfg.get('mrm') is not None:
+                    kept.append({k: rec.get(k) for k in ('sim_t', 'speed_mps', 'lane_offset_m', 'lane_width_m',
+                                                         'ego_width_m', 'kerb_sign')})
                 n += 1
                 costs['step_ms'].append((time.monotonic() - t_step) * 1e3)
                 wall = time.monotonic() - t_run
@@ -388,7 +447,21 @@ class Stack(Worker):
             with open(os.path.join(self.out_dir, 'trajectories.json'), 'w', encoding='utf-8') as fh:
                 json.dump({'dt': 1.0 / fps, 'columns': ['t', 'x', 'y', 'yaw', 'vx', 'vy', 'length', 'width'],
                            'frame': 'CARLA world', 'actors': director.traj}, fh, separators=(',', ':'))
+            if cfg.get('mrm') is not None:              # the minimal-risk manoeuvre after the first fault (core.mrm)
+                from ..core import mrm as M
+                crit = scenario.get('criticality') or {}
+                hits = [a.get('collision_t') for a in (crit.get('actors') or {}).values()] + \
+                    [o.get('t') for o in crit.get('other_collisions') or ()]
+                v = M.verify(kept, M.first_onset(cfg.get('faults')), cfg['mrm'], hits)
+                out['mrm'] = v
+                scenario['checks'].append({'name': 'minimal risk manoeuvre after the fault', 'ok': v['passed'],
+                                           'detail': '; '.join(c['name'] + (': ' + c['detail'] if not c['ok'] else '')
+                                                               for c in v['checks'] if not c['ok']) or
+                                           'every MRM check passed'})
+                scenario['passed'] = scenario['passed'] and v['passed']
         out['scenario'] = scenario
+        if self.faults:
+            out['faults_applied'] = {'planned': cfg.get('faults'), 'acts_on': 'the data the stack receives'}
         if watch is not None:
             from .oddwatch import write as write_watch
             write_watch(self, self.out_dir, watch)
@@ -491,6 +564,98 @@ class Stack(Worker):
     def collect(self, sensors, frame) -> dict:
         return {x['id']: self.cameras.get(x['actor'].id, frame) for x in sensors}
 
+    def fault_data(self, sensors, data, step, sim_t) -> dict:
+        """Each sensor's reading of this step as the stack receives it, its timed faults applied (None: nothing
+        arrives): camera {'raw' BGRA bytes, 'w', 'h', 'image' BGR array}, lidar {'points' N × 4}, imu {'m'},
+        gnss {'lat', 'lon', 'alt'}."""
+        np, F = self.np, self.F
+        out = {}
+        for x in sensors:
+            sid, d = x['id'], data[x['id']]
+            fl = self.faults.get(sid) or []
+            if fl and F.silenced(fl, sim_t):
+                out[sid] = None
+                continue
+            k = x['kind']
+            if k == 'camera':
+                arr = np.frombuffer(d.raw_data, np.uint8).reshape(d.height, d.width, 4)
+                img = arr[:, :, :3]
+                act = F.active_of(fl, sim_t, F.IMAGE_FAULTS)
+                if act:
+                    img, _ = F.apply_image(np.ascontiguousarray(img), act, self.fault_rng[sid])
+                    arr = np.dstack([img, arr[:, :, 3:]])
+                out[sid] = {'raw': arr.tobytes() if act else d.raw_data, 'w': d.width, 'h': d.height, 'image': img}
+            elif k == 'lidar':
+                pts = np.frombuffer(d.raw_data, np.float32).reshape(-1, 4)
+                if fl:
+                    pts = F.apply_points(pts, fl, sim_t, self.fault_rng[sid])
+                out[sid] = {'points': pts}
+            elif k == 'imu':
+                out[sid] = {'m': d}
+            else:
+                lat, lon, alt = d.latitude, d.longitude, d.altitude
+                if fl:
+                    dn, de = F.gnss_offset(fl, sim_t, self.seed, sid)
+                    lat += math.degrees(dn / 6378137.0)
+                    lon += math.degrees(de / (6378137.0 * max(math.cos(math.radians(lat)), 1e-6)))
+                out[sid] = {'lat': lat, 'lon': lon, 'alt': alt}
+        return out
+
+    def feed_monitor(self, sensors, data, step, sim_t, ego_doc, speed=0.0):
+        """The test stack's health monitor gets what a stack would: full lidar sweeps (a rotation's slices), IMU and
+        GNSS messages (a fix as local metres beside the odometry's position), camera images."""
+        np = self.np
+        for x in sensors:
+            d = data.get(x['id'])
+            k = x['kind']
+            if k == 'lidar':
+                if d is not None:
+                    self.mon_sweeps[x['id']].append(d['points'])
+                per = max(int(round(self.fps / max(float(x['s'].get('rotation_frequency', self.fps)), 1e-6))), 1)
+                if (step + 1) % per == 0:
+                    parts = self.mon_sweeps[x['id']]
+                    if parts:
+                        self.monitor.lidar(sim_t, np.concatenate(parts))
+                    self.mon_sweeps[x['id']] = []
+            elif d is None:
+                continue
+            elif k == 'imu':
+                self.monitor.imu(sim_t)
+            elif k == 'gnss':
+                if self.gnss0 is None:
+                    self.gnss0 = (d['lat'], d['lon'])
+                north = math.radians(d['lat'] - self.gnss0[0]) * 6378137.0
+                east = math.radians(d['lon'] - self.gnss0[1]) * 6378137.0 * math.cos(math.radians(self.gnss0[0]))
+                self.monitor.gnss(sim_t, (north, east), (ego_doc['x'], ego_doc['y']))
+            else:
+                self.monitor.camera(sim_t, d['image'], moving=speed > 0.5)
+
+    def degraded_filter(self, u: dict, obs: dict) -> dict:
+        """The follower's command, or — once the health monitor is degraded — the minimal-risk manoeuvre's (its
+        steering kept: it stays in the lane)."""
+        from ..ros2.degraded import throttle_brake
+        if self.monitor is None or self.monitor.degraded is None:
+            self.u_prev = u
+            return u
+        prev = getattr(self, 'u_prev', u)
+        a_now = 3.0 * float(prev.get('throttle', 0.0)) - 8.0 * float(prev.get('brake', 0.0))
+        a, hold = self.mrm_ctl.accel(self.t_now, float(obs['ego']['speed_mps']), a_now)
+        out = dict(u, **throttle_brake(a, hold))
+        if hold:
+            out['steer'] = 0.0
+        self.u_prev = out
+        return out
+
+    def lane_offset(self, director, ego_doc) -> dict:
+        """The ego's lateral offset from its scenario route (positive right), the lane width there, its width."""
+        p = director.ego_path
+        s = p.project(ego_doc['x'], ego_doc['y'])
+        px, py, pyaw = p.at(s, 0.0)
+        r = math.radians(pyaw)
+        off = (ego_doc['x'] - px) * -math.sin(r) + (ego_doc['y'] - py) * math.cos(r)
+        return {'lane_offset_m': round(off, 4), 'lane_width_m': round(p.width(s), 3),
+                'ego_width_m': round(2.0 * self.ego.bounding_box.extent.y, 3), 'kerb_sign': director.kerb_sign()}
+
     def encode(self, plan, sensors, data, sweeps, i, t_ns, ego, vel, ang, applied, mapper, bridge, rig, first,
                cpms=None):
         """[(topic, CDR bytes)] of a step, in the plan's kinds: sensors first, then /tf, the odometry and the
@@ -513,21 +678,28 @@ class Stack(Worker):
                 fid = f'{R.link_name(x["s"])}_optical'
                 if k == 'image':
                     d = data[x['id']]
-                    m = R.image_bgr(d.raw_data, d.width, d.height, t_ns, fid, bridge.get('image_encoding', 'bgr8'))
+                    if d is None:                        # a silenced camera: no image this step
+                        continue
+                    m = R.image_bgr(d['raw'], d['w'], d['h'], t_ns, fid, bridge.get('image_encoding', 'bgr8'))
                 else:
                     m = R.camera_info(x['s'], t_ns, fid)
             elif k == 'points':
                 x = by[e['sensor']]
                 d = data[x['id']]
-                sweeps[x['id']].append(np.frombuffer(d.raw_data, np.float32).reshape(-1, 4))
+                if d is not None:
+                    sweeps[x['id']].append(d['points'])
                 per = max(int(round(self.fps / max(float(x['s'].get('rotation_frequency', self.fps)), 1e-6))), 1)
                 if (i + 1) % per == 0:
-                    pts = np.concatenate(sweeps[x['id']]) if sweeps[x['id']] else np.zeros((0, 4), np.float32)
-                    sweeps[x['id']].clear()
-                    m = R.pointcloud(pts, t_ns, f'{R.link_name(x["s"])}_link')
+                    got = sweeps[x['id']]
+                    pts = np.concatenate(got) if got else np.zeros((0, 4), np.float32)
+                    sweeps[x['id']] = []
+                    silent = not got and bool(self.faults.get(x['id']))   # every slice silenced: a dead lidar
+                    m = None if silent else R.pointcloud(pts, t_ns, f'{R.link_name(x["s"])}_link')
             elif k == 'imu':
                 x = by[e['sensor']]
-                d = data[x['id']]
+                if data[x['id']] is None:
+                    continue
+                d = data[x['id']]['m']
                 a, g = d.accelerometer, d.gyroscope
                 m = R.imu((a.x, a.y, a.z), (g.x, g.y, g.z), t_ns, f'{R.link_name(x["s"])}_link',
                           float(x['s'].get('noise_accel_stddev', 0.0)) ** 2,
@@ -535,7 +707,9 @@ class Stack(Worker):
             elif k == 'fix':
                 x = by[e['sensor']]
                 d = data[x['id']]
-                m = R.navsatfix(d.latitude, d.longitude, d.altitude, t_ns, f'{R.link_name(x["s"])}_link', x['s'])
+                if d is None:
+                    continue
+                m = R.navsatfix(d['lat'], d['lon'], d['alt'], t_ns, f'{R.link_name(x["s"])}_link', x['s'])
             elif k in ('cpm', 'cpm_json'):            # a roadside unit's CPM of this step, when it sent one
                 line = (cpms or {}).get(e['station'])
                 if line is not None:

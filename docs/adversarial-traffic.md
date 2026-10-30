@@ -150,7 +150,8 @@ wrong-way and on-lane flags.
 
 F3 follows the longitudinal rule of Responsibility-Sensitive Safety (Shalev-Shwartz, Shammah & Shashua 2017): the
 follower keeps a safe distance, and a vehicle cutting in must leave one. RSS's safe-distance formula itself is not
-evaluated. The thresholds are heuristic.
+evaluated here (the thresholds are heuristic); the rare-case search's labels evaluate it in full (`core/rss.py`,
+[scenarios](scenarios.md#avoidable-failures-responsibility-sensitive-safety)).
 
 A **collision caused by the ego** is one where the ego is at fault. It is unit-tested on constructed histories: a
 rear-end, an unsafe cut-in, a swerve, a wrong-way head-on and a side-by-side contact (`tests/test_adversary.py`).

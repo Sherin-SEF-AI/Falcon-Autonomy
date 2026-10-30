@@ -178,6 +178,18 @@ honestly — its control depends on what the device received — not a driving p
 returning `throttle`, `steer`, `brake` (camera: H × W × 3 or 4 uint8 BGR(x) or None; lidar: N × 4 float32 or None;
 meta: frame, sim_t, speed_mps, the hardware stamps). The host never sends code: the stack is chosen on the device.
 
+## Sensor faults in a session
+
+`hil_config(…, faults=[{sensor: 'camera' | 'lidar' | its id, kind, onset_s, for_s, …}], mrm=True)` injects timed faults
+into what is streamed, from `onset_s` seconds after the first step: the camera's image faults (`occlusion` — mud —,
+`dirt`, `rain`, `noise` …) on its pixels, a dropped-out camera as black frames (the stream keeps its rate), the lidar's
+`sector_loss`, `packet_drop` and `dropout` on its points (a dead lidar sends empty sweeps). `latency.jsonl` marks the
+frames (`faults`); with `mrm` the session is judged by the minimal-risk-manoeuvre verifier over the recorded speeds
+(`run.json` `mrm`; [stack testing](stack-testing.md#sensor-faults-mid-run-and-the-minimal-risk-manoeuvre); no lane
+check: a free drive has no route). The default stack above has no degraded mode — an empty sweep counts as a sweep —
+so it **fails** that check (measured with the simulated device, `tests/test_mrm.py`): the device's stack must bring its
+own reaction.
+
 ## Deploying to the AGX Orin (JetPack 6)
 
 The device's address, the agent port, the SSH user, the key's path, the SSH port, the folder and the device's Python

@@ -13,9 +13,14 @@ A suite (schema falcon.suite/1; docs/stack-testing.md):
      "criteria": {"no_collision": true, "min_ttc_s": 1.0, "max_missed_deadlines": 0},
      "rules": "india" | "generic" | "<rule file>",          optional: the traffic rules checked (core.rules); default
                                                             by the map's handedness (LHT india, else generic)
+     "degraded_mode": false,          the built-in follower reacts to sensor failures it detects (ros2/degraded.py)
      "entries": [{"scenario": "<built-in key or project scenario id>",
                   "seeds": [0, 1, 2] | "samples": 10, "seed": 0,      seeds, or that many from seed (seed·1000003+i)
                   "values": {...},                                    fixed parameter values (others sampled)
+                  "faults": [{"sensor", "kind", "onset_s", "for_s", …}],  timed sensor faults (core.faults.TIMED)
+                  "mrm": {...} | true,                                the minimal-risk-manoeuvre check (core.mrm;
+                                                                      its PARAMS overridden), judged from the first
+                                                                      fault's onset
                   "criteria": {...}}]}                                per entry, over the suite's
 
 Criteria replace the scenario's own "pass" where given: no_collision (boxes or the collision sensor), min_ttc_s (the
@@ -31,7 +36,8 @@ kinematic motion).
 Results (summarise): per scenario the runs, passes, the pass rate with its Wilson 95 % interval (Wilson 1927), the mean
 criticality with a percentile bootstrap 95 % interval over runs (core.metrics.uncertainty.bootstrap, seeded), the
 minimum time to collision, collisions and missed deadlines; the same overall; and beside them (rule_summary) the
-traffic-rule violations of the runs (core.rules), per km with intervals.
+traffic-rule violations of the runs (core.rules), per km with intervals; for entries with an MRM check, its pass
+rate with Wilson's interval and the failed checks (mrm_summary).
 """
 from __future__ import annotations
 
@@ -54,7 +60,8 @@ def stack_config(project, world_id: str, rig_id: str, out_dir: str, port: int, t
                  scenario: dict | None = None, seed: int = 0, values: dict | None = None, seconds: float = 20.0,
                  fps: float = 20.0, motion: str = 'kinematic', bridge: dict | None = None,
                  traffic_vehicles: int = 0, render_budget_mpx: float = 200.0, workspace: str = '',
-                 criteria: dict | None = None, name: str = '') -> dict:
+                 criteria: dict | None = None, name: str = '', faults: list | None = None, mrm=None,
+                 degraded_mode: bool = False) -> dict:
     """A stack worker config: a drive config (core.drive) with the driver, the motion and the bridge; a scenario is
     sampled with the seed (and the given values), its pass criteria replaced by `criteria` where given."""
     from .drive import drive_config, scenario_config
@@ -83,6 +90,18 @@ def stack_config(project, world_id: str, rig_id: str, out_dir: str, port: int, t
     if criteria and criteria.get('max_missed_deadlines') is not None:
         b['max_missed'] = int(criteria['max_missed_deadlines'])
     cfg['bridge'] = b
+    if faults:                                  # timed sensor faults (core.mrm.validate_faults; workers.stack)
+        from .mrm import validate_faults
+        bad = validate_faults(faults, cfg['rig'])
+        if bad:
+            raise ValueError('; '.join(bad))
+        cfg['faults'] = copy.deepcopy(list(faults))
+    if mrm:                                     # the minimal-risk-manoeuvre check (core.mrm)
+        if not faults:
+            raise ValueError('an MRM check needs a timed fault to judge it from')
+        cfg['mrm'] = dict(mrm) if isinstance(mrm, dict) else {}
+    if degraded_mode:
+        cfg['degraded_mode'] = True
     return cfg
 
 
@@ -134,6 +153,11 @@ def validate_suite(doc: dict, project=None) -> list:
             out.append(f'entry {k}: {scn["id"]} has no parameter(s) {", ".join(bad)}')
         problems = SC.validate(scn)
         out += [f'entry {k}: {p}' for p in problems]
+        if e.get('faults') and project is not None and project.item('rigs', doc.get('rig')) is not None:
+            from .mrm import validate_faults
+            out += [f'entry {k}: {p}' for p in validate_faults(e['faults'], project.item('rigs', doc['rig']))]
+        if e.get('mrm') and not e.get('faults'):
+            out.append(f'entry {k}: an MRM check needs a timed fault (faults)')
     if project is not None:
         if project.item('worlds', doc.get('world')) is None:
             out.append(f'no world {doc.get("world")!r} in the project')
@@ -172,7 +196,9 @@ def plan_runs(doc: dict, project, suite_dir: str, port: int, tm_port: int, rende
                                motion=doc.get('motion', 'kinematic'), bridge=st.get('bridge'),
                                traffic_vehicles=int(doc.get('traffic_vehicles', 0)),
                                render_budget_mpx=render_budget_mpx, workspace=project.workspace,
-                               criteria=crit, name=f'{doc["name"]}: {scn["name"]} (seed {seed})')
+                               criteria=crit, name=f'{doc["name"]}: {scn["name"]} (seed {seed})',
+                               faults=e.get('faults'), mrm=e.get('mrm'),
+                               degraded_mode=bool(doc.get('degraded_mode')))
             key = run_key(cfg)
             cfg['out'] = os.path.join(suite_dir, 'runs', key[:16])
             cfg['cache_key'] = key
@@ -195,7 +221,10 @@ def result_row(spec: dict, run: dict) -> dict:
             'values': scn.get('values'), 'criticality': overall.get('criticality', crit.get('criticality')),
             'min_ttc_s': overall.get('min_ttc_s'), 'min_distance_m': overall.get('min_distance_m'),
             'collision': collided, 'missed_deadlines': bridge.get('missed'),
-            'steps_per_s': (run.get('performance') or {}).get('steps_per_s'), 'driver': run.get('driver')}
+            'steps_per_s': (run.get('performance') or {}).get('steps_per_s'), 'driver': run.get('driver'),
+            'mrm': ({k: (run.get('mrm') or {}).get(k) for k in ('passed', 'checks', 'measured', 'onset_s')}
+                    if run.get('mrm') else None),
+            'degraded': run.get('degraded')}
 
 
 def read_results(suite_dir: str) -> list:
@@ -260,6 +289,33 @@ def summarise(rows: list, seed: int = 0) -> dict:
                                key=lambda r: -(r.get('criticality') or 0.0))}
 
 
+def mrm_summary(rows: list) -> dict | None:
+    """The MRM checks of a suite's finished runs (core.mrm): per scenario and overall, runs, passed, the pass rate
+    with Wilson's 95 % interval, and how often each check failed. None when no run had one."""
+    ok = [r for r in rows if r.get('status') == 'ok' and r.get('mrm')]
+    if not ok:
+        return None
+
+    def group(rs):
+        n = len(rs)
+        k = sum(1 for r in rs if r['mrm'].get('passed'))
+        lo, hi = wilson(k, n)
+        fails = {}
+        for r in rs:
+            for c in r['mrm'].get('checks') or ():
+                if not c.get('ok'):
+                    fails[c['name']] = fails.get(c['name'], 0) + 1
+        return {'runs': n, 'passed': k, 'pass_rate': k / n, 'pass_rate_ci95': [lo, hi],
+                'interval': 'Wilson score, 95 %', 'failed_checks': fails}
+    by = {}
+    for r in ok:
+        by.setdefault(r['scenario'], []).append(r)
+    return {'scenarios': {s: group(rs) for s, rs in sorted(by.items())}, 'overall': group(ok),
+            'cases': [{k: r.get(k) for k in ('scenario', 'seed', 'run')} | {'passed': r['mrm'].get('passed'),
+                                                                           'checks': r['mrm'].get('checks')}
+                      for r in ok]}
+
+
 def rule_summary(rows: list, ruleset=None, n_boot: int = 1000, seed: int = 0) -> dict | None:
     """Traffic-rule checks (core.rules) of a suite's finished runs: the aggregate over runs (violations per km with a
     bootstrap interval over runs, runs violating with Wilson's interval, per rule) and per scenario; each run's result
@@ -289,7 +345,7 @@ def rule_summary(rows: list, ruleset=None, n_boot: int = 1000, seed: int = 0) ->
 
 
 TABLE_COLUMNS = ('scenario', 'seed', 'status', 'passed', 'criticality', 'min_ttc_s', 'min_distance_m', 'collision',
-                 'missed_deadlines', 'steps_per_s', 'run')
+                 'missed_deadlines', 'mrm_passed', 'steps_per_s', 'run')
 
 
 def write_table(rows: list, path: str):
@@ -298,4 +354,5 @@ def write_table(rows: list, path: str):
         w = csv.writer(fh)
         w.writerow(TABLE_COLUMNS)
         for r in sorted(rows, key=lambda r: (r['scenario'], r['seed'])):
-            w.writerow(['' if r.get(c) is None else r.get(c) for c in TABLE_COLUMNS])
+            row = dict(r, mrm_passed=(r.get('mrm') or {}).get('passed'))
+            w.writerow(['' if row.get(c) is None else row.get(c) for c in TABLE_COLUMNS])

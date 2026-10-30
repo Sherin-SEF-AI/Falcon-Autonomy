@@ -85,6 +85,7 @@ class Live(Worker):
         self.physics = None               # core.sensorphysics.Session (the config's sensor_physics)
         self.watch = None                 # oddwatch.OddWatch (the config's odd)
         self.odd_state = None
+        self.rules = None                 # workers.triggers.RuleRunner (the config's trigger_rules)
 
     # ------------------------------------------------------------------ commands (stdin thread)
     def on_command(self, cmd: dict):
@@ -142,6 +143,9 @@ class Live(Worker):
         self.set_view(world, self.view)
         from .drive import physics_and_watch
         self.physics, self.watch = physics_and_watch(self, world, cfg)
+        from .triggers import RuleRunner
+        self.rules = RuleRunner.from_config(self, world, cfg, self.ego, None, physics=self.physics,
+                                            on_event=self.rule_event)
         self.phase('run')
         for _ in range(int(cfg.get('warmup_steps', 5))):
             self.check()
@@ -159,6 +163,8 @@ class Live(Worker):
             self.check()
             self.apply_commands(world)
             self.drive_step()
+            if self.rules is not None:
+                self.rules.before_tick(steps * self.dt)
             frame = world.tick()
             self.alive()
             snap = world.get_snapshot()
@@ -169,6 +175,8 @@ class Live(Worker):
             if why:
                 raise Failed(why)
             scene.speeds_step(self, st)       # class / road limits; traffic kept at roads that end (run.json traffic)
+            if self.rules is not None:             # trigger rules on this frame's state (their firings: events)
+                self.rules.after_tick(frame, st)
             ev = self.guard.step(st)
             if ev is not None:
                 self.events.append((st, 'road_end', ev))
@@ -209,6 +217,7 @@ class Live(Worker):
                 'recordings': self.recordings,
                 'sensor_physics': self.physics.report() if self.physics is not None else {'enabled': False},
                 'odd_monitor': self.watch.report() if self.watch is not None else None,
+                **({'trigger_rules': self.rules.report()} if self.rules is not None else {}),
                 'summary': {'steps': steps, 'realtime_factor': perf['realtime_factor'],
                             'recordings': len(self.recordings)}, 'name': cfg.get('name', 'live session')}
 
@@ -396,6 +405,12 @@ class Live(Worker):
                 if self.physics is not None:
                     from ..core.weather import resolve
                     self.physics.set_weather(resolve(fields))
+                if self.rules is not None:          # the rules' weather signals follow it
+                    from ..core.weather import resolve
+                    if fields.get('preset'):
+                        self.rules.weather = resolve(fields)
+                    else:
+                        self.rules.weather.update({k: float(v) for k, v in fields.items()})
                 self.log_event('weather', dict({k: fields[k] for k in sorted(fields)[:6]},
                                                vehicle_lights=lit['resolved']))
             elif kind == 'sensor_fail':
@@ -408,6 +423,16 @@ class Live(Worker):
                 self.emit.log(f'unknown event {kind!r}', 'warning')
         except Failed as e:
             self.emit.log(f'event {kind} not possible here: {e}', 'warning')
+
+    def rule_event(self, kind, detail):
+        """A trigger rule's firing (an event), or its fault shown as Live's sensor failure."""
+        if kind == 'fault_request':
+            until = self.world.get_snapshot().timestamp.elapsed_seconds + float(detail['seconds'])
+            self.failures[detail['sensor']] = (detail['mode'], until)
+            self.log_event('sensor_fail', {'sensor': detail['sensor'], 'mode': detail['mode'],
+                                           'seconds': float(detail['seconds']), 'by': 'trigger rule'})
+            return
+        self.log_event(kind, detail)
 
     def ev_pedestrian(self, world, distance, side):
         carla = self.carla

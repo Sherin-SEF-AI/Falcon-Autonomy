@@ -28,6 +28,7 @@ METHODS = (('bayes', 'Bayesian optimisation'),
            ('adaptive', 'Adaptive sampling'), ('random', 'Random (baseline)'))
 OBJECTIVES = (('criticality', 'Criticality of the run'), ('perception', 'Perception failure of a model'),
               ('both', 'Both: perception failure and criticality'))
+COUNTS = (('avoidable', 'Avoidable failures only (RSS: the ego broke it)'), ('all', 'Every failure'))
 WEATHER = (('fog_density', 'Fog'), ('sun_altitude_angle', 'Sun altitude'), ('precipitation', 'Rain'))
 
 
@@ -121,8 +122,8 @@ class Heatmap(QWidget):
                 p.setPen(QColor(THEME.tok['ink']))
                 p.drawText(r, Qt.AlignmentFlag.AlignCenter, str(n))
         p.setPen(QColor(THEME.tok['muted']))
-        p.drawText(QPointF(x0, self.height() - 8), f'{g.get("x", "")} →   (colour: share of failures; number: '
-                                                   'evaluations in the cell)')
+        p.drawText(QPointF(x0, self.height() - 8), f'{g.get("x", "")} →   (colour: share of counted failures — '
+                                                   'avoidable only when RSS counting is on; number: evaluations)')
         p.save()
         p.translate(14, y0 + h)
         p.rotate(-90)
@@ -178,6 +179,17 @@ class RareCasesPage(Page):
         self.objective.currentIndexChanged.connect(lambda _: self.objective_changed())
         self.model = QComboBox()
         self.model.currentIndexChanged.connect(lambda _: self.load())
+        self.count = QComboBox()                     # core.rss: count avoidable failures (the default) or all
+        for k, text in COUNTS:
+            self.count.addItem(text, k)
+        self.count.setToolTip('Responsibility-Sensitive Safety (core.rss): a failure is avoidable when the ego did not '
+                              'give its proper response; one the other road user caused, or that was kinematically '
+                              'unavoidable, is listed but not counted. Applies to the criticality objective.')
+        self.count.currentIndexChanged.connect(lambda _: self.load())
+        self.feasible = QCheckBox('Only kinematically feasible adversaries')
+        self.feasible.setChecked(True)
+        self.feasible.setToolTip('Narrow braking, acceleration and lane-change parameters to the limits in core.rss '
+                                 '(heuristic: braking ≤ 9 m/s², accelerating ≤ 4 m/s², lateral ≤ 4 m/s²)')
         wx = QWidget()
         wl = QHBoxLayout(wx)
         wl.setContentsMargins(0, 0, 0, 0)
@@ -193,7 +205,8 @@ class RareCasesPage(Page):
         self.fps.setValue(20)
         self.fps.setSuffix(' Hz')
         self.fps.valueChanged.connect(lambda _: self.load())
-        for text, w in (('Scenario', self.scenario), ('Objective', self.objective), ('Model', self.model),
+        for text, w in (('Scenario', self.scenario), ('Objective', self.objective), ('Count', self.count),
+                        ('Feasibility', self.feasible), ('Model', self.model),
                         ('Also search', wx), ('Method', self.method), ('World', self.world),
                         ('Rig', self.rig), ('Evaluations', self.budget), ('In batches of', self.batch),
                         ('Failure at objective ≥', self.threshold), ('Simulation rate', self.fps),
@@ -220,7 +233,8 @@ class RareCasesPage(Page):
         rv.addWidget(self.curve)
         rv.addWidget(label('Failing cases, most critical first', h=True))
         self.failures = QTreeWidget()
-        self.failures.setHeaderLabels(['#', 'Objective', 'Criticality', 'Perception failure', 'Values', 'Run'])
+        self.failures.setHeaderLabels(['#', 'Objective', 'Criticality', 'Perception failure', 'RSS', 'Values',
+                                       'Run'])
         self.failures.setRootIsDecorated(False)
         self.failures.setMinimumHeight(160)
         rv.addWidget(self.failures)
@@ -284,6 +298,8 @@ class RareCasesPage(Page):
     def objective_changed(self):
         set_enabled(self.model, self.objective.currentData() != 'criticality',
                     'Criticality needs no model: choose a perception objective to search a model\'s failures')
+        set_enabled(self.count, self.objective.currentData() == 'criticality',
+                    'RSS counting applies to the criticality objective; RSS labels are still shown')
         self.load()
 
     def weather_dims(self) -> list:
@@ -320,7 +336,9 @@ class RareCasesPage(Page):
                 self.scenario.currentData(), '--name', self.study(), '--method', self.method.currentData(),
                 '--budget', str(self.budget.value()), '--batch', str(self.batch.value()), '--threshold',
                 str(self.threshold.value()), '--seed', str(self.seed.value()), '--world', self.world.currentData(),
-                '--rig', self.rig.currentData(), '--objective', obj]
+                '--rig', self.rig.currentData(), '--objective', obj, '--count', self.count.currentData()]
+        if not self.feasible.isChecked():
+            argv.append('--no-feasibility')
         if obj != 'criticality':
             argv += ['--model', self.model.currentData()]
         for k in self.weather_dims():
@@ -356,22 +374,36 @@ class RareCasesPage(Page):
         hist = [{'params': r['values'], 'value': r.get('objective', 0.0), 'i': k, 'run': r['run'],
                  'criticality': r.get('criticality', r.get('objective')),
                  'perception': (r.get('perception') or {}).get('value'), 'kind': r.get('objective_kind',
-                                                                                         'criticality')}
+                                                                                         'criticality'),
+                 'rss': r.get('rss')}
                 for k, r in enumerate(rows)]
         self.history = hist
-        for rank, h in enumerate(S.failures(hist, thr), 1):
+        # the counted failures (objective ≥ threshold) first, then the failures the objective does not count (their
+        # criticality reached it, their RSS label is not avoidable), each with its label and why
+        counted = S.failures(hist, thr)
+        seen = {h['i'] for h in counted}
+        uncounted = sorted((h for h in hist if h['i'] not in seen and (h['criticality'] or 0.0) >= thr),
+                           key=lambda h: -(h['criticality'] or 0.0))
+        for rank, h in enumerate(counted + uncounted, 1):
+            rss = h.get('rss') or {}
+            tag = rss.get('label', '—') + ('' if h['i'] in seen else ' (not counted)')
             it = QTreeWidgetItem([str(rank), f'{h["value"]:.3f}', f'{h["criticality"]:.3f}'
                                   if h['criticality'] is not None else '—',
-                                  f'{h["perception"]:.3f}' if h['perception'] is not None else '—',
+                                  f'{h["perception"]:.3f}' if h['perception'] is not None else '—', tag,
                                   ', '.join(f'{k}={v:.3g}' if isinstance(v, float) else f'{k}={v}'
                                             for k, v in sorted(h['params'].items())), os.path.basename(h['run'])])
+            it.setToolTip(4, rss.get('reason', 'no RSS label (a run from before RSS labels: re-run the search to '
+                                               'label it)'))
             it.setData(0, 256, h)
             self.failures.addTopLevelItem(it)
+        self.n_counted = len(counted)
         what = {'criticality': 'criticality', 'perception': 'perception failure',
                 'both': 'perception failure and criticality'}[self.objective.currentData() or 'criticality']
         if not (self.job is not None and self.job.state not in FINAL):
-            self.state.set('State', f'{len(rows)} evaluations, {self.failures.topLevelItemCount()} failures '
-                                    f'({what} ≥ {thr:g})' if rows else 'no evaluations yet')
+            extra = self.failures.topLevelItemCount() - self.n_counted
+            self.state.set('State', f'{len(rows)} evaluations, {self.n_counted} failures ({what} ≥ {thr:g})'
+                           + (f'; {extra} more not counted (RSS: not the ego\'s)' if extra > 0 else '')
+                           if rows else 'no evaluations yet')
         from ...core import milsearch as MS
         space = (SC.search_space(dict(self.scenarios())[self.scenario.currentData()]) if self.scenario.count()
                  else []) + MS.weather_space(self.weather_dims())
@@ -415,7 +447,7 @@ class RareCasesPage(Page):
         cfg = scenario_config(w.project, scn, self.world.currentData(), self.rig.currentData(),
                               os.path.join(w.service.runs_dir(), run_dir_name('replay')), w.service.port,
                               w.service.tm_port, seed=self.seed.value(), values=values,
-                              workspace=w.workspace(), fps=float(self.fps.value()))
+                              workspace=w.workspace(), fps=float(self.fps.value()), trigger_rules='project')
         MS.apply_weather(cfg, weather)
         w.service.submit_drive(cfg, title=f'Replay: {scn["name"]}')
         w.jobs_dock.raise_()

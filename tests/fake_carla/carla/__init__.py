@@ -43,6 +43,8 @@ CARLA's documented and measured behaviour:
 * The traffic light (actor 50) controls the +x lanes with a stop line at x = STOP_LINE_X (get_stop_waypoints); its
   state is Green unless FAKE_CARLA_LIGHT_STATE names another (tests) or set_state() changed it. Map.get_waypoint with
   project_to_road=False returns None off the carriageway.
+* A just-spawned actor: with FAKE_CARLA_SPAWN_AT_ORIGIN=1 (tests), get_transform() reports the origin until the next
+  tick, as a real 0.9.16 server does in synchronous mode (measured: (0, 0, 0) before the actor's first tick).
 """
 from __future__ import annotations
 
@@ -509,6 +511,7 @@ class Actor:
         self._m_world = transform._m() if parent is None else None
         self.is_alive = True
         self.bounding_box = BoundingBox(Location(0, 0, 0), Vector3D(0.1, 0.1, 0.1))
+        self._fresh = os.environ.get('FAKE_CARLA_SPAWN_AT_ORIGIN') == '1' and parent is None
 
     def world_matrix(self):
         if self.parent is None:
@@ -516,6 +519,8 @@ class Actor:
         return self.parent.world_matrix() @ self._rel
 
     def get_transform(self):
+        if getattr(self, '_fresh', False):              # not ticked since its spawn (FAKE_CARLA_SPAWN_AT_ORIGIN)
+            return Transform()
         return _T(self.world_matrix())
 
     def get_location(self):
@@ -1375,6 +1380,8 @@ class World:
         self._unseen = False
         self._frame += 1
         self._t = round(self._t + dt, 12)
+        for a in list(self._actors.values()):
+            a._fresh = False
         for a in list(self._actors.values()):
             if isinstance(a, WalkerAIController):
                 a._step(dt)

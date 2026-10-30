@@ -359,6 +359,16 @@ def build_report(suite_dir: str, odd: dict, out_dir: str, studies=(), odd_path: 
                                      f'{rr["runs_violating"]} of {rr["runs_evaluated"]} runs'
                                      + (f', {rr["per_km"]:.2f} per km' if rr['per_km'] is not None else ''),
                              'evidence': []})
+    from .stack import mrm_summary
+    mrm = mrm_summary(rows)                    # the minimal-risk manoeuvre after timed sensor faults (core.mrm)
+    for scn, g in sorted(((mrm or {}).get('scenarios') or {}).items()):
+        if g['passed'] < g['runs']:
+            risks.insert(0, {'kind': 'mrm', 'severity': 'high',
+                             'text': f'{scn}: the minimal-risk manoeuvre failed in {g["runs"] - g["passed"]} of '
+                                     f'{g["runs"]} runs with a sensor fault ('
+                                     + ', '.join(f'{k}: {n}' for k, n in sorted(g['failed_checks'].items())) + ')',
+                             'evidence': [c['run'] for c in mrm['cases'] if c['scenario'] == scn and
+                                          not c['passed']]})
     inputs = {'suite_results': os.path.join(suite_dir, 'results.jsonl')}
     if odd_path:
         inputs['odd'] = odd_path
@@ -369,7 +379,7 @@ def build_report(suite_dir: str, odd: dict, out_dir: str, studies=(), odd_path: 
                                                  'driver': (suite.get('stack') or {}).get('driver'),
                                                  'criteria': suite.get('criteria')},
            'odd': odd, 'coverage': cov, 'results': results, 'triggering_conditions': trig, 'residual_risks': risks,
-           'traffic_rules': rules, 'odd_monitor': outside,
+           'traffic_rules': rules, 'odd_monitor': outside, 'mrm': mrm,
            'limits': {'sotif_not_covered': SOTIF_NOT_COVERED, 'simulation': [{'title': t, 'text': x}
                                                                             for t, x in SIM_LIMITS],
                       'road_type': 'heuristic: the road features the scenario director required at the start, not a '
@@ -487,6 +497,27 @@ def _rules_html(rules: dict | None) -> str:
     return ''.join(out)
 
 
+def _mrm_html(mrm: dict | None) -> str:
+    """The minimal-risk manoeuvre after timed sensor faults (core.mrm): per scenario and per case."""
+    if not mrm:
+        return ''
+    o = mrm['overall']
+    out = ['<h2>Minimal-risk manoeuvre after sensor faults</h2><p class="muted">Runs with a timed sensor fault and '
+           'the MRM check (core.mrm): after the fault the vehicle must start slowing within its reaction time, come '
+           'to a standstill within its window and stay there, decelerate within its limit with bounded jerk, stay in '
+           'its lane (or move to the shoulder) and touch nothing. Every threshold is heuristic (docs/stack-testing.md)'
+           f'. Overall {o["passed"]} of {o["runs"]} passed ({_pct(o["pass_rate"])}, Wilson 95 % '
+           f'{_pct(o["pass_rate_ci95"][0])}–{_pct(o["pass_rate_ci95"][1])}).</p>',
+           '<table><tr><th>scenario</th><th>seed</th><th>MRM</th><th>failed checks</th></tr>']
+    for c in mrm['cases']:
+        bad = '; '.join(f'{x["name"]}: {x["detail"]}' for x in c.get('checks') or () if not x.get('ok'))
+        out.append(f'<tr><td>{_e(c["scenario"])}</td><td class="num">{_e(c["seed"])}</td><td class="'
+                   f'{"pass" if c["passed"] else "fail"}">{"passed" if c["passed"] else "FAILED"}</td>'
+                   f'<td>{_e(bad) or "<span class=muted>—</span>"}</td></tr>')
+    out.append('</table>')
+    return ''.join(out)
+
+
 def _odd_monitor_html(om: dict | None) -> str:
     """The time each scenario's runs spent outside the ODD (core.oddmonitor.suite_outside)."""
     if not om:
@@ -587,6 +618,7 @@ def render_html(rep: dict) -> str:
                        for c in t['cases'][:10])
         if rows:
             p.append(f'<table><tr><th>parameters</th><th class="num">criticality</th></tr>{rows}</table>')
+    p.append(_mrm_html(rep.get('mrm')))
     p.append('<h2>Residual risks</h2><table><tr><th>kind</th><th>risk</th><th>evidence</th></tr>')
     for r in rep['residual_risks']:
         ev = '<br>'.join(f'<code>{_e(x)}</code>' for x in r['evidence'][:5]) + (

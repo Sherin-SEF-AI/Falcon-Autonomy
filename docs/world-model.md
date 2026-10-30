@@ -21,6 +21,8 @@ with provenance over the run's run.json, frames.jsonl, lanes.json and actors.jso
 | Ego actions | `ego_actions.jsonl` | the recorded control (live recordings, and drives since 0.6: the traffic manager's or the director's), and always speed, acceleration, yaw rate, curvature and lateral acceleration, derived from the poses by finite differences, and labelled so |
 | Clips | `clips.json` | fixed-rate multi-camera clips (default 10 Hz, 1 s, every 0.5 s). A rate that does not divide the drive's frame rate is refused; images are never interpolated |
 
+The same occupancy, on the grids and class lists of Occ3D-nuScenes, OpenOcc v2 (with per-voxel flow) and SurroundOcc, with Occ3D's camera-visibility mask, is an export: `falcon export RUN --format occ3d` ([dataset format](dataset-format.md#semantic-occupancy-exports-occ3d-openocc-surroundocc)).
+
 Camera optical flow is a label layer of its own (`flow/<camera>/<n>.npy`, see [dataset format](dataset-format.md)).
 
 ## Language data (`falcon.language/1`)

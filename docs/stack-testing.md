@@ -152,7 +152,78 @@ the other work). What Falcon provides for it, checked only as far as stated:
 message it holds the line it started on (pure pursuit) and brakes for lidar points in its corridor (taken to
 `base_link` through `/tf_static`), publishing one control message of any of the three types stamped with the
 odometry's stamp. `falcon stack run --test-stack` or a suite's `launch` starts the bridge node and it in the image.
-It is a test object, not a driver.
+It is a test object, not a driver. With `--degraded-mode` it reacts to sensor failures by a minimal-risk manoeuvre
+([below](#sensor-faults-mid-run-and-the-minimal-risk-manoeuvre)).
+
+## Sensor faults mid-run and the minimal-risk manoeuvre
+
+A stack run (or a suite entry) can carry **timed sensor faults** that start mid-drive — `faults: [{sensor, kind,
+onset_s, for_s, …}]` (`core.faults.TIMED`; `falcon stack run|suite new --fault SENSOR:KIND:ONSET[:K=V,…]`):
+
+| kind | sensor | what the stack receives from `onset_s` (for `for_s`, or to the end) |
+|---|---|---|
+| `occlusion` `{cover}` | camera | mud on the lens: one dark, opaque, soft-edged patch over that share of the image |
+| `dirt`, `rain`, `noise`, `glare`, `compression` … | camera | the image faults of known size ([rigs](index.md#rigs)) |
+| `sector_loss` `{from_deg, to_deg}` | lidar | no returns in that azimuth sector of the lidar's frame |
+| `packet_drop` `{rate}` | lidar | that share of its 1° azimuth packets lost, seeded per sweep |
+| `multipath` `{jump_m, period_s}` | GNSS | fixes offset by up to `jump_m` in a seeded direction, re-drawn every `period_s` (heuristic model) |
+| `dropout` | any | nothing: a silent camera (no image), lidar (no cloud for a rotation with every slice silenced), IMU or GNSS |
+
+frames.jsonl marks the steps (`faults`: the kinds acting per sensor). The faults act on the data a stack is sent — the
+ROS 2 messages, the built-in follower's monitor, a HIL session's streams — not on the run's recorded files.
+
+**The MRM verifier** (`core/mrm.py`; `mrm: true` on an entry, `--mrm`) judges the run from the first fault's onset:
+did the stack bring the vehicle to a **minimal risk condition**? Every threshold is **heuristic** — a controlled stop
+for Falcon's test stack, not a regulation's values:
+
+| check | passes when |
+|---|---|
+| reaction | the vehicle starts slowing (≥ 0.5 m/s² for 0.3 s) within **1.5 s** of the onset |
+| standstill | ≤ 0.2 m/s within 1.5 s + v_onset / 1.5 m/s², and held to the end (no restart) |
+| deceleration | never above **4 m/s²** (a controlled stop, not emergency braking) |
+| jerk | \|jerk\| ≤ **10 m/s³** (speed smoothed over 0.25 s), except 0.2 s in all |
+| lane | the lateral offset from the scenario route stays within (lane − vehicle width) / 2 + 0.2 m, or the stop ends on the kerb side within 2.5 m of the lane's edge (the shoulder) |
+| no collision | no contact of the ego after the onset |
+
+The result is a check of the scenario (so the run passes only if the MRM does), `run.json` `mrm` with every check and
+the measured reaction, standstill time, peak deceleration and jerk; a suite's `results.json` `mrm` gives the pass rate
+per scenario with its Wilson interval, the failed checks and every case, `results.csv` an `mrm_passed` column, and the
+safety-case report a *Minimal-risk manoeuvre after sensor faults* section (each case passed or failed, with why) and
+a residual risk per scenario whose MRM failed.
+
+**The test stack's degraded mode** (`falcon_autonomy/ros2/degraded.py`, shared by both test stacks): a health monitor
+reads what arrives — a lidar silent for 0.35 s, a sweep with fewer than half the recent median points, an empty azimuth
+sector wider than 45° where earlier sweeps had points; an IMU silent for 0.25 s; a GNSS silent for 0.5 s or jumping 4 m
+more than the odometry moved; a camera image with over 20 % dark, texture-less 8 × 8 blocks, or 10 identical images
+while moving — and once one fails (latched) the stack performs the **MRM**: the deceleration demand ramps at 4 m/s³ to
+2.5 m/s², the lane-keeping steering continues, then it stands braked (thresholds heuristic). The built-in follower uses
+it with `"degraded_mode": true` on the suite (`--degraded-mode`): the rig's sensors are spawned for it, their faulted
+data feed the monitor, `run.json` `degraded` says when and why. The ROS 2 follower takes `--degraded-mode` (`--test-stack
+--degraded-mode` adds it to the launch): it watches its point clouds and the `/falcon` IMU and GNSS topics. Without the
+mode both ignore failures — the baseline the verifier must fail.
+
+Measured against the fake carla (`tests/test_mrm.py`, 2026-10-30): with the lead never braking and the ego at 30 km/h,
+a lidar dropout, a 120° lidar sector loss, an IMU dropout, a 12 m GNSS multipath jump and a 60 % camera occlusion at
+3 s are each detected and the built-in follower in degraded mode **passes** every MRM check; without the mode it drives
+on and **fails** (never slowed, no standstill); the ROS 2 follower's own decisions behind the bridge logic pass with
+`--degraded-mode` and fail without. Over real DDS (the follower and the bridge node in `falcon-ros2-bridge:humble`
+containers, the worker against the fake carla; `tests/test_stack_ros2.py`, 2026-10-30), the lidar dropping out at 3 s:
+with `--degraded-mode` the follower slowed 0.55 s after the onset and stood still at 3.95 s (window 7.1 s), peak
+deceleration 2.5 m/s², peak jerk 8.6 m/s³, no missed deadline — **passed**; without it, it never slowed — **failed**.
+On the real server (CARLA 0.9.16, the demo project's Central Bengaluru, 2026-10-30; the built-in follower behind a
+lead that never brakes, 30 km/h, a front camera 640 × 360, a 32-channel lidar at 10 Hz, IMU and GNSS, real sensor
+data into the monitor), a fault at 4 s:
+
+| fault | degraded mode | detected | reaction | standstill (window 7.1 s) | peak decel / jerk | MRM |
+|---|---|---|---|---|---|---|
+| lidar sector loss −60…60° | off | — | never slowed | none | — | **failed** |
+| lidar sector loss −60…60° | on | 4.05 s: an empty sector of 120° | 0.25 s | 3.65 s | 2.5 m/s² / 8.6 m/s³ | **passed** |
+| camera occlusion, 60 % | off | — | never slowed | none | — | **failed** |
+| camera occlusion, 60 % | on | 4.00 s: 56 % of the image dark and texture-less | 0.20 s | 3.60 s | 2.5 m/s² / 8.6 m/s³ | **passed** |
+
+Limits: the monitor's thresholds were chosen on Falcon's simulated sensors; a
+frozen-image check needs motion (a standing car in a still scene sees identical images); the verifier has no lane
+offsets without a scenario route (free drives, HIL sessions) and judges those on the other checks.
 
 ## Suites
 
@@ -208,4 +279,6 @@ in-process stand-in for rclpy (deadlines, stale and missed controls, on_miss), r
 intervals, table) and the report. `tests/test_stack_ros2.py` (`FALCON_ROS2=1`, Docker and the image): the encoding
 against rclpy's serialiser, and the closed loop over real DDS with each control type (the worker against the fake
 carla; the node and the follower in containers). `tests/test_gui_stack.py`: the page, a baseline suite as a job, a
-replay and a report.
+replay and a report. `tests/test_mrm.py`: the timed fault kinds, the health monitor and the MRM profile, the verifier on
+constructed runs (each failure named), the follower with and without its degraded mode on every fault kind, the ROS 2
+follower's decisions through the bridge logic, a suite and its safety case, a HIL session with faults.

@@ -23,6 +23,11 @@ is_defined_acceleration, steering_tire_angle), ackermann_msgs/AckermannDriveStam
 (speed, acceleration, steering_angle) or carla_msgs/CarlaEgoVehicleControl on /falcon/ego/vehicle_control_cmd
 (throttle a / 3 m/s², brake −a / 8 m/s², steer −δ / 70°). It runs on simulation time (use_sim_time) and prints a
 summary on exit (SIGINT / SIGTERM, or --max-steps).
+
+--degraded-mode: it also watches its sensors' health from their data (degraded.py beside it: the lidar's sweeps,
+the IMU's and GNSS's messages found under /falcon) and, once a failure is detected, carries out the minimal-risk
+manoeuvre: target speed 0, a jerk-limited deceleration to --mrm-decel, the line held, then standing still. Without
+it, it ignores failures (the baseline the MRM verifier should fail).
 """
 from __future__ import annotations
 
@@ -34,6 +39,11 @@ import sys
 import time
 
 import numpy as np
+
+try:                                                    # beside this file: in the bridge image (/falcon/ros2) and here
+    from degraded import MRM, Monitor
+except ImportError:                                     # imported as falcon_autonomy.ros2.follower_stack
+    from .degraded import MRM, Monitor
 
 WHEELBASE_M = 2.9
 TOPICS = {'autoware': '/control/command/control_cmd', 'ackermann': '/falcon/ego/ackermann_cmd',
@@ -59,9 +69,37 @@ def cloud_xyz(msg) -> np.ndarray:
 class Brain:
     """The decisions, without ROS (unit-testable)."""
 
-    def __init__(self, speed, corridor=1.3, front=2.6, stop_gap=6.0, decel=4.0):
+    def __init__(self, speed, corridor=1.3, front=2.6, stop_gap=6.0, decel=4.0, degraded=False,
+                 degraded_params=None):
         self.speed, self.corridor, self.front, self.stop_gap, self.decel = speed, corridor, front, stop_gap, decel
         self.line = None
+        self.monitor = Monitor(degraded_params, ('lidar',)) if degraded else None
+        self.mrm = MRM(degraded_params) if degraded else None
+        self.a_prev = 0.0
+        self.fix0 = None
+
+    # degraded mode: what arrives (simulation seconds), for the health monitor
+    def sense_points(self, t, pts_sensor):
+        if self.monitor is not None:
+            self.monitor.lidar(t, pts_sensor)
+
+    def sense_imu(self, t):
+        if self.monitor is not None:
+            self.monitor.expect.add('imu')
+            self.monitor.imu(t)
+
+    def sense_fix(self, t, lat, lon, odom_xy):
+        if self.monitor is None:
+            return
+        self.monitor.expect.add('gnss')
+        if self.fix0 is None:
+            self.fix0 = (lat, lon)
+        north = math.radians(lat - self.fix0[0]) * 6378137.0
+        east = math.radians(lon - self.fix0[1]) * 6378137.0 * math.cos(math.radians(self.fix0[0]))
+        self.monitor.gnss(t, (north, east), odom_xy)
+
+    def degraded(self):
+        return self.monitor is not None and self.monitor.degraded is not None
 
     def gap(self, pts_base: np.ndarray | None):
         if pts_base is None or not len(pts_base):
@@ -70,8 +108,9 @@ class Brain:
              & (pts_base[:, 2] < 3.0))
         return float(pts_base[m, 0].min() - self.front) if m.any() else None
 
-    def act(self, x, y, yaw, v, pts_base):
-        """-> (steering angle rad, positive left; set speed m/s; acceleration m/s²; gap m or None)."""
+    def act(self, x, y, yaw, v, pts_base, t=None):
+        """-> (steering angle rad, positive left; set speed m/s; acceleration m/s²; gap m or None). t: simulation
+        seconds (degraded mode judges the sensors' silence by it)."""
         if self.line is None:
             self.line = (x, y, yaw)
         x0, y0, h = self.line
@@ -90,6 +129,12 @@ class Brain:
         a = min(max(1.5 * (target - v), -8.0), 2.5)
         if gap is not None and gap < self.stop_gap:
             a = -8.0
+        if self.monitor is not None and t is not None and self.monitor.check(t)[0]:
+            m, hold = self.mrm.accel(t, v, self.a_prev)     # the minimal-risk manoeuvre: stop in the lane, hold
+            # its sensors are not to be trusted: the speed set where it is (a speed-tracking bridge adds nothing), the
+            # deceleration the manoeuvre's; standing, speed 0 and the brake held
+            target, a = (0.0, -self.mrm.p['mrm_decel']) if hold else (v, m)
+        self.a_prev = a
         return delta, target, a, gap
 
 
@@ -106,6 +151,8 @@ def main(argv=None) -> int:
     ap.add_argument('--decel', type=float, default=4.0)
     ap.add_argument('--max-steps', type=int, default=0)
     ap.add_argument('--points-wait', type=float, default=0.2, help='wall seconds to wait for the step\'s cloud')
+    ap.add_argument('--degraded-mode', action='store_true', help='detect sensor failures and stop in the lane')
+    ap.add_argument('--mrm-decel', type=float, default=2.5, help='the minimal-risk manoeuvre\'s deceleration, m/s²')
     a = ap.parse_args(argv)
     import rclpy
     from rclpy.parameter import Parameter
@@ -115,7 +162,7 @@ def main(argv=None) -> int:
     from tf2_msgs.msg import TFMessage
     rclpy.init()
     node = rclpy.create_node('falcon_follower', parameter_overrides=[Parameter('use_sim_time', value=True)])
-    brain = Brain(a.speed, a.corridor, a.front, a.stop_gap, a.decel)
+    brain = Brain(a.speed, a.corridor, a.front, a.stop_gap, a.decel, a.degraded_mode, {'mrm_decel': a.mrm_decel})
     state = {'pts': None, 'pts_stamp': -1, 'mount': {}, 'steps': 0, 'stale_points': 0, 'no_points': 0,
              'braking': 0, 'min_gap': None}
     reliable = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
@@ -137,8 +184,12 @@ def main(argv=None) -> int:
                                                              tr.rotation.w)), t.header.frame_id)
     node.create_subscription(TFMessage, '/tf_static', on_tf, latched)
 
+    def sim_s(stamp):
+        return stamp.sec + stamp.nanosec * 1e-9
+
     def on_points(m):
         P = cloud_xyz(m)
+        brain.sense_points(sim_s(m.header.stamp), P)          # the sensor frame: azimuths as the lidar sees them
         mt = state['mount'].get(m.header.frame_id)
         if mt is not None and mt[2] == 'base_link':
             P = P @ mt[1].T + mt[0]
@@ -175,6 +226,19 @@ def main(argv=None) -> int:
                 if topic.startswith('/falcon') and 'sensor_msgs/msg/PointCloud2' in types:
                     subscribe_points(topic)
                     break
+        if a.degraded_mode and 'health_topics' not in state:      # the IMU and GNSS too, for their health
+            from sensor_msgs.msg import Imu, NavSatFix
+            state['health_topics'] = []
+            for topic, types in node.get_topic_names_and_types():
+                if topic.startswith('/falcon') and 'sensor_msgs/msg/Imu' in types:
+                    node.create_subscription(Imu, topic, lambda mm: brain.sense_imu(sim_s(mm.header.stamp)),
+                                             reliable)
+                    state['health_topics'].append(topic)
+                elif topic.startswith('/falcon') and 'sensor_msgs/msg/NavSatFix' in types:
+                    node.create_subscription(NavSatFix, topic, lambda mm: brain.sense_fix(
+                        sim_s(mm.header.stamp), mm.latitude, mm.longitude, state.get('odom_xy', (0.0, 0.0))),
+                        reliable)
+                    state['health_topics'].append(topic)
         p, q = m.pose.pose.position, m.pose.pose.orientation
         yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         v = math.hypot(m.twist.twist.linear.x, m.twist.twist.linear.y)
@@ -183,7 +247,11 @@ def main(argv=None) -> int:
             state['no_points'] += 1
         elif state['pts_stamp'] < stamp:
             state['stale_points'] += 1
-        delta, target, acc, gap = brain.act(p.x, p.y, yaw, v, state['pts'])
+        state['odom_xy'] = (p.x, p.y)
+        delta, target, acc, gap = brain.act(p.x, p.y, yaw, v, state['pts'], sim_s(m.header.stamp))
+        if brain.degraded() and 'degraded' not in state:
+            state['degraded'] = {'t': brain.monitor.degraded[0], 'why': brain.monitor.degraded[1]}
+            node.get_logger().warning(f'degraded: {brain.monitor.degraded[1]}: minimal-risk manoeuvre')
         if gap is not None:
             state['min_gap'] = gap if state['min_gap'] is None else min(state['min_gap'], gap)
         if acc < 0:
@@ -226,8 +294,8 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        print(json.dumps({'follower': {k: v for k, v in state.items() if k not in ('pts', 'mount', 'stop')}}),
-              flush=True)
+        print(json.dumps({'follower': {k: v for k, v in state.items() if k not in ('pts', 'mount', 'stop', 'pending')}},
+                         default=str), flush=True)
         node.destroy_node()
         rclpy.try_shutdown()
     return 0

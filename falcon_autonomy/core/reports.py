@@ -522,6 +522,14 @@ def report_study(src: str) -> Page:
     pg.note(f'The objective is {obj["about"]}.' if obj.get('about') else
             'The objective is the run\'s criticality (core.criticality; 1 for a collision): where driving the '
             'scenario becomes critical, not where a perception model fails.')
+    if st.get('feasibility'):
+        pg.note('Kinematic feasibility (core.rss, heuristic limits): ' + '; '.join(st['feasibility']) + '.')
+    by_values = {json.dumps(r.get('values'), sort_keys=True): r for r in results}
+
+    def rss_cell(r):
+        lab = (r or {}).get('rss') or {}
+        return esc(lab.get('label', '—')) + (f' <span class="muted">{esc(lab["reason"])}</span>'
+                                             if lab.get('reason') else '')
     searches = sorted(f for f in os.listdir(src) if f.startswith('search-') and f.endswith('.json'))
     for f in searches:
         s = pg.json(os.path.join(src, f))
@@ -531,17 +539,26 @@ def report_study(src: str) -> Page:
         vals = [h['value'] for h in sorted(s['history'], key=lambda h: h['i'])]
         pg.add('<p class="legend"><span><i class="sw b"></i>best criticality so far</span><span>dashed: the '
                'failure threshold</span></p>', curve_chart(vals, s['threshold'], 'search curve'))
-        pg.add(table(['rank', 'criticality', 'parameters'], [
-            [esc(k + 1), num(h['value']), f'<span class="mono">{esc(json.dumps(h["params"]))}</span>']
+        pg.add(table(['rank', 'objective', 'RSS', 'parameters'], [
+            [esc(k + 1), num(h['value']), rss_cell(by_values.get(json.dumps(h['params'], sort_keys=True))),
+             f'<span class="mono">{esc(json.dumps(h["params"]))}</span>']
             for k, h in enumerate(s['failures'][:20])], numeric=(0, 1)))
+        uncounted = [r for r in results if (r.get('criticality') or 0) >= s['threshold'] > (r.get('objective') or 0)]
+        if uncounted:
+            pg.note(f'{len(uncounted)} more run(s) reached the threshold by criticality but are not counted: by '
+                    'Responsibility-Sensitive Safety (core.rss) the ego was not responsible for their critical event.')
+            pg.add(table(['criticality', 'RSS', 'parameters'], [
+                [num(r.get('criticality')), rss_cell(r), f'<span class="mono">{esc(json.dumps(r["values"]))}</span>']
+                for r in sorted(uncounted, key=lambda r: -(r.get('criticality') or 0))[:20]], numeric=(0,)))
     if not searches and results:
         pg.h2('Evaluations')
         pg.add(curve_chart([r['objective'] for r in results], None, 'evaluations'))
     pg.h2('Runs')
-    pg.add(table(['parameters', 'criticality', 'status', 'run'], [
-        [f'<span class="mono">{esc(json.dumps(r["values"]))}</span>', num(r.get('objective')), esc(r.get('status')),
+    pg.add(table(['parameters', 'objective', 'criticality', 'RSS', 'status', 'run'], [
+        [f'<span class="mono">{esc(json.dumps(r["values"]))}</span>', num(r.get('objective')),
+         num(r.get('criticality', r.get('objective'))), rss_cell(r), esc(r.get('status')),
          f'<span class="mono">{esc(os.path.basename(r.get("run") or ""))}</span>']
-        for r in sorted(results, key=lambda r: -(r.get('objective') or 0))[:30]], numeric=(1,)))
+        for r in sorted(results, key=lambda r: -(r.get('objective') or 0))[:30]], numeric=(1, 2)))
     pg.provenance(None)
     return pg
 

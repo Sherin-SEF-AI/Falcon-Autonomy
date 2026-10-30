@@ -20,6 +20,7 @@ folder beside it (`name.falcon/`). Machine settings (CARLA's folder, ports) and 
 | `scenarios`, `dataset_specs`, `models`, `experiments` | [{`id`, `name`, …}] | filled by later milestones |
 | `loop` | object | the closed loop's settings and iterations |
 | `drive_sets` | [drive set] | optional: named sets of runs ([runs](runs.md)) |
+| `trigger_rules` | [trigger rule] | optional: live trigger rules ([below](#trigger-rule), [scenarios](scenarios.md#trigger-rules)) |
 | `run_tags` | {run folder: [tag]} | optional: your tags on runs, keyed by the run's folder relative to the workspace (an absolute path outside it); the runs themselves are never changed |
 | `infrastructure` | {`rsus`: [roadside unit]} | optional: V2X roadside units standing in the worlds ([V2X](v2x.md)); an older build refuses a file that has it |
 
@@ -106,3 +107,18 @@ document, e.g. `["worlds", 0, "weather"]`; each edit knows its inverse, which is
 | `runs` | `kind: list`: run folders relative to the workspace (absolute outside it); one no longer on disk drops out |
 | `query` | `kind: query`: a search in the run index's language ([runs](runs.md)), e.g. `weather:rain tod:night status:ok` |
 | `created` | UTC ISO 8601 |
+
+## trigger rule
+
+| field | meaning |
+|---|---|
+| `id` | unique among the rules; `fired.<id>` in another rule's condition counts its firings |
+| `name`, `about` | optional text |
+| `rule` | `when <condition> -> <action>[; <action>]` ([trigger rules](scenarios.md#trigger-rules)); checked by `core.triggers`, not by the schema, so a rule being typed can be saved — a run refuses an enabled rule that does not parse |
+| `repeat` | `once` (default), `every` (each time the condition becomes true) or `cooldown` (while it holds, once per `cooldown_s`) |
+| `cooldown_s` | seconds ≥ 0 (> 0 for `cooldown`) |
+| `enabled` | default true |
+| `applies` | some of `drives`, `scenarios`, `live` (default all three) |
+
+Added after 2.3.0 without a format version change: an older build refuses a project that has `trigger_rules` (its schema
+does not know the field); removing the field makes the file readable there again.

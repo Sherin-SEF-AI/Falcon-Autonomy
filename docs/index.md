@@ -162,7 +162,9 @@ actors, the parameters as distributions and the timeline. **Run this sample** ru
 unattended, and resumes where it stopped. OpenSCENARIO import and export. The **Timeline** tab is an editor: the
 events on a time axis (drag a time trigger or a lane change's duration, snapped; the wheel zooms), the selected
 event's trigger and actions in a form, and above it a **plan** of where everyone goes — a plan on a straight
-schematic road, not a simulation. See [scenarios](scenarios.md).
+schematic road, not a simulation. The **Trigger rules** tab holds the project's live rules — `when ego.speed > 40 and
+visibility < 30 -> spawn jaywalker` — evaluated every tick of drives, scenario runs and Live, every firing recorded.
+See [scenarios](scenarios.md).
 
 ### Rare cases
 Search a scenario's parameters for where it becomes critical (Bayesian optimisation, CMA-ES, adaptive sampling or

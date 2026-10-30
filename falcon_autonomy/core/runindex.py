@@ -215,6 +215,8 @@ def summarise(run_dir: str, workspace: str = '') -> dict | None:
         ev.append('failed_check')
     if run.get('faults_applied'):
         ev.append('fault')
+    if any((run.get('trigger_rules') or {}).get('fired', {}).values()):
+        ev.append('trigger')                      # a trigger rule fired (core.triggers)
     if e['status'] not in ('ok', None):
         ev.append(str(e['status']))
     e['events'] = ev

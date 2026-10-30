@@ -65,7 +65,9 @@ SCHEMA = 'falcon.perception_score/1'
 OBJECTIVES = ('criticality', 'perception', 'both')
 METRICS = ('perception', 'window_miss', 'lost_lead', 'miss_rate')
 DEFAULTS = {'objective': 'criticality', 'metric': 'perception', 'iou': 0.5, 'min_score': 0.5, 'window_s': 3.0,
-            'lead_s': 3.0, 'target_classes': [], 'range_m': [0.0, 50.0], 'every': 1, 'camera': None}
+            'lead_s': 3.0, 'target_classes': [], 'range_m': [0.0, 50.0], 'every': 1, 'camera': None,
+            'count': 'avoidable', 'feasibility': True}
+COUNTS = ('avoidable', 'all')         # the criticality objective: avoidable failures only (core.rss), or any
 WEATHER_PREFIX = 'weather.'
 WEATHER_RANGES = {'fog_density': (0.0, 100.0), 'sun_altitude_angle': (-10.0, 90.0), 'precipitation': (0.0, 100.0),
                   'precipitation_deposits': (0.0, 100.0), 'wetness': (0.0, 100.0), 'cloudiness': (0.0, 100.0)}
@@ -107,6 +109,9 @@ def normalise_spec(spec: dict | None) -> dict:
         raise MilError('range_m is [lo, hi) metres with 0 ≤ lo < hi')
     s['range_m'] = [lo, hi]
     s['target_classes'] = sorted({str(c) for c in s['target_classes'] or ()})
+    if s['count'] not in COUNTS:
+        raise MilError(f'count must be one of {", ".join(COUNTS)}, not {s["count"]!r}')
+    s['feasibility'] = bool(s['feasibility'])
     if s['objective'] == 'criticality':
         s.pop('model', None)
     elif not isinstance(s.get('model'), dict):
@@ -123,7 +128,9 @@ def spec_key(spec: dict, workspace: str = '') -> str:
     from . import provenance as PV
     s = normalise_spec(spec)
     if s['objective'] == 'criticality':
-        return 'criticality'
+        return 'criticality' if s['count'] == 'all' else 'criticality-rss'
+    s.pop('count')                    # RSS counting and feasibility act on the criticality objective only: a
+    s.pop('feasibility')              # perception study's key (and its scores) stay as they were
     m = s.pop('model')
     s['model_sha256'] = model_fingerprint(m, workspace)
     return PV.sha256_json(s)[:16]
@@ -348,10 +355,14 @@ def perception_score(frames: list, scenario: dict | None, fps: float, spec: dict
     return out
 
 
-def objective_value(spec: dict, criticality: float, perception: dict | None) -> float:
-    """The search's value: the criticality, the perception failure (its chosen metric), or min of both."""
+def objective_value(spec: dict, criticality: float, perception: dict | None, rss: dict | None = None) -> float:
+    """The search's value: the criticality (by default counting avoidable failures only: core.rss.rss_objective of
+    the run's RSS label), the perception failure (its chosen metric), or min of both."""
     kind = spec.get('objective', 'criticality')
     if kind == 'criticality':
+        if spec.get('count', 'avoidable') == 'avoidable':
+            from .rss import rss_objective
+            return rss_objective(criticality, rss)
         return float(criticality)
     if perception is None:
         raise MilError('the perception objective needs the run scored by the model')
@@ -364,8 +375,14 @@ def describe(spec: dict) -> str:
     """The objective in words (study.json, the search's records and the reports)."""
     kind = spec.get('objective', 'criticality')
     if kind == 'criticality':
-        return ('the scenario\'s criticality (core.criticality; 1 for a collision): where driving the scenario becomes '
+        base = ('the scenario\'s criticality (core.criticality; 1 for a collision): where driving the scenario becomes '
                 'critical, not where a perception model fails')
+        if spec.get('count', 'avoidable') == 'avoidable':
+            from .rss import NON_AVOIDABLE_CAP
+            return (base + f'; counting avoidable failures only — a run whose critical event the ego is not '
+                    f'responsible for under RSS (core.rss: the other road user\'s, kinematically unavoidable, or not '
+                    f'dangerous) is capped at {NON_AVOIDABLE_CAP:g}')
+        return base + '; every failure counted (RSS labels shown, not applied)'
     m = spec.get('model') or {}
     what = f'{spec.get("metric", "perception")} of {m.get("name") or m.get("id")} ({DEFINITION})'
     if kind == 'perception':

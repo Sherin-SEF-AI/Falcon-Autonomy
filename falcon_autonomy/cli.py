@@ -38,6 +38,7 @@
     falcon dashcam route plan|import|match|drive|pairs ...   drive your dashcam's route in simulation on its streets
     falcon runs search PROJECT|WORKSPACE [QUERY...] [--sort KEY] [--json]   search the runs (docs/runs.md)
     falcon vlm list|verify|fetch|eval|finetune ...   vision-language driving explanations scored against ground truth
+    falcon triggers list|check|add|remove|signals PROJECT …   live trigger rules: when <condition> -> <action>
     falcon rules check RUN... [--set india|generic|FILE] | list | show SET   traffic rules as temporal logic
     falcon why case|evaluation|episode ...   root-cause attribution of a failure (docs/root-cause.md)
     falcon odd monitor RUN... --odd FILE [--reference REF] | calibrate --in RUN... --out FILE   runtime ODD monitoring
@@ -197,6 +198,9 @@ def cmd_drive(a, smoke=False) -> int:
             out = a.out or os.path.join(svc.runs_dir(), run_dir_name(f'drive-{world}'))
             cfg = drive_config(proj, world, rig, out, svc.port, svc.tm_port, a.seconds, a.fps, a.seed,
                                render_budget_mpx=float(st.get('render_budget_mpx')))
+            if a.triggers != 'none':                 # the project's trigger rules for drives (core.triggers)
+                from .core.triggers import attach
+                attach(cfg, proj, 'drives', None if a.triggers == 'all' else a.triggers.split(','))
         if a.max_wall:
             cfg['max_wall_s'] = a.max_wall
         job = svc.submit_drive(cfg, kind='smoke' if smoke else 'drive')
@@ -312,6 +316,8 @@ def parser() -> argparse.ArgumentParser:
         if name == 'drive':
             d.add_argument('--audio', action='store_true', help='then derive synthetic array audio into RUN/audio '
                                                                 '(docs/audio.md)')
+            d.add_argument('--triggers', default='all', help='trigger rules: all (the project\'s enabled rules for '
+                           'drives), none, or rule ids ID,ID')
             d.add_argument('--world', default='')
             d.add_argument('--rig', default='')
             d.add_argument('--seconds', type=float, default=10.0)
@@ -370,6 +376,8 @@ def parser() -> argparse.ArgumentParser:
                                    'route (see docs/dashcam.md)')
     sub.add_parser('vlm', help='vision-language explanations scored against ground truth: falcon vlm '
                                'list|verify|fetch|eval|finetune (see docs/vlm.md)')
+    sub.add_parser('triggers', help='live trigger rules: falcon triggers list|check|add|remove|signals (see '
+                   'docs/scenarios.md)')
     sub.add_parser('rules', help='traffic rules as temporal logic: falcon rules check RUN... | list | show SET (see '
                                  'docs/traffic-rules.md)')
     sub.add_parser('why', help='why did it fail: falcon why case|evaluation|episode (see docs/root-cause.md)')
@@ -488,6 +496,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['deploy']:                    # TensorRT engines on the Jetson, profiled and gated (core.deploy)
         from .core.deploy import main_deploy
         return main_deploy(argv[1:])
+    if argv[:1] == ['triggers']:                  # live trigger rules (core.triggers)
+        from .core.triggers import main_triggers
+        return main_triggers(argv[1:])
     if argv[:1] == ['rules']:                     # traffic rules as temporal logic (core.rules)
         from .core.rules import main_rules
         return main_rules(argv[1:])

@@ -382,7 +382,7 @@ class LivePage(Page):
                               os.path.join(w.service.runs_dir(), run_dir_name('live')), w.service.port,
                               w.service.tm_port, path, w.service.runs_dir(), fps=self.fps.value(), mode=mode,
                               view={'kind': kind, 'sensor': sensor, 'width': width, 'height': height, 'fov': 90.0},
-                              workspace=w.workspace())
+                              workspace=w.workspace(), trigger_rules='project')
             self.job = w.service.submit_live(cfg)
         except (ProjectError, RuntimeError, ValueError) as e:
             QMessageBox.warning(self, 'Live', str(e))

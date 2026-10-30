@@ -180,12 +180,16 @@ class Drive(Worker):
                                   '(objects.json "ground_relabelled", run.json lidar_checks)')
         faults = scene.FaultState(cfg['rig']['sensors'], int(cfg.get('seed', 0)))
         physics, watch = physics_and_watch(self, world, cfg, self.lidars, self.others)     # sensor physics, ODD
+        from .triggers import RuleRunner
+        rules = RuleRunner.from_config(self, world, cfg, ego, director, faults=faults, physics=physics)
         prev_yaw = None
         try:
             for i in range(steps):
                 self.check()
                 if director is not None:
                     director.step(i / fps)
+                if rules is not None:
+                    rules.before_tick(i / fps)           # the actors rules added to a drive without a scenario
                 frame = world.tick()
                 if director is not None:
                     director.sync(frame)
@@ -219,6 +223,8 @@ class Drive(Worker):
                     v = director.k_vel(ego)              # physics off: CARLA reports the ego still; the director knows
                     rec['speed_mps'] = round(math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z), 4)
                 rec['control'] = ego_control(ego, director)
+                if rules is not None:                    # trigger rules on this frame's state; act from the next tick
+                    rules.after_tick(frame, rec['sim_t'], rec)
                 depth_now = None
                 yaw = rec['ego']['yaw']
                 yaw_rate = 0.0 if prev_yaw is None else ((yaw - prev_yaw + 180.0) % 360.0 - 180.0) * fps0 * \
@@ -249,7 +255,8 @@ class Drive(Worker):
                         for k in keys:
                             rec['files'][k] = faults.last[k]
                         continue
-                    img_faults = faults.image(s['id'], r.plan['K'], scene.yaw_rate_optical(s, yaw_rate))
+                    img_faults = faults.image(s['id'], r.plan['K'], scene.yaw_rate_optical(s, yaw_rate),
+                                              rec['sim_t'])
                     for kind in r.kinds():
                         ext = {'rgb': 'jpg', 'objects': 'json', 'flow': 'npy'}.get(kind, 'png')
                         rel = os.path.join(kind, s['id'], f'{i:06d}.{ext}')
@@ -273,7 +280,8 @@ class Drive(Worker):
                         cpm_log.write(line)
                 if watch is not None:
                     rec['odd'] = watch.step(rec['sim_t'], ego, rec['speed_mps'], watch_rgb)
-                actor_log.step(world, i, frame, rec['sim_t'], director)
+                actor_log.step(world, i, frame, rec['sim_t'], director or (rules.director if rules is not None
+                                                                            else None))
                 index.write(json.dumps(rec, separators=(',', ':')) + '\n')
                 n += 1
                 wall = time.monotonic() - t_rec
@@ -319,6 +327,13 @@ class Drive(Worker):
             with open(os.path.join(self.out_dir, 'trajectories.json'), 'w', encoding='utf-8') as fh:
                 json.dump({'dt': 1.0 / fps, 'columns': ['t', 'x', 'y', 'yaw', 'vx', 'vy', 'length', 'width'],
                            'frame': 'CARLA world', 'actors': director.traj}, fh, separators=(',', ':'))
+        rules_report = None
+        if rules is not None:
+            rules_report = rules.report()
+            if rules.trajectories() is not None:          # a drive without a scenario whose rules added actors
+                with open(os.path.join(self.out_dir, 'trajectories.json'), 'w', encoding='utf-8') as fh:
+                    json.dump({'dt': 1.0 / fps, 'columns': ['t', 'x', 'y', 'yaw', 'vx', 'vy', 'length', 'width'],
+                               'frame': 'CARLA world', 'actors': rules.trajectories()}, fh, separators=(',', ':'))
         lidar_checks = [L.report() for L in self.lidars + [x for st in self.stations for x in st.lidar_recorders]]
         for c in lidar_checks:
             m = c['match']
@@ -334,6 +349,7 @@ class Drive(Worker):
         if getattr(self, 'subclass', None):
             self.run['subclasses'] = {str(k): v for k, v in sorted(self.subclass.items())}
         return {'performance': perf, 'lidar_checks': lidar_checks, 'scenario': scenario, 'faults_applied': faults.report(),
+                **({'trigger_rules': rules_report} if rules_report is not None else {}),
                 'sensor_physics': physics.report() if physics is not None else {'enabled': False},
                 'odd_monitor': watch.report() if watch is not None else None,
                 'summary': {'steps': n, 'cameras': len(cams.cams), 'town': cfg.get('town'),
