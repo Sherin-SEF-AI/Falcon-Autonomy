@@ -10,7 +10,8 @@ the static scene only. docs/reconstruction.md is the manual.
     rec = Recon.load('~/demo.falcon/recon/kitti-0005')
     out = rec.render(rec.camera(rec.frame(40), lateral_m=1.0))     # image, range, alpha (and semantic)
 
-Modules: raster (the differentiable rasteriser, pure PyTorch), gaussians (parameters, the .ply layout, density
+Modules: raster (the differentiable rasteriser: a pure-PyTorch reference, and raster_triton's kernels for the
+compositing on a CUDA GPU), gaussians (parameters, the .ply layout, density
 control, Adam), data (posed images from Falcon runs, KITTI raw, nuScenes; masks; initial points), metrics (PSNR,
 SSIM, depth), train, scene (a trained reconstruction and its render API), evaluate (held-out frames, other runs,
 depth-warped references), rerender (a falcon-raw run from a shifted ego path), vo (monocular visual odometry, bundle

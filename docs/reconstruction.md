@@ -20,7 +20,8 @@ falcon recon info ~/demo.falcon/recon/drive
 
 `train` also takes `--iterations` (7000), `--width` (640: images are worked on at most this wide), `--init
 auto|lidar|points|sfm|range|random`, `--holdout` (8), `--seed`, `--sh-degree` (3), `--max-gaussians` (600 000),
-`--every`, `--camera`, `--device`, `--no-masks`, `--no-semantic`, `--config FILE`. `render` and `rerender` take
+`--every`, `--camera`, `--device`, `--raster-backend auto|torch|triton` ([the rasteriser](#the-rasteriser-triton-kernels-and-a-pytorch-reference)),
+`--no-masks`, `--no-semantic`, `--config FILE`. `render` and `rerender` take
 `--lateral` (metres to the right), `--forward`, `--up`, `--yaw` (degrees, CARLA's sense: positive turns right), `--mount
 x,y,z,roll,pitch,yaw` (the camera's mount in CARLA's vehicle frame, as in a rig), `--fov` and `--size WxH`. Exit codes
 are the CLI's ([cli](cli.md#exit-codes)).
@@ -36,55 +37,103 @@ against the images by gradient descent through that differentiable rasterisation
 clones, splits and prunes them. Falcon's implementation is written from the papers. **The Inria reference code is not
 used** (its licence is non-commercial).
 
-## The rasteriser: pure PyTorch
+## The rasteriser: Triton kernels and a PyTorch reference
 
 This machine has torch 2.9.1 + CUDA 12.8 and Python 3.14 but no CUDA toolkit (no `nvcc`), so gsplat's CUDA kernels
 cannot be compiled here, and its prebuilt wheels do not fit: on 2026-10-29 its wheel index offered gsplat 1.5.3 for
 CPython 3.10 only, torch 2.0–2.4 and CUDA 11.8–12.4 (PyPI has only the source-compiling wheel). No Python 3.10 is
 installed, and torch ≤ 2.4 with CUDA ≤ 12.4 does not run on an RTX 5080 (Blackwell needs CUDA 12.8), so a
 project-local venv would not have helped without system changes. Falcon therefore has its own differentiable
-rasteriser in plain PyTorch (`core/recon/raster.py`), which runs wherever torch runs — any CUDA GPU torch supports, or
-the CPU — in float32 or float64.
+rasteriser (`core/recon/raster.py`), written from the papers, with two backends for its hot part — the per-tile
+compositing and its gradient:
+
+- **`triton`** (`core/recon/raster_triton.py`): kernels written in Triton (3.5.1 here; MIT licence), which compiles
+  them for the GPU itself — no CUDA toolkit needed. The first render with a given channel count compiles for about
+  4 s (measured), then they are cached (`~/.triton`). CUDA and float32 only.
+- **`torch`**: the same compositing in plain PyTorch tensor operations — the reference, which runs wherever torch runs
+  (any CUDA GPU torch supports, or the CPU) in float32 or float64, and against which every gradient is checked by
+  finite differences.
+
+`auto` (the default) uses Triton when the tensors are float32 on a CUDA GPU and Triton imports, PyTorch otherwise;
+`falcon recon train --raster-backend torch|triton` (setting `raster_backend`) forces one — `triton` fails, saying why,
+where it cannot run. Every render of a training (its steps, held-out checks, the semantic vote, the evaluation) uses
+the chosen backend, and run.json records it: `raster: {requested, backend, triton (its version), early_stop_transmittance}`.
+Viewing, evaluating and re-rendering a reconstruction use `auto`.
 
 How it works:
 
-- **Projection** of every Gaussian (vectorised): the camera-frame mean, the 2 × 2 screen covariance Σ' = J W Σ Wᵀ Jᵀ +
-  0.3 I (the paper's dilation; x/z and y/z clamped to 15 % beyond the field for the Jacobian, as the paper does) and
-  its inverse.
+- **Projection** of every Gaussian (vectorised, torch, both backends): the camera-frame mean, the 2 × 2 screen
+  covariance Σ' = J W Σ Wᵀ Jᵀ + 0.3 I (the paper's dilation; x/z and y/z clamped to 15 % beyond the field for the
+  Jacobian, as the paper does) and its inverse. The 3 × 3 products are written as broadcast sums, not batched
+  matrix multiplications (cuBLAS's batched GEMM on hundreds of thousands of 3 × 3 matrices took ~27 ms of a step).
 - **Exact bounds**: a pixel gets α = min(0.99, o·exp(−½ dᵀ Σ'⁻¹ d)) and α < 1/255 is skipped (as in the paper), so a
   Gaussian touches exactly the pixels inside dᵀ Σ'⁻¹ d ≤ 2 ln(255 o) — its axis-aligned box is used to bin it,
   tighter than the paper's 3σ circle and losing nothing.
 - **Tiles**: the depth-sorted Gaussians are listed per 8 × 8 pixel tile (a stable sort by tile keeps the depth order).
-- **Chunks**: tiles with similar list lengths are composited together, each list padded to the chunk's longest, as one
-  tensor of (tiles × 64 pixels × Gaussians) — capped at 2²⁴ elements on a GPU — so memory is bounded whatever the
-  scene; every chunk runs under activation checkpointing, so the backward pass recomputes it rather than storing it.
 - **Compositing**: Tᵢ = Πⱼ<ᵢ(1 − αⱼ), wᵢ = αᵢTᵢ, colour Σ wᵢcᵢ, expected depth Σ wᵢzᵢ, alpha 1 − T_N, and on request
   the **median depth** — the z of the Gaussian at which T falls below ½, with that Gaussian's own flags (is it the
-  sky?). Unlike the CUDA kernels there is no early stop at T < 10⁻⁴ (a difference below 10⁻⁴ of a colour).
-- **Gradients** are torch's autograd through these operations; `tests/test_recon.py` compares every one (means,
-  scales, rotations, opacities, colours, spherical harmonics) with central finite differences in float64.
+  sky?).
+  - *Triton*: one GPU program per tile walks the tile's list 32 Gaussians at a time in registers. It **stops a tile
+    once every pixel's T < 10⁻⁴** (checked after each 32), as the CUDA implementations stop a pixel: the image differs
+    from compositing everything by less than 10⁻⁴ × the largest value left out (10⁻⁴ of a colour; for the expected
+    depth, 10⁻⁴ of the farthest depth left out); the median is unaffected.
+  - *PyTorch*: tiles with similar list lengths are composited together, each list padded to the chunk's longest, as
+    one tensor of (tiles × 64 pixels × Gaussians) — capped at 2²⁴ elements on a GPU — so memory is bounded whatever
+    the scene; every chunk runs under activation checkpointing. No early stop: every listed Gaussian is composited.
+- **Gradients**: the PyTorch path's are torch's autograd; `tests/test_recon.py` compares every one (means, scales,
+  rotations, opacities, colours, spherical harmonics) with central finite differences in float64. The Triton path has
+  hand-written backward kernels (the formulas are in `raster_triton.py`), front to back with the suffix sums taken
+  from the forward totals, going exactly as far as the forward pass did — so with the early stop its gradient is that
+  of the image it rendered. Per-Gaussian sums are taken in a fixed order (no float atomics), so it is repeatable bit
+  for bit. `tests/test_recon_triton.py` checks that with the stop off it agrees with the reference — every output and
+  the gradients of the 2D means, conics, opacities, features, depths and median features, and end to end of means,
+  scales, rotations, opacities and spherical harmonics — to float32 rounding (10⁻⁴ of each gradient's largest value
+  allowed; 1–4 × 10⁻⁷ measured), on random scenes and on empty tiles, Gaussians partly off-screen or at the near
+  plane, opacities under 1/255, a median never reached, nothing visible, partial tiles and 4/8/16-pixel tiles; and
+  that with it on, the Gaussians it never reached get exactly zero gradient.
 
-**Speed** (measured 2026-10-29, RTX 5080, torch 2.9.1 + CUDA 12.8; CPU an AMD Ryzen 9 9900X, 12 threads): one
-640 × 360 view of random Gaussians spread over 2–62 m in front of the camera, with degree-3 spherical harmonics,
-forward and backward:
+**Where the time went** (one training-like step — render, L1 + SSIM loss, backward — of a 477 000-Gaussian Town10
+reconstruction at 640 × 360 with degree-3 SH; profiled 2026-10-30 with `torch.profiler` and synchronised timers,
+another agent's CARLA server on the GPU for part of it, so the shares are indicative): before, compositing was
+nearly all of it — ~33 ms forward and most of a 150 ms backward (recomputation under checkpointing and autograd
+through the (tiles × pixels × Gaussians) tensors), against 5 ms projection, 2.4 ms SH and 9 ms sort and binning.
+With the Triton kernels the compositing took 1.5 ms forward and 4.2 ms backward, and what remained exposed was the
+projection's batched 3 × 3 matrix products (~27 ms of the backward) and the SH's sixteen coefficient slices (~14 ms:
+each made a full-size zero-filled gradient); written as broadcast sums, projection and SH take ~2 ms each forward
+and the whole backward pass fell from 46 to 8.7 ms; a sorted search replaced a `bincount` in the binning (9 → ~4 ms).
+A step is then about 13 ms at 266 000 Gaussians and is bound by the host — the launches of the PyTorch operations
+around the kernels and the binning's synchronisations — more than by the GPU.
 
-| Gaussians | tile | (Gaussian, tile) pairs | forward | backward | peak GPU memory |
-|---|---|---|---|---|---|
-| 100 000 | 8 px | 0.45 M | 13 ms | 34 ms | 1.1 GiB |
-| 100 000 | 16 px | 0.22 M | 17 ms | 49 ms | 1.1 GiB |
-| 300 000 | 8 px | 1.3 M | 25 ms | 85 ms | 1.4 GiB |
-| 300 000 | 16 px | 0.65 M | 45 ms | 147 ms | 1.3 GiB |
-| 600 000 | 8 px | 2.7 M | 50 ms | 172 ms | 1.7 GiB |
-| 600 000 | 16 px | 1.3 M | 88 ms | 293 ms | 1.6 GiB |
-| 300 000, on the CPU | 8 px | 1.3 M | 0.47 s | 2.26 s | — |
+**Speed** (measured 2026-10-30, RTX 5080, torch 2.9.1 + CUDA 12.8, Triton 3.5.1). The three implementations below
+were timed **interleaved in one process** (each step of each in turn), so a shared GPU slows them alike; the GPU had
+an idle CARLA server of another agent on it (0–17 % utilisation sampled between runs). *original* is the PyTorch
+rasteriser as of commit 5a47ea1 (2026-10-29); *torch* is today's reference path (the broadcast-sum projection and SH
+above); *Triton* the kernels.
 
-So 8-pixel tiles are the default. In real training (below) a step — render, loss, backward, Adam, density control —
-ran at 8.9–11.1 steps a second with 270 000–600 000 Gaussians at 640 × 360 — a 7000-step reconstruction in 11–13
-minutes — and a render for viewing takes 26 ms (440 000 Gaussians, 640 × 360, the median of 19 poses). That is slower
-than CUDA kernels: the paper reports real-time rendering (at least 30 frames a second at 1080p) and training in
-minutes (about 40 for 30 000 steps) on an A6000; gsplat could not be run here to compare on the same machine, so no
-same-machine ratio is claimed. On the CPU a step at this size takes about 3 s: CPU training is for tests and small
-images.
+A training step (render, L1 + SSIM loss, backward; no optimiser) of the finished Town10 reconstruction below
+(266 056 Gaussians, 640 × 360, degree-3 SH), the median over 88 steps from 44 training views: original **107.0 ms**,
+torch **93.1 ms**, Triton **12.95 ms** — 8.3 × and 7.2 × faster.
+
+One 640 × 360 view of random Gaussians (depth uniform over 2–62 m inside 1.2 × the field, scales 0.02–0.3 m,
+opacities 0.1–0.9, degree-3 SH; median of 15 after 5 warm-ups), forward and backward, peak GPU memory:
+
+| Gaussians | (Gaussian, tile) pairs | original | torch | Triton |
+|---|---|---|---|---|
+| 100 000 | 0.87 M | 24.7 + 62.9 ms, 1.11 GiB | 24.2 + 59.7 ms, 1.11 GiB | 6.5 + 4.1 ms, 0.15 GiB |
+| 300 000 | 2.65 M | 61.2 + 182.7 ms, 1.34 GiB | 61.4 + 163.4 ms, 1.33 GiB | 7.9 + 5.1 ms, 0.43 GiB |
+| 600 000 | 5.23 M | 112.7 + 348.0 ms, 1.66 GiB | 111.0 + 321.0 ms, 1.66 GiB | 14.5 + 6.6 ms, 0.83 GiB |
+
+(These scenes have about twice the pairs per Gaussian of the 2026-10-29 table this replaces, so they are not
+comparable with it.) 8-pixel tiles stay the default: 16-pixel tiles roughly halve the pairs but were slower for both
+backends (on the 477 000-Gaussian step above the Triton backward took 93 ms with 16-pixel tiles against 8.7 ms, its
+256-pixel register tiles spilling). A render for viewing (colour, median range, sky; `Recon.render`) of the same
+266 000-Gaussian reconstruction takes **9.1 ms** with Triton and 30.7 ms with PyTorch (the median of 40, 20 poses).
+On the CPU (PyTorch only) one view of 300 000 Gaussians took 0.47 s forward and 2.26 s backward (2026-10-29, AMD
+Ryzen 9 9900X, 12 threads): CPU training is for tests and small images.
+
+Training throughput, wall time, memory and quality are under [Measured](#measured). The paper reports real-time
+rendering (at least 30 frames a second at 1080p) and training in minutes (about 40 for 30 000 steps) on an A6000;
+gsplat could not be run here to compare on the same machine, so no same-machine ratio to it is claimed.
 
 ## Sources
 
@@ -143,8 +192,8 @@ view) — so re-rendered views carry an estimate of the semantic labels.
 A CUDA training is a `needs_gpu` job: from the GUI the queue holds the GPU lock; from the CLI `falcon recon` takes it
 itself and waits while a CARLA job or another GPU job holds it. Its share of GPU memory is capped at 60 % and its peak
 measured. Seeded throughout: on the CPU with one thread two runs give the same Gaussians bit for bit (tested); with
-several CPU threads the backward pass accumulates in a varying order, so runs differ in the last bits; on CUDA two
-runs were identical (measured below).
+several CPU threads the backward pass accumulates in a varying order, so runs differ in the last bits; on CUDA
+repeated runs were identical with either rasteriser backend (measured below).
 
 **Output** (`--out`): `point_cloud.ply` (+ `extras.npz`: the sky flags and class votes), `views.json` (every frame's
 pose, intrinsics and split), `curves.jsonl` (loss, PSNR of the step's image, the number of Gaussians, held-out PSNR
@@ -204,7 +253,39 @@ and none is pinned in Falcon.
 
 ## Measured
 
-On 2026-10-29, RTX 5080, defaults (7000 steps, 640 px wide, seed 0), each run holding Falcon's GPU lock. PSNR in dB;
+**Triton against PyTorch, whole trainings** (2026-10-30, RTX 5080, torch 2.9.1 + CUDA 12.8, Triton 3.5.1; the
+defaults — 7000 steps, 640 px wide, seed 0 — on the demo-tour project's `20261030-081500-town10-day-lidar`: a
+Town10HD_Opt drive recorded on CARLA 0.9.16, 300 frames at 20 Hz over 52 m, 1280 × 720, a 32-channel lidar; 262
+frames trained, 38 held out; started from the lidar; `train()` called directly, without Falcon's GPU lock). The GPU
+was **shared with other agents' jobs throughout** — CARLA servers and a translator training — so throughput varied
+from run to run; each pair was run back to back and their ratio is the number to read:
+
+| pair (UTC) | also on the GPU | Triton | PyTorch | ratio | original (5a47ea1) |
+|---|---|---|---|---|---|
+| 1 (06:01–06:32) | a CARLA server at 92–99 % utilisation | 55.9 steps/s | 9.08 steps/s | 6.2 × | 7.70 steps/s |
+| 2 (06:34–07:16) | a translator training (3.2 GiB), then a CARLA server | 44.7 and 72.0 steps/s (before, after) | 6.18 steps/s | 7.2 × and 11.6 × | 6.87 steps/s |
+| 3 (07:19–07:38) | an idle or lightly loaded CARLA server (3.5–4.3 GiB) | 71.9 and 71.3 steps/s (before, after) | 8.13 steps/s | 8.8 × | — |
+
+In pair 3, the least shared: 97 s of training against 861 s, the whole run (reading the images, training, the
+semantic vote, the evaluation) 120 s against 892 s; peak GPU memory **1.24 GiB against 2.08 GiB** (the original
+2.09 GiB). The fastest Triton run, started while the GPU was briefly at 10 % utilisation, trained at 101 steps/s
+(69 s). The Gaussians peaked near 494 000 at step 3000 and ended at about 266 000. Each implementation is repeatable
+bit for bit — all six Triton runs wrote the same `.ply`, all three PyTorch runs another and both original runs a
+third — so each has one result:
+
+| rasteriser | held-out PSNR (38 frames) | SSIM | depth | Gaussians |
+|---|---|---|---|---|
+| Triton | 33.65 | 0.933 | 5.6 % (60.0 %) | 266 056 |
+| PyTorch | 33.62 | 0.932 | 5.5 % (59.7 %) | 265 477 |
+| original (5a47ea1) | 33.59 | 0.932 | 5.1 % (59.4 %) | 266 592 |
+
+The PyTorch path and the original compute the same mathematics and differ only in the order of float32 roundings (in
+the projection and the SH), yet they end 0.03 dB and 0.4 points of depth error apart: rounding alone moves a training
+this far. Triton — with its early stop — lies within that spread (+0.04 dB, +0.1 point), so the quality is the same
+within the noise of the method.
+
+The measurements below (2026-10-29) used the PyTorch rasteriser as it was then (the *original* above). RTX 5080,
+defaults (7000 steps, 640 px wide, seed 0), each run holding Falcon's GPU lock. PSNR in dB;
 "depth" is the median absolute relative error of the range against CARLA's range labels and, in brackets, the share
 of pixels within 10 %. Two Falcon drives recorded on a real CARLA 0.9.16 server (Town10HD_Opt, ClearNoon, 1280 × 720)
 and a KITTI raw drive.
@@ -274,7 +355,10 @@ road lines 0.66, road 0.98); `m5/lead` held out 92.8 %, mIoU 0.74 (12 classes), 
 21 MB (RGB, range, semantic).
 
 **Determinism**: two 1500-step CUDA trainings of `m5/drive` (density control included, 341 080 Gaussians) gave
-identical parameters bit for bit, as did two 600-step ones. On the CPU, two runs with one thread are identical
+identical parameters bit for bit, as did two 600-step ones (2026-10-29, the PyTorch rasteriser). On 2026-10-30 six
+7000-step Triton trainings of the Town10 drive above, under different loads from other jobs on the GPU, wrote the
+same `.ply` bit for bit, and so did three PyTorch ones (the Triton backward sums each Gaussian's gradient in a fixed
+order rather than with float atomics). On the CPU, two runs with one thread are identical
 (tested) and two with two threads were not (largest parameter difference 0.03 after 40 steps).
 
 ## Re-rendering a drive from a shifted path
@@ -537,7 +621,11 @@ the camera's layout).
 - **Pinhole cameras only** (fisheye projection is not implemented); one camera per reconstruction; no rolling shutter,
   exposure or white-balance modelling (a real log's auto-exposure changes are learned as view-dependent colour).
 - **Depth sorting by the centre's depth** (the paper's): Gaussians can pop when their order changes.
-- **Speed**: plain PyTorch is slower than CUDA kernels (numbers above); 7000 steps by default, not the paper's 30 000.
+- **Speed**: the Triton backend made a training 6–12 times faster than plain PyTorch (8.8 × in the least shared
+  pair, measured above); a step is now bound by the PyTorch operations around the kernels (projection, SH, sorting,
+  binning, the optimiser) more than by the compositing. 7000 steps by default, not the paper's 30 000. The Triton
+  backend is CUDA and float32 only, stops a tile at T < 10⁻⁴ (a difference below 10⁻⁴ of a colour), and compiles its
+  kernels (~4 s) at first use.
 - **Determinism**: not with several CPU threads; on CUDA measured on one machine, driver and torch version only.
 - **LPIPS** is not reported; nuScenes and Waymo are not verified on real files (none on this machine); Waymo and ROS 2
   bags are not reconstructed.

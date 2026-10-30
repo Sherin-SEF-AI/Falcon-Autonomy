@@ -1,5 +1,6 @@
-"""A differentiable 3D Gaussian rasteriser in pure PyTorch (no CUDA kernels, no compiler: it runs wherever torch runs,
-on the GPU or the CPU, in float32 or float64).
+"""A differentiable 3D Gaussian rasteriser with two backends for its compositing: a pure-PyTorch reference (no CUDA
+kernels, no compiler: it runs wherever torch runs, on the GPU or the CPU, in float32 or float64) and Triton kernels
+for a CUDA GPU (core.recon.raster_triton: float32; Triton compiles them at first use, no CUDA toolkit needed).
 
 Written from the papers, not from any existing implementation: 3D Gaussian Splatting (Kerbl, Kopanas, Leimkühler and
 Drettakis, "3D Gaussian Splatting for Real-Time Radiance Field Rendering", SIGGRAPH 2023) for the representation,
@@ -28,29 +29,50 @@ nothing.
 
 Rasterisation (rasterize()): Gaussians are sorted once by camera depth (their centre's z, as in the paper: popping
 when the order changes is a known artefact of the method); each (Gaussian, tile) pair of a TILE × TILE pixel grid is
-listed and the pairs sorted stably by tile, which keeps the depth order inside each tile. Tiles are then processed in
-chunks — tiles of similar list length together, each padded to the chunk's longest list — so that a chunk's
-(tiles × pixels × Gaussians) tensors stay under a set number of elements (bounded memory, whatever the scene). Per
-pixel, front to back: Tᵢ = Πⱼ<ᵢ (1 − αⱼ), wᵢ = αᵢ Tᵢ, colour = Σ wᵢ fᵢ + T_N·background, expected depth Σ wᵢ zᵢ,
-alpha 1 − T_N, and on request the median depth: the z of the Gaussian at which T falls below ½ (with that Gaussian's
-own features — which surface it is), the sharper depth for labels. Unlike the CUDA implementation there is no early
-stop at T < 10⁻⁴: every listed Gaussian is composited (the result differs from a stopped one by less than 10⁻⁴ of a
-colour).
+listed and the pairs sorted stably by tile, which keeps the depth order inside each tile. Per pixel, front to back:
+Tᵢ = Πⱼ<ᵢ (1 − αⱼ), wᵢ = αᵢ Tᵢ, colour = Σ wᵢ fᵢ + T_N·background, expected depth Σ wᵢ zᵢ, alpha 1 − T_N, and on
+request the median depth: the z of the Gaussian at which T falls below ½ (with that Gaussian's own features — which
+surface it is), the sharper depth for labels.
 
-Gradients come from torch's autograd through these vectorised operations; each chunk runs under activation
-checkpointing (recomputed in the backward pass) so the backward pass needs no more memory than one chunk's forward.
+Backends (rasterize(backend=…); resolve_backend()). Projection, spherical harmonics, the depth sort and the binning
+are the same torch code for both; only the per-tile compositing and its gradient differ.
+- 'torch', the reference: tiles are processed in chunks — tiles of similar list length together, each padded to the
+  chunk's longest list — so that a chunk's (tiles × pixels × Gaussians) tensors stay under a set number of elements
+  (bounded memory, whatever the scene). There is no early stop: every listed Gaussian is composited. Gradients come
+  from torch's autograd through these vectorised operations; each chunk runs under activation checkpointing
+  (recomputed in the backward pass) so the backward pass needs no more memory than one chunk's forward.
+  tests/test_recon.py compares every gradient with central finite differences in float64.
+- 'triton': one GPU program per tile walks its list 32 Gaussians at a time in registers, with hand-written backward
+  kernels (their formulas are in raster_triton's doc) and no per-pair intermediates beyond one gradient row per
+  (Gaussian, tile) pair, summed per Gaussian in a fixed order (bit-for-bit repeatable, no float atomics). It stops a
+  tile once every pixel's T < T_STOP = 10⁻⁴ (checked every 32 Gaussians), as the CUDA implementations stop a pixel:
+  the result differs from the full composite by less than 10⁻⁴ × the largest feature left out (10⁻⁴ of a colour; of
+  the far depth, for the expected depth), the median is unaffected, and the backward pass goes exactly as far as the
+  forward did, so its gradient is that of what was rendered. t_stop=0 composites everything, and then it agrees
+  with the reference to float32 rounding (tests/test_recon_triton.py: every output and gradient, edge cases
+  included).
+- 'auto' (the default, changeable with set_default_backend() or default_backend()): Triton when the tensors are
+  float32 on a CUDA device, the tile is 4, 8 or 16 px and Triton imports; the reference otherwise.
+
 The hard cuts (α < 1/255, the 0.99 cap, z ≤ near) are not differentiable at their edges, as in the original method.
-tests/test_recon.py compares every gradient with central finite differences in float64.
 
 The projected 2D means are returned with their gradient retained (meta['means2d']) so a trainer can accumulate the
 screen-space gradient that drives adaptive density control.
 
-Speed: this does in vectorised tensor operations what the CUDA kernels do per thread, and it is slower — it
-evaluates every pixel of a tile against every Gaussian listed for the tile (the kernels do the same, but in shared
-memory and with early termination) and allocates its intermediates. Measured numbers are in docs/reconstruction.md.
+Speed (measured 2026-10-30, RTX 5080, torch 2.9.1 + CUDA 12.8, Triton 3.5.1; docs/reconstruction.md has the
+conditions and the GPU's other users): the torch path does in vectorised tensor operations what a kernel does per
+thread, evaluates every pixel of a tile against every Gaussian of its padded list and allocates (and, under
+checkpointing, recomputes) its intermediates; the Triton kernels keep a tile's pixels and 32 Gaussians at a time in
+registers. A training step (render, loss, backward) of a 266 000-Gaussian reconstruction at 640 × 360 took 93 ms
+with the torch path and 13 ms with Triton (interleaved in one process), and whole 7000-step trainings ran 6–12 times
+faster with Triton (8.8 × when the GPU was least shared), at 1.24 against 2.08 GiB peak GPU memory, with the same
+held-out quality within the run-to-run spread of float32 rounding (33.65 against 33.62 dB). With the compositing in
+Triton, a step is bound by the torch operations around it (projection, SH, sorting, binning), which is why they are
+written to launch few kernels (covariance(), sh_to_color()).
 """
 from __future__ import annotations
 
+import contextlib
 import math
 
 import torch
@@ -62,6 +84,9 @@ ALPHA_MAX = 0.99
 EPS2D = 0.3                    # px², the paper's screen-space dilation (a low-pass filter)
 FIELD_GUARD = 0.15             # the Jacobian's x/z, y/z clamp: this share of the field beyond each image edge
 NEAR = 0.05
+T_STOP = 1e-4                  # the Triton path's early termination: a tile stops once every pixel's T is below this
+BACKENDS = ('auto', 'torch', 'triton')
+TRITON_TILES = (4, 8, 16)      # the Triton kernels need a power-of-two pixel count per tile
 
 # real spherical-harmonics basis constants (the standard real SH, l ≤ 3)
 SH_C0 = 0.28209479177387814
@@ -69,6 +94,66 @@ SH_C1 = 0.4886025119029199
 SH_C2 = (1.0925484305920792, -1.0925484305920792, 0.31539156525252005, -1.0925484305920792, 0.5462742152960396)
 SH_C3 = (-0.5900435899266435, 2.890611442640554, -0.4570457994644658, 0.3731763325901154, -0.4570457994644658,
          1.445305721320277, -0.5900435899266435)
+
+
+_default_backend = ['auto']
+_triton_state: list = []
+
+
+def triton_status() -> tuple:
+    """(available, 'triton X.Y.Z' or why not): Triton and the kernels' module import (nothing is compiled yet)."""
+    if not _triton_state:
+        try:
+            import triton
+            from . import raster_triton  # noqa: F401
+            _triton_state.append((True, f'triton {triton.__version__}'))
+        except Exception as e:                       # ImportError, or a Triton that fails to initialise
+            _triton_state.append((False, f'Triton unavailable ({type(e).__name__}: {e})'))
+    return _triton_state[0]
+
+
+def resolve_backend(backend: str | None, device, dtype=torch.float32, tile: int = TILE) -> str:
+    """The rasteriser that runs: 'triton' or 'torch'. backend None means the default (set_default_backend(), 'auto'
+    unless changed); 'auto' is Triton when the tensors are float32 on a CUDA device, the tile is 4, 8 or 16 px and
+    Triton imports, else torch; 'triton' raises ValueError when it cannot run, saying why."""
+    b = backend or _default_backend[0]
+    if b not in BACKENDS:
+        raise ValueError(f'unknown rasteriser backend {b!r} (one of {", ".join(BACKENDS)})')
+    if b == 'torch':
+        return 'torch'
+    device = torch.device(device)
+    if device.type != 'cuda':
+        why = f'the tensors are on {device.type}, not a CUDA device'
+    elif dtype != torch.float32:
+        why = f'its kernels are float32 only, not {dtype}'
+    elif tile not in TRITON_TILES:
+        why = f'tiles of {tile} px are not one of {TRITON_TILES}'
+    else:
+        ok, msg = triton_status()
+        why = None if ok else msg
+    if why is None:
+        return 'triton'
+    if b == 'triton':
+        raise ValueError(f'the Triton rasteriser cannot run: {why}')
+    return 'torch'
+
+
+def set_default_backend(backend: str) -> str:
+    """Set the backend rasterize() uses when none is passed; returns the previous one."""
+    if backend not in BACKENDS:
+        raise ValueError(f'unknown rasteriser backend {backend!r} (one of {", ".join(BACKENDS)})')
+    prev, _default_backend[0] = _default_backend[0], backend
+    return prev
+
+
+@contextlib.contextmanager
+def default_backend(backend: str):
+    """with default_backend('torch'): every render inside uses that backend unless one is passed."""
+    prev = set_default_backend(backend)
+    try:
+        yield
+    finally:
+        set_default_backend(prev)
 
 
 def quat_to_rotmat(q: torch.Tensor) -> torch.Tensor:
@@ -81,29 +166,34 @@ def quat_to_rotmat(q: torch.Tensor) -> torch.Tensor:
 
 
 def covariance(scales: torch.Tensor, quats: torch.Tensor) -> torch.Tensor:
-    """Σ = R S Sᵀ Rᵀ, (N, 3, 3), from linear scales (N, 3) and quaternions (N, 4)."""
+    """Σ = R S Sᵀ Rᵀ, (N, 3, 3), from linear scales (N, 3) and quaternions (N, 4). Products of these 3 × 3 (and the
+    projection's 2 × 3) matrices are written as broadcast sums, not batched matmuls: cuBLAS's batched GEMM on
+    millions of tiny matrices was the largest cost of a training step once the compositing ran in Triton (measured
+    2026-10-30: ~27 ms of a step, forward and backward, at 477 000 Gaussians)."""
     M = quat_to_rotmat(quats) * scales[:, None, :]
-    return M @ M.transpose(1, 2)
+    return (M[:, :, None, :] * M[:, None, :, :]).sum(-1)
 
 
 def sh_to_color(sh: torch.Tensor, dirs: torch.Tensor, degree: int) -> torch.Tensor:
     """RGB from spherical harmonics. sh (N, (D+1)², 3) — coefficient k of channel c at [:, k, c] —, dirs (N, 3) unit
     view directions (from the camera to the Gaussian), degree D ≤ 3 used. Returns SH·basis + ½, clamped at 0 (the
-    paper's convention: a zero SH is mid-grey)."""
-    c = SH_C0 * sh[:, 0]
+    paper's convention: a zero SH is mid-grey). The basis is stacked and contracted with the coefficients in one
+    broadcast sum (indexing sh[:, k] sixteen times made sixteen full-size zero-filled gradients in the backward
+    pass)."""
+    basis = [torch.full_like(dirs[:, 0], SH_C0)]
     if degree > 0:
-        x, y, z = dirs[:, 0:1], dirs[:, 1:2], dirs[:, 2:3]
-        c = c - SH_C1 * y * sh[:, 1] + SH_C1 * z * sh[:, 2] - SH_C1 * x * sh[:, 3]
+        x, y, z = dirs.unbind(-1)
+        basis += [-SH_C1 * y, SH_C1 * z, -SH_C1 * x]
         if degree > 1:
             xx, yy, zz, xy, yz, xz = x * x, y * y, z * z, x * y, y * z, x * z
-            c = (c + SH_C2[0] * xy * sh[:, 4] + SH_C2[1] * yz * sh[:, 5] + SH_C2[2] * (2 * zz - xx - yy) * sh[:, 6]
-                 + SH_C2[3] * xz * sh[:, 7] + SH_C2[4] * (xx - yy) * sh[:, 8])
+            basis += [SH_C2[0] * xy, SH_C2[1] * yz, SH_C2[2] * (2 * zz - xx - yy), SH_C2[3] * xz,
+                      SH_C2[4] * (xx - yy)]
             if degree > 2:
-                c = (c + SH_C3[0] * y * (3 * xx - yy) * sh[:, 9] + SH_C3[1] * xy * z * sh[:, 10]
-                     + SH_C3[2] * y * (4 * zz - xx - yy) * sh[:, 11]
-                     + SH_C3[3] * z * (2 * zz - 3 * xx - 3 * yy) * sh[:, 12]
-                     + SH_C3[4] * x * (4 * zz - xx - yy) * sh[:, 13] + SH_C3[5] * z * (xx - yy) * sh[:, 14]
-                     + SH_C3[6] * x * (xx - 3 * yy) * sh[:, 15])
+                basis += [SH_C3[0] * y * (3 * xx - yy), SH_C3[1] * xy * z, SH_C3[2] * y * (4 * zz - xx - yy),
+                          SH_C3[3] * z * (2 * zz - 3 * xx - 3 * yy), SH_C3[4] * x * (4 * zz - xx - yy),
+                          SH_C3[5] * z * (xx - yy), SH_C3[6] * x * (xx - 3 * yy)]
+    b = torch.stack(basis, -1)
+    c = (b[:, :, None] * sh[:, :len(basis)]).sum(1)
     return (c + 0.5).clamp_min(0.0)
 
 
@@ -114,7 +204,7 @@ def project(means, scales, quats, opacities, viewmat, K, width, height, near=NEA
     overlapping the image)."""
     fx, fy, cx, cy = (float(v) for v in K)
     R, t = viewmat[:3, :3], viewmat[:3, 3]
-    pc = means @ R.T + t
+    pc = (means[:, None, :] * R[None]).sum(-1) + t             # W μ + w (a broadcast sum: covariance()'s note)
     x, y, z = pc.unbind(-1)
     front = z > near
     zs = torch.where(front, z, torch.full_like(z, near))
@@ -123,14 +213,14 @@ def project(means, scales, quats, opacities, viewmat, K, width, height, near=NEA
     gx, gy = FIELD_GUARD * (hi_x - lo_x), FIELD_GUARD * (hi_y - lo_y)
     tx = (x / zs).clamp(lo_x - gx, hi_x + gx) * zs
     ty = (y / zs).clamp(lo_y - gy, hi_y + gy) * zs
-    zero = torch.zeros_like(zs)
-    J = torch.stack([fx / zs, zero, -fx * tx / (zs * zs), zero, fy / zs, -fy * ty / (zs * zs)], -1).reshape(-1, 2, 3)
-    T = J @ R
+    # the rows of T = J W, J = [[fx/z, 0, −fx tx/z²], [0, fy/z, −fy ty/z²]]; Σ' = T Σ Tᵀ entry by entry
+    t0 = (fx / zs)[:, None] * R[0] + (-fx * tx / (zs * zs))[:, None] * R[2]
+    t1 = (fy / zs)[:, None] * R[1] + (-fy * ty / (zs * zs))[:, None] * R[2]
     cov3 = covariance(scales, quats)
-    cov2 = T @ cov3 @ T.transpose(1, 2)
-    a = cov2[:, 0, 0] + eps2d
-    b = cov2[:, 0, 1]
-    c = cov2[:, 1, 1] + eps2d
+    s0 = (cov3 * t0[:, None, :]).sum(-1)
+    a = (t0 * s0).sum(-1) + eps2d
+    b = (t1 * s0).sum(-1)
+    c = (t1 * (cov3 * t1[:, None, :]).sum(-1)).sum(-1) + eps2d
     det = (a * c - b * b).clamp_min(1e-12)
     conic = torch.stack([c / det, -b / det, a / det], -1)
     u = fx * x / zs + cx
@@ -145,9 +235,12 @@ def project(means, scales, quats, opacities, viewmat, K, width, height, near=NEA
             'cov2d': torch.stack([a, b, c], -1), 'extent': ext, 'visible': visible}
 
 
-def _bin(means2d, ext, order, width, height, tile):
+def _bin(means2d, ext, order, width, height, tile, groups=False):
     """The (Gaussian, tile) pairs of the depth-ordered visible Gaussians `order`, sorted by tile (depth order kept
-    within a tile). Returns (pair_gauss, tile_start, tile_count, tiles_x, tiles_y)."""
+    within a tile). Returns (pair_gauss, tile_start, tile_count, tiles_x, tiles_y) and, with groups, a dict giving
+    each Gaussian's pairs (the Triton backward's fixed-order per-Gaussian sums): 'seg_rows' (the pairs' positions in
+    the tile-sorted list, grouped by Gaussian), 'seg_start' and 'seg_count' (each of `order`'s segment of it) and
+    'seg_gauss' (= order)."""
     dev = means2d.device
     ntx, nty = (width + tile - 1) // tile, (height + tile - 1) // tile
     with torch.no_grad():
@@ -165,16 +258,26 @@ def _bin(means2d, ext, order, width, height, tile):
         total = int(cnt.sum())
         if total == 0:
             z = torch.zeros(ntx * nty, dtype=torch.long, device=dev)
-            return torch.zeros(0, dtype=torch.long, device=dev), z, z, ntx, nty
-        gid = torch.repeat_interleave(torch.arange(len(order), device=dev), cnt)
+            e0 = torch.zeros(0, dtype=torch.long, device=dev)
+            if groups:
+                return e0, z, z, ntx, nty, {'seg_rows': e0, 'seg_start': e0, 'seg_count': e0, 'seg_gauss': e0}
+            return e0, z, z, ntx, nty
+        gid = torch.repeat_interleave(torch.arange(len(order), device=dev), cnt, output_size=total)
         first = torch.cumsum(cnt, 0) - cnt
         local = torch.arange(total, device=dev) - first[gid]
         w = nx[gid]
         tile_id = (ty0[gid] + local // w) * ntx + (tx0[gid] + local % w)
         tile_sorted, perm = torch.sort(tile_id, stable=True)
         pair_gauss = order[gid[perm]]
-        count = torch.bincount(tile_sorted, minlength=ntx * nty)
-        start = torch.cumsum(count, 0) - count
+        # each tile's run of the sorted list (a search of the sorted ids: cheaper than bincount's atomics)
+        edges = torch.searchsorted(tile_sorted, torch.arange(ntx * nty + 1, device=dev, dtype=tile_sorted.dtype))
+        start = edges[:-1]
+        count = edges[1:] - start
+        if groups:
+            rows = torch.empty_like(perm)
+            rows[perm] = torch.arange(total, device=dev)
+            return pair_gauss, start, count, ntx, nty, {'seg_rows': rows, 'seg_start': first, 'seg_count': cnt,
+                                                        'seg_gauss': order}
     return pair_gauss, start, count, ntx, nty
 
 
@@ -202,29 +305,65 @@ def _composite(px, m2, con, op, feat, dep, valid, mfeat=None):
 
 
 def rasterize(proj: dict, features: torch.Tensor, width: int, height: int, background=None, tile: int = TILE,
-              chunk_elems: int | None = None, use_checkpoint: bool | None = None, median_features=None):
+              chunk_elems: int | None = None, use_checkpoint: bool | None = None, median_features=None,
+              backend: str | None = None, t_stop: float | None = None):
     """Alpha-composite projected Gaussians (project()'s dict) with per-Gaussian features (N, C). Returns
     (image (H, W, C), depth (H, W) — the expected depth Σ wᵢ zᵢ, not divided by alpha —, alpha (H, W), info: the
-    number of pairs and chunks, and with median_features (N, M) given 'median' (H, W, 1 + M): the median depth — the
-    depth of the Gaussian at which the transmittance falls below ½ — and that Gaussian's median_features, zeros where
-    it never does). background: (C,) composited behind (default zeros)."""
+    number of pairs and chunks, the backend that ran, and with median_features (N, M) given 'median' (H, W, 1 + M):
+    the median depth — the depth of the Gaussian at which the transmittance falls below ½ — and that Gaussian's
+    median_features, zeros where it never does). background: (C,) composited behind (default zeros). backend:
+    'torch', 'triton' or 'auto' (None: the default, set_default_backend(); resolve_backend()). t_stop: the Triton
+    path's early-termination transmittance (default T_STOP; 0 composites every listed Gaussian, as the torch path
+    always does); chunk_elems and use_checkpoint are the torch path's."""
     dev, dt = features.device, features.dtype
     C = features.shape[1]
     M = 0 if median_features is None else median_features.shape[1] + 1
+    be = resolve_backend(backend, dev, dt, tile)
+    vis = proj['visible']
+    idx = torch.nonzero(vis, as_tuple=False).squeeze(1)
+    order = idx[torch.argsort(proj['depth'].detach()[idx], stable=True)]
+    binned = _bin(proj['means2d'], proj['extent'], order, width, height, tile, groups=be == 'triton')
+    pair_gauss, start, count, ntx, nty = binned[:5]
+    bg = torch.zeros(C, dtype=dt, device=dev) if background is None else torch.as_tensor(background, dtype=dt,
+                                                                                          device=dev)
+    if be == 'triton':
+        from .raster_triton import Composite
+        i32 = lambda t: t.to(torch.int32).contiguous()  # noqa: E731
+        bins = {'pair_gauss': i32(pair_gauss), 'start': i32(start), 'count': i32(count), 'ntx': ntx, 'nty': nty}
+        bins.update({k: i32(v) for k, v in binned[5].items()})
+        dep = proj['depth'][:, None].to(dt)
+        mf = None if median_features is None else torch.cat([dep, median_features.to(dt)], 1)
+        f_out, t_out, m_out = Composite.apply(proj['means2d'], proj['conic'], proj['opacity'],
+                                              torch.cat([features, dep], 1), mf, bins, tile,
+                                              T_STOP if t_stop is None else float(t_stop))
+        full = torch.cat([f_out, t_out[..., None], m_out], -1)
+        n_chunks = 0
+    else:
+        full, n_chunks = _rasterize_torch(proj, features, median_features, pair_gauss, start, count, ntx, tile, C, M,
+                                          chunk_elems, use_checkpoint)
+    img = full.reshape(nty, ntx, tile, tile, C + 2 + M).permute(0, 2, 1, 3, 4).reshape(nty * tile, ntx * tile,
+                                                                                         C + 2 + M)
+    img = img[:height, :width]
+    t_final = img[..., C + 1]
+    color = img[..., :C] + t_final[..., None] * bg
+    info = {'pairs': int(len(pair_gauss)), 'chunks': n_chunks, 'visible': int(len(order)), 'backend': be}
+    if M:
+        info['median'] = img[..., C + 2:]
+    return color, img[..., C], 1.0 - t_final, info
+
+
+def _rasterize_torch(proj, features, median_features, pair_gauss, start, count, ntx, tile, C, M, chunk_elems,
+                     use_checkpoint):
+    """The torch path's compositing: (tiles, TILE², C + 2 + M) per tile and pixel — features, expected depth,
+    T_final [, median] —, empty tiles (0…, 0, 1, 0…); and the number of chunks."""
+    dev, dt = features.device, features.dtype
     if chunk_elems is None:
         chunk_elems = 1 << 24 if dev.type == 'cuda' else 1 << 21
     if use_checkpoint is None:
         use_checkpoint = torch.is_grad_enabled() and any(
             t.requires_grad for t in (features, proj['means2d'], proj['conic'], proj['opacity'], proj['depth']))
-    vis = proj['visible']
-    idx = torch.nonzero(vis, as_tuple=False).squeeze(1)
-    order = idx[torch.argsort(proj['depth'].detach()[idx], stable=True)]
-    pair_gauss, start, count, ntx, nty = _bin(proj['means2d'], proj['extent'], order, width, height, tile)
     P = tile * tile
-    ntiles = ntx * nty
-    bg = torch.zeros(C, dtype=dt, device=dev) if background is None else torch.as_tensor(background, dtype=dt,
-                                                                                          device=dev)
-    # the output, per tile and pixel: features, depth, T_final; empty tiles keep (0…, 0, 1)
+    ntiles = len(count)
     pieces, where = [], []
     busy = torch.nonzero(count > 0, as_tuple=False).squeeze(1)
     if len(busy):
@@ -260,24 +399,17 @@ def rasterize(proj: dict, features: torch.Tensor, width: int, height: int, backg
                       torch.zeros(ntiles, P, M, dtype=dt, device=dev)], -1)
     if pieces:
         full = full.index_put((torch.cat(where),), torch.cat(pieces, 0))
-    img = full.reshape(nty, ntx, tile, tile, C + 2 + M).permute(0, 2, 1, 3, 4).reshape(nty * tile, ntx * tile,
-                                                                                         C + 2 + M)
-    img = img[:height, :width]
-    t_final = img[..., C + 1]
-    color = img[..., :C] + t_final[..., None] * bg
-    info = {'pairs': int(len(pair_gauss)), 'chunks': len(pieces), 'visible': int(len(order))}
-    if M:
-        info['median'] = img[..., C + 2:]
-    return color, img[..., C], 1.0 - t_final, info
+    return full, len(pieces)
 
 
 def render(means, scales, quats, opacities, features, viewmat, K, width, height, background=None, sh_degree=None,
-           tile: int = TILE, chunk_elems: int | None = None, median_features=None):
+           tile: int = TILE, chunk_elems: int | None = None, median_features=None, backend: str | None = None,
+           t_stop: float | None = None):
     """Render one view. features: (N, C) to composite as they are, or with sh_degree given (N, (D+1)², 3)
     spherical-harmonics coefficients evaluated towards this camera. Returns {'image' (H, W, C), 'depth' (H, W,
     expected), 'alpha' (H, W), 'means2d' (N, 2, with its gradient retained when it has one), 'visible', 'radius'
     (N, px: the larger bounding-box half-size), 'info'} and, with median_features (N, M), 'median' (H, W, 1 + M):
-    the median depth and the median Gaussian's features (rasterize())."""
+    the median depth and the median Gaussian's features (rasterize()). backend, t_stop: rasterize()'s."""
     proj = project(means, scales, quats, opacities, viewmat, K, width, height)
     proj['opacity'] = opacities
     if proj['means2d'].requires_grad:
@@ -291,7 +423,7 @@ def render(means, scales, quats, opacities, features, viewmat, K, width, height,
     else:
         feats = features
     img, depth, alpha, info = rasterize(proj, feats, width, height, background, tile, chunk_elems,
-                                        median_features=median_features)
+                                        median_features=median_features, backend=backend, t_stop=t_stop)
     radius = torch.where(proj['visible'], proj['extent'].max(-1).values, torch.zeros_like(proj['extent'][:, 0]))
     out = {'image': img, 'depth': depth, 'alpha': alpha, 'means2d': proj['means2d'], 'visible': proj['visible'],
            'radius': radius, 'info': info}

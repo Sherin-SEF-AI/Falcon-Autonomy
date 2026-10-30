@@ -2,7 +2,8 @@
 SSIM against scikit-image, the 3DGS .ply layout, density control, an optimisation that recovers a known scene, the
 sources (a synthetic Falcon run, KITTI raw and nuScenes folders written here — never real dataset files), training,
 evaluation, the depth warp, the re-rendered run, the CLI and the Replay page's section. Everything runs on the CPU
-on scenes rendered here; GPU tests run only with FALCON_GPU_TESTS=1."""
+on scenes rendered here; GPU tests run only with FALCON_GPU_TESTS=1. The Triton backend is compared with this
+reference in test_recon_triton.py."""
 import json
 import math
 import os
@@ -517,6 +518,7 @@ def test_training_writes_a_reconstruction(trained):
     rj = read_json(os.path.join(out, 'run.json'))
     assert rj['status'] == 'ok' and rj['summary']['init'] == 'lidar' and rj['summary']['heldout_frames'] == 3
     assert rj['timings']['steps_per_s'] > 0 and rj['device']['type'] == 'cpu'
+    assert rj['raster']['backend'] == 'torch' and rj['raster']['requested'] == 'auto'     # Triton is CUDA only
     assert any(k.endswith('/drive.json') for k in rj['provenance']['inputs']) and rj['summary']['semantic_votes']
     ev = read_json(os.path.join(out, 'evaluation.json'))
     h = ev['heldout']['mean']
