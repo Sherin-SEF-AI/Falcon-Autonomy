@@ -47,6 +47,7 @@ Ids match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` and are unique within their list.
 | `vehicles`, `walkers` | how many |
 | `fleet` | weights per CARLA base type (`car`, `truck`, `van`, `bus`, `motorcycle`, `bicycle`), normalised at run time |
 | `behaviour` | traffic-manager settings: `distance_to_leading_m`, `speed_difference_pct`, `ignore_lights_pct`, `ignore_signs_pct`, `auto_lane_change`, `walker_crossing_factor` |
+| `lateral_filtering` | optional: `enabled`, `vehicles` (`motorcycle`, `bicycle`, `autorickshaw`; default the first two), `controller` (`tm`, the default, or `own`) — two-wheelers that filter laterally ([Indian road assets](indian-assets.md#lateral-filtering)); absent: off. No migration: older projects simply do not have it |
 
 ## rig and sensor
 

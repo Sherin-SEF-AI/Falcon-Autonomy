@@ -112,8 +112,13 @@ to a real one (then name its blueprint in the profile's fleet: `blueprint:vehicl
 **Road features**: an imported world can carry speed breakers as real geometry (elevation profiles the vehicle physics
 drives over), placed from OpenStreetMap's `traffic_calming` tags at import and from the Worlds page (*Road
 features*); such a world's mesh is generated at a 0.25 m vertex distance. Puddles (`precipitation_deposits`) are not
-drawn on an imported world ([Indian road assets](indian-assets.md)). The traffic manager keeps vehicles in lanes, so lane-splitting by
-two-wheelers is not reproduced by the profile.
+drawn on an imported world ([Indian road assets](indian-assets.md)).
+
+**Lateral filtering**: the traffic manager keeps every vehicle on its lane's centre. A profile's *Lateral filtering*
+(Worlds page, traffic profile; `lateral_filtering` in the project) gives its two-wheelers — and, when asked, the
+autorickshaw stand-ins — a lateral position of their own: the lane line, between vehicles, the kerb side, never an
+oncoming lane. [Indian road assets](indian-assets.md#lateral-filtering) has the design, the measurements on this
+world and the limits.
 
 ## Speed limits and speed breakers
 

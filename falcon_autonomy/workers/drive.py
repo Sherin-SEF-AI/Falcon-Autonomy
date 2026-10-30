@@ -198,6 +198,8 @@ class Drive(Worker):
                         if len(guard.events) == 1:
                             self.note('the ego left the road network where a road ends and was put back on the road '
                                       '(frames.jsonl "teleport"); see docs/worlds.md')
+                if getattr(self, 'lateral', None) is not None:   # vehicles filtering laterally (workers.lateral)
+                    rec['lateral'] = self.lateral.frame_summary()
                 rec.update(scene.ego_state(ego))
                 if director is not None and director.kinematic and director.k_vel(ego) is not None:
                     v = director.k_vel(ego)              # physics off: CARLA reports the ego still; the director knows

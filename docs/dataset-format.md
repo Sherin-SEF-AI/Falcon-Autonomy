@@ -9,7 +9,9 @@ run/
   run.json            what ran: versions, seed, hashes, timings, measured performance, lidar checks, faults applied;
                       traffic: the vehicles placed, and on an imported world speed_source — the traffic's speeds
                       from the file's limits ("map") or CARLA's own ("carla"), see worlds.md, and keeper — the
-                      traffic moved away from roads that end (counts, events); lights: vehicle lights set and read
+                      traffic moved away from roads that end (counts, events), and lateral_filtering — the
+                      two-wheelers that filter laterally (controller, parameters, counts, offset histogram,
+                      ms per update; indian-assets.md); lights: vehicle lights set and read
                       back (drives, live, stack, gym, HIL); city: an imported
                       world's buildings, trees and lamps placed (the plan's SHA-256, spawned, failed, seconds)
   dataset.json        sensors (K, lens, views, planned pose, streams), label encodings and classes, provenance
@@ -36,8 +38,21 @@ run/
 `speed_mps`, `control`, `recorded` (false on steps `record_every` skips), `teleport` (on the step the road-end guard put the ego back on the road: `cause` (`dead_end_ahead` or `fell`), from, to, detail — the pose jumps there; see [worlds](worlds.md#roads-that-end-the-edge-of-an-imported-area)), `traffic_respawns` (on a step the traffic keeper moved traffic away from a road that ends: per vehicle kind — `dead_end`, `fell`, `lost`, `replaced` — actor, from, to and, after a stop in view, `held_s`; those actors' poses jump there), `files` (`"<sensor>/<kind>": path`), and
 when used `stamps` (per sensor, with its clock-offset fault), `faults` (per sensor: `drop` or `freeze`), `lidar_pose`
 (per lidar: the 3 × 4 world matrix of the sweep's end, row-major), `physics` (per sensor: the weather effects that
-touched the frame — [sensor physics](sensor-physics.md)) and `odd` (`in`, `why`, `road`, … — [ODD
-monitoring](odd-monitoring.md)).
+touched the frame — [sensor physics](sensor-physics.md)), `odd` (`in`, `why`, `road`, … — [ODD
+monitoring](odd-monitoring.md)) and `lateral` (when the traffic profile turns lateral filtering on: `vehicles` it
+holds, how many are in each mode — `filter` (off their lane centre), `lane`, `junction` (back on the centre near a
+junction), `held` (stopped by the traffic keeper) — [Indian road assets](indian-assets.md#lateral-filtering)).
+
+## Lateral filtering in actors.jsonl
+With lateral filtering on, the row of every vehicle it holds carries **`lateral`**: `offset_m` (its measured lateral
+offset from the centre of its reference lane, metres, **+ to the driver's right**, CARLA's right vector (−sin yaw,
+cos yaw) — in left-hand traffic the kerb side is negative), `target_m` (the offset commanded that step), `lane`
+([road id, lane id] of the reference lane: the lane the traffic manager drives for the `tm` controller, the vehicle's
+own route for `own`), `mode` (as in frames.jsonl), `gap_m` (the clearance ahead along its path, 30 = nothing within
+the look-ahead), `cap_kmh` (the clearance's speed cap, `null` when none) and, for the `tm` controller, `ignoring`
+(true while the traffic manager's vehicle detection is off for it: it is filtering past an object on its lane's
+centre). The offset is measured on the reference lane's polyline, not on the nearest lane: a vehicle riding the line
+into the next lane has an offset beyond half the lane's width. Junction steps are in mode `junction`.
 
 Lidar labels: the tag is CARLA's semantic tag of the surface hit, except **30 `weather_noise`**: a spurious return of
 fog or rain added by Falcon's sensor physics (actor id 0; nuScenes-lidarseg `noise`). Real returns always keep CARLA's
