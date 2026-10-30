@@ -131,8 +131,12 @@ class LidarRecorder:
         from .scene import camera_transform
         tf = camera_transform(w.carla, s['pose'])
         bp_raw, bp_sem = lidar_blueprints(lib, s, role)
-        self.raw = w.own(world.spawn_actor(bp_raw, tf, attach_to=ego))
-        self.sem = w.own(world.spawn_actor(bp_sem, tf, attach_to=ego))
+        if getattr(ego, 'is_static_anchor', False):         # a roadside unit's lidar: standing in the world
+            self.raw = w.own(world.spawn_actor(bp_raw, ego.compose(tf)))
+            self.sem = w.own(world.spawn_actor(bp_sem, ego.compose(tf)))
+        else:
+            self.raw = w.own(world.spawn_actor(bp_raw, tf, attach_to=ego))
+            self.sem = w.own(world.spawn_actor(bp_sem, tf, attach_to=ego))
         for a in (self.raw, self.sem):
             q = queue.Queue()
             cameras.queues[a.id] = q
@@ -202,6 +206,7 @@ class LidarRecorder:
                     eff.insert(0, 'lidar_attenuation')
                 if eff:
                     rec.setdefault('physics', {})[self.s['id']] = eff
+        self.last_slice = (xyz, tag, idx)                # the slice as recorded (workers.rsu reads it)
         self.slices.append((xyz, inten, tag, idx, M_ws))
         if len(self.slices) >= self.steps_per_sweep:
             self.write_sweep(out_dir, rec)

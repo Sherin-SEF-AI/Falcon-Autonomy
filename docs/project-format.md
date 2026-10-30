@@ -21,6 +21,7 @@ folder beside it (`name.falcon/`). Machine settings (CARLA's folder, ports) and 
 | `loop` | object | the closed loop's settings and iterations |
 | `drive_sets` | [drive set] | optional: named sets of runs ([runs](runs.md)) |
 | `run_tags` | {run folder: [tag]} | optional: your tags on runs, keyed by the run's folder relative to the workspace (an absolute path outside it); the runs themselves are never changed |
+| `infrastructure` | {`rsus`: [roadside unit]} | optional: V2X roadside units standing in the worlds ([V2X](v2x.md)); an older build refuses a file that has it |
 
 Ids match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` and are unique within their list.
 
@@ -63,6 +64,23 @@ A rig: `id`, `name`, `vehicle` (a CARLA blueprint id, `vehicle.*`), `sensors`. A
 
 This build records pinhole cameras with `semantic` labels; the other sensor types and label layers are accepted by
 the schema and recorded from milestone 3 on.
+
+## roadside unit
+
+| field | meaning |
+|---|---|
+| `id`, `name` | |
+| `world` | the id of the world it stands in |
+| `x`, `y` | the pole's foot in CARLA's world (metres; +x East, +y South) |
+| `z` | its ground height; absent: the nearest lane's, read on the server |
+| `yaw` | its heading, CARLA's degrees (0 = +x, positive towards +y) |
+| `height_m` | the mast head above the foot (1–30 m; default 6) |
+| `sensors` | rig sensors (cameras and lidars) posed from the mast head: x along the heading, y right, z up |
+| `station_id` | the ETSI StationId of its CPMs; absent: CRC-32 of the id |
+| `cpm` | `rate_hz` (10), `min_pixels` (20), `min_points` (3), `noise` {`position_m`, `velocity_mps`} (0), `camera_range_m` (100), `sectors` (16), `max_objects` (255), `free_space` (true), `epoch` (the UTC instant of sim time 0) |
+| `junction` | where a placement helper put it (id, name, corner, distance, clearance, method) |
+
+No migration: the section is optional, and a project without it is unchanged.
 
 ## Versions and migrations
 

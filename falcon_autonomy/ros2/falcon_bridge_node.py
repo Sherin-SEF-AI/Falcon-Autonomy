@@ -90,9 +90,13 @@ class BridgeCore:
     def hello(self, h: dict):
         if int(h.get('protocol', 0)) != 1:
             raise ValueError(f'protocol {h.get("protocol")} (this node speaks 1)')
+        missing = []
         for e in h.get('topics', []):
             if e['topic'] not in self.pubs:
-                self.pubs[e['topic']] = self.adapter.publisher(e['topic'], e['type'], e.get('qos', 'reliable'))
+                try:
+                    self.pubs[e['topic']] = self.adapter.publisher(e['topic'], e['type'], e.get('qos', 'reliable'))
+                except (AttributeError, ModuleNotFoundError, ValueError) as ex:   # a message package not installed
+                    missing.append({'topic': e['topic'], 'type': e['type'], 'why': str(ex)})
         c = h.get('control')
         ctl = None
         if c:
@@ -101,7 +105,7 @@ class BridgeCore:
                 self.control = c['topic']
             ctl = {'topic': c['topic'], 'type': c['type'], 'ok': ok, 'why': why}
             self.control_type = c['type']
-        self.send({'t': 'ready', 'node': 'falcon_bridge', 'control': ctl, **self.adapter.info()})
+        self.send({'t': 'ready', 'node': 'falcon_bridge', 'control': ctl, 'missing': missing, **self.adapter.info()})
 
     def publish_step(self, h: dict, payload: bytes):
         t0 = time.monotonic()

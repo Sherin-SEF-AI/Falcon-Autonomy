@@ -65,6 +65,9 @@ EXTRA_DEFS = {
     'carla_msgs/msg/CarlaEgoVehicleControl': ('std_msgs/Header header\nfloat32 throttle\nfloat32 steer\n'
                                               'float32 brake\nbool hand_brake\nbool reverse\nint32 gear\n'
                                               'bool manual_gear_shift\n'),
+    # a roadside unit's CPM (docs/v2x.md): the UDP payload the etsi_its_messages conversion node decodes, and its JSON
+    'udp_msgs/msg/UdpPacket': 'std_msgs/Header header\nstring address\nuint16 src_port\nuint8[] data\n',
+    'std_msgs/msg/String': 'string data\n',
 }
 GEAR_DRIVE, GEAR_REVERSE, GEAR_PARK = 2, 20, 22
 MODE_AUTONOMOUS = 1
@@ -293,6 +296,11 @@ def gear_report(reverse: bool, t_ns: int) -> dict:
 
 def control_mode_report(t_ns: int) -> dict:
     return {'stamp': B.stamp(t_ns), 'mode': MODE_AUTONOMOUS}
+
+
+def udp_packet(payload: bytes, t_ns: int, frame_id: str = 'map') -> dict:
+    """udp_msgs/UdpPacket (flynneva/udp_msgs, MIT) carrying a BTP-B header and a UPER message (core.cpm.btp_payload)."""
+    return {'header': B.header(t_ns, frame_id), 'address': '', 'src_port': 0, 'data': bytes(payload)}
 
 
 # ---------------------------------------------------------------------------------------------- control commands

@@ -26,6 +26,9 @@
                      "kind": {"enum": ["list", "query"]}, "runs": {"type": "array", "items": {"type": "string"}},
                      "query": {"type": "string"}, "created": {"type": "string"}}}},
     "run_tags": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string", "minLength": 1}}},
+    "infrastructure": {"type": "object", "description": "Roadside units standing in the worlds (docs/v2x.md).",
+                       "properties": {"rsus": {"type": "array", "items": {"$ref": "#/$defs/rsu"}}},
+                       "additionalProperties": false},
     "loop": {
       "type": "object",
       "properties": {
@@ -143,6 +146,32 @@
         "name": {"type": "string", "minLength": 1},
         "vehicle": {"type": "string", "pattern": "^vehicle\\."},
         "sensors": {"type": "array", "items": {"$ref": "#/$defs/sensor"}}
+      }
+    },
+    "rsu": {
+      "type": "object",
+      "description": "A roadside unit: its pole's foot in CARLA's world (x, y; z its ground height, absent: the nearest lane's), its heading (yaw, degrees, CARLA's), the mast head's height, and sensors posed from the mast head in the station frame (x along the heading, y right, z up). docs/v2x.md.",
+      "required": ["id", "name", "world", "x", "y", "sensors"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string", "minLength": 1},
+        "world": {"$ref": "#/$defs/id"},
+        "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"},
+        "yaw": {"type": "number"},
+        "height_m": {"type": "number", "minimum": 1, "maximum": 30},
+        "station_id": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "sensors": {"type": "array", "items": {"$ref": "#/$defs/sensor"}},
+        "cpm": {"type": "object", "properties": {
+          "rate_hz": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
+          "min_pixels": {"type": "integer", "minimum": 1}, "min_points": {"type": "integer", "minimum": 1},
+          "noise": {"type": "object", "properties": {"position_m": {"type": "number", "minimum": 0},
+                                                     "velocity_mps": {"type": "number", "minimum": 0}},
+                    "additionalProperties": false},
+          "camera_range_m": {"type": "number", "exclusiveMinimum": 0, "maximum": 409.5},
+          "sectors": {"type": "integer", "minimum": 1, "maximum": 64},
+          "max_objects": {"type": "integer", "minimum": 1, "maximum": 255},
+          "free_space": {"type": "boolean"}, "epoch": {"type": "string"}}, "additionalProperties": false},
+        "junction": {"type": "object"}
       }
     }
   }

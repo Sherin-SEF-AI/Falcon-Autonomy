@@ -11,7 +11,9 @@ the map (a town, or an OpenDRIVE file), the weather, the rig, the traffic, the s
    choices; sets the weather;
 2. spawns the ego (role 'hero') at a seeded spawn point and the traffic (role falcon_traffic) at others, all on the
    traffic manager's autopilot, then each camera (role falcon_sensor) and, beside it, one CARLA camera per label
-   kind it records (semantic segmentation for 'semantic'), same size, field of view, pose and tick;
+   kind it records (semantic segmentation for 'semantic'), same size, field of view, pose and tick; and the world's
+   roadside units (workers.rsu): their sensors standing in the world, recorded with the same labels, and their CPMs
+   (cpm.jsonl);
 3. warms up warmup_steps steps unrecorded (the first frames after a spawn are not settled), then records `steps`
    steps (or until max_wall_s of wall clock, for the smoke drive): per step every camera's frame of exactly that
    tick (by frame number) — RGB as JPEG, semantic tags as a single-channel PNG — and a line in frames.jsonl with the
@@ -84,9 +86,10 @@ class Drive(Worker):
         order = list(rng.permutation(len(spawns)))
         rig_cams = [x for x in cfg['rig']['sensors'] if x['type'] in ('camera.pinhole', 'camera.fisheye')]
         need_gt = any(camgt.wants_gt(x) for x in rig_cams)
-        level = camgt.level_boxes(self, world) if need_gt else []      # before any vehicle is spawned
+        has_rsu = bool((cfg.get('infrastructure') or {}).get('rsus'))      # roadside units (workers.rsu)
+        level = camgt.level_boxes(self, world) if need_gt or has_rsu else []      # before any vehicle is spawned
         raster = camgt.LaneRaster(carla, world.get_map()) if cfg.get('xodr') and (
-            need_gt or any(x['type'] == 'lidar' for x in cfg['rig']['sensors'])) else None
+            need_gt or has_rsu or any(x['type'] == 'lidar' for x in cfg['rig']['sensors'])) else None
         director = None
         if cfg.get('scenario') or cfg.get('replay'):
             if cfg.get('replay'):                       # a log replay (workers.replay): the same interface
@@ -106,6 +109,14 @@ class Drive(Worker):
             world.tick()
             director.setup(ego, ego_wp)
         else:
+            if cfg.get('start_near'):                   # start near a roadside unit, traffic around it (core.v2x)
+                from ..core.v2x import spawn_order
+                order, n_near = spawn_order([(p.location.x, p.location.y, p.rotation.yaw) for p in spawns], order,
+                                            cfg['start_near'])
+                self.run['start_near'] = dict(cfg['start_near'], ego_candidates=n_near)
+                if not n_near:
+                    self.note('no spawn point heading for the roadside unit within the asked distance: the ego starts '
+                              'at the seeded spawn point')
             ego = scene.spawn_ego(self, world, lib, spawns, order, cfg['rig']['vehicle'])
         # an autopilot ego can drive off a road that ends (an imported area's edge): put back, marked in the frame
         guard = scene.RoadEndGuard(self, world, ego, spawns) if director is None else None
@@ -124,6 +135,8 @@ class Drive(Worker):
         for L in self.lidars:
             L.set_rate(fps0)
         self.others = scene.Others(self, world, lib, ego, cfg['rig']['sensors'], cams)
+        from . import rsu as RSU
+        self.stations = RSU.stations(self, world, lib, cfg, cams, raster) if has_rsu else []
         # the range check: the first pinhole camera with ground truth (its depth view), against the first lidar
         depth_rec = next((r for r in self.recorders if r.gt and r.s['type'] == 'camera.pinhole'), None)
         depth_cam = depth_rec.s if depth_rec is not None else None
@@ -153,6 +166,7 @@ class Drive(Worker):
         mpx = rig_mpx(cfg['rig'])
         index = open(os.path.join(self.out_dir, 'frames.jsonl'), 'w', encoding='utf-8')
         actor_log = scene.ActorLog(self, os.path.join(self.out_dir, 'actors.jsonl'))
+        cpm_log = RSU.CpmLog(os.path.join(self.out_dir, 'cpm.jsonl')) if self.stations else None
         t_rec = time.monotonic()
         n = late = 0
         sim_t0 = None
@@ -252,6 +266,11 @@ class Drive(Worker):
                         L.range_check(np.frombuffer(m_raw.raw_data, np.float32).reshape(-1, 4)[:, :3]
                                       .astype(np.float64), depth_cam, depth_now, M_cam_from_lidar)
                 self.others.step(frame, rec['sim_t'], self.out_dir, rec)
+                for st in self.stations:                 # roadside units: recorded, and their CPMs (workers.rsu)
+                    line = st.step(i, frame, rec['sim_t'], rec, self.out_dir, record,
+                                   lambda anchor: camgt.scene_boxes(self, world, anchor, level), director)
+                    if line is not None:
+                        cpm_log.write(line)
                 if watch is not None:
                     rec['odd'] = watch.step(rec['sim_t'], ego, rec['speed_mps'], watch_rgb)
                 actor_log.step(world, i, frame, rec['sim_t'], director)
@@ -263,7 +282,8 @@ class Drive(Worker):
                 f = (wall / max_wall) if max_wall else (i + 1) / steps
                 self.emit.progress(0.05 + 0.9 * f, f'step {i + 1}{"" if max_wall else f" of {steps}"} '
                                                    f'({(i + 1) / max(wall, 1e-6):.1f} steps/s)')
-                if len(cams.pending) > MAX_IN_FLIGHT * max(len(self.recorders), 1):
+                if len(cams.pending) > MAX_IN_FLIGHT * max(len(self.recorders) + sum(len(st.recorders) for st in
+                                                                                         self.stations), 1):
                     late += 1
                     cams.flush(MAX_IN_FLIGHT)
             cams.flush(0)
@@ -271,6 +291,8 @@ class Drive(Worker):
             index.close()
             actor_log.close()
             self.others.close()
+            if cpm_log is not None:
+                cpm_log.close()
         wall = time.monotonic() - t_rec
         sim_s = n / fps
         perf = {'steps': n, 'wall_s': round(wall, 3), 'steps_per_s': round(n / max(wall, 1e-6), 3),
@@ -279,10 +301,16 @@ class Drive(Worker):
                 'camera_frames': -(-n // every) * len(self.recorders), 'record_every': every, 'encoder_waits': late, 'source': 'measured'}
         for k, unit in (('steps_per_s', '1/s'), ('realtime_factor', '×'), ('mpx_per_s', 'Mpx/s')):
             self.emit.metric(k, perf[k], unit)
-        write_json(os.path.join(self.out_dir, 'dataset.json'), scene.dataset_doc(
-            cfg.get('name', 'drive'), self.recorders, n, fps, self.run,
-            {'town': cfg.get('town'), 'xodr': cfg.get('xodr'), 'weather': cfg.get('weather'),
-             'label_warnings': label_warnings}))
+        ds_doc = scene.dataset_doc(
+            cfg.get('name', 'drive'), self.recorders + [r for st in self.stations for r in st.recorders], n, fps,
+            self.run, {'town': cfg.get('town'), 'xodr': cfg.get('xodr'), 'weather': cfg.get('weather'),
+                       'label_warnings': label_warnings})
+        if self.stations:                               # roadside sensors: posed in their station's frame
+            ds_doc['ego'] = {'actor_id': int(ego.id)}
+            ds_doc['infrastructure'] = {'stations': [st.doc() for st in self.stations], 'cpm': 'cpm.jsonl'}
+            for x in ds_doc['sensors']:
+                x['station'] = next((st.id for st in self.stations if x['id'].startswith(st.id + '.')), None)
+        write_json(os.path.join(self.out_dir, 'dataset.json'), ds_doc)
         self.emit.progress(1.0, f'recorded {n} steps in {wall:.1f} s', force=True)
         scenario = None
         if director is not None:
@@ -291,7 +319,7 @@ class Drive(Worker):
             with open(os.path.join(self.out_dir, 'trajectories.json'), 'w', encoding='utf-8') as fh:
                 json.dump({'dt': 1.0 / fps, 'columns': ['t', 'x', 'y', 'yaw', 'vx', 'vy', 'length', 'width'],
                            'frame': 'CARLA world', 'actors': director.traj}, fh, separators=(',', ':'))
-        lidar_checks = [L.report() for L in self.lidars]
+        lidar_checks = [L.report() for L in self.lidars + [x for st in self.stations for x in st.lidar_recorders]]
         for c in lidar_checks:
             m = c['match']
             self.emit.log(f'lidar {c["sensor"]}: {m["exact_slices"]} of {m["slices"]} slices matched by order '
@@ -300,6 +328,9 @@ class Drive(Worker):
         from .oddwatch import write as write_watch
         write_watch(self, self.out_dir, watch)
         scene.speeds_report(self)
+        if self.stations:
+            self.run['infrastructure'] = {'stations': [st.report() for st in self.stations], 'cpm_standard': 'CPM-shaped '
+                                          'per ETSI TS 103 324 V2.1.1, UPER-encoded (docs/v2x.md)'}
         if getattr(self, 'subclass', None):
             self.run['subclasses'] = {str(k): v for k, v in sorted(self.subclass.items())}
         return {'performance': perf, 'lidar_checks': lidar_checks, 'scenario': scenario, 'faults_applied': faults.report(),

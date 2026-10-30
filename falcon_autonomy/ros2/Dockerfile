@@ -7,6 +7,11 @@
 #   carla_msgs (built here)            only CarlaEgoVehicleControl.msg, copied field for field from
 #                                      carla-simulator/ros-carla-msgs (MIT): steer / throttle / brake, the message
 #                                      CARLA's own ROS 2 interface and its ROS bridge take
+#   ros-humble-udp-msgs                udp_msgs/msg/UdpPacket (flynneva/udp_msgs, MIT): a roadside unit's CPM as UDP
+#                                      payload (docs/v2x.md)
+#   ros-humble-etsi-its-conversion     ika-rwth-aachen/etsi_its_messages (MIT): its conversion node decodes the UPER
+#                                      CPMs into etsi_its_cpm_ts_msgs/CollectivePerceptionMessage (asn1c-generated
+#                                      code); falcon v2x converter prints the command
 #
 # Falcon's bridge node itself is not copied in: it is mounted (or copied) from Falcon's source, see
 # docs/stack-testing.md.
@@ -14,7 +19,7 @@ FROM ros:humble-ros-base
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ros-humble-autoware-control-msgs ros-humble-autoware-vehicle-msgs \
-        ros-humble-ackermann-msgs \
+        ros-humble-ackermann-msgs ros-humble-udp-msgs ros-humble-etsi-its-conversion ros-humble-etsi-its-cpm-ts-msgs \
  && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /opt/falcon_ws/src/carla_msgs/msg && cd /opt/falcon_ws/src/carla_msgs \
