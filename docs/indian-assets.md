@@ -195,6 +195,179 @@ objects, class static); the handcart moved 15.9 m in 16 s (3.58 km/h) with its p
 objects, class dynamic); the autorickshaw cut in (seeds 3 and 5: at 1.30 s and 0.35 s, at most 40.8 and 47.3 km/h),
 passed (227 and 240 labelled objects, class car); the monsoon variant passed on Town10HD with deposits 100.
 
+## Lateral filtering
+
+CARLA's traffic manager (TM) keeps every vehicle on its lane's centre line. In Bengaluru a two-wheeler rides the lane
+line, squeezes between a bus and an autorickshaw, keeps to the kerb and passes a queue. A traffic profile's
+**Lateral filtering** (Worlds ▸ traffic profile; `lateral_filtering: {enabled, vehicles, controller}` in the project)
+gives its background two-wheelers — CARLA base types `motorcycle` and `bicycle`, and the autorickshaw stand-ins when
+`autorickshaw` is named — a lateral position of their own (`workers/lateral.py`).
+
+**The chooser** (every 0.1 s of simulated time, per vehicle): the same-direction width around the vehicle — its lane
+and one same-direction driving lane (or paved shoulder) each side, never an oncoming lane — is cut into 0.4 m strips;
+every vehicle and walker within 40 m is put in the curvilinear frame of the vehicle's lane ahead (a polyline, so
+curves do not bend the strips); each strip is scored by the speed it allows against the speed the vehicle wants (the
+first object whose across-span, widened by its class's clearance, meets the vehicle's sideways path to the strip —
+moving across at 1 m/s against its closing speed — or the strip itself), an anisotropic repulsion field
+exp(−(Δs/σs)²)·exp(−(edge gap/σd)²) with σd 1.0 m for a bus or truck and 0.35 m for a two-wheeler, the distance from a
+home offset 0.2 lane widths to the near (kerb) side — **left in left-hand traffic** — and a hysteresis penalty; a
+sideways move into a vehicle alongside, or into the strip of one closing from behind, is not allowed. Within 5 m of a
+junction and inside it the target is the lane centre. **Every buffer, weight and rate is a heuristic** (run.json
+`traffic.lateral_filtering.parameters` records them), not measured on Indian roads.
+
+### What CARLA 0.9.16's traffic manager offers (measured)
+
+The 0.9.16 client has `TrafficManager.vehicle_lane_offset(actor, offset)` and `global_lane_offset(offset)` (added in
+0.9.14; positive = right of the lane centre), besides `ignore_vehicles_percentage`, `set_desired_speed`,
+`get_next_action` / `get_all_actions`, `set_path` / `set_route`. Measured on Town10HD (scratch server, 2026-10-30;
+a Yamaha YZF on the autopilot at 30 km/h on a straight two-lane road, 3.5 m lanes):
+
+| test | result |
+|---|---|
+| offset +1.0 / −1.0 m | tracked: +0.99 / −0.99 m mean after 4 s; reached in about 2 s from the start of the motion (0.57 m after 1 s) |
+| a parked car on the lane centre 35 m ahead, offset 0, ±1.0, ±1.4, ±1.8 m | the motorcycle **stopped behind it every time** (at 30.5–30.7 m), also at 1.8 m where its side clears the car's by 0.3 m |
+| a parked car on the neighbouring lane's centre, offset 0–2.0 m | passed it, no contact |
+| the same, offset 2.4 m (0.4 m into the car's width) | **drove into it**: 10 collision-sensor events |
+
+So the TM's collision detection looks along the lane's centre whatever the offset, both ways: an offset alone gives
+lane-line riding but never a filter-through, and it does not protect a vehicle offset into another's path.
+
+### Two designs, measured
+
+* **A, `tm` (the default)**: the vehicle stays on the TM's autopilot (routing, lights, signs, walkers, speed); the
+  chooser's offset goes to `vehicle_lane_offset`; while the vehicle is off its lane centre the chooser's clearance
+  along its own path caps its desired speed (the speed from which 3.5 m/s² stops it 1.5 m behind the object, or
+  matches its speed); when the TM would stop it for an object on the lane centre that its own path clears, the TM's
+  vehicle detection is switched off for it (`ignore_vehicles_percentage` 100) until that is no longer so; in
+  junctions the TM's detection and speed are back. The TM's own lane changes are off for these vehicles: under an
+  offset a TM lane change shifts the reference lane by a lane width (measured: reference flips and contacts in the
+  first rounds).
+* **B, `own`**: the vehicle comes off the autopilot: its own route on the lane graph (a seeded choice at each branch,
+  avoiding dead ends), pure-pursuit steering to the route shifted by the offset, a PI speed controller to min(the
+  road's limit and breakers from `workers/speedcontrol.py`, the clearance cap, a red or yellow light it is at, a yield
+  to vehicles crossing its path in a junction).
+
+### Measured on central Bengaluru
+
+**Conditions** (2026-10-30): the demo copy of the re-imported central Bengaluru (`world-8c0095b7`, city props on,
+left-hand traffic, road speed limits and breakers from the file, traffic keeper on), CARLA 0.9.16 on Falcon's
+scratch server (rpc 2350, 11 GB cap) inside Falcon's machine lock, the Indian mixed profile (60 vehicles of which
+about 27 two-wheelers, 40 walkers), a light rig (one 640 × 360 RGB camera), 60 s at 20 fps after 10 warm-up steps,
+seeds 1–6, `base` = the profile without lateral filtering, `tm` and `own` = with it. The same seed places the same
+traffic in all three (the filter draws nothing from the spawn generator); the drives diverge afterwards. Three
+earlier rounds on seeds 1–4 shaped the chooser (the sideways path had been tested against the whole swept width, so it
+almost never passed; the junction distance went from 10 to 5 m; the TM's own lane changes were turned off; the
+clearance term became the speed the strip allows); the tables are the committed code.
+
+**Method** (from actors.jsonl, offline against the map): a two-wheeler's offset is its distance from the nearest
+driving lane's centre (junctions left out); *between lanes* = its box crosses the line to a same-direction lane;
+*near side* = more than 0.25 m to the kerb side (left here); a *pass* = a two-wheeler moving > 1 m/s goes from behind a
+same-direction vehicle (headings within 45°, within 4 m across throughout) to in front of it — *close*
+(filter-through) when their centres were less than 2.6 m apart across while level, else *in the next lane*; a
+*contact* = two oriented boxes (shrunk 5 cm a side) that start to overlap — the same pair again only after 2 s apart,
+pairs with an actor that just jumped (a respawn) left out; box overlap is a proxy for a collision, not CARLA's
+collision sensor. Keeper counts and put-backs from run.json and frames.jsonl.
+
+| measure | base (6 runs) | tm (6 runs) | own (5 runs) |
+|---|---|---|---|
+| two-wheeler \|offset\| from the nearest lane centre, median m | 0.02 (0.01–0.05) | 0.40 (0.40–0.40) | 0.40 (0.40–0.41) |
+| … 90th percentile, m | 0.55 (0.40–0.68) | 0.68 (0.60–0.81) | 1.01 (0.86–1.15) |
+| … share > 0.5 m | 12.0 % (8.5 %–15.9 %) | 18.5 % (12.8 %–27.8 %) | 32.3 % (27.8 %–40.2 %) |
+| … share > 1.0 m | 4.7 % (3.1 %–7.0 %) | 3.1 % (1.6 %–7.7 %) | 10.5 % (6.8 %–17.1 %) |
+| share of time between two same-direction lanes | 1.69 % (1.14 %–2.19 %) | 0.26 % (0.11 %–0.36 %) | 0.52 % (0.06 %–0.99 %) |
+| share on the near (kerb) side, > 0.25 m | 9 % (8 %–12 %) | 73 % (70 %–77 %) | 70 % (61 %–77 %) |
+| passes by two-wheelers: close (filter-through) / in the next lane | 3 / 7 | 7 / 4 | 8 / 2 |
+| … per 100 two-wheeler km (close, all) | 4.1, 13.8 | 9.9, 15.5 | 14.5, 18.1 |
+| contacts vehicle–vehicle (with a two-wheeler) / vehicle–walker | 22 (9) / 4 | 17 (8) / 4 | 25 (10) / 2 |
+| … per 100 vehicle km | 18.1 (over 144 km) | 15.2 (over 138 km) | 23.9 (over 113 km) |
+| keeper: dead ends moved / fell / replaced (TM removals) | 88 / 66 / 42 | 97 / 50 / 33 | 109 / 126 / 17 |
+| ego put back (teleports) | 2 | 2 | 2 |
+| wall ms per step (whole drive) | 124.4 (94.3–171.8) | 126.9 (81.2–177.6) | 130.2 (64.5–177.0) |
+| filter: ms per step() call | — | 20.26 (13.22–26.27) | 14.02 (8.66–18.77) |
+| filter: share of updates in junction mode | — | 33 % (24 %–41 %) | 45 % (32 %–59 %) |
+
+`own-s4` (the sixth `own` drive) failed at 59.9 s: the traffic manager removed the autopilot ego at a dead end of its
+road graph (an ego event of the diverged traffic, not a filtered vehicle) — the drive's outputs are not kept, so `own`
+has 5 runs. The machine was loaded by other jobs during this session (load average up to 37): the whole-drive wall
+times are dominated by that and are not comparable to the earlier, unloaded rounds. The step-time cost, from the
+first round (load ≈ 6; `base`, `tm`, `own` back to back per seed, seeds 1–4, one session; the chooser's score was tuned
+afterwards, its per-update work is the same): **41.0 ms per step without, 42.4 ms with `tm` (+3.5 %), 44.0 ms with
+`own` (+7 %)**; the filter itself took 7.4 ms per update with `tm` (6.4–7.9; 21–28 vehicles; an update every second
+step) and 5.2 ms per step with `own` (it drives every step).
+
+Autorickshaws filtering too (`tmauto`, seeds 1–3, against the same seeds of `base` and `tm`):
+
+| measure | base (3 runs) | tm (3 runs) | tmauto (3 runs) |
+|---|---|---|---|
+| two-wheeler \|offset\| from the nearest lane centre, median m | 0.02 (0.02–0.02) | 0.40 (0.40–0.40) | 0.40 (0.40–0.40) |
+| … 90th percentile, m | 0.57 (0.56–0.57) | 0.62 (0.61–0.64) | 0.65 (0.61–0.70) |
+| … share > 0.5 m | 12.5 % (11.0 %–14.4 %) | 15.7 % (12.8 %–18.4 %) | 16.0 % (14.7 %–17.5 %) |
+| … share > 1.0 m | 4.2 % (3.1 %–5.0 %) | 2.2 % (2.1 %–2.3 %) | 2.6 % (1.8 %–3.0 %) |
+| share of time between two same-direction lanes | 1.67 % (1.24 %–2.19 %) | 0.27 % (0.11 %–0.36 %) | 0.31 % (0.13 %–0.42 %) |
+| share on the near (kerb) side, > 0.25 m | 9 % (8 %–10 %) | 73 % (71 %–76 %) | 73 % (71 %–76 %) |
+| passes by two-wheelers: close (filter-through) / in the next lane | 0 / 3 | 2 / 3 | 1 / 4 |
+| … per 100 two-wheeler km (close, all) | 0.0, 9.2 | 6.1, 15.1 | 3.2, 15.9 |
+| contacts vehicle–vehicle (with a two-wheeler) / vehicle–walker | 9 (5) / 2 | 9 (2) / 1 | 15 (5) / 1 |
+| … per 100 vehicle km | 15.6 (over 70 km) | 14.7 (over 68 km) | 23.5 (over 68 km) |
+| keeper: dead ends moved / fell / replaced (TM removals) | 46 / 32 / 19 | 49 / 21 / 17 | 47 / 28 / 19 |
+| ego put back (teleports) | 0 | 0 | 0 |
+| wall ms per step (whole drive) | 130.2 (100.6–171.8) | 143.4 (115.2–177.6) | 72.7 (52.0–89.0) |
+| filter: ms per step() call | — | 20.27 (17.80–23.02) | 12.48 (10.69–13.50) |
+| filter: share of updates in junction mode | — | 32 % (27 %–38 %) | 31 % (29 %–35 %) |
+
+Twice the traffic (120 vehicles, seeds 1–3):
+
+| measure | base-n120 (3 runs) | tm-n120 (3 runs) |
+|---|---|---|
+| two-wheeler \|offset\| from the nearest lane centre, median m | 0.02 (0.02–0.02) | 0.40 (0.40–0.40) |
+| … 90th percentile, m | 0.55 (0.47–0.59) | 0.80 (0.80–0.80) |
+| … share > 0.5 m | 11.5 % (9.5 %–13.9 %) | 22.6 % (20.9 %–24.3 %) |
+| … share > 1.0 m | 5.1 % (4.2 %–6.4 %) | 3.4 % (3.0 %–4.2 %) |
+| share of time between two same-direction lanes | 2.25 % (1.93 %–2.45 %) | 0.78 % (0.46 %–1.15 %) |
+| share on the near (kerb) side, > 0.25 m | 9 % (8 %–10 %) | 71 % (68 %–74 %) |
+| passes by two-wheelers: close (filter-through) / in the next lane | 4 / 13 | 12 / 6 |
+| … per 100 two-wheeler km (close, all) | 6.0, 25.5 | 18.6, 27.9 |
+| contacts vehicle–vehicle (with a two-wheeler) / vehicle–walker | 28 (14) / 3 | 32 (15) / 3 |
+| … per 100 vehicle km | 23.8 (over 130 km) | 26.6 (over 131 km) |
+| keeper: dead ends moved / fell / replaced (TM removals) | 99 / 45 / 26 | 79 / 43 / 25 |
+| ego put back (teleports) | 0 | 0 |
+| wall ms per step (whole drive) | 68.5 (54.0–81.2) | 65.4 (56.7–71.2) |
+| filter: ms per step() call | — | 16.23 (14.47–17.34) |
+| filter: share of updates in junction mode | — | 31 % (30 %–31 %) |
+
+**Which design, and the default.** `own` spreads the two-wheelers widest (10.5 % of the time more than 1 m off a
+lane centre, 14.5 close passes per 100 two-wheeler km) but its contacts rose from 18.1 to 23.9 per 100 vehicle km and
+almost twice as many vehicles fell through the generated mesh (126 against 66: its pure pursuit cuts the imported
+world's tight junction corners, where the traffic manager's path does not) — and it gives up the traffic manager's
+lights, signs and junction negotiation for Falcon's simpler versions. `tm` multiplies the close passes by 2.4 (9.9 against 4.1
+per 100 two-wheeler km; 3.1× at 120 vehicles), moves the two-wheelers to the kerb side (73 % of the time against 9 %),
+and at the profile's 60 vehicles had **fewer** contacts (15.2 against 18.1 per 100 vehicle km), fewer falls (50
+against 66), fewer traffic-manager removals (33 replaced against 42) and the same ego put-backs (2 and 2). So `tm` is
+the design and the default, and the Indian profile turns it on for its two-wheelers. At 120 vehicles its contacts were
+26.6 against 23.8 per 100 vehicle km (35 against 31 events — within the run-to-run spread; pooled over both densities
+both are 20.8). Autorickshaws are **not** in the default: filtering them raised contacts by half on the same seeds
+(23.5 against 14.7 per 100 vehicle km) for no more passes.
+
+**Limits** (measured or by construction):
+
+- The effect is modest on this world: half of its road length has one lane per direction (3.4 m), where a
+  two-wheeler cannot pass a car without the oncoming lane, which the chooser never uses; and a third of the updates
+  are within 5 m of a junction, where the vehicle is back on its lane centre. Lane-line riding stays rare: between two
+  same-direction lanes 0.26 % of the time with `tm` — **less** than without it (1.69 %), because the traffic manager's
+  own lane changes (which cross the line in transit) are off for filtering vehicles.
+- The traffic manager's other vehicles still look along their own lane's centre: one behind a stopped two-wheeler
+  that sits off its lane centre may not see it (several of the `tm` contacts are a stand-in creeping into a stopped
+  two-wheeler); in junctions the two-wheelers come back to the centre but are not always there yet.
+- Every buffer, weight, rate and the home offset is a heuristic; the pass and contact measures are this document's
+  definitions; 6 drives of 60 s give 10–25 contacts per variant, so differences of a few events are noise.
+- No paved shoulder exists in this world: the shoulder path (LaneType.Shoulder counted as same-direction width) is
+  not exercised.
+- Deterministic with the seed by construction (vehicles taken in the order they were added, the `own` controller's
+  choices from a generator seeded with the run's seed and the vehicle's index) and in the fake carla (tests). On the
+  server, CARLA's vehicle physics bounds it ([scenarios](scenarios.md)): two sessions' `base` drives of seeds 1–4
+  stayed within 1 cm of each other for the full 60 s in three seeds and diverged at 19.5 s in the fourth. A repeat of
+  a `tm` drive on the server was not run (the shared scratch server's port was busy with another job both times).
+
 ## Limits
 
 - Stand-ins and proxies have the wrong appearance; only their size, motion and place are Indian.

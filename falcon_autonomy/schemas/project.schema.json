@@ -96,7 +96,18 @@
         "vehicles": {"type": "integer", "minimum": 0, "maximum": 500},
         "walkers": {"type": "integer", "minimum": 0, "maximum": 500},
         "fleet": {"type": "object", "description": "Share of each vehicle class (weights, normalised at run time).", "additionalProperties": {"type": "number", "minimum": 0}},
-        "behaviour": {"type": "object"}
+        "behaviour": {"type": "object"},
+        "lateral_filtering": {
+          "type": "object",
+          "description": "Background two-wheelers (and, when named, the autorickshaw stand-ins) that filter laterally — ride the lane line, pass between vehicles, keep to the kerb side — instead of keeping to the lane centre (workers.lateral; docs/indian-assets.md). Absent or enabled false: off. controller 'tm': the traffic manager's per-vehicle lane offset with the chooser's clearance (the default); 'own': driven off the autopilot by Falcon's own pure-pursuit controller (kept for comparison).",
+          "required": ["enabled"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "vehicles": {"type": "array", "items": {"enum": ["motorcycle", "bicycle", "autorickshaw"]}, "minItems": 1, "uniqueItems": true},
+            "controller": {"enum": ["tm", "own"]}
+          },
+          "additionalProperties": false
+        }
       }
     },
     "pose": {

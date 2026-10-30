@@ -120,6 +120,8 @@ def main_recon(argv) -> int:
     t.add_argument('--init', choices=('auto', 'lidar', 'points', 'sfm', 'range', 'random'))
     t.add_argument('--camera')
     t.add_argument('--device')
+    t.add_argument('--raster-backend', choices=('auto', 'torch', 'triton'),
+                   help='the rasteriser: Triton kernels on a CUDA GPU (auto when Triton imports) or plain PyTorch')
     t.add_argument('--no-masks', action='store_true', help='learn from every pixel (moving objects included)')
     t.add_argument('--no-semantic', action='store_true', help='do not vote semantic classes')
     dc = sub.add_parser('from-dashcam', help='pose a dashcam segment (visual odometry + its GPS), reconstruct it and '
@@ -218,7 +220,7 @@ def main_recon(argv) -> int:
             over = {'iterations': a.iterations, 'width': a.width, 'holdout': a.holdout, 'seed': a.seed,
                     'sh_degree': a.sh_degree, 'max_gaussians': a.max_gaussians, 'every': a.every,
                     'voxel_m': a.voxel_m, 'sky_points': a.sky_points, 'gpu_memory_fraction': a.gpu_memory_fraction,
-                    'init': a.init, 'camera': a.camera, 'device': a.device}
+                    'init': a.init, 'camera': a.camera, 'device': a.device, 'raster_backend': a.raster_backend}
             s.update({k: v for k, v in over.items() if v is not None})
             if a.no_masks:
                 s['masks'] = False

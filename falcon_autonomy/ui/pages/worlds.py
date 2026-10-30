@@ -579,15 +579,58 @@ class TrafficEditor(Section):
             sb.editingFinished.connect(lambda k=k, w=sb: self.set(['traffic_profiles', i, 'behaviour', k],
                                                                    w.value()))
             self.form.row(text, sb)
+        self.lateral_rows(i, tp)
         notes = []
         if tp.get('fleet_source'):
             notes.append(f'Fleet shares: {tp["fleet_source"]}.')
         if tp.get('fleet_labels'):
             notes.append('CARLA 0.9.16 has no autorickshaw: the Microlino, the nearest vehicle in measured size, '
                          'stands in with a three-wheeler\'s top speed and acceleration, labelled "autorickshaw '
-                         '(stand-in)" (docs/indian-assets.md). Lane-splitting by two-wheelers is not reproduced by the '
-                         'traffic manager.')
+                         '(stand-in)" (docs/indian-assets.md).')
+        if not (tp.get('lateral_filtering') or {}).get('enabled'):
+            notes.append('The traffic manager keeps vehicles on their lane centres: turn on lateral filtering for '
+                         'two-wheelers that ride the lane line and pass between vehicles.')
         self.notes.setText(' '.join(notes))
+
+    LATERAL_TIP = ('Two-wheelers choose their own lateral position over the same-direction lanes every 0.1 s: they '
+                   'ride the lane line, pass between vehicles and keep to the kerb side, never into oncoming lanes; '
+                   'back on the lane centre before junctions. The chooser\'s buffers and weights are heuristics '
+                   '(docs/indian-assets.md has what was measured).')
+
+    def lateral_rows(self, i, tp):
+        """Lateral filtering (workers.lateral): on/off for two-wheelers, the autorickshaw stand-ins too, and the
+        controller."""
+        from PyQt6.QtWidgets import QCheckBox
+        from ...core.traffic import LATERAL_DEFAULTS
+        cur = dict(LATERAL_DEFAULTS, **(tp.get('lateral_filtering') or {}))
+        on = QCheckBox('Two-wheelers filter between lanes')
+        on.setChecked(bool(cur['enabled']))
+        on.setToolTip(self.LATERAL_TIP)
+        auto = QCheckBox('Autorickshaws filter too')
+        auto.setChecked('autorickshaw' in cur['vehicles'])
+        ctl = QComboBox()
+        ctl.addItem('Traffic manager, lane offset', 'tm')
+        ctl.addItem('Falcon\'s own controller', 'own')
+        ctl.setCurrentIndex(max(ctl.findData(cur['controller']), 0))
+        ctl.setToolTip('Traffic manager: routing, lights and speed stay the traffic manager\'s; the offset and a '
+                       'clearance cap are Falcon\'s (the default, measured best). Own: driven off the autopilot by '
+                       'pure pursuit (kept for comparison).')
+
+        def apply(*_):
+            kinds = ['motorcycle', 'bicycle'] + (['autorickshaw'] if auto.isChecked() else [])
+            self.set(['traffic_profiles', i, 'lateral_filtering'],
+                     {'enabled': on.isChecked(), 'vehicles': kinds, 'controller': ctl.currentData()})
+            for x in (auto, ctl):
+                set_enabled(x, on.isChecked(), 'Turn lateral filtering on first.')
+        on.toggled.connect(apply)
+        auto.toggled.connect(apply)
+        ctl.activated.connect(apply)
+        self.lateral_on, self.lateral_auto, self.lateral_ctl = on, auto, ctl
+        for x in (auto, ctl):
+            set_enabled(x, on.isChecked(), 'Turn lateral filtering on first.')
+        self.form.row('Lateral filtering', on, 'off: every vehicle keeps to its lane centre (CARLA\'s traffic manager)')
+        self.form.row('', auto)
+        self.form.row('Controller', ctl)
 
     def set(self, path, value):
         cur = self.page.win.project.doc

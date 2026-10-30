@@ -221,6 +221,9 @@ class TrafficKeeper:
         cl = getattr(self.w, 'class_limits', None)
         if cl is not None and a.id in cl.rows and sc is None:
             cl.update(a.id, force=True)
+        lat = getattr(self.w, 'lateral', None)
+        if lat is not None:                  # a vehicle that filters laterally: from its lane centre again
+            lat.reset(a)
 
     def _move(self, a, row, loc, why: str, sim_t: float, ego_tf, strict_view=True):
         carla = self.w.carla
@@ -289,6 +292,9 @@ class TrafficKeeper:
             self.w.own(a)
             self.add(a, row['beh'], row['diff'], row['kind'], row['cls'], row['label'])
             self.vehicles -= 1               # the same vehicle of the profile, not one more
+            lat = getattr(self.w, 'lateral', None)
+            if lat is not None:              # it filtered laterally: its replacement does too
+                lat.adopt(aid, a)
             a.set_autopilot(True, self.w.tm.get_port())
             if row['cls']:                   # a stand-in: its class's label and limits again
                 from .scene import class_limits

@@ -381,6 +381,29 @@ def test_rig_editor(window, qapp):
     assert len(rig['sensors']) == 1
 
 
+def test_traffic_profile_lateral_filtering(window, qapp):
+    """The traffic editor turns lateral filtering on (two-wheelers, then autorickshaws too, the controller) and off."""
+    page = window.go('worlds')
+    ed = page.traffic_editor
+    tp = window.project.item('traffic_profiles', ed.pid)
+    assert 'lateral_filtering' not in tp and not ed.lateral_on.isChecked() and not ed.lateral_auto.isEnabled()
+    assert 'turn on lateral filtering' in ed.notes.text()
+    ed.lateral_on.setChecked(True)
+    pump(qapp, timeout=0.2)
+    tp = window.project.item('traffic_profiles', ed.pid)
+    assert tp['lateral_filtering'] == {'enabled': True, 'vehicles': ['motorcycle', 'bicycle'], 'controller': 'tm'}
+    ed.show_profile(ed.pid)
+    ed.lateral_auto.setChecked(True)
+    pump(qapp, timeout=0.2)
+    tp = window.project.item('traffic_profiles', ed.pid)
+    assert tp['lateral_filtering']['vehicles'] == ['motorcycle', 'bicycle', 'autorickshaw']
+    from falcon_autonomy.core.project import validate
+    assert validate(window.project.doc) == []
+    window.undo.undo()
+    window.undo.undo()
+    assert 'lateral_filtering' not in window.project.item('traffic_profiles', ed.pid)
+
+
 def test_datasets_tab_and_browser_layers(window, qapp, tmp_path):
     window.project.path = str(tmp_path / 'proj.falcon.json')
     window.save()

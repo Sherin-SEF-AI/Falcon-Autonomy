@@ -14,7 +14,9 @@ The recipe is the 3DGS paper's (Kerbl et al. 2023, §5–7), at a shorter schedu
   opacities reset every 3000 steps within that window.
 
 The paper trains 30 000 steps; the default here is 7000 (the paper reports its 7000-step results too, somewhat below
-its 30 000-step ones) because this rasteriser is plain PyTorch. Every setting is in run.json.
+its 30 000-step ones), chosen when the rasteriser was plain PyTorch; with the Triton backend (raster_backend, 'auto':
+Triton on a CUDA GPU when it imports, else PyTorch) a step is several times faster (measured in
+docs/reconstruction.md), which makes longer schedules affordable. Every setting is in run.json.
 
 Held out: every holdout-th frame (default 8: frames 0, 8, 16, …, the Mip-NeRF 360 convention the paper follows) is
 never trained on and is what the evaluation scores. Semantic classes: when the source has semantic labels (Falcon
@@ -27,13 +29,16 @@ GPU: a CUDA training is a needs_gpu job (job_spec()) and, run from the CLI, take
 
 Reproducibility: seeded (torch, numpy, the image order, the splits' samples). On the CPU with one thread two runs
 give the same Gaussians bit for bit (tested); with several CPU threads the backward pass's sums are accumulated in a
-varying order, so runs differ in the last bits. On CUDA two 1500-step runs with density control were identical bit
-for bit (measured on one machine, driver and torch version; docs/reconstruction.md) — another GPU or torch may differ.
+varying order, so runs differ in the last bits. On CUDA repeated runs with density control were identical bit for
+bit with either rasteriser backend (two 1500-step PyTorch runs; six 7000-step Triton runs under different loads from
+other GPU jobs; measured on one machine, driver, torch and Triton version: docs/reconstruction.md) — another GPU or
+version may differ.
 
 Outputs (the reconstruction folder): point_cloud.ply (+ extras.npz), views.json (every frame's pose and split),
 curves.jsonl (the training curve), evaluation.json (held-out PSNR / SSIM / depth), renders/ (a few held-out frames
 beside their renders), run.json (provenance: the source's files hashed, settings, seed, versions, device, timings,
-peak memory).
+peak memory, and 'raster': the rasteriser backend requested and the one that ran, Triton's version, the early-stop
+transmittance).
 """
 from __future__ import annotations
 
@@ -57,7 +62,7 @@ DEFAULTS = {
     'lr_scales': 5e-3, 'lr_quats': 1e-3, 'densify_from': 500, 'densify_until': None, 'densify_every': 100,
     'grad_threshold': 2e-4, 'percent_dense': 0.01, 'opacity_reset_every': 3000, 'sh_up_every': 1000,
     'eval_every': 1000, 'log_every': 50, 'masks': True, 'semantic': True, 'every': 1, 'camera': None,
-    'gpu_memory_fraction': 0.6, 'tile': 8, 'renders': 4, 'background': [0.0, 0.0, 0.0],
+    'gpu_memory_fraction': 0.6, 'tile': 8, 'renders': 4, 'background': [0.0, 0.0, 0.0], 'raster_backend': 'auto',
 }
 
 
@@ -90,6 +95,8 @@ def normalise(s: dict | None) -> dict:
         out[k] = int(out[k])
     if not 0 <= out['sh_degree'] <= 3:
         raise ReconError('sh_degree is 0–3')
+    if out['raster_backend'] not in ('auto', 'torch', 'triton'):
+        raise ReconError('raster_backend is auto, torch or triton')
     if out['iterations'] < 1:
         raise ReconError('iterations must be at least 1')
     if out['densify_until'] is None:
@@ -165,13 +172,21 @@ def vote_semantics(gs: Gaussians, views: dict, n_classes: int = 30, cancel=None)
 
 def train(source, out_dir: str, settings: dict | None = None, emitter=None, cancel=None, argv=None) -> dict:
     """Train a reconstruction of `source` ('KIND:PATH', core.recon.data.parse_source) into out_dir; returns the
-    summary (also in run.json)."""
+    summary (also in run.json). Every render of the run — training steps, held-out checks, the semantic vote and
+    the evaluation — uses the raster_backend setting (raster.resolve_backend())."""
+    from .raster import default_backend
+    s = normalise(settings)
+    with default_backend(s['raster_backend']):
+        return _train(source, out_dir, s, emitter, cancel, argv)
+
+
+def _train(source, out_dir: str, s: dict, emitter, cancel, argv) -> dict:
     from . import evaluate as EV
     from .. import provenance as PV
     from ..paths import ensure_dir
+    from .raster import T_STOP, resolve_backend, triton_status
     from .scene import pick_device, write_views
     em = emitter or _Quiet()
-    s = normalise(settings)
     out_dir = ensure_dir(os.path.abspath(os.path.expanduser(out_dir)))
     kind, path, opts = D.parse_source(source) if isinstance(source, str) else (source[0], source[1], {})
     if s['camera']:
@@ -183,6 +198,10 @@ def train(source, out_dir: str, settings: dict | None = None, emitter=None, canc
     if not train_f:
         raise ReconError('no frames to train on')
     dev = pick_device(s['device'])
+    try:
+        backend = resolve_backend(s['raster_backend'], dev, torch.float32, s['tile'])
+    except ValueError as e:
+        raise ReconError(str(e)) from None
     torch.manual_seed(s['seed'])
     np.random.seed(s['seed'] % 2 ** 32)
     gen = torch.Generator(device=dev)
@@ -194,6 +213,8 @@ def train(source, out_dir: str, settings: dict | None = None, emitter=None, canc
     run = PV.new_run('recon.train', argv or [], s['seed'], dict(s, source=f'{kind}:{path}'),
                      {f'source/{k}': v for k, v in (cap.meta.get('inputs') or {}).items()})
     run['schema_recon'] = SCHEMA
+    run['raster'] = {'requested': s['raster_backend'], 'backend': backend, 'triton': triton_status()[1],
+                     'early_stop_transmittance': T_STOP if backend == 'triton' else None}
     run['source'] = dict(cap.summary(), meta={k: v for k, v in cap.meta.items() if k not in ('inputs', 'sensor')})
     run_path = os.path.join(out_dir, 'run.json')
     PV.write_json(run_path, run)
@@ -312,7 +333,8 @@ def train(source, out_dir: str, settings: dict | None = None, emitter=None, canc
                        'torch': torch.__version__, 'peak_gpu_memory_gib': None if peak is None else round(peak, 3),
                        'threads': torch.get_num_threads()},
                determinism='CPU with one thread: bit for bit (tested); several CPU threads: not (sums accumulate in '
-                           'a varying order); CUDA: bit for bit as measured on the reference machine')
+                           'a varying order); CUDA: bit for bit as measured on the reference machine (either '
+                           'rasteriser backend)')
     run['outputs'] = PV.hash_tree(out_dir, skip=('run.json',))
     PV.write_json(run_path, run)
     return summary

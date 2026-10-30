@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Lateral filtering for two-wheelers** (`workers/lateral.py`, a traffic profile's `lateral_filtering`, Worlds ▸
+  traffic profile): background two-wheelers choose their own lateral position over the same-direction lanes every
+  0.1 s — a gap-seeking chooser over 0.4 m strips with an anisotropic repulsion field and a kerb-side home offset
+  (left in left-hand traffic); heuristics, recorded in run.json. Measured first: CARLA 0.9.16's
+  `TrafficManager.vehicle_lane_offset` tracks ±2.4 m, but the traffic manager's collision detection ignores the offset
+  both ways (stops behind a car it would clear, drives into one it overlaps). The default `tm` controller keeps the
+  traffic manager for routing, lights and speed, caps the speed with its own clearance off the lane centre and switches
+  the traffic manager's vehicle detection off only while filtering past an object on the lane centre. On central
+  Bengaluru (6 × 60 s, 60 vehicles): close passes 2.4× (9.9 against 4.1 per 100 two-wheeler km), contacts 15.2
+  against 18.1 per 100 vehicle km, falls 50 against 66, ego put-backs equal; Falcon's own pure-pursuit controller
+  (`own`, kept for comparison) had 23.9 contacts per 100 km and twice the falls. On by default in the Indian profile
+  for two-wheelers (not autorickshaws: their contacts rose by half). actors.jsonl `lateral`, frames.jsonl `lateral`,
+  run.json `traffic.lateral_filtering`; docs/indian-assets.md.
+
 ## 2.3.0 — a living Bengaluru: city, speed limits, traffic kept, night, longer dashcam routes
 
 - **Longer dashcam routes and rain**: a 10-minute, 8.8 km stretch of the user's daylight footage imported (from a

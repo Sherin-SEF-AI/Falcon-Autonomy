@@ -14,6 +14,10 @@ EVERY_S of simulated time as the vehicle moves:
 set_desired_speed replaces the traffic manager's limit-relative target (vehicle_percentage_speed_difference), so the
 difference is applied here. A call is made only when the target moves by more than RESEND_KMH.
 
+Lateral filtering (workers.lateral) shares it: a vehicle filtering off its lane centre has the traffic manager's
+vehicle detection off, and the filter's clearance cap (apply_cap) lowers the target sent; a vehicle the filter drives
+itself (its 'own' controller, manual) has its target computed here (base) but never sent.
+
 Made by scene.load_map for an OpenDRIVE world (cfg['speed_limits'] != 'carla'); run.json traffic.speed_source says
 what was used: the file's records, how many vehicles and samples took their limit from which source, the breaker
 slow-downs.
@@ -44,6 +48,9 @@ class SpeedControl:
         self.in_zone = set()
         self.slowed_for = {}             # 'breaker' | 'limit ahead' → updates in which it lowered the target
         self.roles = {}                  # role → vehicles held (ever)
+        self.base = {}                   # actor id → the last target computed (km/h), before any cap
+        self.caps = {}                   # actor id → a cap on it (km/h): workers.lateral's clearance
+        self.manual = set()              # actors driven off the autopilot (workers.lateral 'own'): never sent
         self.removed = 0                 # of them, gone during the run (a dead end, the run's own removal)
 
     def add(self, a, diff_pct: float = 0.0, top_kmh: float | None = None, role: str = 'traffic'):
@@ -134,6 +141,7 @@ class SpeedControl:
             self.drop(aid)               # removed by the server (a dead end) or by the run
             return
         target, src, why = got
+        self.base[aid] = target
         self.samples[src] += 1
         if why is not None:
             self.slowed_for[why] = self.slowed_for.get(why, 0) + 1
@@ -141,9 +149,18 @@ class SpeedControl:
         if slowed and aid not in self.in_zone:
             self.slowed[aid] = self.slowed.get(aid, 0) + 1
         (self.in_zone.add if slowed else self.in_zone.discard)(aid)
+        self._send(aid, row)
+
+    def _send(self, aid, row):
+        """The target (capped) to the traffic manager when it moved by more than RESEND_KMH."""
         tm = self.w.tm
-        if tm is None:
+        if tm is None or aid in self.manual or aid not in self.base:
             return
+        a = row[0]
+        target = self.base[aid]
+        cap = self.caps.get(aid)
+        if cap is not None:
+            target = min(target, cap)
         if row[3] is None or abs(target - row[3]) > RESEND_KMH:
             try:
                 tm.set_desired_speed(a, target)
@@ -152,7 +169,22 @@ class SpeedControl:
                 return
             row[3] = target
 
+    def apply_cap(self, aid, cap_kmh: float | None):
+        """A cap on the vehicle's target (None: none), sent at once against the last target computed."""
+        row = self.rows.get(aid)
+        if row is None:
+            return
+        if cap_kmh is None:
+            if self.caps.pop(aid, None) is None:
+                return
+        else:
+            self.caps[aid] = max(0.0, float(cap_kmh))
+        self._send(aid, row)
+
     def drop(self, aid):
+        self.base.pop(aid, None)
+        self.caps.pop(aid, None)
+        self.manual.discard(aid)
         if self.rows.pop(aid, None) is not None:
             self.removed += 1
 
