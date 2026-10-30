@@ -22,6 +22,25 @@ DEFAULT_TM_PORT = 8310
 RESERVED_PORTS = frozenset(list(range(2000, 2011)) + [8100])
 SERVER_MEMORY_GB = 12.0
 MEMORY_RESERVE_GB = 2.0          # left free for the desktop and the GUI whenever Falcon starts something heavy
+# the assistant (docs/assistant.md): off and without consent until the user turns it on and accepts its notice; the
+# key is never here (assistant.keystore). Prices: $ per million tokens (input, output), the user's own table — the
+# defaults are what console.groq.com/docs/models listed on 2026-10-30.
+ASSISTANT_DEFAULTS = {
+    'enabled': False,
+    'consent': 0,                        # the version of the notice the user accepted (0: none)
+    'consent_time': '',
+    'base_url': 'https://api.groq.com/openai/v1',
+    'main_model': 'openai/gpt-oss-120b',
+    'fast_model': 'openai/gpt-oss-20b',
+    'temperature': 0.3,
+    'reasoning_effort': 'medium',
+    'mode': 'ask',
+    'preview': False,                    # show what will be sent before each message goes
+    'prices': {'openai/gpt-oss-120b': [0.15, 0.60], 'openai/gpt-oss-20b': [0.075, 0.30],
+               'qwen/qwen3.8-27b': [0.80, 4.00]},
+    'models': [],                        # the server's last model list ({id, context_window}), from Refresh
+    'models_checked': '',
+}
 
 DEFAULTS = {
     'carla_root': '',
@@ -42,6 +61,7 @@ DEFAULTS = {
     'cloud_llm': None,                   # never set unless the user configures and approves one
     'notify_jobs': True,                 # a desktop notification when a long job ends while the window is in the back
     'hil_device': {},                    # the HIL device: address, ports, SSH user and key path (core.hil); no password
+    'assistant': copy.deepcopy(ASSISTANT_DEFAULTS),
 }
 
 

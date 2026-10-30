@@ -4,8 +4,8 @@ Machine settings, kept in the user's config folder ($XDG_CONFIG_HOME/FalconAuton
 (a Jetson's credentials) are set where they are used and stored apart, never shown."""
 from __future__ import annotations
 
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLineEdit, QMessageBox,
-                             QSpinBox)
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLineEdit,
+                             QMessageBox, QSpinBox)
 
 from ...core.paths import tilde
 from ...core.settings import RESERVED_PORTS
@@ -93,11 +93,230 @@ class SettingsPage(Page):
                   'machine')
         look.add(h)
         v.addWidget(look)
+        self._assistant_section(v)
         b = QHBoxLayout()
         b.addWidget(button('Apply', self.apply, role='primary'))
         b.addStretch(1)
         v.addLayout(b)
         v.addStretch(1)
+
+    # ------------------------------------------------------------------ the assistant (docs/assistant.md)
+    def _assistant_section(self, v):
+        from PyQt6.QtWidgets import QPlainTextEdit, QToolButton
+        from ...assistant.agent import MODE_TEXT, MODES
+        from ...assistant.provider import REASONING_EFFORTS, format_prices
+        from .. import icons
+        svc = self.win.assistant
+        c = svc.cfg()
+        sec = Section('Assistant', 'An agent that uses Falcon through its own tools, on a model server with your own '
+                                   'API key (Groq by default: get a key at console.groq.com). It sends text only — '
+                                   'never images, video, lidar, audio or anything from your dashcam footage — and '
+                                   'nothing at all before you turn it on and accept its notice. The key is kept in '
+                                   'the system keyring or your secrets file, never in a project, a log or a report.')
+        self.assistant_section = sec
+        f = Form()
+        self.as_on = QCheckBox('Use the assistant')
+        self.as_on.setChecked(bool(c['enabled']))
+        self._row(f, 'Assistant', self.as_on, 'off: nothing is ever sent')
+        kr = QHBoxLayout()
+        self.as_key = QLineEdit()
+        self.as_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.as_key.setAccessibleName('API key')
+        self.as_key.setProperty('mono', True)
+        self.as_eye = QToolButton()
+        self.as_eye.setCheckable(True)
+        self.as_eye.setIcon(icons.icon('eye', 14))
+        self.as_eye.setToolTip('Show or hide what you type (a stored key is never shown)')
+        self.as_eye.toggled.connect(lambda on: (self.as_key.setEchoMode(
+            QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password),
+            self.as_eye.setIcon(icons.icon('eye-off' if on else 'eye', 14))))
+        kr.addWidget(self.as_key, 1)
+        kr.addWidget(self.as_eye)
+        kr.addWidget(button('Test connection', self.assistant_test))
+        self.as_remove = button('Remove', self.assistant_remove_key, tip='Delete the stored key')
+        kr.addWidget(self.as_remove)
+        self._row(f, 'API key', kr, 'saved by Apply')
+        self.as_url = QLineEdit(c['base_url'])
+        self.as_url.setPlaceholderText('https://api.groq.com/openai/v1')
+        self._row(f, 'Server', self.as_url, 'any OpenAI-compatible chat-completions API')
+        mr = QHBoxLayout()
+        self.as_main = QComboBox()
+        self.as_fast = QComboBox()
+        for cb, cur in ((self.as_main, c['main_model']), (self.as_fast, c['fast_model'])):
+            cb.setEditable(True)
+            cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+            ids = [m['id'] for m in c.get('models') or [] if isinstance(m, dict) and m.get('id')]
+            cb.addItems(ids if cur in ids else [cur] + ids)
+            cb.setCurrentText(cur)
+        mr.addWidget(self.as_main, 1)
+        mr.addWidget(button('Refresh', self.assistant_refresh, tip='List the models the server offers now'))
+        self._row(f, 'Main model', mr, 'plans, calls Falcon\'s tools, reasons over results')
+        self._row(f, 'Fast model', self.as_fast, 'short answers: summaries, explaining an error')
+        self.as_temp = QDoubleSpinBox()
+        self.as_temp.setRange(0.0, 2.0)
+        self.as_temp.setSingleStep(0.1)
+        self.as_temp.setDecimals(1)
+        self.as_temp.setValue(float(c['temperature']))
+        self._row(f, 'Temperature', self.as_temp, 'lower is steadier')
+        self.as_effort = QComboBox()
+        self.as_effort.addItems(list(REASONING_EFFORTS))
+        self.as_effort.setCurrentText(c['reasoning_effort'])
+        self._row(f, 'Reasoning effort', self.as_effort, 'for models that take it (gpt-oss, Qwen 3)')
+        self.as_mode = QComboBox()
+        for m in MODES:
+            self.as_mode.addItem(MODE_TEXT[m], m)
+        self.as_mode.setCurrentIndex(MODES.index(c['mode']) if c['mode'] in MODES else 0)
+        self._row(f, 'Permission mode', self.as_mode, 'Ask: every change waits for you; trash always asks')
+        self.as_prices = QPlainTextEdit(format_prices(c.get('prices') or {}))
+        self.as_prices.setFixedHeight(64)
+        self.as_prices.setToolTip('One line per model: the model, then $ per million input and output tokens. Your '
+                                  'own table: the cost shown is estimated from it.')
+        self._row(f, 'Prices', self.as_prices, '$ per million tokens, input and output — your table; costs shown '
+                  'are estimates from it')
+        nr = QHBoxLayout()
+        self.as_notice = label('', muted=True, wrap=True)
+        nr.addWidget(self.as_notice, 1)
+        nr.addWidget(button('Read the notice…', self.assistant_notice))
+        self._row(f, 'What is sent', nr)
+        self.as_status = label('', muted=True, wrap=True)
+        self._row(f, '', self.as_status)
+        sec.add(f)
+        v.addWidget(sec)
+        self._assistant_refresh_state()
+
+    def _assistant_refresh_state(self):
+        svc = self.win.assistant
+        has = svc.keys.has()
+        self.as_key.setPlaceholderText(f'stored in {svc.keys.where()} — type to replace' if has else
+                                       'paste your key (gsk_…)')
+        self.as_remove.setEnabled(has)
+        c = svc.cfg()
+        self.as_notice.setText(f'accepted {c["consent_time"].replace("T", " ").rstrip("Z")} UTC' if svc.consented()
+                               else 'not accepted yet: nothing is sent until you do')
+
+    def show_assistant(self):
+        """Scroll to the Assistant section (from the Assistant panel) and put the keyboard where setup continues."""
+        from PyQt6.QtWidgets import QScrollArea
+        p = self.assistant_section.parentWidget()
+        while p is not None and not isinstance(p, QScrollArea):
+            p = p.parentWidget()
+        if p is not None:
+            p.ensureWidgetVisible(self.assistant_section, 0, 40)
+        (self.as_key if self.as_on.isChecked() and not self.win.assistant.keys.has() else self.as_on).setFocus()
+
+    def _assistant_gate(self) -> bool:
+        from ..assistant_dock import ensure_consent
+        if ensure_consent(self, self.win.assistant):
+            self.as_on.setChecked(True)
+            self._assistant_refresh_state()
+            return True
+        self.as_status.setText('Nothing was sent: the notice was not accepted.')
+        return False
+
+    def _assistant_call(self, fn, done):
+        from ...assistant.provider import ProviderError
+        key = self.as_key.text().strip() or None
+        url = self.as_url.text().strip() or None
+        if not self._assistant_gate():
+            return
+        if key is None and not self.win.assistant.keys.has():
+            self.as_status.setText('Paste your key first.')
+            return
+        self.as_status.setText('asking the server…')
+
+        def err(e):
+            self.as_status.setText(('⚠ ' + e.message) if isinstance(e, ProviderError) else
+                                   f'⚠ {type(e).__name__}')
+        tasks.run(self, lambda: fn(key, url), done, err)
+
+    def assistant_test(self):
+        self._assistant_call(lambda k, u: self.win.assistant.test_connection(k, u),
+                             lambda msg: (self.as_status.setText('✓ ' + msg), self._fill_models()))
+
+    def assistant_refresh(self):
+        self._assistant_call(lambda k, u: self.win.assistant.models(k, u),
+                             lambda ms: (self._fill_models(), self.as_status.setText(
+                                 f'✓ {len(ms)} models listed by the server')))
+
+    def _fill_models(self):
+        c = self.win.assistant.cfg()
+        ids = [m['id'] for m in c.get('models') or [] if isinstance(m, dict) and m.get('id')]
+        for cb in (self.as_main, self.as_fast):
+            cur = cb.currentText()
+            cb.clear()
+            cb.addItems(ids if cur in ids else [cur] + ids)
+            cb.setCurrentText(cur)
+            cb.setToolTip('' if cur in ids else f'{cur} is not among the models the server lists')
+
+    def assistant_remove_key(self):
+        svc = self.win.assistant
+        if QMessageBox.question(self, 'Remove the key', f'Delete the API key stored in {svc.keys.where()}?') \
+                != QMessageBox.StandardButton.Yes:
+            return
+        svc.keys.remove()
+        self.as_status.setText('Key removed.')
+        self._assistant_refresh_state()
+        self._assistant_changed()
+
+    def assistant_notice(self):
+        from ..assistant_dock import ConsentDialog
+        svc = self.win.assistant
+        d = ConsentDialog(self)
+        if svc.consented():
+            d.ok.setText('Keep it on')
+        if d.exec() == QDialog.DialogCode.Accepted:
+            if not svc.consented():
+                svc.accept_notice()
+            svc.set_cfg(enabled=True)
+            self.as_on.setChecked(True)
+            self._assistant_refresh_state()
+            self._assistant_changed()
+
+    def _assistant_changed(self):
+        if hasattr(self.win, 'assistant_panel'):
+            self.win.assistant_panel.refresh_state()
+            self.win.refresh_assistant_badge()
+
+    def _assistant_values(self):
+        """The section's values, checked: (dict, None) or (None, why)."""
+        from ...assistant.provider import parse_prices
+        try:
+            prices = parse_prices(self.as_prices.toPlainText())
+        except ValueError as e:
+            return None, f'Prices: {e}'
+        url = self.as_url.text().strip() or 'https://api.groq.com/openai/v1'
+        if not url.startswith(('https://', 'http://')):
+            return None, 'Server: an http(s) address, e.g. https://api.groq.com/openai/v1'
+        main, fast = self.as_main.currentText().strip(), self.as_fast.currentText().strip()
+        if not main or not fast:
+            return None, 'Choose a main and a fast model.'
+        return {'base_url': url, 'main_model': main, 'fast_model': fast, 'temperature': self.as_temp.value(),
+                'reasoning_effort': self.as_effort.currentText(), 'mode': self.as_mode.currentData(),
+                'prices': prices}, None
+
+    def _assistant_apply(self, vals) -> bool:
+        svc = self.win.assistant
+        on = self.as_on.isChecked()
+        if on and not svc.consented():
+            from ..assistant_dock import ConsentDialog
+            if ConsentDialog(self).exec() != QDialog.DialogCode.Accepted:
+                on = False
+                self.as_on.setChecked(False)
+            else:
+                svc.accept_notice()
+        key = self.as_key.text().strip()
+        if key:
+            try:
+                svc.keys.set(key)
+            except ValueError as e:
+                QMessageBox.warning(self, 'API key', f'The key was not saved: {e}.')
+                return False
+            self.as_key.clear()
+            self.as_eye.setChecked(False)
+            self.win.log.append_line(f'assistant: key saved in {svc.keys.where()}')
+        svc.set_cfg(save=False, enabled=on, **vals)
+        self._assistant_refresh_state()
+        return True
 
     def _row(self, form, text, field, note=''):
         self.fields.append((text, note, field))
@@ -128,6 +347,10 @@ class SettingsPage(Page):
 
     def apply(self):
         st = self.win.settings
+        avals, why = self._assistant_values()
+        if why:
+            QMessageBox.warning(self, 'Settings', why)
+            return
         root = self.root.text().strip()
         if root and not S.is_carla_root(root):
             QMessageBox.warning(self, 'Settings', f'{root} is not a CARLA folder ({S.BINARY} is missing).')
@@ -157,7 +380,10 @@ class SettingsPage(Page):
         st.set('render_budget_mpx', self.budget.value(), save=False)
         st.set('geocoding_allowed', self.geo.isChecked(), save=False)
         st.set('notify_jobs', self.notify.isChecked(), save=False)
+        if not self._assistant_apply(avals):
+            return
         st.save()
+        self._assistant_changed()
         self.win.log.append_line(f'settings saved ({tilde(st.path)})')
         for p in self.win.pages:
             if p is not self:

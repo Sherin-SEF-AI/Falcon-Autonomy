@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The assistant's runtime and panel** (`assistant/groq.py`, `provider.py`, `agent.py`, `session.py`, `service.py`,
+  `grounding.py`, `keystore.py`, `ui/assistant_dock.py`; docs/assistant.md): an OpenAI-compatible streaming client on
+  the standard library (Groq by default; retries with backoff and jitter honouring retry-after; every failure a
+  sentence without the key; every payload redacted; nothing sent before the user turns it on and accepts the notice);
+  the agent loop (read calls side by side, act and trash one at a time; Ask, Auto and Autopilot — trash always asks;
+  Autopilot resumes when its jobs finish through a queue subscription; Stop closes the request in flight); a plan
+  checklist and approval cards with the tool's exact preview and estimate; an activity log with Undo (project edits,
+  jobs, the trash); a grounding check that marks numbers no tool returned; a conversation per project and an audit
+  log of payload hashes in the workspace; Settings ▸ Assistant (the key in the keyring or the 0600 secrets file, model
+  pickers from /models, the user's price table); Ctrl+Shift+A, Ctrl+K ▸ Ask Falcon…, a status-bar badge with tokens
+  and estimated cost. Groq's API verified against its documentation on 2026-10-30: `qwen/qwen3-32b` was shut down on
+  2026-07-17, so the fast lane defaults to `openai/gpt-oss-20b`. Tested against a fake server only.
+
 - **Lateral filtering for two-wheelers** (`workers/lateral.py`, a traffic profile's `lateral_filtering`, Worlds ▸
   traffic profile): background two-wheelers choose their own lateral position over the same-direction lanes every
   0.1 s — a gap-seeking chooser over 0.4 m strips with an anisotropic repulsion field and a kerb-side home offset

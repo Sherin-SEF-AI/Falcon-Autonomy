@@ -485,6 +485,8 @@ class MainWindow(QMainWindow):
         self.service = CarlaService(settings, self.queue, self.workspace(), fake_carla=fake_carla)
         self.history = JobHistory(self.workspace())
         self.notifier = Notifier(self)
+        from ..assistant.service import AssistantService
+        self.assistant = AssistantService(settings, workspace_fn=self.workspace)    # docs/assistant.md
         self.setWindowTitle(APP_NAME)
         self.resize(1440, 900)
         self.actions_: dict = {}
@@ -533,6 +535,8 @@ class MainWindow(QMainWindow):
         self.set_jobs_visible(False)                     # nothing to show until a job starts
         self._build_pages()
         self._build_actions()
+        from .assistant_dock import install as install_assistant
+        install_assistant(self)                          # the Assistant dock (right, hidden), its badge, Ctrl+Shift+A
         self.projectChanged.connect(self._on_project_changed)
         self.undo.cleanChanged.connect(lambda _: self._update_title())
         self.service.subscribe(self._on_service)
@@ -620,6 +624,18 @@ class MainWindow(QMainWindow):
 
     def toggle_jobs(self):
         self.set_jobs_visible(not (self.jobs_dock.isVisible() or self.log_dock.isVisible()))
+
+    def show_assistant(self, on: bool = True, focus: bool = False):
+        """Show or hide the Assistant panel; focus puts the keyboard in its message box."""
+        if on:
+            from .assistant_dock import place
+            place(self)                                  # docked when there is room beside the pages, else floating
+        self.assistant_dock.setVisible(on)
+        if on:
+            self.assistant_dock.raise_()
+            self.assistant_panel.refresh_state()
+            if focus:
+                self.assistant_panel.composer.setFocus()
 
     def open_job(self, job_id):
         """Go to where a job's result is shown: a recorded drive in Data, anything else on the page it was started
@@ -740,6 +756,9 @@ class MainWindow(QMainWindow):
 
     def _on_project_changed(self, path):
         self._update_title()
+        if path is None and self.assistant_panel.session.workspace != self.workspace():
+            self.assistant_panel.load_session()          # another project: its own conversation
+            self.assistant_panel.refresh_state()
         for p in self.pages:
             p.refresh()
 
@@ -819,6 +838,7 @@ class MainWindow(QMainWindow):
         if old_ws != self.workspace():
             self.service.set_workspace(self.workspace())
             self._set_history()
+            self.assistant_panel.follow_workspace()      # the conversation goes with the project to its new place
             self.log.append_line(f'workspace: {tilde(self.workspace())}')
         self.settings.add_recent(self.project.path)
         self._fill_recent()
@@ -902,6 +922,7 @@ class MainWindow(QMainWindow):
         for p in self.pages:
             if hasattr(p, 'shutdown'):
                 p.shutdown()
+        self.assistant_panel.shutdown()
         for j in self.queue.active():
             self.queue.cancel(j)
         launcher = self.queue.launcher

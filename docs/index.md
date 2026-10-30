@@ -49,6 +49,10 @@ does; the [roadmap](roadmap.md) lists what is planned.
   the limits — nothing is left out). A greyed-out button says in its tooltip why it is off. An empty list says what
   goes there and how to get some.
 - **Undo and redo** (Ctrl+Z, Ctrl+Shift+Z): every change to the project. Dragging a slider is one step.
+- **Assistant** (Ctrl+Shift+A, Ctrl+K ▸ Ask Falcon…, or its status-bar badge): an agent that uses Falcon through its
+  own tools, on a model server with your own API key (Groq by default), text only — off until you turn it on in
+  Settings ▸ Assistant and accept what it sends. It asks before it changes anything (Ask mode), cites only numbers a
+  tool returned and marks any other, and lists every change with Undo ([assistant](assistant.md)).
 - **Themes**: View ▸ Dark theme / Light theme.
 
 ## Pages

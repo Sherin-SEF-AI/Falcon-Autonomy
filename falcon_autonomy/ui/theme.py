@@ -172,6 +172,13 @@ QToolButton#jobsBadge[busy="true"] { color: @ink; font-weight: 600; }
 QWidget#homeCard { background: @panel; border: 1px solid @hair; border-radius: 4px; }
 QLabel[stat="true"] { font-family: "IBM Plex Mono"; font-size: @fs13px; font-weight: 600; }
 QLineEdit#paletteInput { min-height: 30px; max-height: 32px; font-size: @fs13px; }
+QLabel#bubbleUser { background: @raised; border: 1px solid @hair; border-radius: 4px; }
+QFrame#toolCard { background: @panel; border: 1px solid @hair; border-radius: 4px; }
+QFrame#toolCard QToolButton { text-align: left; color: @ink2; font-size: @fs11px; }
+QPlainTextEdit#composer { background: @raised; border: 1px solid @strong; border-radius: 2px; padding: 2px 4px; font-family: "IBM Plex Sans"; }
+QPlainTextEdit#composer:focus { border-color: @ink; }
+QPlainTextEdit#composer:disabled { color: @muted; border-color: @hair; }
+QToolButton#assistantBadge { padding: 0 6px; color: @ink2; }
 '''
 
 

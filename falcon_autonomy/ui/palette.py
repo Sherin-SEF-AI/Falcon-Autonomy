@@ -138,6 +138,16 @@ class CommandPalette(QDialog):
                 it.setToolTip(f'{title}: {e["title"]}' + (f' — {e["sub"]}' if e.get('sub') else ''))
                 self.list.addItem(it)
                 n += 1
+        if text.strip() and getattr(self.win, 'assistant_panel', None) is not None and \
+                self.win.assistant.cfg()['enabled']:                    # the request itself, to the assistant
+            q = text.strip()
+            e = {'kind': 'command', 'title': f'Ask Falcon: {q}', 'sub': '', 'ident': 'ask_text',
+                 'open': lambda w, q=q: w.assistant.ask(q)}
+            it = QListWidgetItem(icons.icon('sparkle', 14), e['title'])
+            it.setData(Qt.ItemDataRole.UserRole, e)
+            it.setData(GROUP_ROLE, 'Assistant')
+            it.setToolTip('Send this to the assistant (Assistant panel)')
+            self.list.addItem(it)
         if self.list.count():
             self.list.setCurrentRow(0)
         self.hint.setText('↑ ↓ to move · Enter to open · Esc to close' if n else

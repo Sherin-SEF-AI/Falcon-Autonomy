@@ -105,6 +105,10 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
 - **The first-run wizard**: finds CARLA, checks the GPU, the Vulkan driver and memory, runs a 30 s smoke drive and
   records this machine's measured throughput for every cost estimate after.
 - **A CLI** for every heavy action, on the same code paths as the GUI, including `falcon reproduce`.
+- **The assistant** (2.5): an agent that uses the app through typed tools — `openai/gpt-oss-120b` on Groq with your
+  own key plans and calls them, a fast model answers one-shot helpers; Ask, Auto and Autopilot modes (trash always
+  asks), approval cards with the exact change, an activity log with Undo, a grounding check on every number, text
+  only and nothing sent before you accept its notice ([assistant](docs/assistant.md)).
 
 ## Requirements
 
@@ -142,7 +146,8 @@ FALCON_REAL_CARLA=1 python3 -m pytest -m real_server     # also against a real C
 [CARLA lessons](docs/carla-lessons.md) · [models](docs/models.md) · [sim-to-real](docs/sim-to-real.md) ·
 [world model](docs/world-model.md) · [audio](docs/audio.md) · [training](docs/training.md) · [policies](docs/policies.md) · [loop](docs/loop.md) · [reports](docs/reports.md) ·
 [stack testing](docs/stack-testing.md) · [V2X](docs/v2x.md) · [log replay](docs/log-replay.md) · [hardware](docs/hardware.md) ·
-[packaging](docs/packaging.md) · [deploy](docs/deploy.md) · [CI](docs/ci.md) · [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
+[packaging](docs/packaging.md) · [deploy](docs/deploy.md) · [CI](docs/ci.md) · [assistant](docs/assistant.md) ·
+[roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
 
 ## Licence
 
