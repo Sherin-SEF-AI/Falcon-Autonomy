@@ -159,11 +159,21 @@ the shapes, dtypes and value ranges above.
 | Town10 | 0 | 190 s | 1.08 % | 25.9 % / 17.9 % | 887 of 60 000 (1.5 %) | 791 of 60 000 (1.3 %) |
 | Town10 | 5 | 698 s | 1.94 % | 30.7 % / 16.7 % | 1 259 (2.1 %) | 3 223 (5.4 %) |
 | Central Bengaluru (imported) | 0 | 128 s | 0.43 % | 8.6 % / 16.4 % | 523 (0.9 %) | 28 (0.05 %) |
+| Central Bengaluru | 5 | 418 s | 0.46 % | 8.9 % / 16.4 % | 558 (0.9 %) | 56 (0.1 %) |
 
 The disagreements are the two methods' differences at voxel edges and between camera rays (a voxel seen through a
-sliver only; one the ray spacing skipped), most where aggregation makes the scene denser: `camera_ray_step` below 1
-casts more rays. Aggregating 5 sweeps either side more than doubled the driveable surface voxels on Town10
-(463 636 → 1 101 570) at 3.7 × the time. The Bengaluru drive's classes were manmade 735 k, sidewalk 58 k, driveable
+sliver only; one the ray spacing skipped), most where aggregation makes the scene denser. Denser rays trade one for
+the other (Town10, aggregate 5, every 10th sweep, 30 samples, 6 000 voxels each way):
+
+| `camera_ray_step` | export | visible but every sight line blocked | hidden but a sight line clear |
+|---|---|---|---|
+| 1 (default) | 70 s | 135 (2.3 %) | 316 (5.3 %) |
+| 0.5 | 128 s | 233 (3.9 %) | 158 (2.6 %) |
+| 0.25 | 394 s | 333 (5.6 %) | 57 (1.0 %) |
+
+— more rays reach voxels through gaps narrower than the check's 27-point lattice sees. Aggregating 5 sweeps either side more than doubled the driveable surface voxels on Town10
+(463 636 → 1 101 570) at 3.7 × the time; on the Bengaluru drive it added little (0.43 → 0.46 % occupied). The
+Bengaluru drive's classes were manmade 735 k, sidewalk 58 k, driveable
 surface 35 k, motorcycles 4 k, bicycles 108 voxels (no car near its lidar in that drive).
 
 Limits: one sweep — or K static ones — is far sparser than Occ3D's whole-sequence aggregation and mesh-based
