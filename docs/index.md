@@ -192,6 +192,12 @@ registered model on the scenario's frames and scores how it misses the actors th
 time — occlusion, range, light, fog, rain, appearance, sensor faults — and says which were necessary or sufficient, in
 that case ([root cause](root-cause.md)).
 
+How often a scenario fails, not only where: **Failure rate** estimates the probability per encounter, with a 95 %
+interval, by adaptive importance sampling over the scenario's declared parameter distributions — per 10ⁿ km or hours
+with an encounter rate you give ([failure rate](failure-rate.md)). **Operating-domain coverage** shows which cells of
+weather × road × actor × speed × light have been tested and how often, and fills the gaps with a scenario and a search
+per cell ([ODD coverage](odd-coverage.md)).
+
 ### Models
 Register a perception model (ONNX, TorchScript or a plug-in; its licence and pinned SHA-256 shown, AGPL refused,
 weights downloaded only when asked), **evaluate** it on checked drives — AP/AR or mIoU with a 95 % bootstrap interval

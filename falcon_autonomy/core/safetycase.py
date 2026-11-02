@@ -279,6 +279,49 @@ def triggering_conditions(results: dict, studies: list) -> list:
     return out
 
 
+def failure_rates(studies: list, max_failure_rate: float = 0.05) -> list:
+    """The failure-rate estimates among the studies (studies/<name>/failure-rate.json, core.failrate through
+    sim.estimate): the probability of failure per encounter with its 95 % interval and trust, the rate per exposure
+    unit when one was given, and a residual-risk entry for each."""
+    out = []
+    for d in studies:
+        p = os.path.join(d, 'failure-rate.json')
+        if not os.path.isfile(p):
+            continue
+        try:
+            fr = read_json(p)
+        except (OSError, ValueError):
+            continue
+        e = fr.get('estimate') or {}
+        name = os.path.basename(os.path.normpath(d))
+        row = {'study': name, 'path': p, 'scenario': fr.get('scenario'), 'scenario_name': fr.get('scenario_name'),
+               'judge': (fr.get('judge') or {}).get('about'), 'threshold': (fr.get('judge') or {}).get('threshold'),
+               'status': e.get('status'), 'reasons': e.get('reasons') or [], 'p': e.get('p'), 'ci95': e.get('ci95'),
+               'upper95': e.get('upper95'), 'failures': e.get('failures'), 'n': e.get('n'),
+               'ess_failures': e.get('ess_failures'), 'runs': (fr.get('runs') or {}).get('total'),
+               'rate': (fr.get('rate') or {}).get('text'), 'nominal_mass': fr.get('nominal_mass'),
+               'estimator': fr.get('estimator'), 'proposal': fr.get('proposal_family')}
+        what = fr.get('scenario_name') or fr.get('scenario')
+        if e.get('status') == 'refused':
+            row['risk'] = {'kind': 'insufficient_evidence', 'scenario': fr.get('scenario'), 'severity': 'medium',
+                           'text': f'{name}: the failure rate of {what} could not be estimated after {row["runs"]} '
+                                   f'runs ({"; ".join(row["reasons"])}).', 'evidence': [p]}
+        else:
+            lo, hi = e['ci95']
+            sev = ('high' if lo > max_failure_rate else
+                   'medium' if hi > max_failure_rate or e['status'] == 'warning' else 'context')
+            per = (fr.get('rate') or {}).get('per') not in (None, 'encounter')
+            row['risk'] = {'kind': 'failure_rate', 'scenario': fr.get('scenario'), 'severity': sev,
+                           'text': f'{name}: {what} fails in {e["p"]:.3g} of encounters (95 % interval '
+                                   f'{lo:.3g}–{hi:.3g}; importance sampling, {row["runs"]} runs, effective failures '
+                                   f'{e["ess_failures"]:.0f})' + (f'; {row["rate"]}' if per else '')
+                                   + ('; WARNING: ' + '; '.join(row['reasons']) if e['status'] == 'warning' else '')
+                                   + ' — under the scenario\'s declared parameter distributions.',
+                           'evidence': [p]}
+        out.append(row)
+    return out
+
+
 def residual_risks(results: dict, cov: dict, triggers: list, max_failure_rate: float = 0.05) -> list:
     out = []
     for scn, g in sorted((results.get('scenarios') or {}).items()):
@@ -341,6 +384,8 @@ def build_report(suite_dir: str, odd: dict, out_dir: str, studies=(), odd_path: 
     cov = coverage(odd, coords)
     trig = triggering_conditions(results, list(studies))
     risks = residual_risks(results, cov, trig, max_failure_rate)
+    rates = failure_rates(list(studies), max_failure_rate)          # failure-rate estimates (core.failrate)
+    risks[:0] = [r['risk'] for r in rates]
     from .oddmonitor import suite_outside
     outside = suite_outside(rows, odd)
     for scn, g in sorted(outside['scenarios'].items()):
@@ -374,12 +419,15 @@ def build_report(suite_dir: str, odd: dict, out_dir: str, studies=(), odd_path: 
         inputs['odd'] = odd_path
     for k, d in enumerate(studies):
         inputs[f'study_{k}'] = os.path.join(d, 'results.jsonl')
+    for r in rates:
+        inputs[f'failure_rate_{r["study"]}'] = r['path']
     rep = {'schema': REPORT_SCHEMA, 'title': f'Safety-case report: {suite.get("name", os.path.basename(suite_dir))}',
            'not_a_claim': NOT_A_CLAIM, 'suite': {'name': suite.get('name'), 'dir': suite_dir,
                                                  'driver': (suite.get('stack') or {}).get('driver'),
                                                  'criteria': suite.get('criteria')},
            'odd': odd, 'coverage': cov, 'results': results, 'triggering_conditions': trig, 'residual_risks': risks,
            'traffic_rules': rules, 'odd_monitor': outside, 'mrm': mrm,
+           'failure_rates': [{k: v for k, v in r.items() if k != 'risk'} for r in rates],
            'limits': {'sotif_not_covered': SOTIF_NOT_COVERED, 'simulation': [{'title': t, 'text': x}
                                                                             for t, x in SIM_LIMITS],
                       'road_type': 'heuristic: the road features the scenario director required at the start, not a '
@@ -538,6 +586,34 @@ def _odd_monitor_html(om: dict | None) -> str:
     return ''.join(out)
 
 
+def _failure_rates_html(rates: list | None) -> str:
+    """The failure-rate estimates (core.failrate): per study the probability per encounter with its interval."""
+    if not rates:
+        return ''
+    out = ['<h2>Failure rates</h2><p class="muted">Adaptive importance sampling over each scenario\'s parameters '
+           '(core.failrate; docs/failure-rate.md): the probability that one encounter — one run of the scenario with '
+           'its parameters drawn from their declared distributions — fails, with its 95 % interval. The '
+           'distributions are the scenario\'s, not measured frequencies; a rate per km or hour uses the encounter '
+           'rate the user gave.</p>',
+           '<table><tr><th>study</th><th>scenario</th><th class="num">P(fail) per encounter (95 %)</th>'
+           '<th class="num">failing / final runs</th><th class="num">effective failures</th><th class="num">runs</th>'
+           '<th>per exposure</th><th>trust</th></tr>']
+    for r in rates:
+        if r['status'] == 'refused':
+            pv = '—' if r.get('upper95') is None else f'≤ {r["upper95"]:.3g}'
+        else:
+            pv = f'{r["p"]:.3g} ({r["ci95"][0]:.3g}–{r["ci95"][1]:.3g})'
+        ess = '—' if r.get('ess_failures') is None else f'{r["ess_failures"]:.0f}'
+        tone = 'pass' if r['status'] == 'ok' else 'fail' if r['status'] == 'refused' else ''
+        why = (': ' + _e('; '.join(r['reasons']))) if r['reasons'] else ''
+        out.append(f'<tr><td><code>{_e(r["study"])}</code></td><td>{_e(r.get("scenario_name") or r["scenario"])}'
+                   f'</td><td class="num">{pv}</td><td class="num">{r.get("failures")} / {r.get("n")}</td>'
+                   f'<td class="num">{ess}</td><td class="num">{r.get("runs")}</td><td>{_e(r.get("rate") or "—")}</td>'
+                   f'<td class="{tone}">{_e(r["status"])}{why}</td></tr>')
+    out.append('</table>')
+    return ''.join(out)
+
+
 def render_html(rep: dict) -> str:
     res, cov = rep['results'], rep['coverage']
     o = res['overall']
@@ -619,6 +695,7 @@ def render_html(rep: dict) -> str:
         if rows:
             p.append(f'<table><tr><th>parameters</th><th class="num">criticality</th></tr>{rows}</table>')
     p.append(_mrm_html(rep.get('mrm')))
+    p.append(_failure_rates_html(rep.get('failure_rates')))
     p.append('<h2>Residual risks</h2><table><tr><th>kind</th><th>risk</th><th>evidence</th></tr>')
     for r in rep['residual_risks']:
         ev = '<br>'.join(f'<code>{_e(x)}</code>' for x in r['evidence'][:5]) + (

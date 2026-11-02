@@ -27,6 +27,8 @@
     falcon sweep PROJECT --scenario S --name N [--grid K | --samples K]   a parameter sweep (resumable)
     falcon search PROJECT --scenario S --name N [--method bayes|bayes-pof|cmaes|adaptive|random] [--budget B]
                   [--objective criticality|perception|both --model ID --weather FIELD]   rare cases
+    falcon failrate run|show|check ...   a scenario's failure rate with a 95 % interval (adaptive importance sampling)
+    falcon coverage show|fill PROJECT ...   coverage of the operating domain; scenarios and searches for its gaps
     falcon stack topics|image|bridge|run|suite|replay|odd|report ...   stack testing: ROS 2 bridge, suites, safety case
     falcon hil device|deploy|session|report|acceptance ...   hardware in the loop: a Jetson (or a simulated device)
     falcon deploy check|build|profile|accuracy|gate|report|all ...   TensorRT engines on the Jetson, profiled and gated
@@ -359,6 +361,10 @@ def parser() -> argparse.ArgumentParser:
                                       'docs/world-model-training.md)')
     sub.add_parser('sweep', help='a scenario parameter sweep (see docs/cli.md)')
     sub.add_parser('search', help='a rare-case search over a scenario\'s parameters (see docs/cli.md)')
+    sub.add_parser('failrate', help='a scenario\'s failure rate with a 95 % interval: falcon failrate run|show|check '
+                                    '(see docs/failure-rate.md)')
+    sub.add_parser('coverage', help='coverage of the operating domain: falcon coverage show|fill PROJECT (see '
+                                    'docs/odd-coverage.md)')
     sub.add_parser('stack', help='stack testing: the ROS 2 bridge, scenario suites, the safety-case report (see '
                                  'docs/stack-testing.md)')
     sub.add_parser('hil', help='hardware in the loop: falcon hil device|deploy|session|report|acceptance (see '
@@ -538,6 +544,12 @@ def main(argv=None) -> int:
     if argv[:1] == ['vlm']:                       # vision-language explanations scored against the truth (core.vlm)
         from .core.vlm_eval import main_vlm
         return main_vlm(argv[1:])
+    if argv[:1] == ['failrate']:                  # a scenario's failure rate by importance sampling (sim.estimate)
+        from .sim.estimate import main_failrate
+        return main_failrate(argv[1:])
+    if argv[:1] == ['coverage']:                  # coverage of the operating domain (core.oddcoverage)
+        from .sim.estimate import main_coverage
+        return main_coverage(argv[1:])
     if argv[:1] in (['sweep'], ['search']):       # scenario studies (sim.studio)
         from .sim.studio import main_study
         return main_study(argv)

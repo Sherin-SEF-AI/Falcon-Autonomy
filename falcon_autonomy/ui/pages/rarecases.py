@@ -222,6 +222,10 @@ class RareCasesPage(Page):
         from ..adversary_panel import attach
         self.adversary = attach(self)                 # learned adversarial traffic and its cases (core.adversary)
         lv.addWidget(self.adversary)
+        from ..failrate_panel import attach as attach_rates     # failure rate and ODD coverage (core.failrate,
+        self.rates, self.coverage = attach_rates(self)           # core.oddcoverage)
+        lv.addWidget(self.rates)
+        lv.addWidget(self.coverage)
         lv.addStretch(1)
         split.addWidget(scroll(left))
         right = QWidget()
@@ -278,6 +282,8 @@ class RareCasesPage(Page):
     def refresh(self):
         if hasattr(self, 'adversary'):
             self.adversary.refresh()
+        if hasattr(self, 'coverage'):
+            self.coverage.refresh()
         cur = self.scenario.currentData()
         self.scenario.blockSignals(True)
         self.scenario.clear()
@@ -346,6 +352,8 @@ class RareCasesPage(Page):
         if self.job is not None and self.job.state not in FINAL:
             self.state.set('State', self.job.summary())
             self.load()
+        if hasattr(self, 'rates'):
+            self.rates.poll()
 
     def rows(self):
         p = os.path.join(self.study_dir(), 'results.jsonl') if self.win.project.path else ''
@@ -408,6 +416,8 @@ class RareCasesPage(Page):
             c.blockSignals(False)
         self.space = space
         self.draw_map()
+        if hasattr(self, 'rates'):
+            self.rates.load()
 
     def draw_map(self):
         hist = getattr(self, 'history', [])

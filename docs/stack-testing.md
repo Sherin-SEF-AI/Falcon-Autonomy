@@ -261,6 +261,9 @@ and `run.json` (the suite's hash, every run's key, provenance) are written at th
 - **Results** per scenario with their intervals, and the failing runs.
 - **Triggering conditions found**: the failing runs' parameters, and for each rare-case study given the failing
   parameter sets and, per parameter, the range the failures span against the range searched.
+- **Failure rates**: each failure-rate estimate among the studies given (`failure-rate.json`): the probability per
+  encounter with its 95 % interval and trust, and per km or hour when an encounter rate was given
+  ([failure rate](failure-rate.md)); a refused one is a residual risk of insufficient evidence.
 - **Residual risks with their evidence**: each failing scenario (failure rate, interval, runs); each scenario with no
   failure whose interval still allows more than `--max-failure-rate` (5 %: a reporting threshold, not a validated
   acceptance criterion); each ODD gap; missed deadlines; the studies' critical cases; the simulation's limits.

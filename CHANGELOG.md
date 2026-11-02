@@ -73,6 +73,34 @@
   a throw-away project with the fake carla, per model success, steps, tokens, time, estimated cost and grounding flags
   (no results published). The notice is version 2 (what suggestions and Explain send): asked again.
 
+- **A scenario's failure rate with a 95 % interval** (`core/failrate.py`, `sim/estimate.py`, `ui/failrate_panel.py`,
+  `core/safetycase.py`; docs/failure-rate.md): adaptive importance sampling over the scenario's declared parameter
+  distributions (each parameter a transform of a standard normal; a defensive mixture of the nominal and a
+  mean-shifted Gaussian, β 0.1, its mean fitted by the multilevel cross-entropy method), the failure judged as the
+  search judges it (the objective, RSS counting), by the scenario's pass criteria or by a traffic-rule violation;
+  P̂ = mean(w·1{fail}) over the final stage with a delta-method interval on log P̂; refused with fewer than 10 failing
+  runs or an effective sample of the failures under 10 (with none, a rule-of-three bound), warned under 30 or above a
+  relative error of 0.3; per 10ⁿ km or hours with an encounter rate you give, taken as exact. Validated on problems
+  with a known probability (`falcon failrate check`, 200 seeds a row): on a linear tail at 1e-4 and 1e-6 in 2 and 5
+  dimensions the interval covered the truth in 92–95 % of the seeds with 2,500–3,000 runs, where plain Monte Carlo with
+  the same runs saw no failure in 79 % and 99 % of the seeds and would need about 820 and 54,000 times as many; in the
+  corner of a 5-dimensional box most estimates were refused or warned, and the warned ones covered 62–92 %. A
+  full-covariance Gaussian was measured and dropped (its spread collapsed: 21–40 of 40 seeds stalled). Rare cases ▸
+  Failure rate; `falcon failrate run|show|check`, resumable; the safety-case report lists each estimate with its
+  residual risk; the assistant: `jobs_search` method `estimate`, `analysis_outputs` kind `failure_rate`. Tested end to
+  end on the fake carla.
+- **Coverage of the operating domain** (`core/oddcoverage.py`, `ui/failrate_panel.py`; docs/odd-coverage.md): every
+  scenario run of the workspace (studies, suites, single runs) placed in weather × road type × actor kind × ego speed ×
+  light from its own config (the safety case's run coordinates; the weather and light thresholds stated), the
+  workspace ODD narrowing the domain; per cell the runs, failures and where they came from, and a stated rule — enough
+  runs when the one-sided Clopper–Pearson 95 % upper bound is at most the target (5 %: 59 runs without a failure) —
+  with the runs still needed; the failure-rate estimates per cell (the ratio estimator) in the same grid. *Fill the
+  gaps* (`falcon coverage fill`) copies a library or project scenario that can produce each untested or under-sampled
+  cell with the cell's weather, light and speed band (an undoable edit) and queues a rare-case search or a sweep of
+  it; of the 6,240 cells of the full domain the library cannot produce 5,760, and says so. Rare cases ▸
+  Operating-domain coverage; `falcon coverage show|fill`; the assistant: `analysis_outputs` kind `coverage`,
+  `jobs_search` scenario `cell:<cell>` — inside existing tools, so the schemas stay at 9,995 of the 10,000 tokens.
+
 - **Lateral filtering for two-wheelers** (`workers/lateral.py`, a traffic profile's `lateral_filtering`, Worlds ▸
   traffic profile): background two-wheelers choose their own lateral position over the same-direction lanes every
   0.1 s — a gap-seeking chooser over 0.4 m strips with an anisotropic repulsion field and a kerb-side home offset
