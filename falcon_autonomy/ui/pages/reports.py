@@ -1,6 +1,7 @@
 """Reports: self-contained HTML reports of a loop iteration, a model evaluation, a dataset, a rare-case study or a
 Leaderboard-style result (core.reports), made as jobs (`falcon report`), listed from the workspace's reports folder,
-opened in the browser and exported to a folder."""
+opened in the browser and exported to a folder; and outputs for a paper (core.paper: LaTeX and CSV tables, figures,
+data cards) as `falcon paper` jobs."""
 from __future__ import annotations
 
 import os
@@ -20,6 +21,8 @@ KIND_TITLES = {'iteration': 'Loop iteration', 'evaluation': 'Model evaluation', 
                'study': 'Rare-case study', 'leaderboard': 'Leaderboard result', 'rules': 'Traffic-rule check',
                'rootcause': 'Root cause', 'vlm': 'VLM explanations', 'deploy': 'Deployment (TensorRT)',
                'ci': 'CI run'}
+PAPER_TITLES = {'experiment': 'Experiment (ablation or sim + real)', 'evaluation': 'Model evaluation',
+                'comparison': 'Comparison of two evaluations', 'datacard': 'Data card of an export'}
 
 
 class ReportsPage(Page):
@@ -49,6 +52,7 @@ class ReportsPage(Page):
         row.addWidget(button('Make the report', self.make_selected, role='primary'))
         sec.add(row)
         v.addWidget(sec)
+        v.addWidget(self._paper_section())
         sec = Section('Reports', 'In the workspace\'s reports folder. Double-click one to open it in the browser.')
         self.list = PlaceholderTree('No reports yet: choose a kind and a source above, then Make the report.')
         self.list.setHeaderLabels(['Created', 'Kind', 'Title', 'File'])
@@ -78,11 +82,62 @@ class ReportsPage(Page):
         super().showEvent(ev)
         self.refresh()
 
+    # ------------------------------------------------------------------ outputs for papers (core.paper)
+    def _paper_section(self):
+        sec = Section('Outputs for a paper', 'LaTeX (booktabs) and CSV tables and PDF, PNG and SVG figures with their '
+                                             'intervals — byte-identical for the same source, so they can be diffed '
+                                             '— or an export\'s data card. Written into the workspace\'s paper '
+                                             'folder; Data ▸ Compare exports a run comparison.')
+        row = QHBoxLayout()
+        self.pkind = QComboBox()
+        for k, t in PAPER_TITLES.items():
+            self.pkind.addItem(t, k)
+        self.pkind.currentIndexChanged.connect(self.fill_paper_sources)
+        self.psrc = QComboBox()
+        self.psrc.setPlaceholderText('Nothing of this kind yet')
+        self.psrc.setMinimumWidth(360)
+        row.addWidget(label('Kind', muted=True))
+        row.addWidget(self.pkind)
+        row.addWidget(label('Source', muted=True))
+        row.addWidget(self.psrc, 1)
+        row.addWidget(button('Write the outputs', self.make_paper))
+        row.addWidget(button('Show the folder', lambda: QDesktopServices.openUrl(
+            QUrl.fromLocalFile(os.path.join(self.win.workspace(), 'paper')))))
+        sec.add(row)
+        return sec
+
+    def fill_paper_sources(self, _i=None):
+        from ...core import paper as PP
+        cur = self.psrc.currentData()
+        self.psrc.clear()
+        for name, path in PP.sources(self.win.workspace()).get(self.pkind.currentData(), []):
+            self.psrc.addItem(name, path)
+            self.psrc.setItemData(self.psrc.count() - 1, tilde(path), Qt.ItemDataRole.ToolTipRole)
+        i = self.psrc.findData(cur)
+        self.psrc.setCurrentIndex(i if i >= 0 else 0)
+
+    def make_paper(self):
+        """Queue `falcon paper KIND SRC --out <ws>/paper/<kind>-<name>` (a data card goes into the export itself)."""
+        src, kind = self.psrc.currentData(), self.pkind.currentData()
+        if not src:
+            QMessageBox.information(self, 'Outputs for a paper', 'Nothing of this kind in the workspace yet.')
+            return None
+        out = src if kind == 'datacard' else os.path.join(self.win.workspace(), 'paper',
+                                                          f'{kind}-{os.path.basename(os.path.normpath(src))}')
+        job = self.win.queue.submit(JobSpec('export', f'Paper outputs: {PAPER_TITLES[kind]} '
+                                                      f'({os.path.basename(src)})',
+                                            [sys.executable, '-m', 'falcon_autonomy', 'paper', kind, src, '--out',
+                                             out], memory_gb=0.5))
+        self.jobs[job.id] = job
+        self.win.jobs_dock.raise_()
+        return job
+
     def folder(self):
         return R.reports_dir(self.win.workspace())
 
     def refresh(self):
         self.fill_sources()
+        self.fill_paper_sources()
         sel = self._current()
         self.list.clear()
         for m in R.list_reports(self.folder()):

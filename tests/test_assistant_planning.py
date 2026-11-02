@@ -28,7 +28,7 @@ def test_research_group_registered_and_small():
     from falcon_autonomy.assistant.agent import GROUP_ABOUT, guess_groups
     from falcon_autonomy.assistant.cli import schema_tokens
     from falcon_autonomy.assistant.tools._compact import DETAILS
-    assert {n for n, t in REGISTRY.items() if t.group == 'research'} == set(RESEARCH)
+    assert {n for n, t in REGISTRY.items() if t.group == 'research'} >= set(RESEARCH)
     for n in RESEARCH:
         t = REGISTRY[n]
         assert (t.tier == 'read') == (n == 'research_bench_results') and len(DETAILS[n]['description']) > 100

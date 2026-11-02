@@ -12,7 +12,9 @@ Tracking. An experiment is a folder experiments/<id>/:
     results.json             a mixed experiment's analysis
 
 Experiment(path).runs() lists the runs with their latest metrics; best(metric) picks the finished run with the best
-latest value.
+latest value. Hypothesis-driven experiments (ablations: a grid of factors, a power analysis, paired bootstrap
+contrasts, re-runs checked against the original) are experiments of kind "ablation" built on these classes
+(core.ablation, `falcon experiment ablation`); core.ablation.registry lists every experiment of every kind.
 
 MLflow export (export_mlflow) writes MLflow's file-store layout WITHOUT importing mlflow: the layout of
 mlflow.store.tracking.file_store.FileStore in MLflow 2.x (as its source reads and writes it, 2.0–2.17):
@@ -786,6 +788,9 @@ def main_experiment(argv) -> int:
     if argv[:1] == ['active']:                    # active learning against random choice (core.activelearn)
         from .activelearn import main_active
         return main_active(argv[1:])
+    if argv[:1] == ['ablation']:                  # hypothesis-driven experiments and the registry (core.ablation)
+        from .ablation import main_ablation
+        return main_ablation(argv[1:])
     ap = argparse.ArgumentParser(prog='falcon experiment', description='experiments: the mixed sim/real training '
                                                                        'experiment, active learning, run tracking, '
                                                                        'MLflow export')
@@ -816,6 +821,8 @@ def main_experiment(argv) -> int:
     mx.add_argument('--weights-dir', action='append', default=[])
     sub.add_parser('active', help='active learning against random choice (falcon experiment active --help; '
                                   'docs/active-learning.md)')
+    sub.add_parser('ablation', help='hypothesis-driven experiments: plan, run, analyse, re-run; the registry '
+                                    '(falcon experiment ablation --help; docs/experiments.md)')
     for name, hlp in (('list', 'the runs and their latest metrics'), ('results', 'a mixed or active experiment\'s '
                                                                                  'table')):
         p = sub.add_parser(name, help=hlp)
@@ -858,6 +865,9 @@ def main_experiment(argv) -> int:
             if doc.get('schema') == 'falcon.active_results/1':
                 from .activelearn import table as active_table
                 print(active_table(doc), flush=True)
+            elif doc.get('schema') == 'falcon.ablation_results/1':
+                from .ablation import table as ablation_table
+                print(ablation_table(doc), flush=True)
             else:
                 print(table(doc), flush=True)
             em.result('ok')

@@ -207,6 +207,10 @@ repeated into the same folder. Names MLflow refuses have their other characters 
 `AP.range_m[0,20)` → `AP.range_m_0_20_`); parameter values are cut at 6000 characters and tags at 5000. The layout is
 checked structurally by the tests; MLflow itself was not run against it.
 
+Hypothesis-driven experiments — ablations over model, weather, world, rig and traffic factors, with a power analysis,
+paired contrasts and re-runs checked against the original — are experiments of the same layout (kind `ablation`), and
+the registry lists every experiment: [experiments](experiments.md).
+
 ## Limits
 
 - 2D boxes only: no segmenter, instance masks or 3D detection in this release.

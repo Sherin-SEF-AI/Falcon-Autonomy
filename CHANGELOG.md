@@ -31,6 +31,27 @@
   also queue the search) and gets counts, durations and shares only. Tested on synthetic reconstructions and the
   fake; not yet on a real event.
 
+- **Ablations and the experiment registry** (`core/ablation.py`, `core/metrics/uncertainty.py`, `core/provenance.py`,
+  `core/reproduce.py`, `core/catalog.py`, `ui/pages/ablations_tab.py`; docs/experiments.md): a stated hypothesis over
+  factors (model, weather, world, rig, traffic) expands into a grid of seeded runs; the replicates come from the exact
+  power of the paired t-test (the noncentral t; Cohen's 34, 15 and 199 pairs at dz 0.5, 0.8, 0.2), alpha divided over
+  the contrasts. The detection executor records one drive per drive cell through the job queue and evaluates every
+  model on the same drive; a simulated executor checks a design first. Each contrast: a paired bootstrap with the
+  expanded percentile interval (simulated coverage 94–95 % with 8–20 units, the plain percentile's 88–92 %), its
+  simultaneous interval, dz, Holm-adjusted p and the verdict — supported, contradicted or no detectable effect with
+  the power the run had. Every run pinned (Falcon's version, the CARLA build, world, rig, traffic and weights hashes,
+  seeds); `falcon experiment ablation rerun` re-runs the whole experiment and checks it against the original, listing
+  the pins that changed. The registry lists every experiment with its hypothesis, factors, status and verdict
+  (Training ▸ Ablations, the catalogue, `analysis_outputs`). The assistant's new **research** group:
+  `research_ablation`, `research_registry`, `research_paper` (290 tokens). On the fake simulator, 4 drives and 8
+  evaluations took 6 s. Tests: tests/test_ablation.py.
+- **Outputs for papers** (`core/paper.py`, `core/exporters.py`, Reports ▸ Outputs for a paper, Data ▸ Compare;
+  docs/experiments.md): an ablation, a mixed experiment, an evaluation, a comparison or a run comparison as LaTeX
+  (booktabs) and CSV tables and PDF, PNG and SVG dot-and-whisker figures with their intervals, drawn by Falcon's own
+  writers (matplotlib is not a dependency) and byte-identical for the same source; every export writes a data card
+  (Datasheets for Datasets: composition, collection, labels, conditions, known gaps, licence, provenance) that names no
+  run from the dashcam footage. `falcon paper`. Tests: tests/test_paper.py.
+
 - **A lab-console interface** (`ui/theme.py`, `ui/frame.py`, `ui/motion.py`, `ui/widgets.py`; docs/index.md ▸ The
   window): graphite panels and bordered cards with one blue accent for the main action and the selection, status
   colours only for state, monospaced right-aligned numbers, 13 px IBM Plex. A top bar (the project and its folder,

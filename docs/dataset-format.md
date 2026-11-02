@@ -244,3 +244,12 @@ Limits: one sweep — or K static ones — is far sparser than Occ3D's whole-seq
 densification; free space is known only along rays that hit something; a moving actor's points lie where it was in its
 slice of the sweep, its box where it is at the step; a far voxel narrower than the ray spacing can fall between camera
 rays (`camera_ray_step` < 1 casts more).
+
+## Data card
+
+Every export writes `DATACARD.md` and `datacard.json` beside `falcon_export.json` (`core.paper.datacard`; `falcon
+paper datacard EXPORT` writes them again): composition (runs, splits, frames, objects per class), the collection
+process (the CARLA build, Falcon's versions, rigs), labels, the conditions covered (world × weather × time of day),
+known gaps, licence and provenance (every run's hashes), after Datasheets for Datasets (Gebru et al. 2021). A run from
+the user's dashcam footage is listed as "run k" without its name, place or date. See
+[experiments](experiments.md#data-cards).

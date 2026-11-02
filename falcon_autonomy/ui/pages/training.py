@@ -29,6 +29,7 @@ from ...core.provenance import read_json
 from ..drivesets import DriveSetBar
 from ..theme import STATUS, THEME
 from ..widgets import Form, KeyValues, Page, PlaceholderList, Section, button, label, scroll
+from .ablations_tab import AblationsTab
 from .translation import TranslationTab
 from .worldmodel_tab import WorldModelTab
 
@@ -194,6 +195,8 @@ class TrainingPage(Page):
         self.tabs.addTab(self._perception_tab(), 'Detectors')
         self.tabs.addTab(self._experiment_tab(), 'Sim + real experiment')
         self.tabs.addTab(self._active_tab(), 'Active learning')
+        self.ablations = AblationsTab(self)               # hypothesis-driven experiments, the registry (core.ablation)
+        self.tabs.addTab(self.ablations, 'Ablations')
         self.tabs.addTab(self._policy_tab(), 'Driving policies')
         self.tabs.addTab(self._leaderboard_tab(), 'Leaderboard')
         self.translation = TranslationTab(self)
@@ -300,6 +303,7 @@ class TrainingPage(Page):
         self.load_leaderboards()
         self.translation.refresh()
         self.worldmodel.refresh()
+        self.ablations.refresh()
 
     @staticmethod
     def _combo_dirs(combo, root, name):

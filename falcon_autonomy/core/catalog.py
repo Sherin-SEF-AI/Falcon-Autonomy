@@ -105,8 +105,25 @@ class Catalog:
                  r.get('started', ''), '', summary, None)
         return self.get(ident)
 
+    # -- experiments (the registry: core.ablation)
+    def add_experiment(self, exp_dir: str) -> dict | None:
+        """Index an experiment folder (experiment.json) of any kind: its id, name, status and, for an ablation, the
+        hypothesis, factors, metric and verdict (core.ablation.summary). A re-run is linked to its original."""
+        from .ablation import summary
+        if not os.path.isfile(os.path.join(exp_dir, 'experiment.json')):
+            return None
+        s = summary(exp_dir)
+        ident = 'experiment:' + str(s['id'])
+        self.add(ident, 'experiment', s['name'] or s['id'], exp_dir, s['status'], s['created'] or '', '',
+                 {k: s.get(k) for k in ('kind', 'hypothesis', 'factors', 'metric', 'verdict', 'runs', 'planned',
+                                        'rerun_of')})
+        if s.get('rerun_of'):
+            self.link(ident, 'experiment:' + str(s['rerun_of']), 'rerun_of')
+        return self.get(ident)
+
     def rebuild(self, workspace: str) -> int:
-        """Re-index every run folder under workspace/runs (the files are the truth). Returns the count."""
+        """Re-index every run folder under workspace/runs, and every experiment under workspace/experiments (the files
+        are the truth). Returns the count of runs."""
         self._exec("DELETE FROM entries WHERE kind = 'run'", commit=True)
         runs = os.path.join(workspace, 'runs')
         n = 0
@@ -114,6 +131,14 @@ class Catalog:
             for d in sorted(os.listdir(runs)):
                 if self.add_run(os.path.join(runs, d)):
                     n += 1
+        exps = os.path.join(workspace, 'experiments')
+        self._exec("DELETE FROM entries WHERE kind = 'experiment' AND id LIKE 'experiment:%'", commit=True)
+        if os.path.isdir(exps):
+            for d in sorted(os.listdir(exps)):
+                try:
+                    self.add_experiment(os.path.join(exps, d))
+                except (OSError, ValueError, KeyError):
+                    continue
         return n
 
 

@@ -63,6 +63,21 @@ On the fake simulator the comparison is exact (bit for bit). On a real server, e
 server build, the same map loaded fresh and synchronous mode throughout; the report states which checks agreed
 rather than a single yes or no.
 
+An experiment is re-run the same way (`falcon experiment ablation rerun ID`, `core.reproduce.compare_experiments`):
+the same planned runs and seeds, each run's metric, each contrast's difference and intervals and the verdicts are
+compared, and every pin that changed is listed — Falcon's version, the CARLA build a drive read, the hashes of the
+worlds, rigs, traffic profiles and model weights ([experiments](experiments.md#pins-and-re-runs)).
+
+## Planned comparisons
+
+An ablation's sample size is that of a two-sided paired t-test at the stated effect (dz = effect / sd of the paired
+differences), alpha divided over the m contrasts (Bonferroni) and the target power; the power is the noncentral t's,
+computed exactly (`core.metrics.paired_power`), and matches Cohen's tables (dz 0.5 → 34 pairs, 0.8 → 15, 0.2 → 199)
+and 20,000 simulated t-tests to within 0.004. The analysis is a paired bootstrap with the expanded percentile interval
+and Holm's correction; simulated, its interval covered a known effect 94–95 % of the time with 8–20 units (the plain
+percentile interval 88–92 %) and its test reached the planned power (0.818 against 0.821). Details and limits:
+[experiments](experiments.md#the-analysis).
+
 ## Lidar labels and their proof
 
 Each rig lidar is spawned twice on the same step with the same attributes: CARLA's ray-cast lidar (the recorded

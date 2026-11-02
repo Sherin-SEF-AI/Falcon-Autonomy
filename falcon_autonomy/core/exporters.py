@@ -8,7 +8,9 @@ writes the bags. Ported in part from Vantage (vantage.sim.record's nuScenes tabl
 
 Every export writes OUT/falcon_export.json (EXPORT_SCHEMA): the format, the runs with their hashes (provenance.block
 over each run's run.json, dataset.json, frames.jsonl and lanes.json), the splits, the frames used, what was left out
-and why, what is heuristic, and how to load it. The report returned is that document.
+and why, what is heuristic, and how to load it. The report returned is that document. Beside it, the set's data card
+(OUT/DATACARD.md and datacard.json, core.paper.datacard: composition, collection, labels, conditions, known gaps,
+licence, provenance; the user's dashcam-derived runs without names, places or dates).
 
 Frames. A run is in CARLA's frames: left-handed, x forward, y right, z up, degrees (core.rig). Every format here is
 right-handed; points map by p -> S·p and rotations by R -> S·R·S with S = diag(1, −1, 1) (core.rig.to_ros), never by
@@ -1565,6 +1567,12 @@ def export(run_dirs: list, fmt: str, out_dir: str, options: dict | None = None, 
     with open(os.path.join(out_dir, MANIFEST), 'w', encoding='utf-8') as fh:
         json.dump(doc, fh, indent=1, ensure_ascii=False, default=_jsonable)
         fh.write('\n')
+    from .paper import PaperError, write_datacard     # the set's data card beside its manifest (core.paper)
+    try:
+        write_datacard(out_dir)
+        doc['datacard'] = 'DATACARD.md'
+    except (PaperError, OSError, ValueError, KeyError, TypeError) as e:
+        doc['datacard'] = f'not written: {e} (falcon paper datacard {out_dir} makes it)'
     if progress:
         progress(1.0, f'{fmt}: done')
     return doc
