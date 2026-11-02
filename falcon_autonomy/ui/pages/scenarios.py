@@ -1,7 +1,7 @@
 """Scenarios: the scenario studio — the library (built-ins and the project's own), a sketch of the scene with the
 actors where a sample puts them and their parameter ranges as bands, the actors, the parameters as distributions and
 the timeline of triggers and actions, the project's live trigger rules (core.triggers), running one sample or a sweep,
-OpenSCENARIO import and export."""
+the planner benchmark (ui.bench_panel), OpenSCENARIO import and export."""
 from __future__ import annotations
 
 import copy
@@ -417,6 +417,9 @@ class ScenariosPage(Page):
         b.addWidget(button('Sweep', self.sweep))
         run.add(b)
         rv.addWidget(run)
+        from ..bench_panel import BenchSection      # the closed-loop planner benchmark (core.planbench)
+        self.bench = BenchSection(self)
+        rv.addWidget(self.bench)
         res = Section('Results')
         self.results = QTreeWidget()
         self.results.setHeaderLabels(['Run', 'Passed', 'Criticality', 'Min TTC', 'Values'])

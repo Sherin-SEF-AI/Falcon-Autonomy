@@ -145,7 +145,7 @@ class Drive(Worker):
             M_cam_from_lidar = np.linalg.inv(mount_matrix(depth_cam['pose'])) @ mount_matrix(self.lidars[0].s['pose'])
         self.check()
         os.makedirs(self.out_dir, exist_ok=True)
-        if need_gt:
+        if need_gt or cfg.get('write_lanes'):         # write_lanes: the planner benchmark's map (core.planbench)
             scene.write_lanes(self, world.get_map(), self.out_dir)
 
         self.phase('run')

@@ -14,9 +14,9 @@ user's dashcam footage to the model.
 From the command line: `falcon assistant tools [--json]` lists them; `falcon assistant call NAME '{"arg": …}'
 --project P.falcon.json` runs a read tool (`--allow-act` lets an act tool run; trash tools never run from there).
 
-99 tools: project 25, runs 11, jobs 29, analysis 11, lab 7, window 8, knowledge 4, system 4.
+102 tools: project 25, runs 11, jobs 29, analysis 11, lab 7, window 8, knowledge 4, system 4, research 3.
 
-What the model is sent is each tool's one-line description and a compact schema (tools/_compact.py); the texts below are the full ones. Schema size, estimated as characters / 4: project 3003, runs 850, jobs 3200, analysis 946, lab 862, window 663, knowledge 309, system 182; all 9995 tokens.
+What the model is sent is each tool's one-line description and a compact schema (tools/_compact.py); the texts below are the full ones. Schema size, estimated as characters / 4: project 3003, runs 850, jobs 3200, analysis 946, lab 862, window 663, knowledge 309, system 182, research 324; all 10318 tokens.
 
 ## Project
 
@@ -156,3 +156,11 @@ What the model is sent is each tool's one-line description and a compact schema 
 | `system_machine` | read | — | The machine: memory (total, available, swap) and the memory Falcon keeps free, the NVIDIA GPUs from nvidia-smi (name, memory used/total, utilisation, driver), the Vulkan driver check and systemd-run — the checks `falcon doctor` runs without CARLA. Measured now; nothing is estimated. |
 | `system_queue` | read | — | The job queue's state: how many jobs run, wait (and why) and are queued; who holds the machine-wide CARLA lock and the GPU lock (a process id; this process or another Falcon process), and the extra memory the next CARLA job's server start needs. jobs_list lists the jobs themselves. |
 | `system_versions` | read | — | Versions: Falcon's, the project format it reads, Python's, CARLA's (from the CARLA folder in Settings, when found) and the open project's name, file and the app version that last saved it. |
+
+## Research
+
+| tool | tier | arguments | what it does |
+|---|---|---|---|
+| `research_bench_run` | act | `planners`? follower, none, autopilot, policy:<id>, stack:<suite file><br>`routes`? route set (default falcon-pdm-v1)<br>`name`? benchmark name (default bench-<set>) | The closed-loop planner benchmark (Scenarios ▸ Planner benchmark; docs/planner-benchmark.md): each planner — follower (Falcon's lane follower, also driven as the reference for progress), none (constant speed), autopilot, policy:<policy id>, stack:<a stack suite file> — drives a fixed route set (falcon-pdm-v1: 23 routes on central Bengaluru, Town10HD_Opt and Town04, pinned seeds, kinematic actors, no background traffic; falcon-pdm-mini: 4), scored with nuPlan/NAVSIM-style terms (no at-fault collisions, drivable area, driving direction, TTC within bound, ego progress, comfort) and the PDM score. Resumable: routes already driven in the named benchmark are not driven again, so a new planner joins its comparison. Read with research_bench_results. |
+| `research_bench_results` | read | `name`? benchmark name (default: list them) | A planner benchmark's scores (benchmarks/<name>): per planner the mean over routes of every term and of the PDM score with 95 % bootstrap intervals, the routes it drove and how many were partial; the paired comparisons against the reference (B − A with intervals); failed runs. Without a name, the benchmarks in the workspace. |
+| `research_incident` | act | `recon` reconstruction id (recon/<id>)<br>`world` the imported world the event is on<br>`start_s`? window start, s from the first posed frame (default all)<br>`end_s`? window end, s (default all)<br>`search`? rare-case search runs to queue (default 0: none) | A recorded dashcam event made a scenario (docs/dashcam.md), on this machine: the reconstruction (falcon recon from-dashcam; its id in recon/) placed on the imported world's matched road, written as a replay scenario, a parametric scenario whose ranges are centred on the extracted values, and OpenSCENARIO. The footage is private: only counts, durations and shares come back, never positions, names or images. search > 0 also queues the rare-case search over the variations (its study is private too). |

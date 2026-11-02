@@ -70,6 +70,10 @@ SHORT = {
     'lab_adversary': 'Queue training or evaluating adversarial traffic.',
     'lab_experiment': 'Queue a mixed sim/real or active-learning experiment.',
     'lab_vlm': 'Queue scoring a VLM\'s driving explanations.',
+    # research
+    'research_bench_run': 'Queue the closed-loop planner benchmark (PDM score) for planners on fixed routes.',
+    'research_bench_results': 'A planner benchmark\'s scores with intervals and comparisons; or the list.',
+    'research_incident': 'Make a scenario from a recorded dashcam event; only counts come back (private).',
     # knowledge
     'knowledge_manual': 'Search the built-in manual offline: best sections with heading, link and text.',
     'knowledge_cli': 'Falcon\'s command-line commands with what they do, optionally filtered.',

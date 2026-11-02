@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- **A closed-loop planner benchmark** (`core/planbench.py`, `sim/benchrun.py`, `ui/bench_panel.py`, Scenarios ▸
+  Planner benchmark, `falcon bench`; docs/planner-benchmark.md): fixed routes — a world, a scenario, a pinned seed;
+  23 in `falcon-pdm-v1` on central Bengaluru (11), Town10HD_Opt (9) and Town04 (3), kinematic actors, no background
+  traffic — driven by any planner Falcon can drive (the lane follower as the reference, constant speed, the autopilot,
+  a trained policy in the environment, a stack suite's stack) and scored from what the runs recorded with nuPlan's
+  and NAVSIM's terms: no at-fault collisions (nuPlan's collision classes, approximated from the contact point),
+  drivable area (0.3 m), driving direction (2 m / 6 m in 1 s), TTC within 0.95 s, progress against the reference,
+  comfort (nuPlan's bounds), and PDMS = NC × DAC × DDC × (5·TTC + 5·EP + 2·C)/12 with NAVSIM v1's form (no DDC) beside
+  it; per route and aggregate with bootstrap intervals over routes, planners compared by a paired bootstrap;
+  resumable. The scoring is a pure function of the run data, unit-tested on synthetic trajectories. Drives and stack
+  runs write the map's lanes when asked (`write_lanes`); a policy's episode now carries every box
+  (`episodes.jsonl` `trajectories`). Measured on the fake only: the lane follower PDMS 0.83 (comfort fails on jerk in
+  kinematic motion), the constant-speed ego 0 (it hits the lead and the stalled van). The assistant queues it with
+  `research_bench_run` and reads it with `research_bench_results`, in a new tool group, `research` (324 tokens; all
+  groups 10,304, so the tests' total bound is raised from 10,000 to 14,000 — groups load on demand).
+- **A real incident as a scenario** (`core/incident.py`, `core/openscenario.py`, `workers/director.py`, Replay ▸ From a
+  dashcam ▸ Make a scenario from this event, `falcon dashcam incident`; docs/dashcam.md): a reconstructed dashcam
+  segment's ego (odometry held to the GPS) snapped to an imported world's lanes, other road users from a detections
+  file (Falcon runs no detector on dashcam footage) cast onto the road plane and attached to the snapped ego, written as
+  a replay scenario (the director now takes a fixed `start`, a `route_xy` and recorded `track`s, replayed
+  kinematically and extrapolated at their end velocities; the ego's driver `replay`), a parametric twin whose
+  parameters are uniform ranges centred on the extracted values, and OpenSCENARIO 1.2 (WorldPosition start,
+  AssignRouteAction, FollowTrajectoryAction; read back by the importer). `falcon search` takes a scenario file, so the
+  rare-case search runs over the variations. Private like the footage: the folder's worker `dashcam-incident`, the
+  scenarios' `source` `dashcam`, inherited by their drives and studies (assistant.privacy also reads drive.json,
+  stack.json and study.json now); the assistant makes one from a reconstruction id (`research_incident`, which can
+  also queue the search) and gets counts, durations and shares only. Tested on synthetic reconstructions and the
+  fake; not yet on a real event.
+
 - **A lab-console interface** (`ui/theme.py`, `ui/frame.py`, `ui/motion.py`, `ui/widgets.py`; docs/index.md ▸ The
   window): graphite panels and bordered cards with one blue accent for the main action and the selection, status
   colours only for state, monospaced right-aligned numbers, 13 px IBM Plex. A top bar (the project and its folder,

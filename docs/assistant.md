@@ -68,10 +68,11 @@ mode the model can ask to be resumed when a job it queued finishes (`plan_wait_j
 
 ## Tools on demand, and the per-minute token limit
 
-Falcon's 99 tools ([the list](assistant-tools.md)) are in eight groups whose compact schemas weigh, in tokens
+Falcon's 102 tools ([the list](assistant-tools.md)) are in nine groups whose compact schemas weigh, in tokens
 (characters / 4), about: project 3,000 (25 tools), jobs 3,200 (29), analysis 940 (11), lab 860 (7: hardware in the
 loop, deployment, CI mode, log replay, adversarial traffic, experiments, VLM evaluation), runs 850 (11), ui 650 (8),
-knowledge 310 (4), system 180 (4) — 9,960 in all, more than Groq's base per-minute limit. So each step sends:
+research 320 (3: the planner benchmark and its results, a dashcam incident made a scenario), knowledge 310 (4),
+system 180 (4) — 10,300 in all, more than Groq's base per-minute limit. So each step sends:
 
 - the **core**: the runtime's own `plan_update`, `plan_wait_jobs`, `tools_find` and `tools_load`, with the two small
   groups knowledge and system (about 1,200 tokens together);
@@ -213,9 +214,9 @@ machine every string is redacted: your home folder becomes `~`, and anything sha
 
 Never sent: images, video, lidar, radar, audio, or anything from your dashcam footage. The tools refuse those sources
 (`assistant.privacy`: anything under `~/Videos`, and any run, reconstruction, image set, translator or world whose own
-records say it came from dashcam footage), and Falcon refuses a message that names such a path and an attachment that
-is one, or that is not plain UTF-8 text (images, video, audio, point clouds, archives, model weights), or that is over
-256 KB. Your key goes only to the server, in the request's header.
+records say it came from dashcam footage — an incident made a scenario, and every drive, stack run or study of such a
+scenario, included), and Falcon refuses a message that names such a path and an attachment that is one, or that is
+not plain UTF-8 text (images, video, audio, point clouds, archives, model weights), or that is over 256 KB. Your key goes only to the server, in the request's header.
 
 ## What the assistant never does
 

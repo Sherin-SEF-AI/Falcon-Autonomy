@@ -43,7 +43,7 @@ From the command line: `falcon assistant tools [--json]` lists them; `falcon ass
 --project P.falcon.json` runs a read tool (`--allow-act` lets an act tool run; trash tools never run from there).
 """
 GROUP_TITLES = {'project': 'Project', 'runs': 'Runs', 'jobs': 'Jobs', 'analysis': 'Analysis', 'lab': 'Lab',
-                'ui': 'Window', 'knowledge': 'Knowledge', 'system': 'System'}
+                'ui': 'Window', 'knowledge': 'Knowledge', 'system': 'System', 'research': 'Research'}
 
 
 def doc_markdown() -> str:

@@ -449,7 +449,8 @@ def main_study(argv) -> int:
     ap = argparse.ArgumentParser(prog='falcon sweep|search')
     ap.add_argument('kind', choices=('sweep', 'search'))
     ap.add_argument('project')
-    ap.add_argument('--scenario', required=True, help='a built-in (core.scenarios.LIBRARY) or a project scenario id')
+    ap.add_argument('--scenario', required=True, help='a built-in (core.scenarios.LIBRARY), a project scenario id or a '
+                                                      'scenario file (.json)')
     ap.add_argument('--name', required=True)
     ap.add_argument('--world', default='')
     ap.add_argument('--rig', default='')
@@ -472,6 +473,9 @@ def main_study(argv) -> int:
         print(f'failed: {e}', flush=True)
         return P.FAILED
     scn = proj.item('scenarios', a.scenario) or (SC.builtin(a.scenario) if a.scenario in SC.LIBRARY else None)
+    if scn is None and a.scenario.endswith('.json') and os.path.isfile(a.scenario):   # a scenario file (core.incident)
+        with open(a.scenario, encoding='utf-8') as fh:
+            scn = json.load(fh)
     if scn is None:
         print(f'failed: no scenario {a.scenario!r}', flush=True)
         return P.FAILED

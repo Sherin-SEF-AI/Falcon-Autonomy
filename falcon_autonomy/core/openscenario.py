@@ -17,12 +17,19 @@ Falcon runs scenarios with its own director (workers.director) and reads and wri
   "falcon:walk", "falcon:go", "falcon:stop");
 * StopTrigger: a SimulationTimeCondition at the scenario's duration.
 
+Recorded events (core.incident): the ego's start as a TeleportAction to a WorldPosition and its route as an
+AssignRouteAction through WorldPosition waypoints (every 5 m); a recorded track as a FollowTrajectoryAction (a
+Trajectory of a Polyline of timed WorldPositions, absolute timing, followingMode position) in an event at time 0 of
+its own maneuver group ("tracks"), the actor's Init a WorldPosition at its first pose. WorldPositions are in
+OpenDRIVE's frame (y north, h counter-clockwise in radians): CARLA's (x, −y, −yaw).
+
 Lane names relative to the handedness ("kerb", "sidewalk", "adjacent", "line") are kept in each entity's
 <Properties> (falcon:lane), since OpenSCENARIO's relative lanes depend on the road's lane numbering. Anything outside
 this subset is refused on import, saying what.
 """
 from __future__ import annotations
 
+import math
 import xml.etree.ElementTree as ET
 
 from .. import __version__
@@ -100,13 +107,27 @@ def export_xosc(scn: dict) -> str:
         pr = _sub(init, 'Private', entityRef=entity_ref)
         for a in actions:
             pr.append(a)
-    private('hero', [_speed_action(float(ego.get('speed_kmh', 30)) / 3.6, None)])
+    hero = [_speed_action(float(ego.get('speed_kmh', 30)) / 3.6, None)]
+    if scn.get('start'):
+        st = scn['start']
+        hero.insert(0, _teleport_world(st['x'], st['y'], st.get('yaw', 0.0)))
+    if scn.get('route_xy'):
+        hero.append(_route_action(scn['route_xy']))
+    private('hero', hero)
+    if ego.get('driver'):
+        init.findall('Private')[-1].append(ET.Comment(f' falcon:driver {ego["driver"]} '))
     for a in scn.get('actors', []):
         pl = a.get('place', {})
-        pa = ET.Element('PrivateAction')
-        tp = _sub(_sub(pa, 'TeleportAction'), 'Position')
-        _sub(tp, 'RelativeLanePosition', entityRef='hero', dLane=DLANE.get(pl.get('lane', 'ego'), 0),
-             ds=float(pl.get('ahead_m', 0.0)), offset=float(pl.get('lateral_m', 0.0)))
+        if a.get('track'):
+            tr = a['track']
+            pa = _teleport_world(tr['x'][0], tr['y'][0], tr['yaw'][0])
+            pa.append(ET.Comment(f' falcon:place {pl.get("lane", "ego")} {float(pl.get("ahead_m", 0.0))} '
+                                 f'{float(pl.get("lateral_m", 0.0))} '))
+        else:
+            pa = ET.Element('PrivateAction')
+            tp = _sub(_sub(pa, 'TeleportAction'), 'Position')
+            _sub(tp, 'RelativeLanePosition', entityRef='hero', dLane=DLANE.get(pl.get('lane', 'ego'), 0),
+                 ds=float(pl.get('ahead_m', 0.0)), offset=float(pl.get('lateral_m', 0.0)))
         moving = a.get('start', 'moving') == 'moving'
         private(a['id'], [pa, _speed_action(float(a.get('speed_kmh', 0)) / 3.6 if moving else 0.0, None)])
         pr = init.findall('Private')[-1]
@@ -125,6 +146,20 @@ def export_xosc(scn: dict) -> str:
             act_el.append(ET.Comment(f' falcon:actor {a["actor"]} '))
             act_el.append(_action(a))
         event.append(_trigger(ev.get('trigger', {})))
+    tracked = ([('hero', ego['track'])] if ego.get('track') else []) + [(a['id'], a['track'])
+                                                                        for a in scn.get('actors', []) if a.get('track')]
+    if tracked:
+        mg = _sub(act, 'ManeuverGroup', maximumExecutionCount=1, name='tracks')
+        actors = _sub(mg, 'Actors', selectTriggeringEntities='false')
+        for ref, _ in tracked:
+            _sub(actors, 'EntityRef', entityRef=ref)
+        man = _sub(mg, 'Maneuver', name='tracks')
+        for ref, tr in tracked:
+            event = _sub(man, 'Event', name=f'track_{ref}', priority='parallel', maximumExecutionCount=1)
+            act_el = _sub(event, 'Action', name=f'follow_{ref}')
+            act_el.append(ET.Comment(f' falcon:actor {ref} '))
+            act_el.append(_follow_trajectory(ref, tr))
+            event.append(_trigger({'type': 'time', 't_s': 0.0}))
     st = _sub(act, 'StartTrigger')
     cg = _sub(st, 'ConditionGroup')
     c = _sub(cg, 'Condition', name='start', delay=0, conditionEdge='rising')
@@ -135,6 +170,51 @@ def export_xosc(scn: dict) -> str:
          rule='greaterThan')
     ET.indent(root)
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding='unicode') + '\n'
+
+
+def _world(parent, x, y, yaw_deg):
+    """A WorldPosition from CARLA's frame (module doc)."""
+    return _sub(parent, 'WorldPosition', x=round(float(x), 4), y=round(-float(y), 4), z=0,
+                h=round(-math.radians(float(yaw_deg)), 6))
+
+
+def _teleport_world(x, y, yaw_deg):
+    pa = ET.Element('PrivateAction')
+    _world(_sub(_sub(pa, 'TeleportAction'), 'Position'), x, y, yaw_deg)
+    return pa
+
+
+def _route_action(pts, step=5.0):
+    """AssignRouteAction > Route > Waypoint+ (OpenSCENARIO 1.2) through the route's points every `step` m."""
+    pa = ET.Element('PrivateAction')
+    route = _sub(_sub(_sub(pa, 'RoutingAction'), 'AssignRouteAction'), 'Route', name='route', closed='false')
+    keep, last = [], None
+    for k, (x, y) in enumerate(pts):
+        if last is None or k == len(pts) - 1 or math.hypot(x - last[0], y - last[1]) >= step:
+            keep.append((float(x), float(y)))
+            last = (x, y)
+    for k, (x, y) in enumerate(keep):
+        a, b = (keep[k], keep[k + 1]) if k + 1 < len(keep) else (keep[max(k - 1, 0)], keep[k])
+        yaw = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])) if a != b else 0.0
+        _world(_sub(_sub(route, 'Waypoint', routeStrategy='shortest'), 'Position'), x, y, yaw)
+    return pa
+
+
+def _follow_trajectory(ref, tr):
+    pa = ET.Element('PrivateAction')
+    fta = _sub(_sub(pa, 'RoutingAction'), 'FollowTrajectoryAction')
+    traj = _sub(_sub(fta, 'TrajectoryRef'), 'Trajectory', name=f'track_{ref}', closed='false')
+    _sub(traj, 'ParameterDeclarations')
+    poly = _sub(_sub(traj, 'Shape'), 'Polyline')
+    for t, x, y, yaw in zip(tr['t'], tr['x'], tr['y'], tr['yaw']):
+        _world(_sub(_sub(poly, 'Vertex', time=round(float(t), 4)), 'Position'), x, y, yaw)
+    _sub(_sub(fta, 'TimeReference'), 'Timing', domainAbsoluteRelative='absolute', scale=1, offset=0)
+    _sub(fta, 'TrajectoryFollowingMode', followingMode='position')
+    return pa
+
+
+def _carla(wpos) -> tuple:
+    return (float(wpos.get('x', 0)), -float(wpos.get('y', 0)), -math.degrees(float(wpos.get('h', 0))))
 
 
 def _speed_action(v, rate):
@@ -216,32 +296,64 @@ def import_xosc(text: str) -> dict:
     for pr in root.findall('Storyboard/Init/Actions/Private'):
         ref = pr.get('entityRef')
         speed = None
-        pos = None
+        pos = world = None
         for pa in pr.findall('PrivateAction'):
             ts = pa.find('LongitudinalAction/SpeedAction/SpeedActionTarget/AbsoluteTargetSpeed')
             if ts is not None:
                 speed = float(ts.get('value'))
             rl = pa.find('TeleportAction/Position/RelativeLanePosition')
+            wl = pa.find('TeleportAction/Position/WorldPosition')
+            route = pa.find('RoutingAction/AssignRouteAction/Route')
             if rl is not None:
                 pos = rl
+            elif wl is not None:
+                world = wl
             elif pa.find('TeleportAction') is not None:
-                raise ValueError(f'{ref}: only RelativeLanePosition teleports are in Falcon\'s subset')
+                raise ValueError(f'{ref}: only RelativeLanePosition and WorldPosition teleports are in Falcon\'s '
+                                 f'subset')
+            if route is not None and ref == 'hero':
+                scn['route_xy'] = [list(_carla(w)[:2]) for w in route.findall('Waypoint/Position/WorldPosition')]
         comment = ' '.join(c.text for c in pr.iter() if c.tag is ET.Comment)
         heading = _field(comment, 'heading', 'lane')
         start = _field(comment, 'start', 'moving')
         if ref == 'hero':
             scn['ego']['speed_kmh'] = 3.6 * (speed or 0.0)
+            scn['ego']['driver'] = _field(comment, 'driver', 'follower')
+            if world is not None:
+                x, y, yaw = _carla(world)
+                scn['start'] = {'x': x, 'y': y, 'yaw': yaw}
             continue
-        lane = lanes.get(ref) or inv_dl.get(int(float(pos.get('dLane', 0))), 'ego')
+        if pos is not None:
+            lane = lanes.get(ref) or inv_dl.get(int(float(pos.get('dLane', 0))), 'ego')
+            place = {'lane': lane, 'ahead_m': float(pos.get('ds', 0)), 'lateral_m': float(pos.get('offset', 0))}
+        else:
+            parts = comment.split()
+            k = parts.index('falcon:place') if 'falcon:place' in parts else -1
+            place = ({'lane': parts[k + 1], 'ahead_m': float(parts[k + 2]), 'lateral_m': float(parts[k + 3])}
+                     if k >= 0 else {'lane': lanes.get(ref) or 'ego', 'ahead_m': 0.0, 'lateral_m': 0.0})
         scn['actors'].append({'id': ref, 'kind': kinds.get(ref, 'car'), 'heading': heading, 'start': start,
-                              'speed_kmh': 3.6 * (speed or 0.0),
-                              'place': {'lane': lane, 'ahead_m': float(pos.get('ds', 0)),
-                                        'lateral_m': float(pos.get('offset', 0))}})
+                              'speed_kmh': 3.6 * (speed or 0.0), 'place': place})
+    by_id = {a['id']: a for a in scn['actors']}
     for ev in root.iter('Event'):
         actions = []
+        tracks = 0
         for act in ev.findall('Action'):
             comment = ' '.join(c.text for c in act.iter() if c.tag is ET.Comment)
             actor = _field(comment, 'actor', None)
+            ft = act.find('PrivateAction/RoutingAction/FollowTrajectoryAction')
+            if ft is not None:
+                vs = ft.findall('.//Polyline/Vertex')
+                pts = [(float(v.get('time')),) + _carla(v.find('Position/WorldPosition')) for v in vs]
+                tr = {'t': [p[0] for p in pts], 'x': [p[1] for p in pts], 'y': [p[2] for p in pts],
+                      'yaw': [p[3] for p in pts]}
+                if actor == 'hero':
+                    scn['ego']['track'] = tr
+                elif actor in by_id:
+                    by_id[actor]['track'] = tr
+                else:
+                    raise ValueError(f'event {ev.get("name")}: a trajectory for an unknown entity {actor!r}')
+                tracks += 1
+                continue
             sa = act.find('PrivateAction/LongitudinalAction/SpeedAction')
             lc = act.find('PrivateAction/LateralAction/LaneChangeAction')
             cc = act.find('UserDefinedAction/CustomCommandAction')
@@ -265,6 +377,8 @@ def import_xosc(text: str) -> dict:
                 actions.append(a)
             else:
                 raise ValueError(f'event {ev.get("name")}: an action outside Falcon\'s OpenSCENARIO subset')
+        if tracks and not actions:
+            continue
         cond = ev.find('StartTrigger/ConditionGroup/Condition')
         stc = cond.find('ByValueCondition/SimulationTimeCondition')
         rdc = cond.find('ByEntityCondition/EntityCondition/RelativeDistanceCondition')

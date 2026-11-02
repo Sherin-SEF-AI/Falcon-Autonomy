@@ -265,6 +265,67 @@ highway, then a town in heavy rain and slow traffic), planned as one window (`--
 Two parallel runs on one scratch configuration shared its server port, and one drive waited for the CARLA lock while
 another process stopped the server it was about to use (*no server answered*); runs in parallel need their own ports.
 
+## A real incident as a scenario
+
+An event you recorded — a cut-in, a hard stop, someone stepping out — can be made a scenario: the ego's trajectory
+and the other road users' tracks over the event's window, placed on the matched road of an imported world, written as
+a Falcon scenario and an OpenSCENARIO file; then the rare-case search looks for variations around it
+(`core/incident.py`; Replay ▸ *From a dashcam* ▸ **Make a scenario from this event**; `falcon dashcam incident`).
+
+It starts from a reconstruction of the segment (`falcon recon from-dashcam`, [reconstruction](reconstruction.md)):
+its posed frames give each frame's time, the car's pose (monocular visual odometry held to the GPS, in local metres)
+and the camera. **Other road users come from a detections file**, because Falcon runs no detector on dashcam footage:
+
+    {"schema": "falcon.dashcam_detections/1",
+     "frames": [{"index": <the video frame number posed.json gives> | "t": <seconds from the first posed frame>,
+                 "boxes": [{"box": [x1, y1, x2, y2], "kind": "car", "track": "c1"}]}]}
+
+— boxes in the posed images' pixels, kinds as the scenarios' (car, truck, bus, van, motorcycle, bicycle, pedestrian,
+child, autorickshaw, …), track ids optional (boxes without one are joined frame to frame by the nearest of the same
+kind within 3 m). Without the file the scenario has the ego only.
+
+1. **The window**: `--from` / `--to` in seconds from the first posed frame (default: all of it).
+2. **The ego on the map**: each pose to latitude and longitude and to the world's frame, snapped to the world's lanes
+   (the route's own Viterbi pass: lane centres within 8 m and 45°). The ego is put on the matched lane's centre; its
+   offset from it, which GPS noise dominates, stays in `incident.json`.
+3. **Other road users**: a box's bottom centre is cast onto the reconstruction's road plane, then moved half the
+   kind's typical length further along the ray for a vehicle (the bottom edge is its near face); boxes past 60 m or
+   above the horizon are dropped. Positions are kept in the car's own frame — the odometry's relative geometry — and
+   attached to the snapped ego, so the conflict's geometry is the reconstruction's; tracks are median-filtered over
+   three samples, speed and heading from central differences.
+4. **Two scenarios**. `scenario.json` replays the event: the ego (driver `replay`) and every actor on its recorded
+   track, kinematically, from the matched start (`start`, `route_xy`); before a track's first sample and after its
+   last an actor keeps its end segment's velocity, so one that enters or leaves the camera's view does not stand in
+   the road. `variations.json` is a parametric fit of the same event — each actor by lane, distance from the ego at
+   t = 0, lateral offset, speed, its largest braking, its lane change or walk as timeline actions — whose parameters
+   are **uniform ranges centred on the extracted values** (speeds ±25 % or 3 km/h, distances ±25 % or 3 m, lateral
+   offsets ±0.5 m, action times ±1 s, braking ±30 %), with the ego on Falcon's lane follower from the same start.
+5. **OpenSCENARIO**: `incident.xosc` — the start as a `WorldPosition`, the route as an `AssignRouteAction`, each track
+   as a `FollowTrajectoryAction` along a polyline of timed world positions ([scenarios](scenarios.md)); Falcon's
+   importer reads it back.
+
+**Searching around it**: `falcon dashcam incident search PROJECT NAME [--budget N] [--method M]` runs the
+[rare-case search](scenarios.md#sweeps-and-rare-case-searches) over `variations.json` on the event's world (the same
+as `falcon search PROJECT --scenario …/variations.json`), with its objective, RSS labels and failure map.
+
+    falcon dashcam incident extract RECON --project P --world W [--from S] [--to S] [--detections FILE] [--name N]
+    falcon dashcam incident search PROJECT NAME [--budget N] [--method bayes|bayes-pof|cmaes|adaptive|random]
+    falcon dashcam incident show PROJECT NAME                 counts only
+
+The incident's folder (`incidents/<name>/` in the workspace: `incident.json`, `scenario.json`, `variations.json`,
+`incident.xosc`, `run.json`) is **private** like the footage: its `run.json` names its worker `dashcam-incident`, both
+scenarios carry `source: {"format": "dashcam"}`, and every drive, stack run or study of them inherits it — the
+assistant never reads them. Its default name is a hash of the reconstruction's folder, not the clip's name (which
+carries its date and time). The assistant can make one from a reconstruction id and queue the search of its
+variations (`research_incident`, with `search` runs); what comes back is counts, durations and
+shares — never positions, tracks, places, file names or images.
+
+Limits. Monocular ranging assumes a flat road: a slope, a pitching car or a box cut by the image's edge moves a road
+user along the ray (a pixel in the bottom edge at 30 m is about 1 m at a 1,000 px focal length). Sizes are typical
+for the kind, not measured. The parametric fit keeps one braking and one lane change per actor and places an actor by
+its offset from the ego's lane (an oncoming one on the nearest oncoming lane). Tested on synthetic reconstructions
+(`tests/test_incident.py`) and on the fake CARLA; not yet on a real event on a real server.
+
 ## Translation to your own roads, measured
 
 Falcon's [translator](translation.md) (CUT, the frame's label as an input, default settings: λ_NCE 10, 12 000
