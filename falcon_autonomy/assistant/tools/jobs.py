@@ -237,9 +237,18 @@ def jobs_sweep(ctx, **a):
     return _queue(ctx, _sweep(ctx, **a))
 
 
+def _base(ctx, scenario):
+    from ._failrate import base_scenario
+    return base_scenario(ctx, scenario)
+
+
 def _search(ctx, scenario, method='bayes', budget=60, batch=4, threshold=0.5, seed=0, world='', rig='',
             objective='criticality', count='avoidable', feasibility=True, model='', weather=(), fps=20, dry=False):
     from ...sim.studio import search_argv, search_name
+    if method == 'estimate' or str(scenario).startswith('cell:'):       # the failure rate, an ODD cell (_failrate)
+        from ._failrate import search_or_estimate
+        return search_or_estimate(ctx, scenario, method, budget, batch, threshold, seed, world, rig, objective, count,
+                                  feasibility, model, weather, fps, dry)
     s = _scenario(ctx, scenario)
     w, r = _world_rig(ctx, world, rig)
     if objective != 'criticality':
@@ -259,9 +268,12 @@ def _search(ctx, scenario, method='bayes', budget=60, batch=4, threshold=0.5, se
       'A rare-case search (Rare cases): Bayesian optimisation (bayes, bayes-pof), CMA-ES, adaptive or random '
       'sampling over a scenario\'s parameters (and optionally fog, sun, rain), for criticality (by default counting '
       'only failures the ego could have avoided by RSS, over the kinematically feasible parameters) or a model\'s '
-      'perception misses. Resumable; the study is studies/<name> (returned). Analyse with analysis_study.',
-      C.obj({'scenario': C.s('scenario key or id'),
-             'method': C.s('search method', enum=['bayes', 'bayes-pof', 'cmaes', 'adaptive', 'random']),
+      'perception misses. Resumable; the study is studies/<name> (returned). Analyse with analysis_study. Method '
+      'estimate: not a search but the failure rate with a 95 % interval (`falcon failrate run`: adaptive importance '
+      'sampling, budget the runs at most; read with analysis_outputs kind failure_rate). Scenario cell:<cell>: the '
+      'scenario generated for an ODD cell (analysis_outputs kind coverage), added to the project.',
+      C.obj({'scenario': C.s('scenario key or id, or cell:<ODD cell> (analysis_outputs kind coverage)'),
+             'method': C.s('search method', enum=['bayes', 'bayes-pof', 'cmaes', 'adaptive', 'random', 'estimate']),
              'budget': C.i('runs (default 60)', minimum=4, maximum=5000), 'batch': C.i('runs per batch (default 4)',
                                                                                      minimum=1, maximum=64),
              'threshold': C.n('failure threshold of the objective (default 0.5)', minimum=0, maximum=1),
@@ -274,7 +286,7 @@ def _search(ctx, scenario, method='bayes', budget=60, batch=4, threshold=0.5, se
                               'weather fields to search too'),
              'fps': C.i('steps per second (default 20)', minimum=5, maximum=100)}, ['scenario']),
       estimate=lambda ctx, **a: _drive_estimate(ctx, _world_rig(ctx, a.get('world'), a.get('rig'))[1],
-                                                int(float(_scenario(ctx, a['scenario']).get('duration_s', 12))
+                                                int(float(_base(ctx, a['scenario']).get('duration_s', 12))
                                                     * float(a.get('fps', 20))), int(a.get('budget', 60))),
       preview=_cli_preview(_search))
 def jobs_search(ctx, **a):

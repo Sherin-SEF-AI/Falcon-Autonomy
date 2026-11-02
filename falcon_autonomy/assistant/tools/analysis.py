@@ -25,6 +25,8 @@ OUTPUTS = {'study': ('studies', ('study.json',)), 'evaluation': ('evaluations', 
            'experiment': ('experiments', ('experiment.json',)),
            'vlm': (os.path.join('vlm', 'evaluations'), ('scores.json', 'run.json')), 'log': ('logs', ('log.json',)),
            'hil': ('runs', ('hil.json',)), 'replay_comparison': ('runs', ('comparison.json',))}
+# the failure rate and the coverage of the operating domain (tools/_failrate.py): read here, queued by jobs_search
+OUTPUTS.update({'failure_rate': ('studies', ('failure-rate.json',)), 'coverage': ('', ('',))})
 LAB = ('ci', 'deploy', 'adversary', 'experiment', 'vlm', 'log', 'hil', 'replay_comparison')
 READER = {'study': 'analysis_study', 'evaluation': 'analysis_evaluation', 'comparison': 'analysis_evaluation',
           'gap': 'analysis_gap', 'suite': 'analysis_suite', 'rootcause': 'analysis_rootcause',
@@ -59,12 +61,18 @@ def compact(v, depth=0, cap=10):
       'sessions, replay comparisons). Use the ids in the analysis and jobs tools. With id, a lab output\'s numbers: '
       'a CI run\'s verdict and gates, a HIL session\'s latency per stage and deadlines, a deployment\'s engines '
       '(latency, power, AP ratio, gate verdict), failure rates, an experiment\'s arms with intervals, VLM scores '
-      '(text only), a log\'s actors and duration, a replay comparison\'s differences.',
+      '(text only), a log\'s actors and duration, a replay comparison\'s differences. Kind failure_rate: the '
+      'failure-rate estimates (with id, one: P(fail) per encounter with its 95 % interval, effective failures, '
+      'trust, per ODD cell); kind coverage: the operating domain\'s grid (cells tested, too few, untested, the next '
+      'to fill; with id, one cell weather/road/actor/speed/light).',
       C.obj({'kind': C.s('what to list', enum=sorted(OUTPUTS)),
              'id': C.s('a lab output\'s id: its numbers (a run id for hil)'),
              'limit': C.i('rows (default 20)', minimum=1, maximum=50)}, ['kind']))
 def analysis_outputs(ctx, kind, id='', limit=20):
     from ..privacy import private_reason
+    if kind in ('failure_rate', 'coverage'):
+        from ._failrate import read_output
+        return read_output(ctx, kind, id, limit)
     if id:
         if kind not in LAB:
             raise ToolError(f'read a {kind} with {READER[kind]}' if kind in READER else
