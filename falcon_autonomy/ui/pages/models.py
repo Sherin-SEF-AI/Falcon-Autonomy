@@ -8,6 +8,7 @@ ONNX detector as TensorRT engines on the Jetson (or the labelled simulated devic
 from __future__ import annotations
 
 import json
+import re
 import os
 import sys
 import time
@@ -26,8 +27,9 @@ from ...core.paths import tilde
 from ...core.project import Edit, new_id
 from ...core.provenance import read_json
 from ..drivesets import DriveSetBar
-from ..theme import SEQ, STATUS, THEME
-from ..widgets import Form, KeyValues, Note, Page, PlaceholderList, PlaceholderTree, Section, button, label, scroll
+from ..theme import SEQ, STATUS, THEME, mono
+from ..widgets import (INTERVAL_ROLE, Form, IntervalDelegate, KeyValues, Page, PlaceholderList, PlaceholderTree,
+                       Section, button, callout, label, scroll)
 
 SYNTHETIC = {'name': 'Synthetic detector (testing only)', 'kind': 'detector', 'runtime': 'python',
              'entry': 'falcon_autonomy.plugins.synthetic_detector:SyntheticDetector', 'licence': 'GPL-3.0-or-later',
@@ -36,6 +38,22 @@ SYNTHETIC = {'name': 'Synthetic detector (testing only)', 'kind': 'detector', 'r
 
 def _fmt(v, nd=3):
     return '—' if v is None else (f'{v:.{nd}f}' if isinstance(v, float) else str(v))
+
+
+_BIN = re.compile(r'^(\w+)\.(range_m|occluded|truncated|height)\[([^,]+),([^)\]]+)[)\]]$')
+_BIN_NAME = {'range_m': ('range', ' m'), 'occluded': ('occluded', ''), 'truncated': ('truncated', ''),
+             'height': ('height', ' px')}
+
+
+def metric_label(key: str) -> str:
+    """A score's name as read: AP.car → AP · car, AP.range_m[0,20) → AP · range 0–20 m, …[80,inf) → ≥ 80 m."""
+    m = _BIN.match(key)
+    if m:
+        head, kind, a, b = m.groups()
+        word, unit = _BIN_NAME[kind]
+        return f'{head} · {word} ≥ {a}{unit}' if b in ('inf', '+inf') else f'{head} · {word} {a}–{b}{unit}'
+    head, dot, rest = key.partition('.')
+    return f'{head} · {rest}' if dot else key
 
 
 class RegisterDialog(QDialog):
@@ -223,8 +241,6 @@ class ModelsPage(Page):
         h.addWidget(split)
         left = QWidget()
         lv = QVBoxLayout(left)
-        lv.addWidget(label(self.title, page=True))
-        lv.addWidget(Note(self.about, limit=160))
         # ---- registered models
         sec = Section('Registered models', 'No model is bundled. Weights download only when you ask, from a pinned '
                                            'URL checked by SHA-256, with the licence shown first.')
@@ -367,9 +383,17 @@ class ModelsPage(Page):
         v.addWidget(self.ev)
         self.ev_info = KeyValues(('Model', 'Frames', 'Bootstrap', 'Ran on', 'Latency (this machine)', 'Note'))
         v.addWidget(self.ev_info)
+        self.synthetic_note = callout('Synthetic test model: these numbers say nothing about a real detector.')
+        self.synthetic_note.hide()
+        v.addWidget(self.synthetic_note)
         self.table = QTreeWidget()
-        self.table.setHeaderLabels(['Metric', 'Value', '95 % CI', 'n'])
+        self.table.setHeaderLabels(['Metric', 'Value', '95 % CI', 'n', 'Interval (0 – 1)'])
         self.table.setRootIsDecorated(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setItemDelegateForColumn(4, IntervalDelegate(self.table))
+        for c in (1, 2, 3):
+            self.table.headerItem().setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.table.headerItem().setToolTip(4, 'The value (dot) and its bootstrap 95 % interval (band) on 0 – 1')
         from ..assistant_dock import add_ask_menu
         add_ask_menu(self.table, self.win, lambda it: ('evaluation', {'evaluation': self.ev.currentData()})
                      if self.ev.currentData() else None)
@@ -775,13 +799,24 @@ class ModelsPage(Page):
         self.ev_info.set('Ran on', ', '.join(e.get('providers') or ()))
         self.ev_info.set('Latency (this machine)', f'median {lat.get("median", 0):.3g} ms, p90 '
                                                    f'{lat.get("p90", 0):.3g} ms per frame')
-        notes = (['SYNTHETIC test model: these numbers say nothing about a real detector']
-                 if e.get('synthetic_model') else []) + ([sc['note']] if sc.get('note') else [])
-        self.ev_info.set('Note', ' · '.join(notes))
+        self.ev_info.set('Note', sc.get('note') or '—')       # a synthetic model's caveat: the box under it
+        self.synthetic_note.setVisible(bool(e.get('synthetic_model')))
         for r in sc['table']:
             ci = '—' if r['ci_low'] is None else f'{_fmt(r["ci_low"])} – {_fmt(r["ci_high"])}'
-            self.table.addTopLevelItem(QTreeWidgetItem([r['metric'], _fmt(r['value']), ci, _fmt(r.get('n'))]))
-        self.table.resizeColumnToContents(0)
+            it = QTreeWidgetItem([metric_label(r['metric']), _fmt(r['value']), ci, _fmt(r.get('n')), ''])
+            it.setToolTip(0, r['metric'])
+            for c in (1, 2, 3):
+                it.setFont(c, mono(12))
+                it.setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            it.setForeground(2, THEME.color('ink2'))
+            it.setForeground(3, THEME.color('muted'))
+            v = r['value']
+            if isinstance(v, (int, float)) and 0 <= v <= 1:
+                it.setData(4, INTERVAL_ROLE, (v, r['ci_low'], r['ci_high']))
+            self.table.addTopLevelItem(it)
+        for c in range(4):
+            self.table.resizeColumnToContents(c)
+        self.table.setColumnWidth(0, max(self.table.columnWidth(0), 200))
         self.gridview.set_grid(e.get('grid'))
         for row in e.get('gallery') or ():
             cond = ', '.join(f'{k} {v}' for k, v in row['conditions'].items() if k in ('weather', 'fog_density',

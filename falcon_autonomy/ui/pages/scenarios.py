@@ -333,7 +333,6 @@ class ScenariosPage(Page):
         h.addWidget(split)
         left = QWidget()
         lv = QVBoxLayout(left)
-        lv.addWidget(label(self.title, page=True))
         self.list = QListWidget()
         self.list.currentRowChanged.connect(lambda _: self.show_scenario())
         lv.addWidget(self.list, 1)

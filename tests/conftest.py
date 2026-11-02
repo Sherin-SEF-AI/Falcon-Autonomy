@@ -19,6 +19,7 @@ _TMP = tempfile.mkdtemp(prefix='falcon-tests-')
 os.environ['XDG_CONFIG_HOME'] = os.path.join(_TMP, 'config')
 os.environ['XDG_CACHE_HOME'] = os.path.join(_TMP, 'cache')
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+os.environ.setdefault('FALCON_REDUCE_MOTION', '1')       # no animations: what a test sees is settled (ui.motion)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 

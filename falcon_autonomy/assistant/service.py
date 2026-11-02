@@ -67,6 +67,7 @@ class AssistantService:
         self.totals = {'prompt': 0, 'completion': 0, 'cost': 0.0, 'requests': 0, 'unpriced': 0, 'model': ''}
         self._window: list = []             # (monotonic time, tokens) of this minute's responses: the TPM in use
         self._gone: set = set()             # models the server said it does not have (this session)
+        self.account_limits: dict = {}      # {'tokens', 'requests'} per minute, as the server last stated them
         self._told: set = set()
 
     # ------------------------------------------------------------------ configuration
@@ -114,8 +115,10 @@ class AssistantService:
         k = key if key else self.keys.get()
         if not k and self.consented() and c['enabled']:
             raise ProviderError('no_key', 'No API key: paste yours in Settings ▸ Assistant.')
-        return GroqClient(base_url or c['base_url'] or DEFAULT_BASE_URL, k, gate=self.gate,
-                          on_request=lambda rec: self._audit(rec, base_url or c['base_url']))
+        cl = GroqClient(base_url or c['base_url'] or DEFAULT_BASE_URL, k, gate=self.gate,
+                        on_request=lambda rec: self._audit(rec, base_url or c['base_url']))
+        cl.on_limits = self.account_limits.update      # what the server says this account may use per minute
+        return cl
 
     def _audit(self, rec: dict, base_url: str):
         ws = self.workspace_fn()

@@ -457,15 +457,97 @@ class PlanView(QFrame):
         self.show()
 
 
+class Working(QWidget):
+    """Three dots that ripple while the assistant works (still when motion is reduced); hidden when it is idle."""
+
+    def __init__(self):
+        super().__init__()
+        from PyQt6.QtCore import QVariantAnimation
+        self.setFixedSize(26, 12)
+        self.t = 0.0
+        self.anim = QVariantAnimation(self)
+        self.anim.setStartValue(0.0)
+        self.anim.setEndValue(1.0)
+        self.anim.setDuration(1100)
+        self.anim.setLoopCount(-1)
+        self.anim.valueChanged.connect(self._tick)
+        self.hide()
+
+    def set_active(self, on: bool):
+        from . import motion
+        self.setVisible(on)
+        if on and motion.enabled():
+            if self.anim.state() != self.anim.State.Running:
+                self.anim.start()
+        else:
+            self.anim.stop()
+
+    def _tick(self, v):
+        self.t = float(v)
+        self.update()
+
+    def paintEvent(self, _ev):                          # noqa: N802
+        import math
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtGui import QColor, QPainter
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        for i in range(3):
+            phase = (self.t - i * 0.18) % 1.0
+            a = 0.35 + 0.65 * max(0.0, math.sin(phase * math.pi)) if self.anim.state() == self.anim.State.Running \
+                else 0.7
+            c = QColor(THEME.tok['accent_hi'])
+            c.setAlphaF(a)
+            p.setBrush(c)
+            lift = 2.0 * max(0.0, math.sin(phase * math.pi)) if self.anim.state() == self.anim.State.Running else 0
+            p.drawEllipse(QPointF(4 + i * 9, 6 - lift), 2.6, 2.6)
+
+
+class WaitBar(QWidget):
+    """A thin bar that drains as a timed wait runs out."""
+
+    def __init__(self):
+        super().__init__()
+        self.frac = 0.0
+        self.setFixedHeight(3)
+        self.hide()
+
+    def set(self, frac: float):
+        self.frac = min(max(frac, 0.0), 1.0)
+        self.update()
+
+    def paintEvent(self, _ev):                          # noqa: N802
+        from PyQt6.QtCore import QRectF
+        from PyQt6.QtGui import QColor, QPainter
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        r = QRectF(10, 0, self.width() - 20, self.height())
+        p.setBrush(QColor(THEME.tok['raised']))
+        p.drawRoundedRect(r, 1.5, 1.5)
+        p.setBrush(QColor(THEME.tok['accent']))
+        p.drawRoundedRect(QRectF(r.left(), r.top(), r.width() * self.frac, r.height()), 1.5, 1.5)
+
+
 class Composer(QPlainTextEdit):
     """The message box: Enter sends, Shift+Enter is a new line, Esc stops; grows to six lines."""
     send = pyqtSignal()
     stop = pyqtSignal()
+    focused = pyqtSignal(bool)                         # its box draws the focus ring
+
+    def focusInEvent(self, ev):                        # noqa: N802
+        super().focusInEvent(ev)
+        self.focused.emit(True)
+
+    def focusOutEvent(self, ev):                       # noqa: N802
+        super().focusOutEvent(ev)
+        self.focused.emit(False)
 
     def __init__(self):
         super().__init__()
         self.setObjectName('composer')
-        self.setPlaceholderText('Ask Falcon… (Enter to send, Shift+Enter for a new line)')
+        self.setPlaceholderText('Ask Falcon to record, check, compare or explain…')
         self.setTabChangesFocus(True)
         self.setAccessibleName('Message to the assistant')
         self.document().contentsChanged.connect(self._fit)
@@ -643,7 +725,7 @@ class AssistantPanel(QWidget):
         self.model.setToolTip('The main model: plans, calls Falcon\'s tools, reasons over results')
         self.model.setAccessibleName('Main model')
         self.model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.model.setMinimumContentsLength(10)
+        self.model.setMinimumContentsLength(8)           # the full name is in the list and the tooltip
         self.model.activated.connect(self._model_changed)
         self.menu_btn = QToolButton()
         self.menu_btn.setIcon(icons.icon('more', 16))
@@ -730,36 +812,65 @@ class AssistantPanel(QWidget):
         self.scroll.verticalScrollBar().valueChanged.connect(
             lambda val: setattr(self, '_at_bottom', val >= self.scroll.verticalScrollBar().maximum() - 24))
         cv.addWidget(self.scroll, 1)
+        srow = QHBoxLayout()                    # what the assistant is doing: a moving mark while it works
+        srow.setContentsMargins(10, 4, 10, 2)
+        srow.setSpacing(8)
+        self.working = Working()
+        srow.addWidget(self.working, 0, Qt.AlignmentFlag.AlignVCenter)
         self.status = label('', muted=True, small=True)
-        self.status.setContentsMargins(10, 2, 10, 2)
         self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        cv.addWidget(self.status)
-        box = QHBoxLayout()
-        box.setContentsMargins(8, 4, 8, 8)
-        box.setSpacing(6)
+        self.status.setWordWrap(True)
+        srow.addWidget(self.status, 1)
+        cv.addLayout(srow)
+        arow = QHBoxLayout()                    # what to do about it (raise the limit…), under the line
+        arow.setContentsMargins(36, 0, 10, 2)
+        self.status_action = button('', role='link')
+        self.status_action.hide()
+        arow.addWidget(self.status_action)
+        arow.addStretch(1)
+        cv.addLayout(arow)
+        self.wait_bar = WaitBar()               # a timed wait drains this bar (the token limit, a retry)
+        cv.addWidget(self.wait_bar)
+        self._wait = None                       # (end, total, text(remaining)) of the wait shown
+        self._wait_timer = QTimer(self)
+        self._wait_timer.setInterval(200)
+        self._wait_timer.timeout.connect(self._tick_wait)
+        self.composer_box = QFrame()
+        self.composer_box.setObjectName('composerBox')
+        cb = QVBoxLayout(self.composer_box)
+        cb.setContentsMargins(2, 2, 6, 6)
+        cb.setSpacing(0)
         self.composer = Composer()
         self.composer.send.connect(self.send)
         self.composer.stop.connect(self.stop)
-        box.addWidget(self.composer, 1)
-        side = QVBoxLayout()
-        side.setSpacing(4)
-        self.send_btn = QPushButton()
-        self.send_btn.setProperty('role', 'primary')
-        self.send_btn.clicked.connect(self._send_or_stop)
+        self.composer.focused.connect(self._composer_focus)
+        cb.addWidget(self.composer)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(6, 0, 0, 0)
+        bar.setSpacing(6)
         self.attach_btn = QToolButton()
         self.attach_btn.setIcon(icons.icon('file', 16))
         self.attach_btn.setToolTip('Attach a text file (a log, a config); only text is ever sent')
         self.attach_btn.setAccessibleName('Attach a text file')
         self.attach_btn.clicked.connect(self.attach)
-        side.addWidget(self.send_btn)
-        side.addWidget(self.attach_btn, 0, Qt.AlignmentFlag.AlignRight)
-        side.addStretch(1)
-        box.addLayout(side)
-        cv.addLayout(box)
+        bar.addWidget(self.attach_btn)
         self.attached = label('', muted=True, small=True)
-        self.attached.setContentsMargins(10, 0, 10, 4)
+        self.attached.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.attached.hide()
-        cv.addWidget(self.attached)
+        bar.addWidget(self.attached, 1)
+        self.hint = label('↵ send · ⇧↵ new line · Esc stop', muted=True, small=True)
+        self.hint.setObjectName('composerHint')
+        bar.addStretch(1)
+        bar.addWidget(self.hint)
+        self.send_btn = QPushButton()
+        self.send_btn.setProperty('role', 'primary')
+        self.send_btn.clicked.connect(self._send_or_stop)
+        bar.addWidget(self.send_btn)
+        cb.addLayout(bar)
+        box = QHBoxLayout()
+        box.setContentsMargins(8, 4, 8, 8)
+        box.addWidget(self.composer_box)
+        cv.addLayout(box)
         self.pages.addWidget(chat)
         # activity
         act = QWidget()
@@ -858,8 +969,17 @@ class AssistantPanel(QWidget):
         busy = self.agent is not None and self.agent.busy
         ok, why = self.svc.ready()
         self.send_btn.setText('Stop' if busy else 'Send')
-        self.send_btn.setIcon(icons.icon('stop' if busy else 'send', 14, THEME.tok['panel']))
+        self.send_btn.setIcon(icons.icon('stop', 12, THEME.status('critical')) if busy else
+                              icons.icon('send', 14, THEME.tok['on_accent']))
         self.send_btn.setToolTip('Stop the assistant (Esc)' if busy else 'Send (Enter)')
+        if self.send_btn.property('role') != ('stop' if busy else 'primary'):
+            from . import motion
+            motion.reset_hover(self.send_btn)
+            self.send_btn.setProperty('role', 'stop' if busy else 'primary')
+            self.send_btn.style().unpolish(self.send_btn)
+            self.send_btn.style().polish(self.send_btn)
+        self.working.set_active(busy)
+        self.hint.setVisible(not busy)
         set_enabled(self.send_btn, busy or ok, why)
         set_enabled(self.composer, ok or busy, why)
         set_enabled(self.attach_btn, ok and not busy, why or 'Wait for the answer first')
@@ -915,6 +1035,8 @@ class AssistantPanel(QWidget):
     # ------------------------------------------------------------------ the list
     def _add(self, w: QWidget):
         self.list.insertWidget(self.list.count() - 1, w)
+        from . import motion
+        motion.fade_in(w, ms=motion.BASE)                # a new message or card eases in
         return w
 
     def _stick(self, _lo, hi):
@@ -1205,7 +1327,8 @@ class AssistantPanel(QWidget):
                                  ' — the assistant continues when one finishes (Stop ends the wait)') if p else '')
         elif kind == 'retry':
             what = 'rate limited' if p.get('status') == 429 else f'server error {p.get("status") or ""}'.strip()
-            self.status.setText(f'{what.capitalize()} — retrying in {p["wait_s"]:.0f} s (attempt {p["attempt"]})')
+            att = p['attempt']
+            self._start_wait(p['wait_s'], lambda r: f'{what.capitalize()} — retrying in {r:.0f} s (attempt {att})')
         elif kind == 'notice':
             self.status.setText(str(p))
         elif kind == 'notice_once':                      # said once per session (a model fallen back)
@@ -1216,8 +1339,21 @@ class AssistantPanel(QWidget):
         elif kind == 'show_me':
             self.status.setText(f'Showing ({p["tool"]}) — pausing {p["pause_s"]:.1f} s so you can follow')
         elif kind == 'tpm_wait':
-            self.status.setText(f'Waiting {p["wait_s"]:.0f} s for your per-minute token limit ({p["limit"]}; this '
-                                f'step is about {p["tokens"]} tokens)')
+            if p['wait_s'] <= 0:                         # the wait is over
+                self._end_wait()
+                self.status.setText('Working…')
+            else:
+                lim, tok, acct = p['limit'], p['tokens'], p.get('account')
+                self._start_wait(p['wait_s'], lambda r: f'Waiting {r:.0f} s: your limit is {lim:,} tokens a minute '
+                                                        f'and this step is about {tok:,}')
+                if acct and acct > lim:                  # the server says the account may use more
+                    self._wait_action(f'Use your account\'s limit ({acct:,} a minute) →', lambda: self._raise_tpm(acct),
+                                      f'Groq says this key\'s account allows {acct:,} tokens a minute; your limit in '
+                                      f'Settings ▸ Assistant is {lim:,}. Raise it to {acct:,} and continue now.')
+                else:
+                    self._wait_action('Change the limit in Settings →', self.open_settings,
+                                      'Settings ▸ Assistant ▸ Tokens per minute: raise it if your plan allows more '
+                                      '(your account\'s limits page at console.groq.com)')
         elif kind == 'usage':
             self._usage_text()
         elif kind == 'error':
@@ -1232,9 +1368,58 @@ class AssistantPanel(QWidget):
                 for card in self.approvals.values():
                     card.settle('stopped')
                 self.approvals.clear()
+                self._end_wait()
                 self.status.setText({'stopped': 'Stopped.', 'failed': '', 'done': ''}.get(p['state'], ''))
                 self._usage_text()
             self._buttons()
+
+    # ------------------------------------------------------------------ timed waits
+    def _start_wait(self, seconds: float, text):
+        import time as _t
+        self._wait = (_t.monotonic() + seconds, max(seconds, 0.1), text)
+        self.status_action.hide()
+        self.wait_bar.show()
+        self._tick_wait()
+        self._wait_timer.start()
+
+    def _wait_action(self, text: str, slot, tip: str = ''):
+        try:
+            self.status_action.clicked.disconnect()
+        except TypeError:
+            pass
+        self.status_action.setText(text)
+        self.status_action.setToolTip(tip)
+        self.status_action.clicked.connect(slot)
+        self.status_action.show()
+
+    def _tick_wait(self):
+        import time as _t
+        if self._wait is None:
+            return
+        end, total, text = self._wait
+        left = max(0.0, end - _t.monotonic())
+        self.status.setText(text(left))
+        self.wait_bar.set(left / total)
+        if left <= 0:
+            self._end_wait()
+
+    def _end_wait(self):
+        self._wait = None
+        self._wait_timer.stop()
+        self.wait_bar.hide()
+        self.status_action.hide()
+
+    def _raise_tpm(self, n: int):
+        """The user chose their account's limit: kept in Settings ▸ Assistant; the waiting step goes on at once."""
+        self.svc.set_cfg(tpm_limit=int(n))
+        self._end_wait()
+        self.status.setText(f'Your limit is now {n:,} tokens a minute (Settings ▸ Assistant). Continuing…')
+        self.win.log.append_line(f'assistant: tokens-per-minute limit set to {n} (the account\'s, as Groq states it)')
+
+    def _composer_focus(self, on: bool):
+        self.composer_box.setProperty('focus', bool(on))
+        self.composer_box.style().unpolish(self.composer_box)
+        self.composer_box.style().polish(self.composer_box)
 
     def _render_stream(self):
         if self.stream is not None:
@@ -1323,20 +1508,44 @@ def place(win):
     dock = win.assistant_dock
     if dock.isVisible() or getattr(dock, '_user_placed', False):
         return
-    room = win.width() - win.centralWidget().minimumSizeHint().width()
-    for d in (win.jobs_dock, win.log_dock):
-        if d.isVisible() and win.dockWidgetArea(d) in (Qt.DockWidgetArea.LeftDockWidgetArea,
-                                                       Qt.DockWidgetArea.RightDockWidgetArea):
-            room -= d.width()
+    room = room_for_panel(win)
     if room >= dock.minimumSizeHint().width() + 8:
         if dock.isFloating():
             dock.setFloating(False)
         QTimer.singleShot(0, lambda: win.resizeDocks([dock], [min(PANEL_W, room - 8)], Qt.Orientation.Horizontal))
         return
     dock.setFloating(True)
+    dock._auto_floated = True                    # Falcon floated it: it docks again once the window has room
     g = win.frameGeometry()
     h = max(420, win.height() - 120)
     dock.setGeometry(g.right() - PANEL_W - 16, g.top() + 60, PANEL_W, h)
+
+
+def room_for_panel(win) -> int:
+    """How wide the panel could be docked beside the pages (their minimum width) and side docks."""
+    room = win.width() - win.centralWidget().minimumSizeHint().width()
+    for d in (win.jobs_dock, win.log_dock):
+        if d.isVisible() and win.dockWidgetArea(d) in (Qt.DockWidgetArea.LeftDockWidgetArea,
+                                                       Qt.DockWidgetArea.RightDockWidgetArea):
+            room -= d.width()
+    return room
+
+
+def redock_if_room(win):
+    """A panel Falcon floated because the window was too narrow docks again when the window has grown (maximised,
+    say); one the user floated or moved stays where they put it."""
+    dock = getattr(win, 'assistant_dock', None)
+    if dock is None or not dock.isVisible() or not dock.isFloating() or not getattr(dock, '_auto_floated', False):
+        return
+    room = room_for_panel(win)
+    if room >= dock.minimumSizeHint().width() + 8:
+        dock._auto_floated = False
+        dock._redocking = True
+        dock.setFloating(False)
+        dock._redocking = False
+        QTimer.singleShot(0, lambda: win.resizeDocks([dock], [min(PANEL_W, room - 8)], Qt.Orientation.Horizontal))
+
+
 def install(win):
     """Add the Assistant dock (right side, hidden until asked), its status-bar badge, Ctrl+Shift+A to show or hide it
     and the command palette's "Ask Falcon…"."""
@@ -1350,7 +1559,13 @@ def install(win):
                      QDockWidget.DockWidgetFeature.DockWidgetClosable)
     win.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
     dock.hide()
-    dock.topLevelChanged.connect(lambda _f: setattr(dock, '_user_placed', dock.isVisible()))
+    def top_level_changed(_floating):
+        if getattr(dock, '_redocking', False):
+            return
+        dock._user_placed = dock.isVisible()     # the user dragged it out or back: theirs from now on
+        if dock.isVisible():
+            dock._auto_floated = False
+    dock.topLevelChanged.connect(top_level_changed)
     win.assistant_panel, win.assistant_dock = panel, dock
 
     badge = QToolButton()

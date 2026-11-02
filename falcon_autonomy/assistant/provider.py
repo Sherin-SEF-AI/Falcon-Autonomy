@@ -189,6 +189,9 @@ def classify(status: int, message: str, model: str, code: str = '') -> ProviderE
         return ProviderError('context', f'The conversation is too long for {model or "the model"}\'s context window. '
                              'Clear it (Clear in the Assistant panel) and ask again.' + said, status)
     if status == 400 and code == 'tool_use_failed' or 'tool_use_failed' in low or 'failed_generation' in low:
+        if 'not in request.tools' in low:              # a tool the request did not offer (Falcon loads its own first)
+            return ProviderError('tool_use_failed', 'The model called a tool it was not given, and asking again did '
+                                 'not help. Ask again in other words, or Clear the conversation.' + said, status)
         return ProviderError('tool_use_failed', 'The model wrote a tool call the server could not parse.' + said,
                              status)
     if status == 400 and ('context' in low and ('length' in low or 'window' in low) or 'too long' in low or

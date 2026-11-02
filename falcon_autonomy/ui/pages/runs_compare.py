@@ -111,7 +111,8 @@ class CompareTab(QWidget):
         self.combos = []
         for s in SLOTS:
             c = QComboBox()
-            c.setMinimumContentsLength(18)
+            c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            c.setMinimumContentsLength(9)              # the run's whole name is in the list and the tooltip
             c.activated.connect(lambda _i: self.load())
             pick.addWidget(label(s, muted=True))
             pick.addWidget(c, 1)

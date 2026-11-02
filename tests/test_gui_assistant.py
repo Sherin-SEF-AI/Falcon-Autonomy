@@ -257,6 +257,7 @@ def test_panel_fits_1280_in_both_themes(window, qapp, srv, reg):
     assert panel.send('x')
     assert pump(qapp, lambda: not panel.agent.busy, 10)
     window.assistant_dock.hide()
+    pump(qapp, timeout=0.1)                                  # the docked panel leaves the layout before the resize
     window.resize(1280, 720)
     pump(qapp, timeout=0.2)
     window.show_assistant(True)                              # no room beside the pages at 1280: it floats over them
@@ -270,6 +271,15 @@ def test_panel_fits_1280_in_both_themes(window, qapp, srv, reg):
     window.show_assistant(True)                              # room: docked at the right
     pump(qapp, timeout=0.3)
     assert not dock.isFloating() and window.width() <= 1600 and panel.width() >= 300
+    dock.hide()                                              # floated by Falcon at 1280, it docks once there is room
+    pump(qapp, timeout=0.1)
+    window.resize(1280, 720)
+    pump(qapp, timeout=0.2)
+    window.show_assistant(True)
+    pump(qapp, timeout=0.3)
+    assert dock.isFloating() and dock._auto_floated
+    window.resize(1600, 900)
+    assert pump(qapp, lambda: not dock.isFloating(), 2) and panel.width() >= 300
     window.set_theme('light')
     pump(qapp, timeout=0.1)
     b = [x for x in panel.findChildren(D.Bubble) if x.kind == 'assistant'][-1]
@@ -307,6 +317,8 @@ def test_ask_and_propose_hooks(window, qapp, srv, reg, tmp_path):
     card.approve.click()
     assert pump(qapp, lambda: os.path.isdir(os.path.join(ws, 'trash', 'r9')) and panel.session.activity, 10)
     assert pump(qapp, lambda: any(b.kind == 'event' for b in panel.findChildren(D.Bubble)), 5)
+    shown = [b.raw for b in panel.findChildren(D.Bubble) if b.kind == 'event']
+    assert shown[-1] == 'A suggestion ran (you approved it): moved.' and '{' not in shown[-1]   # a sentence, no JSON
     e = panel.session.activity[-1]
     assert e['kind'] == 'trash' and panel.undo(e['id']) == 'Restored r9.'
     assert os.path.isdir(os.path.join(ws, 'runs', 'r9'))

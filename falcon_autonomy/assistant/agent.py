@@ -413,6 +413,33 @@ def summarize(result: dict) -> str:
     return ', '.join(keys[:4]) + (' …' if len(keys) > 4 else '')
 
 
+_UNSENT = re.compile(r"call(?:ed)? tool '([^']+)' which was not in request\.tools")
+
+
+def unsent_tool(e) -> str:
+    """The tool a server refused because the request did not offer it (Groq: "attempted to call tool 'x' which was not
+    in request.tools"), or ''."""
+    m = _UNSENT.search(f'{e} {getattr(e, "detail", "") or ""}')
+    return m.group(1) if m else ''
+
+
+SUGGESTION_HOW = {'approved': 'you approved it', 'auto': 'your permission mode ran it', 'allowed': 'you allow it',
+                  'read': 'it only reads'}
+
+
+def suggestion_line(res: dict, approval: str) -> str:
+    """What the panel shows when a suggestion ran: its outcome in a sentence, not the result's JSON."""
+    how = SUGGESTION_HOW.get(approval, approval)
+    if not isinstance(res, dict):
+        return f'A suggestion ran ({how}).'
+    if res.get('error'):
+        return f'A suggestion could not run ({how}): {str(res["error"])[:200]}'
+    if res.get('job') is not None:
+        title = f' — {res["title"]}' if res.get('title') else ''
+        return f'A suggestion queued job {res["job"]}{title} ({how}). Its progress is in Jobs.'
+    return f'A suggestion ran ({how}): {summarize(res) or "done"}.'
+
+
 # --------------------------------------------------------------------------------------------- the agent
 class Agent:
     def __init__(self, service, session: Session, host: Host | None = None, mode: str = 'ask'):
@@ -708,10 +735,14 @@ class Agent:
                     single.append(t.name)
         return groups, single
 
-    def _add_event(self, text: str):
-        idx = self.session.add({'role': 'user', 'content': text, '_event': True})
+    def _add_event(self, text: str, display: str = ''):
+        """A note in the conversation for the model (text); the panel shows display in its place when given."""
+        m = {'role': 'user', 'content': text, '_event': True}
+        if display:
+            m['_display'] = display
+        idx = self.session.add(m)
         self.session.save()
-        self.host.event('event', {'index': idx, 'text': text})
+        self.host.event('event', {'index': idx, 'text': display or text})
 
     # trimming, step by step, when a request is too large (the context, or the tokens-per-minute limit):
     # (tool results kept — None: as many as the context holds; which tool groups' schemas are sent)
@@ -724,6 +755,7 @@ class Agent:
         client.on_retry = lambda status, wait, attempt: self.host.event(
             'retry', {'status': status, 'wait_s': wait, 'attempt': attempt})
         level, failed_tool = 0, False
+        loaded_on_call: set = set()             # tools loaded because the model called them unloaded
         limit = int(cfg.get('tpm_limit') or 0)
         refused = None                          # (the server's too-large error, the size it refused)
         while True:
@@ -749,9 +781,15 @@ class Agent:
                                     'plan allows it (your account\'s limits page at console.groq.com).')
             wait = self.service.tpm_wait(est) if hasattr(self.service, 'tpm_wait') else 0.0
             if wait > 0:
-                self.host.event('tpm_wait', {'wait_s': wait, 'tokens': est, 'limit': limit})
-                if self.cancel.wait(wait):
-                    raise Cancelled()
+                account = (getattr(self.service, 'account_limits', None) or {}).get('tokens')
+                self.host.event('tpm_wait', {'wait_s': wait, 'tokens': est, 'limit': limit, 'account': account})
+                end = time.monotonic() + wait
+                while time.monotonic() < end:           # a limit raised meanwhile (Settings, the panel) ends it
+                    if self.cancel.wait(min(0.5, max(0.0, end - time.monotonic()))):
+                        raise Cancelled()
+                    if self.service.tpm_wait(est) <= 0:
+                        break
+                self.host.event('tpm_wait', {'wait_s': 0.0, 'tokens': est, 'limit': limit, 'account': account})
                 continue
             try:
                 res = client.chat(msgs, model, tools=tools, parallel_tool_calls=parallel_tools(model), stream=True,
@@ -765,6 +803,11 @@ class Agent:
                     refused = (e, est)
                     self.host.event('notice', 'The request was too large: older tool results and unused tools '
                                     'are left out.')
+                    continue
+                missing = unsent_tool(e) if e.kind == 'tool_use_failed' else ''
+                if missing and missing in T.REGISTRY and missing not in loaded_on_call:
+                    loaded_on_call.add(missing)    # it called one of Falcon's tools before loading it: load, again
+                    self.load_tools([missing], why=f'the model called {missing}')
                     continue
                 if e.kind == 'tool_use_failed' and not failed_tool:
                     failed_tool = True          # the model wrote an unparseable call: once more
@@ -1041,8 +1084,10 @@ class Agent:
                    else self._timed(ctx, tool_name, args))
         if before is not None and not res.get('error'):
             self._record_changes(tool_name, args, res, before, sink)
+        if tool is not None and tool.name not in self._always():
+            self.load_tools([tool.name], why='a suggestion ran it')    # the note names it: the model may follow up
         self._add_event(f'[Falcon] The user ran {tool_name} from a suggestion ({approval}): '
-                        + json.dumps(res, ensure_ascii=False, default=str)[:2000])
+                        + json.dumps(res, ensure_ascii=False, default=str)[:2000], suggestion_line(res, approval))
         return res
 
 

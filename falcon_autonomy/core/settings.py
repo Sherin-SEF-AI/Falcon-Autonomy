@@ -58,6 +58,7 @@ DEFAULTS = {
     'free_gpu_for_jobs': True,           # stop Falcon's idle server before a GPU job (measured: it holds 5.9 GB idle)
     'render_budget_mpx': 200.0,
     'theme': 'dark',
+    'reduce_motion': False,              # no page crossfades, sliding selection or pulsing dots (ui.motion)
     'recent_projects': [],
     'first_run_done': False,
     'measured': {},                      # throughput measured on this machine (budget.Throughput.to_dict())
@@ -92,6 +93,8 @@ EXPLAIN = {
     'render_budget_mpx': ('Settings ▸ Falcon\'s server ▸ Render budget', 'runs rendering more megapixels per step are '
                           'refused before they start'),
     'theme': ('Settings ▸ Appearance ▸ Theme', 'dark or light'),
+    'reduce_motion': ('Settings ▸ Appearance ▸ Motion', 'turn off the interface\'s animations (page crossfades, '
+                      'the navigator\'s sliding selection, pulsing status dots)'),
     'recent_projects': ('File ▸ Recent projects', 'the projects opened last (private: paths)'),
     'first_run_done': ('Tools ▸ First-run wizard', 'whether the first-run wizard has finished'),
     'measured': ('the first-run wizard\'s smoke drive and every drive after', 'this machine\'s measured rendering '

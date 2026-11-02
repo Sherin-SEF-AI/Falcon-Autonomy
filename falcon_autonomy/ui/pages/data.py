@@ -18,8 +18,8 @@ from ...core.drive import drive_config, run_dir_name
 from ...core.paths import tilde
 from ...core.project import ProjectError
 from .. import icons, tasks
-from ..widgets import (EmptyState, Form, clear_layout, KeyValues, Note, Page, PlaceholderTree, Section, button, label, scroll,
-                       set_enabled)
+from ..widgets import (EmptyState, Form, KeyValues, Page, PlaceholderTree, Section, button, clear_layout, flow_row,
+                       label, scroll, set_enabled)
 
 
 class ImageView(QLabel):
@@ -430,12 +430,12 @@ class BrowseTab(QWidget):
         self.runs.setColumnWidth(0, 170)
         for c in range(1, len(RUN_COLUMNS)):
             self.runs.header().setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
-        self.runs.setMinimumWidth(420)         # name, date and world without scrolling; the rest scrolls
+        self.runs.setMinimumWidth(320)         # name and date without scrolling; the rest scrolls
         self.runs.currentItemChanged.connect(lambda it, _p: self.show_run(it.data(0, 256)) if it else None)
         self.runs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.runs.customContextMenuRequested.connect(self._menu)
         sv.addWidget(self.runs, 1)
-        hb = QHBoxLayout()                    # hand-offs: use the selected drives elsewhere
+        # hand-offs (use the selected drives elsewhere), organisation and files: rows that wrap in a narrow pane
         self.eval_btn = button('Evaluate on these', self.evaluate_selected,
                                tip='Open Models ▸ Evaluate with the selected drives checked (Ctrl/Shift-click to '
                                    'select several)')
@@ -443,21 +443,15 @@ class BrowseTab(QWidget):
                                 tip='Open Training ▸ Detectors with the selected drives checked')
         self.compare_btn = button('Compare', self.compare_selected,
                                   tip='Open Data ▸ Compare with the selected runs (two to four) side by side')
-        hb.addWidget(self.eval_btn)
-        hb.addWidget(self.train_btn)
-        hb.addWidget(self.compare_btn)
-        hb.addStretch(1)
-        sv.addLayout(hb)
-        sb = QHBoxLayout()                    # the user's own organisation of runs: tags and drive sets
-        sb.addWidget(button('Tags…', self.edit_tags, tip='Tag the selected runs (kept in the project; the runs are '
-                                                         'not changed)'))
-        sb.addWidget(button('Save as a set…', self.save_selection_set,
-                            tip='Save the selected runs as a named drive set (Training, Models and Health use it)'))
+        sv.addWidget(flow_row(self.eval_btn, self.train_btn, self.compare_btn))
         self.save_query_btn = button('Save search…', self.save_query_set,
                                      tip='Save the search as a drive set that is re-evaluated when used')
-        sb.addWidget(self.save_query_btn)
-        sb.addStretch(1)
-        sv.addLayout(sb)
+        sv.addWidget(flow_row(
+            button('Tags…', self.edit_tags, tip='Tag the selected runs (kept in the project; the runs are not '
+                                                'changed)'),
+            button('Save as a set…', self.save_selection_set,
+                   tip='Save the selected runs as a named drive set (Training, Models and Health use it)'),
+            self.save_query_btn))
         split.addWidget(side)
         self.empty = EmptyState('Choose a run on the left to see its frames, labels, objects and traffic rules.')
         right = QWidget()
@@ -465,12 +459,16 @@ class BrowseTab(QWidget):
         top = QHBoxLayout()
         self.sensor = QComboBox()
         self.layer = QComboBox()
+        for c in (self.sensor, self.layer):
+            c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            c.setMinimumContentsLength(8)
         self.layer.addItems(['semantic', 'instance', 'range', 'boxes', 'none'])
         self.layer.currentIndexChanged.connect(lambda _: self.load_frame(self.slider.value()))
         self.opacity = QSlider(Qt.Orientation.Horizontal)
         self.opacity.setRange(0, 100)
         self.opacity.setValue(50)
-        self.opacity.setFixedWidth(140)
+        self.opacity.setMinimumWidth(60)
+        self.opacity.setMaximumWidth(140)
         top.addWidget(label('Camera', muted=True))
         top.addWidget(self.sensor)
         top.addWidget(label('Layer', muted=True))
@@ -486,16 +484,13 @@ class BrowseTab(QWidget):
             self.export_fmt.addItem(v, ('occ3d', v))
         self.export_fmt.setToolTip('waymo: a documented Waymo-style JSON layout, not TFRecords; occ3d, openocc, '
                                    'surroundocc: semantic occupancy from a run with a labelled lidar')
-        xb = QHBoxLayout()                    # the chosen run's files: under the run list, with the hand-offs
-        xb.addWidget(self.export_fmt)
-        xb.addWidget(button('Export…', self.export))
-        xb.addWidget(button('Derive audio', self.derive_audio,
-                            tip='Synthetic microphone-array audio of the selected runs (engines, sirens, horns heard '
-                                'by the rig\'s audio array, with per-frame ground truth) into RUN/audio — procedural, '
-                                'not recorded sound (docs/audio.md)'))
-        xb.addWidget(self.open_btn)
-        xb.addStretch(1)
-        sv.addLayout(xb)
+        sv.addWidget(flow_row(                # the chosen run's files: under the run list, with the hand-offs
+            self.export_fmt, button('Export…', self.export),
+            button('Derive audio', self.derive_audio,
+                   tip='Synthetic microphone-array audio of the selected runs (engines, sirens, horns heard by the '
+                       'rig\'s audio array, with per-frame ground truth) into RUN/audio — procedural, not recorded '
+                       'sound (docs/audio.md)'),
+            self.open_btn))
         self.view = ImageView()
         rv.addWidget(self.view, 1)
         fr = QHBoxLayout()
@@ -877,8 +872,6 @@ class DataPage(Page):
         super().__init__(win)
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 12, 16, 12)
-        v.addWidget(label(self.title, page=True))
-        v.addWidget(Note(self.about, limit=160))
         self.tabs = QTabWidget()
         from .data_health import HealthTab
         from .datasets import DatasetsTab

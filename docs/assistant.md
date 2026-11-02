@@ -95,7 +95,10 @@ number for your plan (default 8,000; 0: no limit). Before each step Falcon estim
   not called in the last two steps, then all but the last result and the core alone; one that still does not fit is
   not sent, and you are told why;
 - a step that fits, but not on top of the tokens the last minute's responses used (as the server counted them), waits
-  until enough of them age out (the panel says how long; Stop ends the wait);
+  until enough of them age out: the panel counts the seconds down over a draining bar, and Stop ends the wait. When
+  the server has stated the account's own limit (Groq's `x-ratelimit-limit-tokens` header) and it is higher than
+  yours, the panel offers **Use your account's limit** — one click keeps it in Settings ▸ Assistant and the waiting
+  step goes on within half a second; otherwise it links to the setting. Falcon never raises the limit by itself;
 - a 413 from the server is trimmed the same way and sent again, smaller; a 429 waits for its `retry-after`.
 
 The status bar badge's tooltip shows the last minute's tokens against the limit.

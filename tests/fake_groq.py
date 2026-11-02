@@ -82,6 +82,7 @@ class FakeGroq:
         self.script: list = []
         self.requests: list = []
         self.models = list(MODELS)
+        self.headers: dict = {}            # sent with every response (the account's x-ratelimit-limit-*)
         self.lock = threading.Lock()
         self.httpd = None
         self.thread = None
@@ -123,7 +124,7 @@ class FakeGroq:
                 self.send_response(status)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(data)))
-                for k, v in (headers or {}).items():
+                for k, v in dict(srv.headers, **(headers or {})).items():
                     self.send_header(k, v)
                 self.end_headers()
                 self.wfile.write(data)
@@ -153,6 +154,8 @@ class FakeGroq:
                 self.send_response(resp.get('status', 200))
                 self.send_header('Content-Type', 'text/event-stream')
                 self.send_header('Transfer-Encoding', 'chunked')
+                for k, v in srv.headers.items():
+                    self.send_header(k, v)
                 self.end_headers()
                 try:
                     for c in resp['stream']:

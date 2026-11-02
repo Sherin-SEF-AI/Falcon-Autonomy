@@ -3,13 +3,16 @@
 Every change is a project edit (undoable); a slider drag is one undo step."""
 from __future__ import annotations
 
+from PyQt6.QtCore import QSize
 from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout, QWidget)
 
 from ...core import weather as W
 from ...core.project import Edit, new_id
 from ...core.worlds import TOWNS
 from .. import icons
-from ..widgets import Form, KeyValues, Page, clear_layout, Section, SliderField, button, label, set_enabled
+from ..theme import THEME
+from ..widgets import (Form, KeyValues, Page, Section, SliderField, Stat, button, clear_layout, label,
+                       set_enabled)
 
 LIMITS = ('Limits of CARLA\'s weather: its lidar and radar ignore it (no loss of range in rain or fog) — switch on '
           'Falcon\'s sensor weather physics below for modelled losses and clutter; rain on a camera '
@@ -46,7 +49,8 @@ class WorldsPage(Page):
         dl.addStretch(1)
         left.addLayout(dl)
         self.list = QListWidget()
-        self.list.setFixedWidth(240)
+        self.list.setObjectName('cardList')
+        self.list.setFixedWidth(300)
         self.list.currentRowChanged.connect(lambda _: self.show_world())
         left.addWidget(self.list, 1)
         rb = QHBoxLayout()
@@ -101,8 +105,17 @@ class WorldsPage(Page):
         pb.addWidget(self.verify_btn)
         pb.addStretch(1)
         self.place.add(pb)
+        self.stats = {}                          # the network in headline numbers, measured from the import
+        srow = QHBoxLayout()
+        srow.setSpacing(10)
+        for k, cap in (('roads', 'Roads'), ('km', 'Length'), ('junctions', 'Junctions'), ('signals', 'Signals'),
+                       ('lanes', 'Lanes vs OSM'), ('total', 'Import')):
+            t = Stat(cap)
+            self.stats[k] = t
+            srow.addWidget(t, 1)
+        self.place.add(srow)
         self.graph = RoadGraphView()
-        self.graph.setMinimumHeight(280)
+        self.graph.setMinimumHeight(340)
         self.place.add(self.graph)
         self.place_kv = KeyValues()
         self.place.add(self.place_kv)
@@ -170,7 +183,12 @@ class WorldsPage(Page):
         self.list.blockSignals(True)
         self.list.clear()
         for w in self.worlds():
-            it = QListWidgetItem(icons.icon('ground', 16), f'{w["name"]}\n{w.get("town") or w["kind"]}')
+            kind = ('CARLA · ' + (w.get('town') or '')) if w['kind'] == 'town' else {
+                'osm': 'Imported · OpenStreetMap'}.get(w['kind'], w['kind'])
+            it = QListWidgetItem(icons.icon('ground', 16, THEME.tok['accent_hi'] if w['kind'] != 'town'
+                                            else THEME.tok['ink2']), f'{w["name"]}\n{kind}')
+            it.setSizeHint(QSize(0, 48))
+            it.setToolTip(w['name'])
             self.list.addItem(it)
         self.list.setCurrentRow(min(i, self.list.count() - 1))
         self.list.blockSignals(False)
@@ -246,6 +264,19 @@ class WorldsPage(Page):
             set_enabled(b, True)
         from ..osmimport import show_report
         show_report(self.place_kv, rep)
+        t = rep.get('graph_totals') or {}
+        lc = rep.get('lane_check') or {}
+        tm = rep.get('timings') or {}
+        self.stats['roads'].set(t.get('roads', '—'), sub='one per travel direction')
+        self.stats['km'].set(f'{t.get("road_km", 0):.2f}', 'km', 'of road')
+        self.stats['junctions'].set(t.get('junctions', '—'))
+        self.stats['signals'].set(t.get('signals', '—'))
+        self.stats['lanes'].set(f'{100 * lc["agreement"]:.0f}' if lc.get('comparable') else '—',
+                                '%' if lc.get('comparable') else '',
+                                f'{lc["matched"]} of {lc["comparable"]} ways agree' if lc.get('comparable')
+                                else 'no comparable way')
+        self.stats['total'].set(tm.get('total_s', '—'), 's' if tm.get('total_s') is not None else '',
+                                'read, convert and write')
         self.place_kv.set('State', f'imported from {os.path.basename(rep["source"])}')
         from ...core.mapedit import edits_hash
         edits = (w.get('osm') or {}).get('edits') or []

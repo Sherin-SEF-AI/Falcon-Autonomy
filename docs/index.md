@@ -23,9 +23,20 @@ does; the [roadmap](roadmap.md) lists what is planned.
 
 ## The window
 
+- **Top bar**: the project's name and workspace folder, the menus, the command search (Ctrl+K), Falcon's CARLA server
+  as a chip (its dot green when ready, amber and pulsing while it starts, red when it crashed; a click goes Home) and
+  the **Assistant** button.
 - **Navigator** (left): Home, then the pages in groups — **Build** (Worlds, Rigs, Scenarios), **Drive** (Live, Data,
   Replay), **Improve** (Loop, Rare cases, Training, Models), **Ship** (Stack testing, Hardware, Reports) — and Settings
-  and Help. Ctrl+0 goes Home, Ctrl+1 … Ctrl+9 to the next nine pages; the rest by the command palette.
+  and Help, each with its count beside it (worlds, rigs, your scenarios, recorded runs, models). Ctrl+0 goes Home,
+  Ctrl+1 … Ctrl+9 to the next nine pages; the rest by the command palette.
+- **Page header**: every page opens with its title, what it is for, and its next-step chips (the assistant's
+  suggestions for that page). Its sections are cards; numbers are in a monospaced face, right-aligned in tables; one
+  blue button per area is the main action; green, amber and red mean a state (ready, a warning, a failure) and
+  nothing else.
+- **Motion**: a page crossfades in, the navigator's selection slides to it, a page's cards fade in the first time it
+  opens, a status dot pulses while something is under way, a button eases into its hover colour — each 120–260 ms,
+  and none delays a click. Settings ▸ Appearance ▸ Motion ▸ **Reduce motion** turns them all off.
 - **Jobs and Log** (bottom): every long action — queued, waiting (and why), running with its progress and ETA,
   finished — and what every job and the app said. The panel stays out of the way until a job starts, and opens
   then; the **Jobs** badge in the status bar (or Ctrl+J) shows or hides it, and says how many jobs run and wait. The ✕
@@ -37,9 +48,9 @@ does; the [roadmap](roadmap.md) lists what is planned.
 - **Notifications**: a job of 20 s or more that ends while Falcon's window is in the background raises a desktop
   notification (through the desktop's notification service, else the system tray) — off in Settings ▸ Job
   notifications. Nothing leaves the machine.
-- **Status bar**: the jobs badge, Falcon's CARLA server (start or stop it there), the GPU's memory and load, free
-  memory.
-- **Command palette** (Ctrl+K, also at the foot of the navigator): every command and page by name — and the
+- **Status bar**: the jobs badge, Falcon's CARLA server with its status dot (start or stop it there), the GPU's memory
+  and load and the free memory, each with a usage bar (amber past 80 %, red past 95 %).
+- **Command palette** (Ctrl+K, the search box in the top bar, or the version at the foot of the navigator): every command and page by name — and the
   project's and workspace's things: runs, scenarios, worlds, rigs, models, drive sets, evaluations, reports, settings,
   the manual's headings and the job history. Type a few letters (in order; word starts and runs of letters rank
   higher, a title starting with them highest); results come grouped by kind, the best group first. Enter opens the

@@ -538,7 +538,7 @@ def test_models_page_evaluates_compares_and_measures_the_gap(window, qapp, tmp_p
     page.every.setValue(4)
     run_job(page.evaluate)
     assert page.ev.count() == 2 and page.table.topLevelItemCount() > 4
-    assert 'SYNTHETIC' in page.ev_info.vals['Note'].text()
+    assert page.synthetic_note.isVisibleTo(page) and 'say nothing about a real detector' in page.synthetic_note.label.text()
     page.cmp_a.setCurrentIndex(1)
     page.cmp_b.setCurrentIndex(0)
     run_job(page.compare)

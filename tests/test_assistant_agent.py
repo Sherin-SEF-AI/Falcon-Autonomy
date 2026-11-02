@@ -526,11 +526,24 @@ def test_tokens_per_minute_trimming_pacing_and_refusal(tmp_path, srv, reg, monke
     svc.add_usage('m', Usage(5000, 0))
     real = AssistantService.tpm_wait
     assert real(svc, 2000) == 0.0 and 55.0 < real(svc, 4000) <= 60.1
-    waits = iter([0.05, 0.0])
+    waits = iter([0.05, 0.05, 0.0, 0.0])
     monkeypatch.setattr(svc, 'tpm_wait', lambda tokens: next(waits))
+    srv.headers = {'x-ratelimit-limit-tokens': '250000', 'x-ratelimit-limit-requests': '1000'}
     srv.push(text('Paced.'))
     run(ag, 'again')
-    assert [p['limit'] for k, p in host.events if k == 'tpm_wait'] == [8000]
+    shown = [p for k, p in host.events if k == 'tpm_wait']
+    assert [(p['limit'], p['wait_s'] > 0) for p in shown] == [(8000, True), (8000, False)]   # the wait, then its end
+    assert svc.account_limits == {'tokens': 250000, 'requests': 1000}       # as the server stated them
+    # a limit raised during the wait ends it at once (the agent re-checks every half second)
+    monkeypatch.setattr(svc, 'tpm_wait', lambda tokens: 30.0 if svc.cfg()['tpm_limit'] < 100000 else 0.0)
+    threading.Timer(0.3, lambda: svc.set_cfg(tpm_limit=250000)).start()
+    t0 = time.monotonic()
+    srv.push(text('Raised.'))
+    run(ag, 'raised')
+    assert time.monotonic() - t0 < 5 and host.kinds('assistant')[-1]['content'] == 'Raised.'
+    assert [p['account'] for k, p in host.events if k == 'tpm_wait'][-1] == 250000
+    svc.set_cfg(tpm_limit=8000)
+    srv.headers = {}
     # a 413 from the server: trimmed and sent again
     monkeypatch.setattr(svc, 'tpm_wait', lambda tokens: 0.0)
     srv.push(error(413, 'Request too large for model `openai/gpt-oss-120b` on tokens per minute (TPM): Limit 8000, '
@@ -563,3 +576,26 @@ def test_trash_undo_goes_through_runs_restore(tmp_path, srv, reg):
     e = ag.session.activity[-1]
     assert e['kind'] == 'trash' and e['item'] == 'T1-a' and len(host.cards) == 1      # trash asked, in Auto too
     assert A.undo_activity(e, ctx=T.ToolContext(workspace=ws)) == 'Restored a.' and restored == ['T1-a']
+
+
+def test_a_known_tool_called_before_it_was_loaded_is_loaded_and_sent_again(tmp_path, srv, reg):
+    """Groq refuses a call to a tool the request did not offer; Falcon loads its own tool and asks again (once per
+    tool), and a tool it does not have ends in a sentence that says so."""
+    from fake_groq import error
+    T.register(T.Tool('runs_search', 'runs', 'read', 'Search runs.', {'type': 'object', 'properties': {}},
+                      lambda ctx: {'runs': []}))
+    svc, ag, host, ws = make(tmp_path, srv)
+    refused = "Tool call validation failed: attempted to call tool 'runs_search' which was not in request.tools"
+    srv.push(error(400, refused, 'tool_use_failed'), text('Found none.'))
+    run(ag, 'hello there')                     # nothing in it loads the runs group
+    first, second = bodies(srv)[-2:]
+    names = lambda b: {t['function']['name'] for t in b.get('tools') or []}       # noqa: E731
+    assert 'runs_search' not in names(first) and 'runs_search' in names(second)
+    assert host.kinds('assistant')[-1]['content'] == 'Found none.' and 'runs_search' in ag.session.loaded_tools
+    assert any(k == 'tools' and p['why'] == 'the model called runs_search' for k, p in host.events)
+    invented = "attempted to call tool 'jobs_queue_drive' which was not in request.tools"
+    srv.push(error(400, invented, 'tool_use_failed'), error(400, invented, 'tool_use_failed'))
+    run(ag, 'and now?')
+    err = host.kinds('error')[-1]
+    assert err['kind'] == 'tool_use_failed' and 'a tool it was not given' in err['message']
+    assert A.unsent_tool(type('E', (), {'__str__': lambda s: invented})()) == 'jobs_queue_drive'

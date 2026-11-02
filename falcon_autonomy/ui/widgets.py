@@ -4,11 +4,12 @@ from __future__ import annotations
 import html
 import re
 
-from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QPainter
-from PyQt6.QtWidgets import (QAbstractScrollArea, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGridLayout,
-                             QHBoxLayout, QLabel, QListWidget, QPushButton, QScrollArea, QSlider, QSplitter,
-                             QTreeWidget, QVBoxLayout, QWidget)
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QFrame,
+                             QGridLayout, QHBoxLayout, QLabel, QLayout, QLineEdit, QListWidget, QPushButton,
+                             QScrollArea, QSizePolicy, QSlider, QSplitter, QStyledItemDelegate, QTreeWidget,
+                             QVBoxLayout, QWidget)
 
 from ..core.paths import tilde
 
@@ -17,11 +18,12 @@ NOTE_AFTER = 200         # a muted, wrapped explanation longer than this opens a
 
 
 def label(text='', *, muted=False, small=False, title=False, mono=False, h=False, wrap=False, sel=False,
-          page=False) -> QLabel:
+          page=False, ink2=False) -> QLabel:
     if muted and wrap and not small and len(text) > NOTE_AFTER:
         return Note(text)
     lb = QLabel(text)
-    for k, v in (('muted', muted), ('small', small), ('title', title), ('mono', mono), ('h', h), ('page', page)):
+    for k, v in (('muted', muted), ('small', small), ('title', title), ('mono', mono), ('h', h), ('page', page),
+                 ('ink2', ink2)):
         if v:
             lb.setProperty(k, True)
     lb.setWordWrap(wrap)
@@ -189,22 +191,25 @@ def set_enabled(w: QWidget, ok: bool, why: str = '', tip: str = ''):
     w.setToolTip((tip or w._tip) if ok else why)
 
 
-class Section(QWidget):
-    """A titled block of a page: a heading, an optional note (one line, the rest behind *more*), then content."""
+class Section(QFrame):
+    """A titled card of a page: a heading, an optional note (one line, the rest behind *more*), then content. A
+    section inside another is drawn as a divided block of its card, not a card of its own."""
 
     def __init__(self, title: str, note: str = '', parent=None):
         super().__init__(parent)
         self.title = title                   # show-me names a control by the section it is in (ui.highlight)
+        self.setObjectName('section')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         v = QVBoxLayout(self)
-        v.setContentsMargins(0, 0, 0, 12)
-        v.setSpacing(6)
+        v.setContentsMargins(16, 13, 16, 15)
+        v.setSpacing(8)
         v.addWidget(label(title, title=True))
         self.note = None
         if note:
             self.note = Note(note)
             v.addWidget(self.note)
         self.body = QVBoxLayout()
-        self.body.setSpacing(6)
+        self.body.setSpacing(8)
         v.addLayout(self.body)
 
     def add(self, w):
@@ -215,13 +220,220 @@ class Section(QWidget):
         return w
 
 
+class Meter(QWidget):
+    """A thin usage bar (used / total): accent while there is room, amber past 80 %, red past 95 %."""
+
+    def __init__(self, width: int = 0, parent=None):
+        super().__init__(parent)
+        self.frac = 0.0
+        self.setFixedHeight(6)
+        if width:
+            self.setFixedWidth(width)
+
+    def set(self, frac):
+        self.frac = 0.0 if frac is None else min(max(float(frac), 0.0), 1.0)
+        self.update()
+
+    def paintEvent(self, _ev):                                  # noqa: N802
+        from .theme import STATUS, THEME
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        r = QRectF(self.rect()).adjusted(0, 1, 0, -1)
+        p.setBrush(QColor(THEME.tok['raised'] if THEME.name == 'dark' else THEME.tok['hair']))
+        p.drawRoundedRect(r, 2, 2)
+        if self.frac > 0:
+            c = STATUS['critical'] if self.frac > 0.95 else STATUS['warning'] if self.frac > 0.8 else THEME.tok['accent']
+            p.setBrush(QColor(c))
+            p.drawRoundedRect(QRectF(r.left(), r.top(), max(r.height(), r.width() * self.frac), r.height()), 2, 2)
+
+
+class Stat(QFrame):
+    """A headline number in a card: a small caption, the value in large mono with its unit, and a line under it
+    (what it counts, or its interval). tone colours the line (a warning, say)."""
+
+    def __init__(self, caption: str, value: str = '—', unit: str = '', sub: str = '', parent=None):
+        super().__init__(parent)
+        self.setObjectName('kpi')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(16, 12, 16, 13)
+        v.setSpacing(3)
+        self.caption = label(caption.upper())
+        self.caption.setProperty('cap', True)
+        v.addWidget(self.caption)
+        row = QHBoxLayout()
+        row.setSpacing(5)
+        self.value = label(value)
+        self.value.setProperty('kpi', True)
+        self.unit = label(unit)
+        self.unit.setProperty('unit', True)
+        row.addWidget(self.value)
+        row.addWidget(self.unit, 0, Qt.AlignmentFlag.AlignBottom)
+        row.addStretch(1)
+        v.addLayout(row)
+        self.sub = label(sub, muted=True, mono=True)
+        self.sub.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)   # clips, never widens
+        self.sub.setMinimumWidth(0)
+        self.caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        v.addWidget(self.sub)
+
+    def set(self, value, unit: str = '', sub: str = '', tone: str = ''):
+        from .theme import STATUS, THEME
+        self.value.setText(str(value))
+        self.unit.setText(unit)
+        self.unit.setVisible(bool(unit))
+        self.sub.setText(sub)
+        self.sub.setToolTip(sub)
+        self.sub.setStyleSheet(f'color: {THEME.status(tone)}' if tone in STATUS else '')
+
+
+INTERVAL_ROLE = Qt.ItemDataRole.UserRole + 7     # (value, ci_low, ci_high) for IntervalDelegate
+
+
+class IntervalDelegate(QStyledItemDelegate):
+    """Draws a value and its interval on a shared axis (0 – 1 unless given): a band for the interval, a dot for the
+    value and faint quarter ticks, so rows read against each other at a glance. Rows without data draw nothing."""
+
+    def __init__(self, parent=None, lo: float = 0.0, hi: float = 1.0):
+        super().__init__(parent)
+        self.lo, self.hi = lo, hi
+
+    def paint(self, p, opt, index):
+        super().paint(p, opt, index)
+        d = index.data(INTERVAL_ROLE)
+        if not d or d[0] is None:
+            return
+        from .theme import THEME
+        v, a, b = d
+        a = v if a is None else a
+        b = v if b is None else b
+        r = QRectF(opt.rect).adjusted(10, 0, -10, 0)
+        span = (self.hi - self.lo) or 1.0
+        x = lambda t: r.left() + (min(max(t, self.lo), self.hi) - self.lo) / span * r.width()   # noqa: E731
+        cy = r.center().y()
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QColor(THEME.tok['hair']))
+        for k in range(5):
+            tx = r.left() + k / 4 * r.width()
+            p.drawLine(QPointF(tx, cy - 6), QPointF(tx, cy + 6))
+        p.setPen(Qt.PenStyle.NoPen)
+        band = QColor(THEME.tok['accent'])
+        band.setAlphaF(0.35)
+        p.setBrush(band)
+        p.drawRoundedRect(QRectF(x(a), cy - 4, max(2.0, x(b) - x(a)), 8), 3, 3)
+        p.setBrush(QColor(THEME.tok['accent_hi']))
+        p.drawEllipse(QPointF(x(v), cy), 4, 4)
+        p.restore()
+
+
+class FlowLayout(QLayout):
+    """Children left to right, wrapping to the next line when the width runs out (chips in a narrow column, a row of buttons that wraps rather than widens its pane)."""
+
+    def __init__(self, parent=None, spacing: int = 6):
+        super().__init__(parent)
+        self.items: list = []
+        self.setSpacing(spacing)
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item):                       # noqa: N802 (Qt's names)
+        self.items.append(item)
+
+    def count(self):
+        return len(self.items)
+
+    def itemAt(self, i):                           # noqa: N802
+        return self.items[i] if 0 <= i < len(self.items) else None
+
+    def takeAt(self, i):                           # noqa: N802
+        return self.items.pop(i) if 0 <= i < len(self.items) else None
+
+    def expandingDirections(self):                 # noqa: N802
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):                   # noqa: N802
+        return True
+
+    def heightForWidth(self, w):                   # noqa: N802
+        return self._lay(QRect(0, 0, w, 0), True)
+
+    def setGeometry(self, r):                      # noqa: N802
+        super().setGeometry(r)
+        self._lay(r, False)
+
+    def sizeHint(self):                            # noqa: N802
+        return self.minimumSize()
+
+    def minimumSize(self):                         # noqa: N802
+        s = QSize()
+        for it in self.items:
+            s = s.expandedTo(it.minimumSize())
+        m = self.contentsMargins()
+        return s + QSize(m.left() + m.right(), m.top() + m.bottom())
+
+    def _lay(self, r: QRect, dry: bool) -> int:
+        m = self.contentsMargins()
+        x, y, line = r.x() + m.left(), r.y() + m.top(), 0
+        right = r.right() - m.right()
+        for it in self.items:
+            if it.widget() is not None and it.widget().isHidden():
+                continue
+            hint = it.sizeHint()
+            w = min(hint.width(), max(r.width() - m.left() - m.right(), 40))
+            if x + w > right + 1 and line > 0:
+                x, y, line = r.x() + m.left(), y + line + self.spacing(), 0
+            if not dry:
+                it.setGeometry(QRect(QPoint(x, y), QSize(w, hint.height())))
+            x += w + self.spacing()
+            line = max(line, hint.height())
+        return y + line - r.y() + m.bottom()
+
+
+def flow_row(*widgets, spacing: int = 6) -> QWidget:
+    """A row of buttons that wraps onto a second line in a narrow pane instead of widening it."""
+    box = QWidget()
+    f = FlowLayout(box, spacing)
+    for wd in widgets:
+        f.addWidget(wd)
+    return box
+
+
+def chip(text: str, tone: str = '') -> QLabel:
+    """A small rounded tag (a state, a tag): tone good, warning, critical or accent colours it."""
+    lb = QLabel(text)
+    lb.setProperty('chip', True)
+    if tone:
+        lb.setProperty('tone', tone)
+    return lb
+
+
+def callout(text: str, tone: str = 'warning') -> QFrame:
+    """A boxed one-line notice inside a card (a caveat that must not be missed)."""
+    from .theme import STATUS, THEME
+    f = QFrame()
+    f.setObjectName('callout')
+    f.setProperty('tone', tone)
+    h = QHBoxLayout(f)
+    h.setContentsMargins(12, 8, 12, 8)
+    lb = label(text, wrap=True)
+    if tone in STATUS:
+        lb.setStyleSheet(f'color: {THEME.status(tone)}')
+    h.addWidget(lb)
+    f.label = lb
+    return f
+
+
+FIELD_MAX = 520          # a form's line edit, spin box or combo box grows no wider than this
+
+
 class Form(QGridLayout):
-    """Label / field rows with an optional note column."""
+    """Label / field rows with an optional note column; single-line fields stop at FIELD_MAX wide."""
 
     def __init__(self):
         super().__init__()
-        self.setHorizontalSpacing(12)
-        self.setVerticalSpacing(6)
+        self.setHorizontalSpacing(14)
+        self.setVerticalSpacing(8)
         self.setColumnStretch(1, 1)
         self.n = 0
         self.rows: dict = {}             # id(field) -> the row's label and note widgets
@@ -230,7 +442,15 @@ class Form(QGridLayout):
         lb = label(text, muted=True)
         self.addWidget(lb, self.n, 0)
         if isinstance(field, QWidget):
-            self.addWidget(field, self.n, 1)
+            if isinstance(field, (QLineEdit, QAbstractSpinBox, QComboBox)) and field.maximumWidth() > FIELD_MAX:
+                field.setMaximumWidth(FIELD_MAX)
+                box = QHBoxLayout()                      # left-aligned: it fills up to FIELD_MAX, the rest stays empty
+                box.setContentsMargins(0, 0, 0, 0)
+                box.addWidget(field, 100)
+                box.addStretch(1)
+                self.addLayout(box, self.n, 1)
+            else:
+                self.addWidget(field, self.n, 1)
         else:
             self.addLayout(field, self.n, 1)
         nb = None
@@ -369,18 +589,18 @@ class Page(QWidget):
         pass
 
     def page_layout(self, title_text=None, note=None) -> QVBoxLayout:
-        """A scrolling page body with its heading; returns the layout to fill."""
+        """A scrolling page body (the frame's page header above it names the page); returns the layout to fill."""
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         body = QWidget()
         body.setObjectName('base')
         v = QVBoxLayout(body)
-        v.setContentsMargins(24, 18, 24, 18)
-        v.setSpacing(10)
-        v.addWidget(label(title_text or self.title, page=True))
-        if note or self.about:
-            v.addWidget(Note(note or self.about, limit=160))
-        v.addWidget(hline())
+        v.setContentsMargins(8, 4, 8, 16)
+        v.setSpacing(14)
+        if title_text:                               # a sub-page's own heading (the frame's header names the page)
+            v.addWidget(label(title_text, page=True))
+        if note:
+            self.header_note = note                  # the frame's header says it in place of the page's about
         outer.addWidget(scroll(body))
         return v
 

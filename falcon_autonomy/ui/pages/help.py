@@ -7,7 +7,7 @@ from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QTextBrowser, QVBoxLayout
 
 from ...core.manual import DOCS_DIRS, docs_dir, load_docs  # noqa: F401 (the manual's files: core.manual)
-from ..widgets import Page, label
+from ..widgets import Page
 
 
 class HelpPage(Page):
@@ -18,7 +18,6 @@ class HelpPage(Page):
         super().__init__(win)
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 12, 16, 12)
-        v.addWidget(label(self.title, page=True))
         self.search = QLineEdit()
         self.search.setPlaceholderText('Search the manual…')
         v.addWidget(self.search)

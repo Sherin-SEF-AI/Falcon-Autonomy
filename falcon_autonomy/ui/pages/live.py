@@ -26,7 +26,7 @@ from ...core.paths import tilde
 from ...core.project import ProjectError
 from .. import input_devices
 from ..theme import STATUS, THEME
-from ..widgets import Form, KeyValues, Note, Page, Section, button, label, scroll, set_enabled
+from ..widgets import Form, KeyValues, Page, Section, button, label, scroll, set_enabled
 
 VIEW_SIZES = {'1280 × 720': (1280, 720), '960 × 540': (960, 540), '640 × 360': (640, 360)}
 KIND_COLOR = {'v': '#3987e5', 'w': '#d95926', 'e': '#199e70'}
@@ -49,15 +49,14 @@ class LiveView(QWidget):
         self.img, self.hdr = img, hdr
         self.update()
 
+    KEYS = (('W S  ↑ ↓', 'throttle and brake'), ('A D  ← →', 'steer'), ('Space', 'hand brake'), ('Q', 'reverse'),
+            ('I J K L', 'free view: move'), ('U O', 'free view: up and down'), ('drag', 'look around'))
+
     def paintEvent(self, ev):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(THEME.tok['viewport']))
         if self.img is None:
-            p.setPen(QColor(THEME.tok['muted']))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                       'Start a session to see the world.\nClick here to drive with the keyboard: W/S or ↑/↓ '
-                       'throttle and brake, A/D or ←/→ steer, Space hand brake, Q reverse.\nFree view: I/K/J/L move, '
-                       'U/O up and down, drag to look around.')
+            self._paint_idle(p)
             return
         iw, ih = self.img.width(), self.img.height()
         k = min(self.width() / iw, self.height() / ih)
@@ -70,24 +69,91 @@ class LiveView(QWidget):
                 c = QColor(KIND_COLOR.get(kind, '#ffffff'))
                 p.setPen(QPen(c, 1.5))
                 p.drawRect(QRectF(r.x() + x0 * k, r.y() + y0 * k, (x1 - x0) * k, (y1 - y0) * k))
-        p.setFont(QFont('IBM Plex Mono', 9))
-        lines = [f'{h.get("speed_kmh", 0):5.1f} km/h   {h.get("mode", "")}   view {h.get("view", "")}',
-                 f'sim {h.get("ticks_per_s", 0):4.1f} steps/s   ×{h.get("rtf", 0):.2f} real time']
+        self._paint_hud(p, r, h)
+
+    def _paint_idle(self, p):
+        """No session: a faint grid, a play mark, and the keys (the view takes the keyboard when clicked)."""
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(THEME.tok['grid1']), 1))
+        for x in range(0, self.width(), 32):
+            p.drawLine(x, 0, x, self.height())
+        for y in range(0, self.height(), 32):
+            p.drawLine(0, y, self.width(), y)
+        cx, cy = self.width() / 2, self.height() / 2 - 70
+        acc = QColor(THEME.tok['accent'])
+        ring = QColor(acc)
+        ring.setAlphaF(0.18)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(ring)
+        p.drawEllipse(QPointF(cx, cy), 30, 30)
+        p.setBrush(acc)
+        p.drawPolygon(QPolygonF([QPointF(cx - 8, cy - 12), QPointF(cx - 8, cy + 12), QPointF(cx + 13, cy)]))
+        p.setPen(QColor(THEME.tok['ink']))
+        p.setFont(QFont('IBM Plex Sans', 11, 600))
+        p.drawText(QRectF(0, cy + 40, self.width(), 22), Qt.AlignmentFlag.AlignCenter, 'No session running')
+        p.setPen(QColor(THEME.tok['muted']))
+        p.setFont(QFont('IBM Plex Sans', 9))
+        p.drawText(QRectF(0, cy + 62, self.width(), 20), Qt.AlignmentFlag.AlignCenter,
+                   'Choose a world and a rig, then Start. Click the view to drive with the keyboard:')
+        mono_f = QFont('IBM Plex Mono', 8)
+        y = cy + 96
+        for keys, what in self.KEYS:
+            p.setFont(mono_f)
+            kw = p.fontMetrics().horizontalAdvance(keys) + 14
+            kr = QRectF(cx - 12 - kw, y, kw, 20)
+            p.setPen(QPen(QColor(THEME.tok['strong']), 1))
+            p.setBrush(QColor(THEME.tok['raised']))
+            p.drawRoundedRect(kr, 4, 4)
+            p.setPen(QColor(THEME.tok['ink2']))
+            p.drawText(kr, Qt.AlignmentFlag.AlignCenter, keys)
+            p.setFont(QFont('IBM Plex Sans', 9))
+            p.setPen(QColor(THEME.tok['muted']))
+            p.drawText(QRectF(cx + 4, y, 260, 20), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, what)
+            y += 26
+
+    def _paint_hud(self, p, r, h):
+        """The readout over the image: speed large, then mode and view, the measured rate, and any alert."""
+        import time as _t
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        lines = [f'{h.get("mode", "")}  ·  view {h.get("view", "")}',
+                 f'{h.get("ticks_per_s", 0):.1f} steps/s  ·  ×{h.get("rtf", 0):.2f} real time']
+        alerts = []
         if h.get('failures'):
-            lines.append('sensor failure: ' + ', '.join(f'{k} {v}' for k, v in h['failures'].items()))
-        if h.get('recording'):
-            lines.append('● recording')
+            alerts.append((STATUS['warning'], 'sensor failure: ' + ', '.join(f'{k} {v}'
+                                                                             for k, v in h['failures'].items())))
         odd = h.get('odd')
         if odd and not odd.get('in', True):                    # the runtime ODD monitor (workers.oddwatch)
-            lines.append('▲ outside the ODD: ' + '; '.join(odd.get('why') or [])[:44])
-        p.fillRect(QRectF(r.x() + 8, r.y() + 8, 330, 18 * len(lines) + 8), QColor(0, 0, 0, 140))
+            alerts.append((STATUS['warning'], '▲ outside the ODD: ' + '; '.join(odd.get('why') or [])[:44]))
+        box = QRectF(r.x() + 12, r.y() + 12, 300, 78 + 18 * len(alerts))
+        p.setPen(QPen(QColor(255, 255, 255, 28), 1))
+        p.setBrush(QColor(8, 10, 13, 170))
+        p.drawRoundedRect(box, 8, 8)
         p.setPen(QColor('#ffffff'))
+        p.setFont(QFont('IBM Plex Mono', 20, 600))
+        speed = f'{h.get("speed_kmh", 0):.0f}'
+        p.drawText(QPointF(box.x() + 14, box.y() + 34), speed)
+        sw = p.fontMetrics().horizontalAdvance(speed)
+        p.setFont(QFont('IBM Plex Mono', 9))
+        p.setPen(QColor(255, 255, 255, 150))
+        p.drawText(QPointF(box.x() + 20 + sw, box.y() + 34), 'km/h')
         for i, t in enumerate(lines):
-            if t.startswith('●'):
-                p.setPen(QColor(STATUS['critical']))
-            elif t.startswith('▲'):
-                p.setPen(QColor(STATUS['warning']))
-            p.drawText(QPointF(r.x() + 14, r.y() + 24 + 18 * i), t)
+            p.drawText(QPointF(box.x() + 14, box.y() + 54 + 16 * i), t)
+        for i, (col, t) in enumerate(alerts):
+            p.setPen(QColor(col))
+            p.drawText(QPointF(box.x() + 14, box.y() + 88 + 18 * i), t)
+        if h.get('recording'):                                   # a pulsing REC mark at the top right
+            a = 0.55 + 0.45 * math.sin(_t.monotonic() * 4.0)
+            c = QColor(STATUS['critical'])
+            c.setAlphaF(a)
+            rr = QRectF(r.right() - 84, r.y() + 12, 72, 24)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(8, 10, 13, 170))
+            p.drawRoundedRect(rr, 12, 12)
+            p.setBrush(c)
+            p.drawEllipse(QPointF(rr.x() + 14, rr.center().y()), 5, 5)
+            p.setPen(QColor('#ffffff'))
+            p.setFont(QFont('IBM Plex Mono', 9, 600))
+            p.drawText(rr.adjusted(24, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, 'REC')
 
     def keyPressEvent(self, ev):
         if not ev.isAutoRepeat():
@@ -203,8 +269,6 @@ class LivePage(Page):
         panel = QWidget()
         pv = QVBoxLayout(panel)
         pv.setContentsMargins(12, 12, 12, 12)
-        pv.addWidget(label(self.title, page=True))
-        pv.addWidget(Note(self.about, limit=160))
 
         ses = Section('Session')
         f = Form()

@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **A lab-console interface** (`ui/theme.py`, `ui/frame.py`, `ui/motion.py`, `ui/widgets.py`; docs/index.md ▸ The
+  window): graphite panels and bordered cards with one blue accent for the main action and the selection, status
+  colours only for state, monospaced right-aligned numbers, 13 px IBM Plex. A top bar (the project and its folder,
+  the menus, the command search, the server chip, the Assistant button); a navigator with each page's count and a
+  sliding selection; one page header for every page (its title, what it is for, its suggestion chips) in place of
+  each page's own; sections drawn as cards; form fields capped at 520 px and left-aligned; a status bar with status
+  dots and usage bars. Home: the next-step banner, headline tiles (worlds, rigs, scenarios, recorded runs, models, the
+  newest evaluation's AP with its interval, marked when the model is synthetic), recent runs with world, rig, steps
+  and real-time factor from each run.json, recent evaluations with AP and CI, the server and the machine with
+  meters. Models: readable score names (AP · range 0–20 m), a bar of each score's bootstrap 95 % interval on 0–1, the
+  synthetic model's caveat in a box. Worlds: the road network's headline numbers, the map centred. Live: a gridded
+  idle view with the driving keys, and a readout over the image with the speed large and a pulsing REC mark. Motion:
+  page crossfades (a fading snapshot, never an effect on an OpenGL view), cards fading in on a page's first visit,
+  pulsing status dots, buttons easing into their hover colour — off with Settings ▸ Appearance ▸ Reduce motion
+  (`reduce_motion`) or `FALCON_REDUCE_MOTION=1`, which the test suite sets. Tests: tests/test_gui_frame.py.
+- **The Assistant panel's composer and status** (`ui/assistant_dock.py`, `assistant/groq.py`, `service.py`,
+  `agent.py`): the message box, the attach button, the key hints and Send in one rounded box with an accent focus
+  ring; Stop as its own red-edged button; three dots that ripple while the assistant works; a timed wait (the
+  per-minute token limit, a retry) counted down over a draining bar. The account's limits as Groq states them
+  (`x-ratelimit-limit-tokens`, `-requests`) are read from every response; when the token limit is higher than the
+  user's, the wait offers **Use your account's limit**, and a limit raised during a wait ends it within half a
+  second (the agent re-checks every 0.5 s). New messages and cards fade in. A suggestion run outside a turn is shown
+  as a sentence ("A suggestion queued job 1 — … (you approved it)") while the model still gets its full result. A
+  panel Falcon floated because the window was too narrow docks again when the window widens (one the user placed
+  stays put); Data ▸ Browse's button rows wrap and its pickers narrow, so the pages need 1,124 px, not 1,259, and the
+  panel docks beside them at 1440 px.
+- **A tool called before it was loaded** (`assistant/agent.py`, `provider.py`): Groq refuses a call to a tool the
+  request did not offer ("attempted to call tool 'jobs_drive' which was not in request.tools"); when it is one of
+  Falcon's, the agent loads it and sends the step again (once per tool) instead of ending the turn, and a tool a
+  suggestion ran is loaded with the note that names it. A tool Falcon does not have ends in a sentence that says so.
+
 - **The assistant's runtime and panel** (`assistant/groq.py`, `provider.py`, `agent.py`, `session.py`, `service.py`,
   `grounding.py`, `keystore.py`, `ui/assistant_dock.py`; docs/assistant.md): an OpenAI-compatible streaming client on
   the standard library (Groq by default; retries with backoff and jitter honouring retry-after; every failure a

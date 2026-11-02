@@ -84,6 +84,10 @@ class SettingsPage(Page):
         self.theme.setCurrentText(st.get('theme'))
         self.theme.activated.connect(lambda _: win.set_theme(self.theme.currentText()))
         self._row(h, 'Theme', self.theme)
+        self.motion = QCheckBox('Reduce motion')
+        self.motion.setChecked(bool(st.get('reduce_motion')))
+        self.motion.toggled.connect(self._set_motion)
+        self._row(h, 'Motion', self.motion, 'no page crossfades, sliding selection or pulsing dots')
         self.geo = QCheckBox('Allow place-name search over the network (OpenStreetMap Nominatim)')
         self.geo.setChecked(bool(st.get('geocoding_allowed')))
         self._row(h, 'Geocoding', self.geo, 'off: imports work from files and bounding boxes only')
@@ -337,6 +341,12 @@ class SettingsPage(Page):
         svc.set_cfg(save=False, enabled=on, **vals)
         self._assistant_refresh_state()
         return True
+
+    def _set_motion(self, reduce: bool):
+        """Reduce motion takes effect at once and is kept, as the theme is."""
+        from .. import motion
+        motion.set_enabled(not reduce)
+        self.win.settings.set('reduce_motion', bool(reduce))
 
     def _row(self, form, text, field, note=''):
         self.fields.append((text, note, field))

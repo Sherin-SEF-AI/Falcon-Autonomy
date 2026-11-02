@@ -75,7 +75,6 @@ class RigsPage(Page):
         left = QWidget()
         lv = QVBoxLayout(left)
         lv.setContentsMargins(12, 12, 6, 12)
-        lv.addWidget(label(self.title, page=True))
         self.rigs = QListWidget()
         self.rigs.setMaximumHeight(120)
         self.rigs.currentRowChanged.connect(lambda _: self.show_rig())

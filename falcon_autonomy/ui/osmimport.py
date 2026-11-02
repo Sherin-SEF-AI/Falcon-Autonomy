@@ -38,13 +38,23 @@ class _Canvas(QWidget):
                 (self.height() - 20 - self.bottom_pad) / max(y1 - y0, 1e-6))
         return k, x0, y1
 
+    def _origin(self, k):
+        """The drawing's top-left in pixels: centred in the widget (above the caption's room)."""
+        if self.bounds is None:
+            return 10.0, 10.0
+        x0, y0, x1, y1 = self.bounds
+        return (max(10.0, (self.width() - (x1 - x0) * k) / 2),
+                max(10.0, (self.height() - self.bottom_pad - (y1 - y0) * k) / 2))
+
     def to_px(self, x, y):
         k, x0, y1 = self.fit()
-        return QPointF(10 + (x - x0) * k, 10 + (y1 - y) * k)
+        ox, oy = self._origin(k)
+        return QPointF(ox + (x - x0) * k, oy + (y1 - y) * k)
 
     def to_m(self, p):
         k, x0, y1 = self.fit()
-        return x0 + (p.x() - 10) / k, y1 - (p.y() - 10) / k
+        ox, oy = self._origin(k)
+        return x0 + (p.x() - ox) / k, y1 - (p.y() - oy) / k
 
     def paint_lines(self, p):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)

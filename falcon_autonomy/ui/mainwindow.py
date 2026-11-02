@@ -8,8 +8,8 @@ import os
 from PyQt6.QtCore import QProcess, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QBrush, QColor, QIcon, QKeySequence, QUndoCommand, QUndoStack
 from PyQt6.QtWidgets import (QApplication, QDialog, QDockWidget, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
-                             QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
-                             QSizePolicy, QStackedWidget, QTabWidget, QToolButton, QTreeWidget, QTreeWidgetItem,
+                             QListWidgetItem, QMainWindow, QMenuBar, QMessageBox, QPlainTextEdit,
+                             QProgressBar, QSizePolicy, QStackedWidget, QTabWidget, QToolButton, QTreeWidget, QTreeWidgetItem,
                              QVBoxLayout, QWidget)
 
 from .. import APP_NAME, __version__
@@ -25,8 +25,16 @@ from ..sim.service import CarlaService
 from . import icons, tasks
 from .qtjobs import JobsBridge, QProcessLauncher
 from .notify import Notifier
+from .frame import COUNT_ROLE, ICON_ROLE
 from .theme import STATUS, THEME, mono, sans
 from .widgets import PlaceholderTree, set_enabled, tidy
+
+
+def _ancestors(w, stop):
+    p = w.parentWidget()
+    while p is not None and p is not stop:
+        yield p
+        p = p.parentWidget()
 
 
 class EditCommand(QUndoCommand):
@@ -151,7 +159,7 @@ class JobsDock(QWidget):
         hd.setStretchLastSection(False)
         hd.setSectionResizeMode(self.STEP, QHeaderView.ResizeMode.Stretch)
         for c, w in ((self.TITLE, 260), (self.STATUS, 90), (self.PROGRESS, 170), (self.ELAPSED, 76),
-                     (self.LEFT, 90), (self.ACTIONS, 168)):
+                     (self.LEFT, 90), (self.ACTIONS, self._actions_width())):
             hd.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
             self.tree.setColumnWidth(c, w)
         hd.setSectionResizeMode(self.ACTIONS, QHeaderView.ResizeMode.Fixed)
@@ -180,6 +188,20 @@ class JobsDock(QWidget):
         self.ticker.start(1000)
         self._buttons()
 
+    def _actions_width(self) -> int:
+        """Room for the widest set of a job's buttons (Open, Log and Explain) at the current font."""
+        fm = self.tree.fontMetrics()
+        return sum(fm.horizontalAdvance(t) + 2 * 8 + 2 for t in ('Cancel', 'Log', 'Explain')) + 12
+
+    def _fit_actions(self, acts):
+        """Widen the buttons' column to a job's three buttons as styled (the theme's padding and font)."""
+        bs = (acts.main, acts.log, acts.explain)
+        for b in bs:
+            b.ensurePolished()
+        need = sum(b.sizeHint().width() for b in bs) + 2 * acts.layout().spacing() + 4 + 8
+        if need > self.tree.columnWidth(self.ACTIONS):
+            self.tree.setColumnWidth(self.ACTIONS, need)
+
     def actions(self, job_id) -> _JobActions | None:
         it = self.items.get(job_id)
         return self.tree.itemWidget(it, self.ACTIONS) if it is not None else None
@@ -194,7 +216,9 @@ class JobsDock(QWidget):
                 it.setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.tree.insertTopLevelItem(0, it)
             self.tree.setItemWidget(it, self.PROGRESS, _JobProgress())
-            self.tree.setItemWidget(it, self.ACTIONS, _JobActions(self, job))
+            acts = _JobActions(self, job)
+            self.tree.setItemWidget(it, self.ACTIONS, acts)
+            self._fit_actions(acts)
             self.items[job.id] = it
             self.jobs[job.id] = job
         st = job.state
@@ -431,18 +455,26 @@ class StatusBarWidgets:
         self.jobs.setToolTip('Show or hide the Jobs and Log panel')
         self.jobs.clicked.connect(win.toggle_jobs)
         sb.addWidget(self.jobs)
+        from . import motion
+        from .widgets import Meter
+        self.dot = motion.Dot('', 6)
         self.server = QLabel()
         self.server_btn = QToolButton()
         self.server_btn.setProperty('text-button', True)
         self.server_btn.clicked.connect(self.toggle_server)
         self.gpu = QLabel()
+        self.gpu.setProperty('mono', True)
         self.mem = QLabel()
-        for w in (self.server, self.server_btn):
+        self.mem.setProperty('mono', True)
+        self.gpu_bar = Meter(64)
+        self.mem_bar = Meter(64)
+        for w in (self.dot, self.server, self.server_btn):
             sb.addWidget(w)
         self.mem.setContentsMargins(0, 0, 10, 0)             # clear of the window's edge and size grip
-        sb.addPermanentWidget(self.gpu)
-        sb.addPermanentWidget(self.mem)
+        for w in (self.gpu_bar, self.gpu, self.mem_bar, self.mem):
+            sb.addPermanentWidget(w)
         self.smi = None
+        self.gpu_vals = None                                 # (name, used MiB, total MiB, load %) once measured
         self.timer = QTimer(win)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(2000)
@@ -469,11 +501,23 @@ class StatusBarWidgets:
         self.server.setText(text)
         self.server.setToolTip(svc.server_error or (svc.server.log_tail(6) if svc.server and st == 'crashed' else
                                                     'Falcon\'s own CARLA server (headless, memory-capped)'))
+        from .frame import SERVER_LOOK
+        tone, pulse = SERVER_LOOK.get(st, ('muted', False))
+        self.dot.set_color(THEME.tok.get(tone) or THEME.color(tone).name(), pulse)
+        top = getattr(self.win, 'top', None)
+        if top is not None:
+            top.set_server(st, {'ready': f'CARLA ready · :{svc.port}', 'starting': f'CARLA starting · :{svc.port}',
+                                'stopped': 'CARLA stopped', 'crashed': 'CARLA crashed',
+                                'external': f'CARLA (yours) · :{svc.port}', 'fake': 'fake CARLA (tests)',
+                                'shared': f'CARLA shared · :{svc.port}'}.get(st, st), self.server.toolTip())
         own = st in ('ready', 'starting')
         self.server_btn.setText('Stop' if own else 'Start')
         self.server_btn.setVisible(st not in ('external', 'fake', 'shared'))
         m = sysinfo.meminfo()
         self.mem.setText(f'RAM {m["available_gb"]:.1f}/{m["total_gb"]:.0f} GB free')
+        if m.get('total_gb'):
+            self.mem_bar.set(1 - m['available_gb'] / m['total_gb'])
+            self.mem_bar.setToolTip(f'{100 * (1 - m["available_gb"] / m["total_gb"]):.0f} % of RAM in use')
         self.mem.setToolTip(f'MemAvailable. Falcon keeps {MEMORY_RESERVE_GB:g} GB free and queues jobs rather than '
                             'overcommit.')
         self.query_gpu()
@@ -499,6 +543,9 @@ class StatusBarWidgets:
             try:
                 self.gpu.setText(f'{f[0].replace("NVIDIA GeForce ", "")} · {float(f[2]) / 1024:.1f}/'
                                  f'{float(f[1]) / 1024:.0f} GB · {f[3]} %')
+                self.gpu_vals = (f[0].replace('NVIDIA GeForce ', ''), float(f[2]), float(f[1]), float(f[3]))
+                self.gpu_bar.set(float(f[2]) / float(f[1]))
+                self.gpu_bar.setToolTip(f'GPU memory {100 * float(f[2]) / float(f[1]):.0f} % in use')
             except (IndexError, ValueError):
                 pass
         p.finished.connect(done)
@@ -548,29 +595,47 @@ class MainWindow(QMainWindow):
         self.pages: list = []
         self._closing = False
 
+        from . import motion
+        from .frame import NavList, PageHeader, TopBar
+        if settings.get('reduce_motion'):
+            motion.set_enabled(False)
+        motion.install(QApplication.instance())
+        self._menubar = QMenuBar()
+        self.top = TopBar(self, self._menubar)
+        self.setMenuWidget(self.top)
         central = QWidget()
         h = QHBoxLayout(central)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(0)
         side = QWidget()
-        side.setFixedWidth(176)
+        side.setObjectName('side')
+        side.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        side.setFixedWidth(212)
         sv = QVBoxLayout(side)
-        sv.setContentsMargins(0, 0, 0, 0)
+        sv.setContentsMargins(0, 4, 0, 0)
         sv.setSpacing(0)
-        self.nav = QListWidget()
-        self.nav.setObjectName('nav')
-        self.nav.setIconSize(QSize(16, 16))
+        self.nav = NavList()
         sv.addWidget(self.nav, 1)
         self.palette_hint = QToolButton()
         self.palette_hint.setObjectName('navFoot')
-        self.palette_hint.setText('Ctrl+K  Search commands')
-        self.palette_hint.setToolTip('The command palette: every page and action by name')
+        self.palette_hint.setText(f'{APP_NAME} {__version__}')
+        self.palette_hint.setToolTip('The command palette (Ctrl+K): every page and action by name')
         self.palette_hint.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.palette_hint.clicked.connect(lambda: self.show_palette())
         sv.addWidget(self.palette_hint)
+        main = QWidget()
+        mv = QVBoxLayout(main)
+        mv.setContentsMargins(0, 0, 0, 0)
+        mv.setSpacing(0)
+        self.header = PageHeader()
+        mv.addWidget(self.header)
         self.stack = QStackedWidget()
+        body = QHBoxLayout()
+        body.setContentsMargins(16, 0, 16, 12)          # pages line up under the header's title
+        body.addWidget(self.stack)
+        mv.addLayout(body, 1)
         h.addWidget(side)
-        h.addWidget(self.stack, 1)
+        h.addWidget(main, 1)
         self.setCentralWidget(central)
         self.nav.currentRowChanged.connect(self._nav_changed)
 
@@ -587,6 +652,7 @@ class MainWindow(QMainWindow):
         self._job_origin: dict = {}                      # job id -> the page it was started from
         self.bridge.added.connect(lambda job: self._job_origin.setdefault(job.id, self.current_key()))
         self.bridge.finished.connect(self._job_finished)
+        self.bridge.finished.connect(lambda _job: self.refresh_nav_counts())
         self.set_jobs_visible(False)                     # nothing to show until a job starts
         self._build_pages()
         self._build_actions()
@@ -598,6 +664,7 @@ class MainWindow(QMainWindow):
         self.undo.cleanChanged.connect(lambda _: self._update_title())
         self.service.subscribe(self._on_service)
         self._update_title()
+        self.refresh_nav_counts()
         self.go('home')
         self.log.append_line(f'{APP_NAME} {__version__} — project {self.project.doc["name"]}'
                              + (f' ({tilde(self.project.path)})' if self.project.path else ' (not saved yet)'))
@@ -622,18 +689,20 @@ class MainWindow(QMainWindow):
             if group:
                 hd = QListWidgetItem(group.upper())
                 hd.setFlags(Qt.ItemFlag.NoItemFlags)
-                hd.setFont(sans(10, 600))
-                hd.setSizeHint(QSize(0, 26))
+                hd.setFont(sans(11, 600))
+                hd.setSizeHint(QSize(0, 30))
                 hd.setForeground(QBrush(THEME.color('muted')))
                 self.nav.addItem(hd)
             elif self.nav.count():
                 sp = QListWidgetItem('')
                 sp.setFlags(Qt.ItemFlag.NoItemFlags)
-                sp.setSizeHint(QSize(0, 12))
+                sp.setSizeHint(QSize(0, 14))
                 self.nav.addItem(sp)
             for cls in classes:
                 page = cls(self)
                 it = QListWidgetItem(icons.icon(cls.icon, 16), cls.title)
+                it.setData(ICON_ROLE, cls.icon)
+                it.setSizeHint(QSize(0, 34))
                 it.setToolTip(cls.about)
                 it.setData(Qt.ItemDataRole.UserRole, len(self.pages))
                 self.pages.append(page)
@@ -652,7 +721,39 @@ class MainWindow(QMainWindow):
         it = self.nav.item(row)
         i = it.data(Qt.ItemDataRole.UserRole) if it is not None else None
         if i is not None:
+            if i != self.stack.currentIndex():
+                from . import motion
+                motion.crossfade(self.stack, self.stack.currentWidget())
             self.stack.setCurrentIndex(i)
+            self.header.show_page(self.pages[i])
+            page = self.pages[i]
+            if not getattr(page, '_motion_shown', False):      # the first visit: its cards fade in one by one
+                page._motion_shown = True
+                from . import motion
+                from .widgets import Section
+                cards = [c for c in page.findChildren(Section) if c.isVisible() and not any(
+                    isinstance(a, Section) for a in _ancestors(c, page))]
+                cards.sort(key=lambda c: (c.mapTo(page, c.rect().topLeft()).y(), c.mapTo(page, c.rect().topLeft()).x()))
+                motion.stagger(cards, step=35)
+
+    def resizeEvent(self, ev):                          # noqa: N802
+        super().resizeEvent(ev)
+        if hasattr(self, 'assistant_dock'):
+            from .assistant_dock import redock_if_room
+            QTimer.singleShot(0, lambda: redock_if_room(self))
+
+    def menuBar(self):                                   # noqa: N802 — the menus live in the top bar
+        return self._menubar
+
+    def refresh_nav_counts(self):
+        """Each page's count beside its name in the navigator (worlds, rigs, scenarios, runs, models)."""
+        doc = self.project.doc
+        cat = self.service.catalog
+        n = {'worlds': len(doc.get('worlds') or []), 'rigs': len(doc.get('rigs') or []),
+             'scenarios': len(doc.get('scenarios') or []), 'models': len(doc.get('models') or []),
+             'data': len(cat.list('run', 100000)) if cat is not None else ''}
+        for r, i in self._nav_rows():
+            self.nav.item(r).setData(COUNT_ROLE, n.get(self.pages[i].key, ''))
 
     def page(self, key):
         return next((p for p in self.pages if p.key == key), None)
@@ -823,6 +924,7 @@ class MainWindow(QMainWindow):
 
     def _on_project_changed(self, path):
         self._update_title()
+        self.refresh_nav_counts()
         if path is None and self.assistant_panel.session.workspace != self.workspace():
             self.assistant_panel.load_session()          # another project: its own conversation
             self.assistant_panel.refresh_state()
@@ -831,6 +933,7 @@ class MainWindow(QMainWindow):
 
     def _update_title(self):
         name = self.project.doc.get('name', 'Untitled')
+        self.top.set_project(name, self.workspace() if self.project.path else '')
         where = f' — {tilde(self.project.path)}' if self.project.path else ''
         self.setWindowTitle(f'{"● " if self.project.dirty else ""}{name}{where} · {APP_NAME}')
 

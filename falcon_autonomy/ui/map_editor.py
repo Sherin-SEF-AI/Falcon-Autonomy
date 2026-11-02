@@ -101,6 +101,9 @@ class MapCanvas(RoadGraphView):
         return min((self.width() - 20) / max(x1 - x0, 1e-6),
                    (self.height() - 20 - self.bottom_pad) / max(y1 - y0, 1e-6))
 
+    def _origin(self, k):                        # fit() already centres the view (and pans and zooms it)
+        return 10.0, 10.0
+
     def fit(self):
         if self.bounds is None:
             return 1.0, 0.0, 0.0

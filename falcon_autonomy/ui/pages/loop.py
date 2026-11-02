@@ -18,7 +18,7 @@ from ...core.jobs import FINAL, JobSpec
 from ...core.project import Edit
 from .. import icons, tasks
 from ..theme import STATUS, THEME
-from ..widgets import KeyValues, Note, Page, Section, button, label, scroll, set_enabled
+from ..widgets import KeyValues, Page, Section, button, label, scroll, set_enabled
 from .home import StatusPanel
 
 
@@ -196,8 +196,6 @@ class LoopPage(Page):
         v = QVBoxLayout(body)
         v.setContentsMargins(24, 18, 24, 18)
         v.setSpacing(10)
-        v.addWidget(label(self.title, page=True))
-        v.addWidget(Note(self.about, limit=160))
 
         sec = Section('Model and ODD', 'The model each new iteration starts with (after a finished iteration, the '
                                        'model it retrained) and the operational design domain it is tested on.')

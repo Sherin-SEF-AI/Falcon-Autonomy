@@ -21,7 +21,7 @@ from ...core import scenarios as SC
 from ...core import search as S
 from ...core.jobs import FINAL, JobSpec
 from ..theme import SEQ, STATUS, THEME
-from ..widgets import Form, KeyValues, Note, Page, Section, button, label, scroll, set_enabled
+from ..widgets import Form, KeyValues, Page, Section, button, label, scroll, set_enabled
 
 METHODS = (('bayes', 'Bayesian optimisation'),
            ('bayes-pof', 'Bayesian optimisation, probability of failure (maps the region)'), ('cmaes', 'CMA-ES'),
@@ -144,8 +144,6 @@ class RareCasesPage(Page):
         h.addWidget(split)
         left = QWidget()
         lv = QVBoxLayout(left)
-        lv.addWidget(label(self.title, page=True))
-        lv.addWidget(Note(self.about, limit=160))
         sec = Section('Search', 'Each evaluation runs the scenario in CARLA with the parameters the method asks for. '
                                 'The objective: the run\'s criticality (1 for a collision), or a model\'s perception '
                                 'failure on the scenario\'s actors (the run is recorded with the rig\'s labels, then '

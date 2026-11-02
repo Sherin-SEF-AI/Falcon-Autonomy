@@ -22,7 +22,7 @@ from ...core.paths import tilde
 from ...core.project import ProjectError
 from .. import tasks
 from ..theme import THEME
-from ..widgets import Form, KeyValues, Note, Page, Section, button, label, scroll, set_enabled
+from ..widgets import Form, KeyValues, Page, Section, button, label, scroll, set_enabled
 
 SIZES = {'1280 × 720': (1280, 720), '960 × 540': (960, 540), '640 × 360': (640, 360), '320 × 180': (320, 180)}
 PLACE_SLOT = {'host': 0, 'cross': 1, 'device': 2}           # the validated categorical palette's first three slots
@@ -152,8 +152,6 @@ class HardwarePage(Page):
         panel = QWidget()
         pv = QVBoxLayout(panel)
         pv.setContentsMargins(12, 12, 12, 12)
-        pv.addWidget(label(self.title, page=True))
-        pv.addWidget(Note(self.about, limit=160))
         pv.addWidget(self._device_section())
         pv.addWidget(self._session_section())
         pv.addStretch(1)

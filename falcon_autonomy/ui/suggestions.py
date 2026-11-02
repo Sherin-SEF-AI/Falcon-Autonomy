@@ -18,77 +18,16 @@ import copy
 import re
 import time
 
-from PyQt6.QtCore import QObject, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLayout, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
-                             QWidgetItem)
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from ..assistant import suggest as S
 from . import icons, tasks
+from .theme import THEME
+from .widgets import FlowLayout
 
 BAR_PAGES = ('worlds', 'scenarios', 'live', 'data', 'rarecases', 'training', 'stack')
 TICK_MS = 10_000
-
-
-class FlowLayout(QLayout):
-    """Children left to right, wrapping to the next line when the width runs out (chips in a narrow column)."""
-
-    def __init__(self, parent=None, spacing: int = 6):
-        super().__init__(parent)
-        self.items: list = []
-        self.setSpacing(spacing)
-        self.setContentsMargins(0, 0, 0, 0)
-
-    def addItem(self, item):                       # noqa: N802 (Qt's names)
-        self.items.append(item)
-
-    def count(self):
-        return len(self.items)
-
-    def itemAt(self, i):                           # noqa: N802
-        return self.items[i] if 0 <= i < len(self.items) else None
-
-    def takeAt(self, i):                           # noqa: N802
-        return self.items.pop(i) if 0 <= i < len(self.items) else None
-
-    def expandingDirections(self):                 # noqa: N802
-        return Qt.Orientation(0)
-
-    def hasHeightForWidth(self):                   # noqa: N802
-        return True
-
-    def heightForWidth(self, w):                   # noqa: N802
-        return self._lay(QRect(0, 0, w, 0), True)
-
-    def setGeometry(self, r):                      # noqa: N802
-        super().setGeometry(r)
-        self._lay(r, False)
-
-    def sizeHint(self):                            # noqa: N802
-        return self.minimumSize()
-
-    def minimumSize(self):                         # noqa: N802
-        s = QSize()
-        for it in self.items:
-            s = s.expandedTo(it.minimumSize())
-        m = self.contentsMargins()
-        return s + QSize(m.left() + m.right(), m.top() + m.bottom())
-
-    def _lay(self, r: QRect, dry: bool) -> int:
-        m = self.contentsMargins()
-        x, y, line = r.x() + m.left(), r.y() + m.top(), 0
-        right = r.right() - m.right()
-        for it in self.items:
-            if it.widget() is not None and it.widget().isHidden():
-                continue
-            hint = it.sizeHint()
-            w = min(hint.width(), max(r.width() - m.left() - m.right(), 40))
-            if x + w > right + 1 and line > 0:
-                x, y, line = r.x() + m.left(), y + line + self.spacing(), 0
-            if not dry:
-                it.setGeometry(QRect(QPoint(x, y), QSize(w, hint.height())))
-            x += w + self.spacing()
-            line = max(line, hint.height())
-        return y + line - r.y() + m.bottom()
 
 
 class Chip(QFrame):
@@ -104,7 +43,7 @@ class Chip(QFrame):
         self.btn = QToolButton()
         self.btn.setObjectName('suggestAct')
         self.btn.setText(s.title)
-        self.btn.setIcon(icons.icon('sparkle', 12))
+        self.btn.setIcon(icons.icon('sparkle', 12, THEME.tok['accent_hi']))
         self.btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.btn.setToolTip(f'{s.shown()}\n\nClick: {s.tool} — opens the Assistant panel with it (an approval card '
                             'when it changes something and your permission mode asks).')
@@ -130,7 +69,12 @@ class SuggestionBar(QWidget):
         self.engine, self.key = engine, page_key
         self.flow = FlowLayout(self)
         self.chips: list = []
+        self.active = True                       # in the page header: shown only while its page is
         self.hide()
+
+    def set_active(self, on: bool):
+        self.active = on
+        self.setVisible(on and bool(self.chips))
 
     def update_chips(self):
         for c in self.chips:
@@ -141,7 +85,7 @@ class SuggestionBar(QWidget):
             c = Chip(s, self.engine.act, self.engine.dismiss)
             self.flow.addWidget(c)
             self.chips.append(c)
-        self.setVisible(bool(self.chips))
+        self.setVisible(self.active and bool(self.chips))
         self.updateGeometry()
 
 
@@ -310,9 +254,13 @@ def install(win):
         if page is None:
             continue
         bar = SuggestionBar(eng, key)
-        if _insert(page, bar):
-            win.suggestion_bars[key] = bar
-            eng.changed.connect(bar.update_chips)
+        header = getattr(win, 'header', None)
+        if header is not None:                       # the frame's page header, under the page's title
+            header.add_bar(key, bar)
+        elif not _insert(page, bar):
+            continue
+        win.suggestion_bars[key] = bar
+        eng.changed.connect(bar.update_chips)
     home = win.page('home')
     if home is not None and hasattr(home, 'show_suggestion'):
         eng.changed.connect(lambda: home.show_suggestion(eng.best()))

@@ -46,6 +46,8 @@ class GroqClient:
         self.scrub = scrubber(self._key)
         self._sleep = sleep                    # tests: record the waits instead of sleeping
         self.on_retry = None                   # on_retry(status, wait_s, attempt): the UI says why it waits
+        self.on_limits = None                  # on_limits({'tokens': n, 'requests': n}): the account's limits as
+        #                                        the server states them in its x-ratelimit-limit-* headers
 
     # ------------------------------------------------------------------ public
     def models(self, cancel: CancelToken | None = None) -> list:
@@ -142,6 +144,7 @@ class GroqClient:
             if conn.sock is not None:
                 conn.sock.settimeout(self.read_timeout_s)
             resp = conn.getresponse()
+            self._limits(resp)
         except (OSError, http.client.HTTPException, ValueError, AttributeError) as e:
             cancel.off(close)
             conn.close()
@@ -150,6 +153,23 @@ class GroqClient:
             raise ProviderError('network', f'Cannot reach {self._host()} ({self._why(e)}). Is the network up?') \
                 from None
         return conn, resp, close
+
+    def _limits(self, resp):
+        """Pass on the per-minute limits the server says the account has (Groq: x-ratelimit-limit-tokens, -requests),
+        when it says them; a missing or malformed header is no limit known."""
+        if self.on_limits is None:
+            return
+        out = {}
+        for k in ('tokens', 'requests'):
+            v = resp.getheader(f'x-ratelimit-limit-{k}')
+            try:
+                n = int(float(v)) if v is not None else 0
+            except ValueError:
+                n = 0
+            if n > 0:
+                out[k] = n
+        if out:
+            self.on_limits(out)
 
     def _host(self) -> str:
         return urllib.parse.urlsplit(self.base_url).netloc or self.base_url

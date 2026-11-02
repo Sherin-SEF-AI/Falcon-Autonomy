@@ -62,7 +62,10 @@ def test_chips_and_home_card_offline_click_dismiss_and_off(window, qapp):
     assert home.next_kind.text() == 'Next best action' and home.next_head.text() == 'Record a first 10 s drive'
     assert home.next_btn.text() == 'Review…' and home.next_dismiss.isVisibleTo(home)
     data = window.suggestion_bars['data']
-    assert data.isVisibleTo(window.page('data')) and [c.s.key for c in data.chips] == ['first_drive:project']
+    assert not data.isVisibleTo(window)                    # in the page header: only while its page is open
+    window.go('data')
+    assert data.isVisibleTo(window) and [c.s.key for c in data.chips] == ['first_drive:project']
+    window.go('home')
     chip = data.chips[0]
     assert 'Nothing is recorded in this project yet' in chip.btn.toolTip() and 'jobs_drive' in chip.btn.toolTip()
     scn = window.suggestion_bars['scenarios']
@@ -87,7 +90,7 @@ def test_chips_and_home_card_offline_click_dismiss_and_off(window, qapp):
     window.assistant.set_cfg(suggestions=False)
     eng.refresh()
     pump(qapp, timeout=0.1)
-    assert not data.isVisibleTo(window.page('data')) and not scn.chips and home.next_kind.text() == 'Next step'
+    assert not data.chips and not data.isVisibleTo(window) and not scn.chips and home.next_kind.text() == 'Next step'
 
 
 def test_model_wording_on_chips_and_home(window, qapp, srv):
