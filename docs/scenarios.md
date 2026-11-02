@@ -15,6 +15,11 @@ behind a bus, a wrong-way scooter, a bus pulling out, stray cattle in the lane, 
 autorickshaw cutting in, and the monsoon variant (a lead vehicle braking on a waterlogged road, with the scenario's own
 weather). Copy one into the project to edit it.
 
+A scenario made from a **recorded event** ([dashcam](dashcam.md#a-real-incident-as-a-scenario)) also carries a fixed
+`start` and `route_xy` on a world's matched road, and tracks (`track`: times and poses) that the director replays
+kinematically — the ego too with the driver `replay`; its parametric twin, `variations.json`, is searched like any
+scenario. The **planner benchmark** scores planners on fixed scenario routes ([planner benchmark](planner-benchmark.md)).
+
 **Indian kinds** of actor: `autorickshaw` and `cycle_rickshaw` are stand-in vehicles held to their class's top speed
 and acceleration; `cattle`, `handcart` and `vendor` are proxy props of the real object's size, a moving one moved
 kinematically. They keep CARLA's labels and carry Falcon's `subclass` ([Indian road assets](indian-assets.md)). A

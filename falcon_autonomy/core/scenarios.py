@@ -25,6 +25,10 @@ A scenario document (the project's scenarios, and the built-in LIBRARY):
                                | {"actor": id, "do": "go"} | {"actor": id, "do": "stop"}]}],
      "pass": {"no_collision": true, "min_ttc_s": expr}}
 
+A recorded event (core.incident) adds: "start": {x, y, yaw} (CARLA's frame: the ego's start on the matched road),
+"route_xy": [[x, y], ...] (the ego's route there), "source": {"format": "dashcam"} (private), the ego's driver
+"replay" with "ego.track", and an actor's "track" — {t, x, y, yaw} replayed kinematically by the director.
+
 The Indian kinds (core.assets, docs/indian-assets.md): autorickshaw and cycle_rickshaw are stand-in vehicles driven
 within their class's top speed and acceleration; cattle, handcart and vendor are proxy props of the real object's
 size (a moving one is moved kinematically). Their labels keep CARLA's class and carry Falcon's subclass.

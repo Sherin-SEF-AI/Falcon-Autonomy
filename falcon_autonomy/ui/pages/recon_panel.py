@@ -2,7 +2,9 @@
 camera images (a job on the GPU queue), look at it from poses the log never took — any frame, the ego moved sideways
 with a slider — and read how it measured (core.recon; docs/reconstruction.md). *From a dashcam* does the same for a
 time window of a dashcam clip: posed by visual odometry and its GPS (core.recon.fromdashcam), reconstructed, placed on
-an imported world. *Hybrid world* composites CARLA's actors over the reconstruction (core.recon.hybrid): a recorded
+an imported world; *Make a scenario from this event* writes the event (the ego and, from a detections file, the
+other road users) as a replay scenario, variations for the rare-case search and OpenSCENARIO (core.incident).
+*Hybrid world* composites CARLA's actors over the reconstruction (core.recon.hybrid): a recorded
 drive of the same world, or a new CARLA drive of the log's path with seeded traffic and the ego at the slider's offset
 (a replay job, then the composite on the GPU queue). torch is imported only when a reconstruction is opened, on a
 worker thread."""
@@ -49,6 +51,8 @@ class ReconPanel(QWidget):
         self.hybrid_next = None                # (carla run, hybrid run): the composite to queue when CARLA's drive ends
         self.hybrid_out = ''
         self.dash_dir = ''
+        self.detections = ''                   # a detections file for the incident (core.incident), optional
+        self.incident = ''                     # the last incident made here (its name)
         self.busy = False
         self.pending = False
         self.last = None                       # the last rendered result (tests read it)
@@ -268,8 +272,89 @@ class ReconPanel(QWidget):
         b.addWidget(self.dash_btn)
         b.addStretch(1)
         sec.add(b)
+        inc = QHBoxLayout()
+        self.inc_btn = button('Make a scenario from this event', self.make_incident,
+                              tip='falcon dashcam incident extract: the reconstruction placed on the world\'s matched '
+                                  'road as a replay scenario, variations around it and OpenSCENARIO (docs/dashcam.md); '
+                                  'it stays on this machine')
+        self.det_btn = button('Detections…', self.choose_detections,
+                              tip='other road users: a falcon.dashcam_detections/1 file (Falcon runs no detector on '
+                                  'dashcam footage); without one the scenario has the ego only')
+        self.search_btn = button('Search variations', self.search_incident,
+                                 tip='the rare-case search over the variations, centred on the extracted values')
+        set_enabled(self.search_btn, False, 'make a scenario from the event first')
+        for x in (self.inc_btn, self.det_btn, self.search_btn):
+            inc.addWidget(x)
+        inc.addStretch(1)
+        sec.add(inc)
         self.refresh_worlds()
         return sec
+
+    # ---------------------------------------------------------------- a real incident as a scenario
+    def choose_detections(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Detections of the segment', self.win.workspace(),
+                                              'Detections (*.json)')
+        if path:
+            self.detections = path
+            self.det_btn.setText(f'Detections: {os.path.basename(path)}')
+
+    def incident_argv(self, name: str) -> list:
+        proj = self.win.project
+        argv = ['dashcam', 'incident', 'extract', self.rec_dir, '--project', proj.path, '--world',
+                self.dash_world.currentData() or '', '--name', name]
+        if self.detections:
+            argv += ['--detections', self.detections]
+        return argv
+
+    def make_incident(self):
+        import sys
+        from ...core import incident as INC
+        from ...core.jobs import JobSpec
+        if not self.rec_dir or not os.path.isfile(os.path.join(self.rec_dir, 'posed', 'posed.json')):
+            self.note.setText('reconstruct a dashcam segment first: the event is read from its posed frames')
+            return None
+        if not self.dash_world.currentData():
+            self.note.setText('choose the imported world the event is on (Place on the world)')
+            return None
+        w = self.win
+        if not w.project.path or w.project.dirty:
+            if not w.save():
+                return None
+        name = INC.default_name(self.rec_dir)
+        argv = [sys.executable, '-m', 'falcon_autonomy'] + self.incident_argv(name)
+        job = w.queue.submit(JobSpec('incident', f'Scenario from the event {name}', argv, memory_gb=0.5))
+        self.jobs['incident'] = job
+        self.incident = name
+        w.jobs_dock.raise_()
+        return job
+
+    def show_incident(self):
+        from ...core import incident as INC
+        from ...core.provenance import read_json
+        p = os.path.join(INC.incident_dir(self.win.workspace(), self.incident), 'run.json')
+        if not os.path.isfile(p):
+            self.info.set('Incident', '—')
+            return
+        s = read_json(p).get('summary') or {}
+        kinds = ', '.join(f'{n} {k}' for k, n in sorted((s.get('kinds') or {}).items())) or 'no other road users'
+        self.info.set('Incident', f'{self.incident}: {s.get("duration_s")} s, {kinds}, '
+                                  f'{100 * (s.get("matched_share") or 0):.0f} % of the poses on the world\'s lanes, '
+                                  f'{s.get("search_parameters")} parameters to search', tip=os.path.dirname(p))
+        set_enabled(self.search_btn, True)
+
+    def search_incident(self):
+        import sys
+        from ...core import incident as INC
+        from ...core.jobs import JobSpec
+        if not self.incident:
+            return None
+        w = self.win
+        argv = [sys.executable, '-m', 'falcon_autonomy'] + INC.search_argv(w.project.path, w.workspace(),
+                                                                         self.incident, 40, fake_carla=w.fake_carla)
+        job = w.queue.submit(JobSpec('study', f'Search the variations of {self.incident}', argv, memory_gb=0.5))
+        self.jobs['incident-search'] = job
+        w.jobs_dock.raise_()
+        return job
 
     def refresh_worlds(self):
         self.dash_world.clear()
@@ -397,6 +482,8 @@ class ReconPanel(QWidget):
         self.note.setText(f'{which}: {job.state}' + (f' — {job.summary()}' if job.state != DONE else ''))
         if job.state == DONE and which == 'dashcam' and self.dash_dir:
             self.rec_dir = self.dash_dir
+        if job.state == DONE and which == 'incident':
+            self.show_incident()
         if which == 'hybrid-carla' and self.hybrid_next:
             carla, out = self.hybrid_next
             self.hybrid_next = None

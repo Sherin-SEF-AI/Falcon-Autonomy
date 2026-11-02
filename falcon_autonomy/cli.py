@@ -36,10 +36,12 @@
     falcon recon train|from-dashcam|place|eval|render|rerender|info ...   neural reconstruction of a drive (3DGS)
     falcon dashcam list|gps|extract|match ...   a dashcam's clips, GPS track and GPS-stamped frames (docs/dashcam.md)
     falcon dashcam route plan|import|match|drive|pairs ...   drive your dashcam's route in simulation on its streets
+    falcon dashcam incident extract|search|show ...   a reconstructed dashcam event as a scenario and OpenSCENARIO
     falcon runs search PROJECT|WORKSPACE [QUERY...] [--sort KEY] [--json]   search the runs (docs/runs.md)
     falcon vlm list|verify|fetch|eval|finetune ...   vision-language driving explanations scored against ground truth
     falcon triggers list|check|add|remove|signals PROJECT …   live trigger rules: when <condition> -> <action>
     falcon rules check RUN... [--set india|generic|FILE] | list | show SET   traffic rules as temporal logic
+    falcon bench routes|run|score|results ...   a closed-loop planner benchmark, PDM-score style (docs/planner-benchmark.md)
     falcon why case|evaluation|episode ...   root-cause attribution of a failure (docs/root-cause.md)
     falcon odd monitor RUN... --odd FILE [--reference REF] | calibrate --in RUN... --out FILE   runtime ODD monitoring
     falcon assets inventory|list|show ID|verify   Indian road assets within the packaged CARLA (docs/indian-assets.md)
@@ -381,6 +383,8 @@ def parser() -> argparse.ArgumentParser:
                    'docs/scenarios.md)')
     sub.add_parser('rules', help='traffic rules as temporal logic: falcon rules check RUN... | list | show SET (see '
                                  'docs/traffic-rules.md)')
+    sub.add_parser('bench', help='a closed-loop planner benchmark: falcon bench routes|run|score|results (see '
+                                 'docs/planner-benchmark.md)')
     sub.add_parser('why', help='why did it fail: falcon why case|evaluation|episode (see docs/root-cause.md)')
     sub.add_parser('ci', help='CI mode: a suite headless with gates, JUnit, Markdown and HTML: falcon ci '
                               'run|validate|init|summary|post|lint (see docs/ci.md)')
@@ -502,6 +506,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['triggers']:                  # live trigger rules (core.triggers)
         from .core.triggers import main_triggers
         return main_triggers(argv[1:])
+    if argv[:1] == ['bench']:                     # the closed-loop planner benchmark (core.planbench)
+        from .core.planbench import main_bench
+        return main_bench(argv[1:])
     if argv[:1] == ['rules']:                     # traffic rules as temporal logic (core.rules)
         from .core.rules import main_rules
         return main_rules(argv[1:])
@@ -526,6 +533,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['recon']:                     # neural reconstruction of a drive (core.recon)
         from .core.recon.commands import main_recon
         return main_recon(argv[1:])
+    if argv[:2] == ['dashcam', 'incident']:       # a reconstructed dashcam event as a scenario (core.incident)
+        from .core.incident import main_incident
+        return main_incident(argv[2:])
     if argv[:2] == ['dashcam', 'route']:          # drive a dashcam route in simulation (core.dashcam_route)
         from .core.dashcam_route import main_route
         return main_route(argv[2:])

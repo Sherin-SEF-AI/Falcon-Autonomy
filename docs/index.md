@@ -179,7 +179,10 @@ events on a time axis (drag a time trigger or a lane change's duration, snapped;
 event's trigger and actions in a form, and above it a **plan** of where everyone goes — a plan on a straight
 schematic road, not a simulation. The **Trigger rules** tab holds the project's live rules — `when ego.speed > 40 and
 visibility < 30 -> spawn jaywalker` — evaluated every tick of drives, scenario runs and Live, every firing recorded.
-See [scenarios](scenarios.md).
+See [scenarios](scenarios.md). The **Planner benchmark** drives planners (the lane follower, a policy, a ROS 2 stack)
+over fixed routes on central Bengaluru and CARLA's towns and compares them by the nuPlan/NAVSIM-style PDM score with
+bootstrap intervals ([planner benchmark](planner-benchmark.md)); a recorded dashcam event can be made a scenario and
+searched around ([dashcam](dashcam.md#a-real-incident-as-a-scenario)).
 
 ### Rare cases
 Search a scenario's parameters for where it becomes critical (Bayesian optimisation, CMA-ES, adaptive sampling or

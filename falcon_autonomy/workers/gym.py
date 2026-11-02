@@ -204,6 +204,10 @@ class Gym(Worker):
         if self.action_kind not in ('continuous', 'discrete'):
             raise Failed(f'action must be continuous or discrete, not {self.action_kind!r}')
         os.makedirs(self.out_dir, exist_ok=True)
+        if self.bev is None and cfg.get('write_lanes'):     # the planner benchmark's map (core.planbench)
+            self.expect(180.0)
+            scene.write_lanes(self, self.map, self.out_dir)
+            self.phase('setup')
         self.ep_log = open(os.path.join(self.out_dir, 'episodes.jsonl'), 'a', encoding='utf-8')
         from .drive import physics_and_watch
         _, self.watch = physics_and_watch(self, world, cfg, with_physics=False)       # the ODD monitor, when asked
@@ -813,13 +817,18 @@ class Gym(Worker):
         if self.cfg.get('log_actions', True):
             summ['actions'] = ep['actions']
         if self.cfg.get('log_trace', True):
+            d = ep['director']                        # every box over the episode (core.planbench scores them)
+            summ['trajectories'] = {'dt': self.dt, 'columns': ['t', 'x', 'y', 'yaw', 'vx', 'vy', 'length', 'width'],
+                                    'actors': d.traj, 'kinds': {k: v['kind'] for k, v in d.actors.items()},
+                                    'events': [[t, next((k for k, v in d.actors.items() if v['actor'].id == oid),
+                                                        None)] for t, oid, _imp in d.events]}
             summ['trace'] = {'columns': list(TRACE_COLUMNS), 'rows': ep['trace'],
                              'ego': {'length': round(ep['len'], 3), 'width': round(ep['wid'], 3)},
                              'handedness': self.cfg.get('handedness'), 'town': self.cfg.get('town') or None}
         summ = self.summary_extras(summ)
         self.ep_log.write(json.dumps(summ, separators=(',', ':')) + '\n')
         self.ep_log.flush()
-        return {k2: v for k2, v in summ.items() if k2 not in ('actions', 'trace')}
+        return {k2: v for k2, v in summ.items() if k2 not in ('actions', 'trace', 'trajectories')}
 
     # ------------------------------------------------------------------ tidy-up
     def tidy(self):

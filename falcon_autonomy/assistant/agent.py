@@ -143,6 +143,7 @@ GROUP_ABOUT = {
     'ui': 'Falcon\'s window: the open page, go to a page, show a run or frame, outline a control',
     'knowledge': 'the manual (search), the command line, settings, the tools themselves',
     'system': 'the CARLA server, the machine, the queue\'s locks, versions',
+    'research': 'the closed-loop planner benchmark (PDM score) and its results; a dashcam incident made a scenario',
 }
 CORE = ('plan_update', 'plan_wait_jobs', 'tools_find', 'tools_load')     # always sent
 ALWAYS = ('knowledge', 'system')        # small groups sent with the core (about 500 tokens); the rest on demand
@@ -236,6 +237,7 @@ GUESS = {
     'system': r'\b(gpu|vram|memory|ram|server|machine)\b',
     'lab': r'\b(hil|hardware.in.the.loop|deploy\w*|tensorrt|orin|jetson|ci|log.replay|adversar\w*|experiments?|'
            r'active.learning|vlm)\b',
+    'research': r'\b(benchmark\w*|pdm|nuplan|navsim|planners?|incidents?)\b',
 }
 PAGE_GROUPS = {'data': 'runs', 'replay': 'runs', 'models': 'analysis', 'loop': 'analysis', 'rarecases': 'analysis',
                'reports': 'analysis', 'training': 'jobs', 'stack': 'jobs', 'scenarios': 'project', 'worlds': 'project',

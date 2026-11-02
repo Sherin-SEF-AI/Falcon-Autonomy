@@ -28,6 +28,14 @@ tick late): the motion is computed here and repeats bit for bit; collisions are 
 
 Every pose and velocity is read from the world snapshot of exactly the frame just ticked (sync()).
 
+Recorded events (core.incident: a dashcam event made a scenario). A scenario's optional "start" {x, y, yaw} (CARLA's
+frame) places the ego at the map's driving lane nearest that point (refused when none is within 5 m and 60° of it),
+and "route_xy" [[x, y], ...] is the ego's route there (then the lane on from its end). An actor's (or the ego's,
+driver "replay") optional "track" {t, x, y, yaw} is replayed kinematically whatever the motion: the pose
+interpolated at each step's time (yaw unwrapped), before its first sample and after its last extrapolated at the
+velocity of its first or last segment — a road user that enters or leaves the camera's view keeps moving instead of
+standing in the road. A replayed actor ignores the timeline's actions.
+
 Records: per step the ego's and every actor's (t, x, y, yaw, vx, vy, length, width) and the ego's collision events
 (sensor.other.collision), for core.criticality; the timeline's firings with their times; each scenario actor's CARLA
 id and blueprint (report(): 'actor_ids', 'blueprints'), which the labels' track ids refer to.
@@ -179,6 +187,19 @@ class Director:
 
     # ------------------------------------------------------------------ placement
     def place_ego(self, spawns, order):
+        if self.scn.get('start'):                       # a recorded event's start (core.incident)
+            st = self.scn['start']
+            carla = self.carla
+            wp = self.map.get_waypoint(carla.Location(x=float(st['x']), y=float(st['y']), z=0.0))
+            if wp is None:
+                raise Failed('the scenario\'s start is not on this map\'s roads')
+            loc = wp.transform.location
+            far = math.hypot(loc.x - float(st['x']), loc.y - float(st['y']))
+            turn = abs(_wrap(wp.transform.rotation.yaw - float(st.get('yaw', wp.transform.rotation.yaw))))
+            if far > 5.0 or turn > 60.0:
+                raise Failed(f'the scenario\'s start is {far:.1f} m and {turn:.0f}° from the nearest driving lane: '
+                             f'is it this map\'s (the event was matched to world {st.get("world") or "?"})?')
+            return wp.transform, wp
         needs = set(self.scn.get('needs') or [])
         route = self.scn.get('ego', {}).get('route', 'straight')
         reasons = {}
@@ -235,6 +256,18 @@ class Director:
         return None
 
     def ego_route(self, wp):
+        pts = self.scn.get('route_xy')
+        if pts and len(pts) >= 2:                       # a recorded event's route, then the lane on from its end
+            P = np.asarray(pts, float)
+            d = np.diff(P, axis=0)
+            yaws = list(np.degrees(np.arctan2(d[:, 1], d[:, 0])))
+            yaws.append(yaws[-1])
+            end = self.map.get_waypoint(self.carla.Location(x=float(P[-1, 0]), y=float(P[-1, 1]), z=0.0))
+            more = lane_path(end, 200.0) if end is not None else None
+            if more is not None and len(more.pts) > 1:
+                P = np.r_[P, more.pts[1:]]
+                yaws += list(more.yaw[1:])
+            return Path(P, yaws, [wp.lane_width] * len(P), wp.transform.location.z)
         route = self.scn.get('ego', {}).get('route', 'straight')
         return self.turn_route(wp) if route == 'turn_across' else lane_path(wp, 400.0)
 
@@ -390,6 +423,8 @@ class Director:
         from ..core import assets as AS
         path, lateral = self.actor_path(a, ego_wp)
         x, y, yaw = path.at(0.0, lateral)
+        if a.get('track'):                              # a recorded track: placed at its pose at t = 0
+            x, y, yaw, _v = track_pose(a['track'], 0.0)
         cls = _class_of(a['kind'])
         prop = a['kind'] in PROXIES
         if prop:
@@ -418,7 +453,7 @@ class Director:
                                 'walk_speed': 0.0, 'walker': a['kind'] in ('pedestrian', 'child'),
                                 'heading': a.get('heading', 'lane'), 'prop': prop, 's': 0.0,
                                 'top': (float(top) / 3.6) if top is not None else None,
-                                'max_accel': spec.get('accel_mps2'), 'class': cls}
+                                'max_accel': spec.get('accel_mps2'), 'class': cls, 'track': a.get('track')}
         self.actors[a['id']]['spawn_pose'] = (x, y, yaw)      # where it was placed (add_actor: before any tick)
         self.traj[a['id']] = []
         return self.actors[a['id']]
@@ -641,6 +676,8 @@ class Director:
                     self.drive_actor(st, t)
             if self.driver in ('follower', 'none'):
                 self.drive_ego()
+            elif self.driver == 'replay':
+                self.replay(self.ego, (self.scn.get('ego') or {}).get('track'), t)
         finally:
             moves, self.moves = self.moves, None
         place_now(self.w.client, self.carla, moves)
@@ -724,9 +761,27 @@ class Director:
                 st['actor'].open_door(getattr(VD, name))
         self.w.emit.log(f'scenario: {a["actor"]} {do} at {t:.2f} s')
 
+    def replay(self, actor, track, t):
+        """Place an actor at its recorded track's pose for the coming tick (module doc)."""
+        if not track:
+            return
+        carla = self.carla
+        x, y, yaw, v = track_pose(track, t + self.dt)
+        k = self.kin.get(actor.id)
+        z = k[2] if k is not None else self.tf(actor).location.z
+        if k is None:
+            actor.set_simulate_physics(False)
+        prop = (getattr(self.w, 'proxies', None) or {}).get(actor.id)
+        self.kin[actor.id] = [x, y, z, yaw, v]
+        self.move(actor, carla.Transform(carla.Location(x=x, y=y, z=z),
+                                         carla.Rotation(yaw=yaw + (prop['yaw_offset'] if prop else 0.0))))
+
     def drive_actor(self, st, t):
         carla = self.carla
         actor = st['actor']
+        if st.get('track'):
+            self.replay(actor, st['track'], t)
+            return
         if st['walker']:
             if self.kinematic:
                 self.kin_step(actor, {}, walk=(st['path'].yaw[0], st['walk_speed'] if st['walking'] else 0.0))
@@ -818,6 +873,28 @@ class Director:
                 'subclasses': {k: self.w.subclass[v['actor'].id] for k, v in self.actors.items()
                                if v['actor'].id in (getattr(self.w, 'subclass', None) or {})},
                 **({'added': self.added, 'fired_added': self.fired_added} if self.added else {})}
+
+
+def track_pose(track: dict, t: float):
+    """(x, y, yaw°, speed) of a recorded track {t, x, y, yaw} at time t (module doc: linear between samples,
+    extrapolated at the end segments' velocity outside them)."""
+    T = np.asarray(track['t'], float)
+    X, Y = np.asarray(track['x'], float), np.asarray(track['y'], float)
+    Yw = np.degrees(np.unwrap(np.radians(np.asarray(track['yaw'], float))))
+    if len(T) == 1:
+        return float(X[0]), float(Y[0]), float(Yw[0]), 0.0
+    if t <= T[0] or t >= T[-1]:
+        i, j = (0, 1) if t <= T[0] else (len(T) - 2, len(T) - 1)
+        dt = max(T[j] - T[i], 1e-6)
+        vx, vy = (X[j] - X[i]) / dt, (Y[j] - Y[i]) / dt
+        ref = i if t <= T[0] else j
+        return (float(X[ref] + vx * (t - T[ref])), float(Y[ref] + vy * (t - T[ref])), float(Yw[ref]),
+                float(math.hypot(vx, vy)))
+    k = int(np.clip(np.searchsorted(T, t) - 1, 0, len(T) - 2))
+    f = (t - T[k]) / max(T[k + 1] - T[k], 1e-9)
+    v = math.hypot(X[k + 1] - X[k], Y[k + 1] - Y[k]) / max(T[k + 1] - T[k], 1e-9)
+    return (float(X[k] + f * (X[k + 1] - X[k])), float(Y[k] + f * (Y[k + 1] - Y[k])),
+            float(Yw[k] + f * (Yw[k + 1] - Yw[k])), float(v))
 
 
 def follow(actor, path, lateral, speed, dt, st, tr, v):

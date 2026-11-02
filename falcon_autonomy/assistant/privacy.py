@@ -10,7 +10,9 @@ it shows where and when they drove. Refused: anything under ~/Videos; a run, rec
 or world whose own records say it came from dashcam footage — a drive along a dashcam route (dashcam_route in its
 settings, or in its provenance.settings, where run.json keeps the config), a reconstruction posed from a dashcam
 segment (dashcam.json), frames extracted from clips (worker dashcam-extract), a real image set or translator of kind
-dashcam, an OSM import whose source is a dashcam route. The markers are read from the folder's own run.json /
+dashcam, an OSM import whose source is a dashcam route, an incident made a scenario (worker dashcam-incident) and
+any drive, stack run or study of such a scenario (its scenario's source {"format": "dashcam"}, in drive.json,
+stack.json, study.json or run.json's provenance). The markers are read from the folder's own run.json /
 import.json / model json (and its parent's, for a file in a run); a folder without any record is not private by this
 test — the tools only hand over Falcon's own outputs.
 
@@ -32,7 +34,8 @@ SECRET_PATTERNS = (
     re.compile(r'(?i)bearer\s+[A-Za-z0-9._\-]{16,}'),
     re.compile(r'(?i)\b(password|passwd|token|api[_-]?key|secret)\s*[=:]\s*\S+'),
 )
-RECORDS = ('run.json', 'import.json', 'dashcam.json', 'translator.json', 'model.json', 'set.json')
+RECORDS = ('run.json', 'import.json', 'dashcam.json', 'translator.json', 'model.json', 'set.json', 'drive.json',
+           'stack.json', 'study.json')
 
 
 def redact_text(s: str) -> str:
@@ -67,6 +70,11 @@ def _says_dashcam(doc) -> str | None:
         return 'a drive along a route taken from the dashcam footage'
     if doc.get('dashcam_route'):
         return 'a drive along a route taken from the dashcam footage'
+    for d in (doc, st, pst):                                  # a scenario made from a dashcam event (core.incident)
+        scn = d.get('scenario') if isinstance(d, dict) else None
+        src = scn.get('source') if isinstance(scn, dict) else None
+        if isinstance(src, dict) and src.get('format') == 'dashcam':
+            return 'a scenario made from an event in the dashcam footage'
     worker = str(doc.get('worker') or (doc.get('provenance') or {}).get('worker') or '')
     if worker.startswith('dashcam'):
         return 'made from the dashcam footage'

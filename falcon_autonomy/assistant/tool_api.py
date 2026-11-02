@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 TIERS = ('read', 'act', 'trash')
-GROUPS = ('project', 'runs', 'jobs', 'analysis', 'lab', 'ui', 'knowledge', 'system')
+GROUPS = ('project', 'runs', 'jobs', 'analysis', 'lab', 'ui', 'knowledge', 'system', 'research')
 NEVER = ('delete_run', 'delete_project', 'change_settings', 'set_port', 'start_server', 'stop_server', 'shell',
          'git_push', 'download_model', 'send_image')
 

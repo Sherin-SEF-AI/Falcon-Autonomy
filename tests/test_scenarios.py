@@ -73,6 +73,7 @@ def test_openscenario_round_trip(key):
 
 def test_openscenario_refuses_outside_the_subset():
     from falcon_autonomy.core import openscenario as X
-    xml = X.export_xosc(SC.sample(SC.builtin('lead_brake'), 1)).replace('RelativeLanePosition', 'WorldPosition')
+    # a WorldPosition is in the subset since recorded events (core.incident); a road's LanePosition is not
+    xml = X.export_xosc(SC.sample(SC.builtin('lead_brake'), 1)).replace('RelativeLanePosition', 'LanePosition')
     with pytest.raises(ValueError, match='subset'):
         X.import_xosc(xml)

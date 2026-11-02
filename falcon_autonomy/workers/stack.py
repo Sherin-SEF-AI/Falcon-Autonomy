@@ -278,6 +278,8 @@ class Stack(Worker):
                           f'from {control["topic"]} ({control["type"]})')
             self.phase('setup')
         os.makedirs(self.out_dir, exist_ok=True)
+        if cfg.get('write_lanes'):                       # the planner benchmark's map (core.planbench)
+            scene.write_lanes(self, world.get_map(), self.out_dir)
         from .drive import physics_and_watch
         _, watch = physics_and_watch(self, world, cfg, with_physics=False)       # the ODD monitor, when asked
         watch_cam = next((x['id'] for x in sensors if x['kind'] == 'camera'), None)
