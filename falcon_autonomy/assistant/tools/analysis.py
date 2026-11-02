@@ -55,11 +55,13 @@ def compact(v, depth=0, cap=10):
       'The workspace\'s analysis outputs of one kind, newest first, by id (folder or file name): studies, '
       'evaluations, comparisons, gaps, suites, root-cause answers, translators, reconstructions, trainings, world '
       'models, policies, exports, reports, V2X benefit files, derived data, leaderboards, and the lab jobs\' outputs '
-      '(CI runs, deployments, adversary trainings and evaluations, experiments, VLM evaluations, imported logs, HIL '
+      '(CI runs, deployments, adversary trainings and evaluations, experiments — the registry: each with its kind, '
+      'status and, for an ablation, hypothesis, factors, metric and verdict —, VLM evaluations, imported logs, HIL '
       'sessions, replay comparisons). Use the ids in the analysis and jobs tools. With id, a lab output\'s numbers: '
       'a CI run\'s verdict and gates, a HIL session\'s latency per stage and deadlines, a deployment\'s engines '
-      '(latency, power, AP ratio, gate verdict), failure rates, an experiment\'s arms with intervals, VLM scores '
-      '(text only), a log\'s actors and duration, a replay comparison\'s differences.',
+      '(latency, power, AP ratio, gate verdict), failure rates, an experiment\'s arms (or an ablation\'s contrasts '
+      'and cells) with intervals, VLM scores (text only), a log\'s actors and duration, a replay comparison\'s '
+      'differences.',
       C.obj({'kind': C.s('what to list', enum=sorted(OUTPUTS)),
              'id': C.s('a lab output\'s id: its numbers (a run id for hil)'),
              'limit': C.i('rows (default 20)', minimum=1, maximum=50)}, ['kind']))
@@ -86,6 +88,14 @@ def analysis_outputs(ctx, kind, id='', limit=20):
             import time
             rows.append({'id': n, 'modified': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(os.path.getmtime(p))),
                          'kind': 'folder' if os.path.isdir(p) else 'file'})
+            if kind == 'experiment':              # the registry's row: hypothesis, factors, status, verdict
+                from ...core.ablation import summary
+                try:
+                    s = summary(p)
+                    rows[-1].update({k: s[k] for k in ('kind', 'status', 'hypothesis', 'factors', 'metric',
+                                                       'verdict', 'rerun_of') if s.get(k) is not None})
+                except (OSError, ValueError, KeyError):
+                    pass
     out = C.capped(rows, int(limit))
     if hidden:
         out['private_left_out'] = hidden

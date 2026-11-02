@@ -43,5 +43,8 @@ They talk over the [local protocol](protocol.md): JSON lines on stdin/stdout (an
   `logs/`, `catalog.sqlite`.
 - The **catalogue** indexes runs (and, as milestones land, datasets, models, evaluations, experiments); it can be
   rebuilt from the files (`falcon runs PROJECT --rebuild`), which are the truth.
+- The **experiment registry** is the workspace's `experiments/<id>/` folders (each with its definition and hash, plan
+  and pins, tracked runs and results) and the catalogue's experiment rows ([experiments](experiments.md#the-registry));
+  outputs for papers go to `paper/`.
 - **User settings and secrets** live in `$XDG_CONFIG_HOME/FalconAutonomy/`; secrets in a separate file readable
   only by the user, never shown and never copied into a project.

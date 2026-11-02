@@ -1,7 +1,7 @@
 """Data ▸ Compare: two to four recorded runs side by side (core.runcompare): their cameras on one time scrubber,
 aligned by simulation time from each run's first frame; their events on a shared timeline; and a table of what each
 recorded, with the difference from the first run. Rule violations and lane margins come from a traffic-rule check
-of each run, computed in the background."""
+of each run, computed in the background. *Export for a paper* writes the table as LaTeX and CSV (core.paper)."""
 from __future__ import annotations
 
 import os
@@ -159,6 +159,8 @@ class CompareTab(QWidget):
         self.table.setRootIsDecorated(False)
         self.table.setMinimumHeight(90)
         sec.add(self.table)
+        sec.add(button('Export for a paper', self.export_paper, tip='The table as LaTeX (booktabs) and CSV into the '
+                                                                    'workspace\'s paper folder (core.paper)'))
         self.body.addWidget(sec)
         self.body.setSizes([520, 300])
         v.addWidget(self.empty, 1)
@@ -198,6 +200,20 @@ class CompareTab(QWidget):
 
     def chosen(self) -> list:
         return [c.currentData() for c in self.combos if c.currentData()]
+
+    def export_paper(self):
+        """Queue `falcon paper runs RUN… --out <ws>/paper/runs-<stamp>` for the runs shown (a run from the dashcam
+        footage is labelled by its slot, never by its name)."""
+        import sys
+        import time
+        from ...core.jobs import JobSpec
+        paths = [r['path'] for r in self.runs]
+        if len(paths) < 2:
+            return None
+        out = os.path.join(self.win.workspace(), 'paper', f'runs-{time.strftime("%Y%m%d-%H%M%S")}')
+        return self.win.queue.submit(JobSpec('export', f'Paper outputs: {len(paths)} runs compared',
+                                             [sys.executable, '-m', 'falcon_autonomy', 'paper', 'runs', *paths,
+                                              '--out', out], memory_gb=0.5))
 
     # ------------------------------------------------------------------ loading
     def load(self):

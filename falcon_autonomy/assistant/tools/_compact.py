@@ -70,6 +70,11 @@ SHORT = {
     'lab_adversary': 'Queue training or evaluating adversarial traffic.',
     'lab_experiment': 'Queue a mixed sim/real or active-learning experiment.',
     'lab_vlm': 'Queue scoring a VLM\'s driving explanations.',
+    # research
+    'research_ablation': 'An ablation of a hypothesis: create (planned by a power analysis), run, analyse, rerun, '
+                         'export.',
+    'research_registry': 'Every experiment with hypothesis, factors, status and verdict; with id, its results.',
+    'research_paper': 'LaTeX and CSV tables and figures of an experiment or evaluation, or an export\'s data card.',
     # knowledge
     'knowledge_manual': 'Search the built-in manual offline: best sections with heading, link and text.',
     'knowledge_cli': 'Falcon\'s command-line commands with what they do, optionally filtered.',

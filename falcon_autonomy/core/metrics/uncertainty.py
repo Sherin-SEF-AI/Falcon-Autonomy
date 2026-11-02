@@ -24,8 +24,25 @@ probability that B is better; Koehn 2004, Statistical significance tests for mac
 as used for model comparison).
 Seeded with numpy's default_rng(seed): the same inputs give the same numbers.
 
+With method='expanded' (bootstrap and paired_bootstrap) the interval is the expanded percentile interval (Hesterberg
+2015, What Teachers Should Know About the Bootstrap, The American Statistician 69(4)): the quantiles taken at
+Φ(± √(n/(n−1)) · t_{n−1, (1+ci)/2}) instead of (1 ± ci)/2, n the number of units — it widens the percentile
+interval by the factors a t interval has over a z interval, which removes most of the percentile interval's
+under-coverage with few units. Each paired result also carries p_value: the two-sided p-value that inverts the
+interval used (the largest 1 − ci at which the interval still holds 0), from the share of resamples on the far side
+of 0 (ties counted half); with no resample beyond 0 it is computed at half a resample and is an upper bound.
+
 summary_table(results): rows {'metric', 'value', 'ci_low', 'ci_high', 'n'} for a UI table from a bootstrap or
 paired_bootstrap result, or from a dict of named numbers and results.
+
+Planning and many contrasts (core.ablation): t_cdf / t_ppf (Student's t, central and noncentral), paired_power(n,
+dz, alpha) — the power of the two-sided paired t-test with n pairs at the standardised effect dz = mean difference /
+sd of the differences (Cohen 1988, Statistical Power Analysis for the Behavioral Sciences, §2.3.5: the noncentral t
+with n − 1 degrees of freedom and noncentrality dz √n, computed exactly by numerical integration over the chi
+distribution, not by the normal approximation) — and paired_sample_size(dz, alpha, power), the smallest n reaching it.
+holm(p_values): Holm's step-down adjusted p-values (Holm 1979, A simple sequentially rejective multiple test
+procedure, Scand. J. Statistics 6), which control the family-wise error rate at alpha for any dependence between the
+contrasts and reject everything Bonferroni rejects.
 
 Limits. The bootstrap assumes the units are exchangeable draws from what the results should generalise to (the same
 towns, weathers and scenario mix); with few units (under about 20 drives) its intervals are too narrow, and the
@@ -123,9 +140,9 @@ def bootstrap(metric_fn, items, n: int = 1000, seed: int = 0, ci: float = 0.95, 
               unit_key: str = 'drive', method: str = 'percentile') -> dict:
     """Bootstrap CI of metric_fn(items). A number gives {'value', 'ci_low', 'ci_high', 'sd', 'n_valid', ...}; a dict
     gives {'metrics': {key: {'value', 'ci_low', 'ci_high', 'sd', 'n_valid'}}, ...}; both with 'ci', 'method', 'unit',
-    'n_units', 'n_items', 'n_boot', 'seed'."""
-    if method not in ('percentile', 'bca'):
-        raise ValueError("method is 'percentile' or 'bca'")
+    'n_units', 'n_items', 'n_boot', 'seed'. method: 'percentile', 'bca' or 'expanded' (the module docstring)."""
+    if method not in ('percentile', 'bca', 'expanded'):
+        raise ValueError("method is 'percentile', 'bca' or 'expanded'")
     if not 0 < ci < 1:
         raise ValueError('ci must lie in (0, 1)')
     items = list(items)
@@ -143,7 +160,11 @@ def bootstrap(metric_fn, items, n: int = 1000, seed: int = 0, ci: float = 0.95, 
     jack = _jackknife(metric_fn, items, groups, keys) if method == 'bca' else None
     per = {}
     for j, k in enumerate(keys):
-        lo, hi, sd, used = _interval(vals[:, j], est[k], ci, method, None if jack is None else jack[:, j])
+        if method == 'expanded' and len(groups) > 1:
+            lo, hi, sd = _expanded(vals[:, j], est[k], ci, len(groups))
+            used = 'expanded'
+        else:
+            lo, hi, sd, used = _interval(vals[:, j], est[k], ci, method, None if jack is None else jack[:, j])
         per[k] = {'value': None if math.isnan(est[k]) else est[k], 'ci_low': lo, 'ci_high': hi, 'sd': sd,
                   'n_valid': int(np.isfinite(vals[:, j]).sum()), 'method': used}
     meta = {'ci': ci, 'method': method, 'unit': unit, 'n_units': len(groups), 'n_items': len(items), 'n_boot': n,
@@ -154,12 +175,15 @@ def bootstrap(metric_fn, items, n: int = 1000, seed: int = 0, ci: float = 0.95, 
 
 
 def paired_bootstrap(metric_fn, items, model_a, model_b, n: int = 1000, seed: int = 0, ci: float = 0.95,
-                     unit: str | None = None, unit_key: str = 'drive') -> dict:
+                     unit: str | None = None, unit_key: str = 'drive', method: str = 'percentile') -> dict:
     """Bootstrap of the difference metric_fn(items, model_b) − metric_fn(items, model_a) on shared resamples. A number
-    gives {'a', 'b', 'diff', 'ci_low', 'ci_high', 'sd', 'p_b_gt_a', 'p_b_eq_a', 'n_valid', ...}; a dict gives
-    {'metrics': {key: {...}}, ...}; both with 'ci', 'unit', 'n_units', 'n_items', 'n_boot', 'seed'."""
+    gives {'a', 'b', 'diff', 'ci_low', 'ci_high', 'sd', 'p_b_gt_a', 'p_b_eq_a', 'p_value', 'n_valid', ...}; a dict
+    gives {'metrics': {key: {...}}, ...}; both with 'ci', 'method', 'unit', 'n_units', 'n_items', 'n_boot', 'seed'.
+    method: 'percentile' or 'expanded' (the module docstring)."""
     if not 0 < ci < 1:
         raise ValueError('ci must lie in (0, 1)')
+    if method not in ('percentile', 'expanded'):
+        raise ValueError("method is 'percentile' or 'expanded'")
     items = list(items)
     unit, groups = _units(items, unit, unit_key)
     if not groups:
@@ -176,19 +200,181 @@ def paired_bootstrap(metric_fn, items, model_a, model_b, n: int = 1000, seed: in
         va[b] = [xa.get(k, math.nan) for k in keys]
         vb[b] = [xb.get(k, math.nan) for k in keys]
     per = {}
+    n_u = len(groups)
     for j, k in enumerate(keys):
         d = vb[:, j] - va[:, j]
         ok = np.isfinite(d)
         est = eb[k] - ea[k]
-        lo, hi, sd, _ = _interval(d, est, ci, 'percentile', None)
+        if method == 'expanded' and n_u > 1:
+            lo, hi, sd = _expanded(d, est, ci, n_u)
+        else:
+            lo, hi, sd, _ = _interval(d, est, ci, 'percentile', None)
+        p_gt = float(np.mean(d[ok] > 0)) if ok.any() else None
+        p_eq = float(np.mean(d[ok] == 0)) if ok.any() else None
         per[k] = {'a': None if math.isnan(ea[k]) else ea[k], 'b': None if math.isnan(eb[k]) else eb[k],
                   'diff': None if math.isnan(est) else est, 'ci_low': lo, 'ci_high': hi, 'sd': sd,
-                  'p_b_gt_a': float(np.mean(d[ok] > 0)) if ok.any() else None,
-                  'p_b_eq_a': float(np.mean(d[ok] == 0)) if ok.any() else None, 'n_valid': int(ok.sum())}
-    meta = {'ci': ci, 'unit': unit, 'n_units': len(groups), 'n_items': len(items), 'n_boot': n, 'seed': seed}
+                  'p_b_gt_a': p_gt, 'p_b_eq_a': p_eq,
+                  'p_value': _p_value(p_gt, p_eq, int(ok.sum()), n_u, method) if p_gt is not None else None,
+                  'n_valid': int(ok.sum())}
+    meta = {'ci': ci, 'method': method, 'unit': unit, 'n_units': n_u, 'n_items': len(items), 'n_boot': n,
+            'seed': seed}
     if not isinstance(pa, Mapping):
         return {**per[''], **meta}
     return {'metrics': per, **meta}
+
+
+def _expanded(vals: np.ndarray, est: float, ci: float, n_units: int):
+    """Hesterberg's expanded percentile interval of the resampled values (the module docstring)."""
+    ok = vals[np.isfinite(vals)]
+    if not ok.size or not math.isfinite(est):
+        return None, None, None
+    c = math.sqrt(n_units / (n_units - 1)) * t_ppf((1 + ci) / 2, n_units - 1)
+    lo_q = _N.cdf(-c)
+    lo, hi = np.quantile(ok, [lo_q, 1 - lo_q])
+    return float(lo), float(hi), float(np.std(ok, ddof=1)) if ok.size > 1 else 0.0
+
+
+def _p_value(p_gt: float, p_eq: float, n_valid: int, n_units: int, method: str) -> float:
+    """The two-sided p-value inverting the interval: s, the share of resamples beyond 0 on the side away from the
+    estimate (ties half; at least half a resample), is the tail the interval's end would sit at."""
+    s = min(p_gt + 0.5 * p_eq, 1.0 - p_gt - 0.5 * p_eq)
+    s = max(s, 0.5 / max(n_valid, 1))
+    if method == 'expanded' and n_units > 1:
+        c = math.sqrt(n_units / (n_units - 1))
+        return float(min(1.0, 2.0 * (1.0 - t_cdf(_N.inv_cdf(1.0 - s) / c, n_units - 1))))
+    return float(min(1.0, 2.0 * s))
+
+
+# ================================================================================================ planning
+def _betacf(a: float, b: float, x: float) -> float:
+    """The continued fraction of the regularised incomplete beta function (modified Lentz; Press et al., Numerical
+    Recipes, 3rd ed., §6.4)."""
+    tiny, eps = 1e-300, 1e-15
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c, d = 1.0, 1.0 - qab * x / qap
+    d = 1.0 / (d if abs(d) > tiny else tiny)
+    h = d
+    for m in range(1, 1000):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        d = 1.0 / (d if abs(d) > tiny else tiny)
+        c = 1.0 + aa / c
+        c = c if abs(c) > tiny else tiny
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        d = 1.0 / (d if abs(d) > tiny else tiny)
+        c = 1.0 + aa / c
+        c = c if abs(c) > tiny else tiny
+        dl = d * c
+        h *= dl
+        if abs(dl - 1.0) < eps:
+            break
+    return h
+
+
+def _betainc(a: float, b: float, x: float) -> float:
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    lb = math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x)
+    if x < (a + 1.0) / (a + b + 2.0):
+        return math.exp(lb) * _betacf(a, b, x) / a
+    return 1.0 - math.exp(lb) * _betacf(b, a, 1.0 - x) / b
+
+
+def _phi(x: np.ndarray) -> np.ndarray:
+    """The standard normal CDF, vectorised (erfc by Press et al.'s Chebyshev fit, fractional error < 1.2e-7)."""
+    z = np.abs(x) / math.sqrt(2.0)
+    t = 1.0 / (1.0 + 0.5 * z)
+    erfc = t * np.exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 + t * (
+        -0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))))
+    return np.where(x >= 0, 1.0 - 0.5 * erfc, 0.5 * erfc)
+
+
+def t_cdf(t: float, df: float, ncp: float = 0.0) -> float:
+    """P(T ≤ t) for Student's t with df degrees of freedom, noncentral with ncp: the central one through the
+    regularised incomplete beta function; the noncentral one as E[Φ(t·S − ncp)], S = √(χ²_df / df), integrated over
+    S's density (midpoint rule on 6000 points over its mass)."""
+    if df <= 0:
+        raise ValueError('df must be positive')
+    if ncp == 0.0:
+        x = df / (df + t * t)
+        tail = 0.5 * _betainc(df / 2.0, 0.5, x)
+        return 1.0 - tail if t > 0 else tail
+    sig = 1.0 / math.sqrt(2.0 * df)
+    lo, hi = max(0.0, 1.0 - 12.0 * sig - 0.5), 1.0 + 12.0 * sig + 5.0
+    k = 6000
+    s = lo + (np.arange(k) + 0.5) * (hi - lo) / k
+    v = df * s * s                                              # S = √(V/df): f_S(s) = f_χ²(df s²) · 2 df s
+    logf = ((df / 2.0 - 1.0) * np.log(v) - v / 2.0 - (df / 2.0) * math.log(2.0) - math.lgamma(df / 2.0)
+            + math.log(2.0 * df) + np.log(s))
+    w = np.exp(logf) * (hi - lo) / k
+    return float(np.sum(w * _phi(t * s - ncp)) / np.sum(w))
+
+
+def t_ppf(q: float, df: float) -> float:
+    """The q-quantile of the central t with df degrees of freedom (bisection on t_cdf to 1e-10)."""
+    if not 0.0 < q < 1.0:
+        raise ValueError('q must lie in (0, 1)')
+    if q == 0.5:
+        return 0.0
+    if q < 0.5:
+        return -t_ppf(1.0 - q, df)
+    lo, hi = 0.0, 1.0
+    while t_cdf(hi, df) < q:
+        hi *= 2.0
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        if t_cdf(mid, df) < q:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < 1e-10:
+            break
+    return (lo + hi) / 2.0
+
+
+def paired_power(n: int, dz: float, alpha: float = 0.05) -> float:
+    """The power of the two-sided paired t-test at level alpha with n pairs and standardised effect dz."""
+    if n < 2:
+        return 0.0
+    df = n - 1
+    tc = t_ppf(1.0 - alpha / 2.0, df)
+    ncp = abs(dz) * math.sqrt(n)
+    return float(1.0 - t_cdf(tc, df, ncp) + t_cdf(-tc, df, ncp))
+
+
+def paired_sample_size(dz: float, alpha: float = 0.05, power: float = 0.8, n_max: int = 100000) -> dict:
+    """The smallest number of pairs n whose two-sided paired t-test at level alpha reaches the power at effect dz:
+    {'n', 'power' (exact at n), 'n_normal' (the normal approximation it started from), 'capped' (n_max reached)}."""
+    if not math.isfinite(dz) or dz == 0:
+        raise ValueError('the effect size must be a finite number other than 0')
+    if not 0 < alpha < 1 or not 0 < power < 1:
+        raise ValueError('alpha and power must lie in (0, 1)')
+    za, zb = _N.inv_cdf(1.0 - alpha / 2.0), _N.inv_cdf(power)
+    n0 = max(2, math.ceil(((za + zb) / abs(dz)) ** 2 + za * za / 2.0))      # with Guenther's (1981) correction
+    n = max(2, min(n0 - 3, n_max))
+    while n < n_max and paired_power(n, dz, alpha) < power:
+        n += 1
+    while n > 2 and paired_power(n - 1, dz, alpha) >= power:
+        n -= 1
+    return {'n': n, 'power': paired_power(n, dz, alpha), 'n_normal': n0, 'capped': n >= n_max}
+
+
+def holm(p_values) -> list:
+    """Holm's step-down adjusted p-values, in the given order (None stays None)."""
+    idx = [i for i, p in enumerate(p_values) if p is not None]
+    m = len(idx)
+    order = sorted(idx, key=lambda i: p_values[i])
+    out = [None] * len(p_values)
+    run = 0.0
+    for rank, i in enumerate(order):
+        run = max(run, min(1.0, (m - rank) * float(p_values[i])))
+        out[i] = run
+    return out
 
 
 def _row(name, r, n):

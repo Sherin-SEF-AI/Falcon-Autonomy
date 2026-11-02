@@ -11,10 +11,16 @@ A drive is re-run from its own drive.json (the same seed, settings, map and rig)
 
 Bit-for-bit reproduction needs the same server build, the same map and synchronous mode from a fresh load; the
 report says what differed rather than a single yes/no.
+
+An experiment is re-run from its own definition and seeds (`falcon experiment ablation rerun`) and compared with
+compare_experiments: the same planned runs and seeds, each run's metric, each contrast's difference and interval, the
+verdicts — and every pin that changed between the two (Falcon's version, the CARLA build, the hashes of the worlds,
+rigs, traffic profiles and model weights).
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 
 DEFAULT_TOL = {'pose_tol': 1e-3, 'rgb_tol': 2.0, 'label_agree': 0.999}
@@ -98,5 +104,89 @@ def compare_drives(a_dir: str, b_dir: str, tol: dict | None = None, max_images: 
     if obj_n:
         check('objects', obj_diff == 0, f'{obj_n} object files compared, {obj_diff} differ (ids, classes, tight '
                                         'boxes)')
+    rep['ok'] = all(c['ok'] for c in rep['checks'])
+    return rep
+
+
+EXPERIMENT_TOL = {'metric_tol': 1e-9, 'effect_tol': 1e-9}
+
+
+def compare_experiments(a_dir: str, b_dir: str, tol: dict | None = None) -> dict:
+    """An experiment's re-run against the original (core.ablation.rerun, `falcon experiment ablation rerun`): the
+    same planned runs, each run's metric within metric_tol, each contrast's difference and interval within
+    effect_tol, the same verdicts; and every pin that changed (core.provenance.diff_pins: Falcon's version, the CARLA
+    build, the world, rig, traffic and weights hashes, the seeds) — at the experiment's level and per run. The
+    default tolerances ask for the same numbers: a deterministic executor (the fake simulator, the simulated
+    executor) reproduces them exactly; on a real server the drives' images can differ slightly (see compare_drives),
+    so give the tolerance the comparison needs."""
+    from . import provenance as PV
+    from .experiments import Experiment
+    t = dict(EXPERIMENT_TOL, **(tol or {}))
+    ea, eb = Experiment(a_dir), Experiment(b_dir)
+    rep = {'tolerance': t, 'original': ea.id, 'rerun': eb.id, 'checks': [], 'pins_changed': [], 'differing': []}
+
+    def check(name, ok, detail):
+        rep['checks'].append({'name': name, 'ok': bool(ok), 'detail': detail})
+
+    def rd(d, f):
+        p = os.path.join(d, f)
+        return PV.read_json(p) if os.path.isfile(p) else {}
+    pa, pb = rd(a_dir, 'plan.json'), rd(b_dir, 'plan.json')
+    names_a, names_b = [r['name'] for r in pa.get('runs') or ()], [r['name'] for r in pb.get('runs') or ()]
+    seeds_ok = [(r['name'], r['seed']) for r in pa.get('runs') or ()] == [(r['name'], r['seed'])
+                                                                          for r in pb.get('runs') or ()]
+    check('planned runs', names_a == names_b and seeds_ok, f'{len(names_a)} vs {len(names_b)} runs; seeds '
+                                                           f'{"the same" if seeds_ok else "differ"}')
+    rep['pins_changed'] = [d for d in PV.diff_pins(pa.get('pins') or {}, pb.get('pins') or {})
+                           if d['key'] != 'spec_sha256']
+    metric = ((ea.doc.get('definition') or {}).get('spec') or {}).get('metric')
+    worst, n, missing, run_pins = 0.0, 0, [], {}
+    for name in names_a:
+        ra, rb = ea.run(name), eb.run(name)
+        if ra.status != 'ok' or rb.status != 'ok':
+            missing.append(name)
+            continue
+        va, vb = ra.latest().get(metric), rb.latest().get(metric)
+        if va is None or vb is None:
+            if (va is None) != (vb is None):
+                missing.append(name)
+            continue
+        dv = abs(float(va) - float(vb))
+        if dv > t['metric_tol'] and len(rep['differing']) < 50:          # the first 50 that differ
+            rep['differing'].append({'run': name, 'original': va, 'rerun': vb, 'diff': dv})
+        worst = max(worst, dv)
+        n += 1
+        for d in PV.diff_pins(ra.info().get('pins') or {}, rb.info().get('pins') or {}):
+            if d['key'] != 'spec_sha256':
+                run_pins.setdefault(d['key'], dict(d, run=name, runs=0))['runs'] += 1
+    check('runs finished in both', not missing, f'{len(missing)} not finished in one of them' if missing else
+          f'{n} compared')
+    check(f'each run\'s {metric}', worst <= t['metric_tol'], f'largest difference {worst:.6g} (tolerance '
+                                                             f'{t["metric_tol"]:g})')
+    # the runs' own pins too (the CARLA build a drive read, the drive's key, the weights): the first run that differs
+    rep['pins_changed'] += [dict(v, key=f'runs.{k}') for k, v in sorted(run_pins.items())]
+    ra_, rb_ = rd(a_dir, 'results.json'), rd(b_dir, 'results.json')
+    if ra_ and rb_:
+        ka = {c['id']: c for c in ra_.get('contrasts') or ()}
+        worst_e, verd = 0.0, []
+        for c in rb_.get('contrasts') or ():
+            o = ka.get(c['id'])
+            if o is None:
+                verd.append(c['id'])
+                continue
+            for k in ('diff', 'ci_low', 'ci_high'):
+                if (o.get(k) is None) != (c.get(k) is None):
+                    worst_e = math.inf
+                elif o.get(k) is not None:
+                    worst_e = max(worst_e, abs(o[k] - c[k]))
+            if o.get('verdict') != c.get('verdict'):
+                verd.append(c['id'])
+        check('effects and intervals', worst_e <= t['effect_tol'], f'largest difference {worst_e:.6g} (tolerance '
+                                                                   f'{t["effect_tol"]:g})')
+        check('verdicts', not verd and ra_.get('verdict') == rb_.get('verdict'),
+              f'hypothesis {ra_.get("verdict")} vs {rb_.get("verdict")}'
+              + (f'; contrasts differing: {", ".join(verd)}' if verd else ''))
+    else:
+        check('analysis', False, 'results.json missing in ' + ('the original' if not ra_ else 'the re-run'))
     rep['ok'] = all(c['ok'] for c in rep['checks'])
     return rep

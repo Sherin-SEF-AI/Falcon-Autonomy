@@ -27,11 +27,13 @@ from .lanes import culane, lane_iou_matrix, lane_pixels, tusimple, tusimple_benc
 from .nuscenes import CLASS_RANGE, DIST_THS, nuscenes_evaluate, nuscenes_match, nuscenes_summarise
 from .segmentation import confusion_matrix, segmentation_metrics
 from .tracking import ALPHAS, clear_mot, hota, prepare_sequence, tracking_evaluate
-from .uncertainty import bootstrap, paired_bootstrap, summary_table
+from .uncertainty import (bootstrap, holm, paired_bootstrap, paired_power, paired_sample_size, summary_table,
+                          t_cdf, t_ppf)
 
 __all__ = ['ALPHAS', 'AREA_RANGES', 'CLASS_RANGE', 'DEFAULT_BREAKDOWNS', 'DIST_THS', 'IOU_THRS', 'MAX_DETS', 'REC_THRS',
            'bootstrap', 'box_iou', 'calibration', 'clear_mot', 'coco_accumulate', 'coco_evaluate', 'coco_match',
-           'coco_summarise', 'confusion_matrix', 'culane', 'detection_calibration', 'detection_correctness', 'hota',
-           'lane_iou_matrix', 'lane_pixels', 'linear_assignment', 'nuscenes_evaluate', 'nuscenes_match',
-           'nuscenes_summarise', 'paired_bootstrap', 'prepare_sequence', 'segmentation_metrics', 'summary_table',
-           'tracking_evaluate', 'tusimple', 'tusimple_bench']
+           'coco_summarise', 'confusion_matrix', 'culane', 'detection_calibration', 'detection_correctness', 'holm',
+           'hota', 'lane_iou_matrix', 'lane_pixels', 'linear_assignment', 'nuscenes_evaluate', 'nuscenes_match',
+           'nuscenes_summarise', 'paired_bootstrap', 'paired_power', 'paired_sample_size', 'prepare_sequence',
+           'segmentation_metrics', 'summary_table', 't_cdf', 't_ppf', 'tracking_evaluate', 'tusimple',
+           'tusimple_bench']

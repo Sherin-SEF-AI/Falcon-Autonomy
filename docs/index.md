@@ -210,6 +210,10 @@ distance next to its real-vs-real floor; optional appearance matching with its e
 - **Sim + real experiment** trains real only against real + X % synthetic at the same budget. Each arm is scored on the
   same real test set, with paired intervals against real only and the spread over seeds; the experiment exports for
   MLflow ([training](training.md)).
+- **Ablations** test a stated hypothesis over factors (model × weather × light, …): the grid and its replicates from a
+  power analysis, the drives and evaluations run as jobs, paired bootstrap intervals with Holm's correction and the
+  verdict, every run pinned and the whole experiment re-run and checked with one command; the **registry** lists
+  every experiment with its hypothesis, status and verdict ([experiments](experiments.md)).
 - **Driving policies** clones the recorded control of drives, or learns by PPO in CARLA along a scenario curriculum.
 - **Leaderboard** scores a policy as the CARLA Leaderboard scores routes (driving score, route completion, infraction
   penalty, with intervals). Select any infraction and *Replay* it: the episode is re-run exactly with a chase camera
@@ -301,7 +305,9 @@ Self-contained HTML reports ([reports](reports.md)) of a loop iteration, a model
 rare-case study or a Leaderboard result: inline CSS and SVG (nothing fetched from the network), light and dark, every
 number with its interval where it has one, and the provenance — the source's own and the SHA-256 of every file the
 report read. Choose the kind and the source, *Make the report* (a job), then open it in the browser or export a
-selection to a folder.
+selection to a folder. **Outputs for a paper** write an experiment, an evaluation or a comparison as LaTeX (booktabs)
+and CSV tables and PDF, PNG and SVG figures with their intervals — byte-identical for the same source — and every
+dataset export carries a data card ([experiments](experiments.md#outputs-for-papers)).
 
 ### Settings
 Where CARLA and its Python are; Falcon's ports, the server's memory cap and quality; the render budget; the theme;
@@ -351,4 +357,7 @@ and ran at 77: runs over the **render budget** (200 Mpx by default) are refused 
 
 Every run folder holds its input (`drive.json`), what was recorded, and `run.json`: the versions, the seed, the
 settings, the inputs' hashes, the measured performance, the status and exit code. `falcon reproduce RUN` re-runs it
-from its own input and compares the result within a tolerance (see [methods](methods.md#reproduction)).
+from its own input and compares the result within a tolerance (see [methods](methods.md#reproduction)). An ablation's
+runs are pinned (Falcon's version, the CARLA build, the world, rig and weights hashes, the seeds) and `falcon
+experiment ablation rerun ID` re-runs the whole experiment and lists what agreed and which pins changed
+([experiments](experiments.md#pins-and-re-runs)).

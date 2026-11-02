@@ -140,6 +140,8 @@ GROUP_ABOUT = {
     'analysis': 'studies, failure maps, criticality, root causes, evaluations, the gap, suites, V2X, traffic rules',
     'lab': 'hardware in the loop, deployment, CI mode, log replay, adversarial traffic, experiments, VLM evaluation; '
            'their results',
+    'research': 'ablations of a hypothesis (plan with a power analysis, run, analyse, re-run and check), the '
+                'experiment registry, tables, figures and data cards for papers',
     'ui': 'Falcon\'s window: the open page, go to a page, show a run or frame, outline a control',
     'knowledge': 'the manual (search), the command line, settings, the tools themselves',
     'system': 'the CARLA server, the machine, the queue\'s locks, versions',
@@ -236,6 +238,8 @@ GUESS = {
     'system': r'\b(gpu|vram|memory|ram|server|machine)\b',
     'lab': r'\b(hil|hardware.in.the.loop|deploy\w*|tensorrt|orin|jetson|ci|log.replay|adversar\w*|experiments?|'
            r'active.learning|vlm)\b',
+    'research': r'\b(ablations?|hypothes[ie]s|registry|power.analysis|sample.size|latex|paper|data.?cards?|'
+                r'datasheets?)\b',
 }
 PAGE_GROUPS = {'data': 'runs', 'replay': 'runs', 'models': 'analysis', 'loop': 'analysis', 'rarecases': 'analysis',
                'reports': 'analysis', 'training': 'jobs', 'stack': 'jobs', 'scenarios': 'project', 'worlds': 'project',

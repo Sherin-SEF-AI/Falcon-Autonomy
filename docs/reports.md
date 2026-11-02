@@ -36,6 +36,11 @@ with their title, kind, source and the number of files read; double-click (or *O
 *Export to a folder…* copies the selected reports, which need nothing else. The Loop page's *Report…* makes the
 current iteration's report.
 
+*Outputs for a paper* writes an experiment (an ablation or a mixed sim/real one), an evaluation, a comparison of two
+evaluations or an export's data card as LaTeX (booktabs) and CSV tables and PDF, PNG and SVG figures with their
+intervals, into `workspace/paper/` (`falcon paper`; [experiments](experiments.md#outputs-for-papers)). Unlike a report,
+these files carry no date and no machine: the same source gives the same bytes.
+
 ## The command
 
 ```sh

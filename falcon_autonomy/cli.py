@@ -20,6 +20,8 @@
     falcon gap --sim RUN... --real KIND:PATH --out DIR   the sim-to-real gap of camera images
     falcon train --out DIR --train KIND:PATH... [--val ...] [--arch A --init I]   fine-tune a detector (resumable)
     falcon experiment mixed|list|best|results|export ...   the mixed sim/real experiment, run tracking, MLflow
+    falcon experiment ablation example|plan|new|run|analyse|show|rerun|list ...   hypothesis-driven experiments
+    falcon paper experiment|evaluation|comparison|runs|datacard SRC... --out DIR   LaTeX/CSV tables, figures, data cards
     falcon translate train|apply|check|experiment|results ...   learned sim-to-real image translation, labels kept
     falcon policy bc|offline|ppo|rollout ...   driving policies: behaviour cloning, PPO, evaluation in the environment
     falcon adversary train|eval|replay ...   learned adversarial traffic: multi-agent PPO, failures, replay
@@ -349,6 +351,8 @@ def parser() -> argparse.ArgumentParser:
                                  'docs/training.md)')
     sub.add_parser('experiment', help='the mixed sim/real training experiment, run tracking and MLflow export (see '
                                       'docs/training.md)')
+    sub.add_parser('paper', help='outputs ready for papers: falcon paper '
+                                 'experiment|evaluation|comparison|runs|datacard SRC --out DIR (see docs/experiments.md)')
     sub.add_parser('translate', help='learned sim-to-real image translation, labels kept: falcon translate '
                                      'train|apply|check|experiment|results (see docs/translation.md)')
     sub.add_parser('policy', help='driving policies: falcon policy bc|offline|ppo|rollout (see docs/policies.md)')
@@ -472,6 +476,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['experiment']:                # experiments: mixed sim/real, tracking, MLflow (core.experiments)
         from .core.experiments import main_experiment
         return main_experiment(argv[1:])
+    if argv[:1] == ['paper']:                     # LaTeX and CSV tables, figures, data cards (core.paper)
+        from .core.paper import main_paper
+        return main_paper(argv[1:])
     if argv[:1] == ['translate']:                 # sim-to-real image translation, labels kept (core.translate)
         from .core.translate import main_translate
         return main_translate(argv[1:])
