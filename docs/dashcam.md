@@ -274,7 +274,7 @@ a Falcon scenario and an OpenSCENARIO file; then the rare-case search looks for 
 
 It starts from a reconstruction of the segment (`falcon recon from-dashcam`, [reconstruction](reconstruction.md)):
 its posed frames give each frame's time, the car's pose (monocular visual odometry held to the GPS, in local metres)
-and the camera. **Other road users come from a detections file**, because Falcon runs no detector on dashcam footage:
+and the camera. **Other road users come from a detections file** — written by [near-miss mining](nearmiss.md) (RT-DETRv2 and ByteTrack, each box with its fused range), or by hand or another tool:
 
     {"schema": "falcon.dashcam_detections/1",
      "frames": [{"index": <the video frame number posed.json gives> | "t": <seconds from the first posed frame>,
@@ -463,6 +463,9 @@ Examples (raw | translated | an unpaired held-out real night frame) are in
 
 ## Limits
 
+- Near-miss mining ([nearmiss.md](nearmiss.md)) has its own limits: monocular ranges that hang on the horizon row,
+  a flat road, typical sizes, the GPS's 1 Hz speed, an autorickshaw class that is a size heuristic; it is tested on
+  synthetic clips and not yet measured on the real footage (its models are downloaded only at acceptance).
 - One camera family verified (YOUQING freeGPS, HEVC 4K). Another layout is skipped and counted, not decoded.
 - The GPS-to-frame offset is ±0.5 s by the file's layout and supported to about ±2 s by the video's motion on clear clips;
   positions are a consumer GPS's (no accuracy is recorded), interpolated linearly at 1 Hz.

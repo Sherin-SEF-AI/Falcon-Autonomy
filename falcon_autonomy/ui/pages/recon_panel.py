@@ -278,8 +278,8 @@ class ReconPanel(QWidget):
                                   'road as a replay scenario, variations around it and OpenSCENARIO (docs/dashcam.md); '
                                   'it stays on this machine')
         self.det_btn = button('Detections…', self.choose_detections,
-                              tip='other road users: a falcon.dashcam_detections/1 file (Falcon runs no detector on '
-                                  'dashcam footage); without one the scenario has the ego only')
+                              tip='other road users: a falcon.dashcam_detections/1 file (near-miss mining writes '
+                                  'one: Replay ▸ Near-misses); without one the scenario has the ego only')
         self.search_btn = button('Search variations', self.search_incident,
                                  tip='the rare-case search over the variations, centred on the extracted values')
         set_enabled(self.search_btn, False, 'make a scenario from the event first')

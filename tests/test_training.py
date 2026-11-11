@@ -217,6 +217,42 @@ def test_training_resumes_bit_for_bit_and_exports(drives, tmp_path):
     assert ver['max_box_diff_px'] <= 0.5 and ver['max_score_diff'] <= 1e-3
     import onnx
     assert onnx.load(reg['path']).opset_import[0].version == T.OPSET
+    # its lineage: every sample's image and labels hashed, the training split's Merkle root in the ONNX metadata,
+    # written before the registration's SHA-256 was taken (core.lineage)
+    import shutil
+    from falcon_autonomy.core import lineage as L
+    from falcon_autonomy.core.provenance import sha256_file
+    rows = data['train']['images']
+    assert all(r['frame'] and r['label'] and r['image'] for r in rows) and data['train']['missing_images'] == 0
+    assert rows[0]['frame'] == L.C.hash_file(rows[0]['image'], data['hash_alg'])
+    meta = L.onnx_metadata(reg['path'])
+    assert meta['falcon.data_merkle_root'] == data['train']['merkle_root'] == L.pairs_root(
+        [(r['frame'], r['label']) for r in rows], data['hash_alg'])
+    assert meta['falcon.val_merkle_root'] == data['val']['merkle_root'] != meta['falcon.data_merkle_root']
+    assert meta['falcon.hash_alg'] == data['hash_alg'] and meta['falcon.dataset_version'] == 'none'
+    assert meta['falcon.manifest_sha'] == data['manifest_sha'] and b['onnx']['metadata'] == T.lineage_props(
+        str(tmp_path / 'b'))
+    assert reg['source']['sha256'] == sha256_file(reg['path']) == b['onnx']['sha256']
+    v = L.verify_model(str(tmp_path / 'b'))
+    assert v['ok'], v['problems']
+    assert v['checked']['images_missing'] == 0
+    pr = L.prove(str(tmp_path / 'b' / 'model.json'), rows[3]['image'])
+    assert pr['member'] and pr['verified'] and pr['leaves'] == 10 and len(pr['path']) == 4
+    assert not L.prove(str(tmp_path / 'b'), data['val']['images'][0]['frame'])['member']
+    assert L.prove(str(tmp_path / 'b'), data['val']['images'][0]['id'], split='val')['verified']
+    shutil.copytree(tmp_path / 'b', tmp_path / 'tampered')         # another root in the metadata: refused
+    L.set_onnx_metadata(str(tmp_path / 'tampered' / 'model.onnx'), {'falcon.data_merkle_root': 's256:' + '0' * 64})
+    bad = L.verify_model(str(tmp_path / 'tampered' / 'model.onnx'), reread=False)
+    assert not bad['ok'] and any('data_merkle_root' in p for p in bad['problems'])
+    assert any('SHA-256' in p for p in L.verify_model(str(tmp_path / 'tampered'), reread=False)['problems'])
+    d = L.diff(str(tmp_path / 'a'), str(tmp_path / 'b'))
+    assert d['same'] and d['relabelled'] == 0 and d['frames_in_both'] == 10
+    from falcon_autonomy.core.catalog import Catalog
+    cat = Catalog(str(tmp_path / 'cat.sqlite'))
+    row = cat.add_run(str(tmp_path / 'b')) and cat.get('model:b')
+    assert row['kind'] == 'model' and row['summary']['merkle_root'] == data['train']['merkle_root']
+    assert row['summary']['onnx_sha256'] == reg['source']['sha256']
+    cat.close()
     # independently of verify_onnx: Runner against the torch model on a frame
     model, _ = T.build_model(T.normalise(s))
     model.load_state_dict(_weights(tmp_path / 'b' / 'checkpoints' / 'best.pt'))
@@ -307,13 +343,19 @@ def test_cli_trains_and_cancels(drives, tmp_path):
     cfg = tmp_path / 'cfg.json'
     cfg.write_text(json.dumps(dict(TINY, epochs=1, export=True)))
     args = ['--config', str(cfg), '--train', f'falcon:{drives["a"]}?every=5', '--val', f'falcon:{drives["c"]}?every=5']
-    r = _cli(args + ['--out', str(tmp_path / 'ok')])
+    r = _cli(args + ['--workspace', str(tmp_path / 'ws'), '--id', 'ok'])
     assert r.returncode == P.OK, r.stdout + r.stderr
     msgs = [P.parse_line(x) for x in r.stdout.splitlines()]
     assert msgs[0]['t'] == 'hello' and msgs[0]['worker'] == 'train' and any(m['t'] == 'progress' for m in msgs)
     assert any(m['t'] == 'metric' and m['name'] == 'val_AP' for m in msgs)
     res = msgs[-1]
     assert res['t'] == 'result' and res['status'] == 'ok' and res['summary']['onnx_verified'] is True
+    from falcon_autonomy.core.catalog import Catalog                  # its model row, with its data's root
+    cat = Catalog(str(tmp_path / 'ws' / 'catalog.sqlite'))
+    row = cat.get('model:ok')
+    data = json.loads((tmp_path / 'ws' / 'training' / 'ok' / 'data.json').read_text())
+    assert row['summary']['merkle_root'] == data['train']['merkle_root'] and row['summary']['dataset_version'] == 'none'
+    cat.close()
     r = _cli(args + ['--out', str(tmp_path / 'cancel')], stdin='{"cmd": "cancel"}\n')
     assert r.returncode == P.CANCELLED, r.stdout + r.stderr
     assert json.loads((tmp_path / 'cancel' / 'run.json').read_text())['status'] == 'cancelled'

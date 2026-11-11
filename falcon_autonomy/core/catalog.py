@@ -119,6 +119,8 @@ class Catalog:
         summary.update(r.get('summary') or {})
         self.add(ident, 'run', r.get('name') or os.path.basename(run_dir), run_dir, r.get('status', ''),
                  r.get('started', ''), '', summary, None)
+        if r.get('status') == 'ok' and os.path.isfile(os.path.join(run_dir, 'model.json')):
+            self.add_model(run_dir)              # a training that registered a model: its lineage row too
         return self.get(ident)
 
     # -- experiments (the registry: core.ablation)
@@ -137,9 +139,72 @@ class Catalog:
             self.link(ident, 'experiment:' + str(s['rerun_of']), 'rerun_of')
         return self.get(ident)
 
+    # -- dataset versions and trained models (their content lineage: core.lineage)
+    def add_dataset(self, version_json: str) -> dict | None:
+        """Index a dataset version (datasets/<spec>/versions/vNNN.json): its splits' sizes, its SHA-256 and its
+        content lineage (Merkle root, hash algorithm, samples). Id dataset:<spec>@v<k>."""
+        try:
+            d = read_json(version_json)
+        except (OSError, ValueError):
+            return None
+        if d.get('schema') != 'falcon.dataset_version/1':
+            return None
+        ident = f'dataset:{d.get("spec")}@v{d.get("version")}'
+        lin = d.get('lineage') or {}
+        summary = {'spec': d.get('spec'), 'version': d.get('version'), 'split_by': d.get('split_by'),
+                   'splits': {k: len(v) for k, v in (d.get('splits') or {}).items()}, 'sha256': d.get('sha256'),
+                   'merkle_root': lin.get('merkle_root'), 'hash_alg': lin.get('hash_alg'), 'samples': lin.get('rows'),
+                   'split_roots': lin.get('roots')}
+        self.add(ident, 'dataset', f'{d.get("name")} v{d.get("version")}', version_json, 'ok', d.get('created', ''),
+                 '', summary)
+        return self.get(ident)
+
+    def add_model(self, train_dir: str) -> dict | None:
+        """Index a trained model (training/<id>/ with model.json and data.json): its data's Merkle root, hash
+        algorithm, dataset version and manifest SHA-256 (as the ONNX file's metadata states them), linked to the
+        dataset version it was trained on (role trained_on). Id model:<training id>."""
+        mj, dj = os.path.join(train_dir, 'model.json'), os.path.join(train_dir, 'data.json')
+        if not os.path.isfile(mj):
+            return None
+        try:
+            reg = read_json(mj)
+            data = read_json(dj) if os.path.isfile(dj) else {}
+        except (OSError, ValueError):
+            return None
+        ident = 'model:' + os.path.basename(os.path.normpath(train_dir))
+        summary = {'registration': reg.get('id'), 'onnx_sha256': (reg.get('source') or {}).get('sha256'),
+                   'merkle_root': (data.get('train') or {}).get('merkle_root'), 'hash_alg': data.get('hash_alg'),
+                   'val_merkle_root': (data.get('val') or {}).get('merkle_root'),
+                   'manifest_sha': data.get('manifest_sha'), 'dataset_version': data.get('dataset_version'),
+                   'images': (data.get('train') or {}).get('n_images')}
+        created = ''
+        try:
+            created = read_json(os.path.join(train_dir, 'run.json')).get('started') or ''
+        except (OSError, ValueError):
+            pass
+        self.add(ident, 'model', reg.get('name') or reg.get('id') or ident, train_dir, 'ok', created, '', summary)
+        ws =os.path.dirname(os.path.dirname(os.path.abspath(train_dir)))
+        for entry in self.list('dataset'):
+            dv = data.get('dataset_version') or ''
+            s = entry['summary']
+            if s.get('sha256') and str(s['sha256'])[:12] in dv and os.path.realpath(entry['path']).startswith(
+                    os.path.realpath(ws)):
+                self.link(ident, entry['id'], 'trained_on')
+        return self.get(ident)
+
     def rebuild(self, workspace: str) -> int:
-        """Re-index every run folder under workspace/runs, and every experiment under workspace/experiments (the files
-        are the truth). Returns the count of runs."""
+        """Re-index every run folder under workspace/runs, every experiment under workspace/experiments, every
+        dataset version and every trained model (the files are the truth). Returns the count of runs."""
+        self._exec("DELETE FROM entries WHERE kind IN ('dataset', 'model')", commit=True)
+        ds = os.path.join(workspace, 'datasets')
+        for spec in sorted(os.listdir(ds)) if os.path.isdir(ds) else ():
+            vd = os.path.join(ds, spec, 'versions')
+            for f in sorted(os.listdir(vd)) if os.path.isdir(vd) else ():
+                if f.endswith('.json'):
+                    self.add_dataset(os.path.join(vd, f))
+        tr = os.path.join(workspace, 'training')
+        for d in sorted(os.listdir(tr)) if os.path.isdir(tr) else ():
+            self.add_model(os.path.join(tr, d))
         self._exec("DELETE FROM entries WHERE kind = 'run'", commit=True)
         runs = os.path.join(workspace, 'runs')
         n = 0

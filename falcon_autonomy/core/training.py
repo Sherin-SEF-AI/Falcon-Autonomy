@@ -62,12 +62,14 @@ and waits while a CARLA job holds the CARLA lock (and holds it, so CARLA jobs qu
 is capped at MAX_BATCH and the process's share of GPU memory at gpu_memory_fraction (default 0.6, a heuristic that
 leaves room for the desktop); the peak memory allocated is measured and kept in run.json.
 
-Output: training/<id>/ — run.json (provenance: inputs hashed, settings, seed, versions, device, measured timings,
-peak GPU memory, determinism notes), data.json (every image used, its unit and domain), metrics.jsonl (one line per
-epoch), checkpoints/last.pt (resume) and best.pt, model.onnx (opset 17, a fixed input size; loads in onnxruntime
-1.28) and model.json: a ready registration in core.models' format (kind detector, runtime onnx, output
-boxes_scores_labels) with the check that the ONNX model, run through core.models.Runner, gives the torch model's
-detections (verification in run.json).
+Output: training/<id>/ — run.json (provenance: inputs hashed, settings, seed, versions, device, measured timings, peak
+GPU memory, determinism notes), data.json (every image used, its unit and domain, and its content addresses: the image's
+bytes and the labels as trained, with each split's Merkle root — core.lineage, manifest()), metrics.jsonl (one line per
+epoch), checkpoints/last.pt (resume) and best.pt, model.onnx (opset 17, a fixed input size; loads in onnxruntime 1.28;
+its metadata_props name its data: falcon.data_merkle_root, falcon.hash_alg, falcon.dataset_version, falcon.manifest_sha
+— written before its SHA-256 is taken) and model.json: a ready registration in core.models' format (kind detector,
+runtime onnx, output boxes_scores_labels) with the check that the ONNX model, run through core.models.Runner, gives the
+torch model's detections (verification in run.json).
 
 Limits: 2D boxes only (no segmenter in this release); one fixed input size per model; no multi-GPU; augmentation is
 a horizontal flip only; COCO and ImageNet pretrained weights carry their training data's terms, and real sets their
@@ -442,24 +444,71 @@ def load_sources(srcs: list, classes) -> tuple:
     return samples, notes, ins
 
 
-def manifest(samples: list) -> dict:
-    """What a set of samples is, for data.json and provenance: per image its id, unit, domain and box counts; and a
-    SHA-256 over the samples' labels and image sizes in bytes (Falcon images are pinned by their run.json's output
-    hashes; real images are identified by path and size, not hashed — that would read the whole set)."""
-    from .provenance import sha256_json
-    rows, key = [], []
+def manifest(samples: list, hasher=None) -> dict:
+    """What a set of samples is, for data.json and provenance. Per image: its id, path, unit, domain, box counts and
+    two content addresses (core.lineage; BLAKE3 when installed, else SHA-256) — `frame`, the image file's bytes (read
+    once: a run indexed by `falcon lineage index` primes the cache, so its unchanged files are not read again), and
+    `label`, the labels as trained: the canonical JSON of the sample's boxes, classes and ignore flags. Over the set:
+    `merkle_root`, the RFC 6962 root of the sorted (frame, label) leaves (core.lineage), with `hash_alg`; and
+    `sha256`, the SHA-256 over the samples' ids, labels and image sizes in bytes that keys a training's settings (it
+    does not cover the image bytes — the Merkle root does; kept as it was so a training started before resumes)."""
+    from . import lineage as L
+    from .provenance import canonical_json, sha256_json
+    hasher = hasher or L.Hasher()
+    for unit in sorted({s['unit'] for s in samples if isinstance(s.get('unit'), str)}):
+        if os.path.isfile(L.index_path(unit)):
+            try:
+                rows_, meta = L.read_index(unit)
+                if meta.get('hash_alg') == hasher.alg:
+                    hasher.prime(rows_, unit)
+            except (L.LineageError, OSError, ValueError):
+                pass
+    rows, key, pairs = [], [], []
     for s in samples:
         try:
-            size = os.path.getsize(s['image'])
+            got = hasher.address(s['image'])
+            size, frame = got['bytes'], got['addr']
         except OSError:
-            size = None
-        rows.append({'id': s['id'], 'unit': s['unit'], 'domain': s['domain'], 'source': s['source'],
-                     'boxes': len(s['boxes']), 'ignored': int(sum(s['ignore']))})
+            size, frame = None, None
+        label = hasher.bytes_address(canonical_json({'boxes': s['boxes'], 'classes': s['classes'],
+                                                     'ignore': [bool(x) for x in s['ignore']]}).encode('utf-8'))
+        rows.append({'id': s['id'], 'image': s['image'], 'unit': s['unit'], 'domain': s['domain'],
+                     'source': s['source'], 'boxes': len(s['boxes']), 'ignored': int(sum(s['ignore'])),
+                     'frame': frame, 'label': label})
         key.append([s['id'], size, s['boxes'], s['classes'], s['ignore']])
+        pairs.append((frame, label))
     return {'n_images': len(samples), 'n_boxes': sum(r['boxes'] for r in rows),
             'n_ignored': sum(r['ignored'] for r in rows),
             'domains': {d: sum(1 for r in rows if r['domain'] == d) for d in sorted({r['domain'] for r in rows})},
-            'sha256': sha256_json(key), 'images': rows}
+            'sha256': sha256_json(key), 'hash_alg': hasher.alg, 'merkle_root': L.pairs_root(pairs, hasher.alg),
+            'missing_images': sum(1 for r in rows if r['frame'] is None), 'images': rows}
+
+
+def dataset_version_of(srcs) -> str:
+    """'<name> v<k> (<spec> sha256 <12 hex>)' of the dataset version(s) a training's sources name ('; ' between
+    several), or 'none'."""
+    from .provenance import read_json
+    out = []
+    for src in srcs or ():
+        src = parse_source(src) if isinstance(src, str) else dict(src)
+        if src.get('kind') != 'version':
+            continue
+        try:
+            d = read_json(src['path'])
+            out.append(f'{d.get("name")} v{d.get("version")} ({d.get("spec")} sha256 {str(d.get("sha256"))[:12]})')
+        except (OSError, ValueError):
+            out.append(f'{src["path"]} (unreadable)')
+    return '; '.join(dict.fromkeys(out)) or 'none'
+
+
+def lineage_props(out_dir: str) -> dict:
+    """The ONNX metadata_props that name a training's data (core.lineage), from its data.json."""
+    from .provenance import read_json
+    d = read_json(os.path.join(out_dir, 'data.json'))
+    return {'falcon.data_merkle_root': (d.get('train') or {}).get('merkle_root') or '',
+            'falcon.val_merkle_root': (d.get('val') or {}).get('merkle_root') or '',
+            'falcon.hash_alg': d.get('hash_alg') or '', 'falcon.dataset_version': d.get('dataset_version') or 'none',
+            'falcon.manifest_sha': d.get('manifest_sha') or ''}
 
 
 # ================================================================================================ settings
@@ -828,9 +877,12 @@ class _Export:
         return Wrapped(model).eval()
 
 
-def export_onnx(model, path: str, s: dict, example: np.ndarray, opset: int = OPSET) -> dict:
+def export_onnx(model, path: str, s: dict, example: np.ndarray, opset: int = OPSET, metadata: dict | None = None
+                ) -> dict:
     """Export the detector (on the CPU) to ONNX with a fixed input size, traced on an example input (1, 3, H, W);
-    checked by onnx.checker. Returns {'path', 'opset', 'sha256', 'bytes', 'seconds'}."""
+    checked by onnx.checker. metadata: string key/values written into the file's metadata_props (the lineage:
+    lineage_props) before its SHA-256 is computed. Returns {'path', 'opset', 'sha256', 'bytes', 'seconds',
+    'metadata'}."""
     import copy
     import warnings
     import onnx
@@ -844,9 +896,13 @@ def export_onnx(model, path: str, s: dict, example: np.ndarray, opset: int = OPS
         torch.onnx.export(m, (torch.from_numpy(example),), tmp, opset_version=int(opset), input_names=['images'],
                           output_names=['boxes', 'scores', 'labels'], dynamo=False, do_constant_folding=True)
     onnx.checker.check_model(onnx.load(tmp))
+    if metadata:
+        from .lineage import set_onnx_metadata
+        set_onnx_metadata(tmp, metadata)
+        onnx.checker.check_model(onnx.load(tmp))
     os.replace(tmp, path)
     return {'path': path, 'opset': int(opset), 'sha256': sha256_file(path), 'bytes': os.path.getsize(path),
-            'seconds': round(time.perf_counter() - t0, 3)}
+            'seconds': round(time.perf_counter() - t0, 3), 'metadata': dict(metadata or {})}
 
 
 def registration(s: dict, onnx_path: str, run_id: str, name: str | None = None, sha256: str | None = None,
@@ -1024,8 +1080,10 @@ def _train(settings, out_dir, data, workspace, emitter, cancel, argv, weights_di
             em.log(f'{out_dir}: already finished; nothing to do')
             return prev['summary']
     terms = sorted({DATA_TERMS[x['source']] for x in tr + va if x['source'] in DATA_TERMS})      # what trains it
-    PV.write_json(os.path.join(out_dir, 'data.json'), {'schema': 'falcon.training_data/1', 'notes': notes,
-                                                       'data_terms': terms, **man})
+    PV.write_json(os.path.join(out_dir, 'data.json'), {
+        'schema': 'falcon.training_data/1', 'notes': notes, 'data_terms': terms, 'manifest_sha': data_sha,
+        'hash_alg': man['train']['hash_alg'], 'dataset_version': dataset_version_of(
+            list(s.get('train') or ()) + list(s.get('val') or ()) + list(s.get('test') or ())), **man})
     wname = weights_needed(s)
     wpath = None
     if wname:
@@ -1264,7 +1322,8 @@ def _finish_model(model, s, out_dir, st, tr, va, te, terms, dev, em, cancel, run
         from .models import preprocess
         em.progress(1.0, 'exporting to ONNX', force=True)
         example = preprocess(load_rgb((va or tr)[0]['image']), input_spec(s))[0]
-        ex = export_onnx(model, os.path.join(out_dir, 'model.onnx'), s, example, int(s['opset']))
+        ex = export_onnx(model, os.path.join(out_dir, 'model.onnx'), s, example, int(s['opset']),
+                         metadata=lineage_props(out_dir))
         rid = os.path.basename(os.path.normpath(out_dir))
         reg = registration(s, ex['path'], rid, sha256=ex['sha256'], data_terms=terms)
         ver = verify_onnx(model, reg, va or tr, s, int(s['verify_images']))
@@ -1448,6 +1507,17 @@ def main_train(argv) -> int:
             locks = gpu_locks(em, flag, held_by_queue=os.environ.get('FALCON_GPU_LOCK_HELD') == '1')
         res = train(s, out, workspace=a.workspace, emitter=em, cancel=flag, argv=['train'] + list(argv),
                     weights_dirs_extra=a.weights_dir)
+        if a.workspace and res.get('registration'):       # the catalogue's model row, with its data's lineage
+            try:
+                from .catalog import Catalog, catalog_path
+                cat = Catalog(catalog_path(a.workspace))
+                try:
+                    cat.add_model(out)
+                finally:
+                    cat.close()
+            except Exception as e:          # noqa: BLE001 (sqlite3.Error, OSError: the catalogue can be rebuilt)
+                em.log(f'the catalogue was not updated ({e}); `falcon runs PROJECT --rebuild` adds the model',
+                       'warning')
         em.result('ok', run_json=os.path.join(out, 'run.json'), summary={
             'best_val_AP': res.get('best_val_AP'), 'epochs': res.get('epochs_run'),
             'registration': res.get('registration'), 'onnx_verified': (res.get('verification') or {}).get('ok'),
