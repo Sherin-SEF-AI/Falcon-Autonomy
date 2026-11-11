@@ -16,7 +16,10 @@ control, Adam), data (posed images from Falcon runs, KITTI raw, nuScenes; masks;
 SSIM, depth), train, scene (a trained reconstruction and its render API), evaluate (held-out frames, other runs,
 depth-warped references), rerender (a falcon-raw run from a shifted ego path), vo (monocular visual odometry, bundle
 adjustment, intrinsics and the GPS alignment for a dashcam), fromdashcam (a dashcam segment posed, reconstructed and
-placed on an imported world), commands (`falcon recon`).
+placed on an imported world), actors (4D: tracked road users as Gaussians in their box frames, wheels, pedestrians'
+deformation), lens_raster (fisheyes: cube faces and the lens fast path; the projector rasteriser), lidar (the neural
+lidar on a recorded beam grid; geometric radar), closedloop (a policy driving through a dynamic reconstruction),
+commands (`falcon recon`).
 
 Importing this package imports nothing heavy; torch is imported by the modules that need it (all but data, vo,
 fromdashcam and commands), so the GUI imports them only inside the functions that use them.

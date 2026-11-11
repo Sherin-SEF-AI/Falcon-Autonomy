@@ -18,8 +18,13 @@ reconstruction is rendered there. The run folder holds:
   Falcon source (the map's lanes do not move with the ego).
 
 Not available, and said in dataset.json, run.json and docs/reconstruction.md: instance, objects (2D/3D boxes), optical
-flow, lidar, radar, actors.jsonl. The reconstruction is of the **static scene**: moving actors were masked out of
-training, so none is drawn (where a mask missed one, a blurred ghost of it may be). A detector therefore cannot be
+flow, lidar, radar, actors.jsonl. A static reconstruction is of the **static scene**: moving actors were masked out of
+training, so none is drawn (where a mask missed one, a blurred ghost of it may be). A dynamic reconstruction
+(core.recon.actors) draws its actors at each frame's time and the run gets actors.jsonl (their boxes with the learned
+correction, the shifted ego as the hero); one with a neural lidar (core.recon.lidar) gets the lidar's sweeps at the
+shifted poses (lidar/<sensor>/<step>.bin, x y z intensity float32 in CARLA's sensor axes, and lidar_pose in
+frames.jsonl) — rendered, not ground truth. Radar is never written here: it is not learned (core.recon.lidar.
+render_radar gives geometric detections, `falcon recon render --radar`). A detector therefore cannot be
 scored on these runs (the harness needs objects); a segmenter can be, against the voted semantic classes, and any
 model can be run on them for its predictions. A run with objects is a hybrid world (core.recon.hybrid): CARLA drives
 and renders the actors at the camera's poses and they are composited over the reconstruction, CARLA's labels kept.
@@ -36,6 +41,14 @@ import numpy as np
 
 SCHEMA = 'falcon.dataset/1'
 NOT_AVAILABLE = ('instance', 'objects', 'flow', 'lidar', 'radar', 'actors.jsonl')
+RADAR_NOTE = 'radar: not learned — geometric detections only (falcon recon render --radar), never written here'
+
+
+def not_available(rec) -> list:
+    """What a re-rendered run of this reconstruction lacks (module doc)."""
+    out = [k for k in NOT_AVAILABLE if not (k == 'actors.jsonl' and rec.actors) and
+           not (k == 'lidar' and rec.lidar_spec is not None)]
+    return out
 
 
 class _Quiet:
@@ -71,10 +84,13 @@ def rerender(recon, out_dir: str, lateral_m=0.0, forward_m=0.0, up_m=0.0, yaw_de
     run = PV.new_run('recon.rerender', argv or [], None, shift, {'recon/run.json': os.path.join(rec.path, 'run.json'),
                                                                  'recon/point_cloud.ply':
                                                                      os.path.join(rec.path, 'point_cloud.ply')})
-    votes = rec.gs.votes is not None
+    votes = rec.gs.votes is not None and not rec.actors
     for d in ('rgb', 'range') + (('semantic',) if votes else ()):
         os.makedirs(os.path.join(out_dir, d, cam_id), exist_ok=True)
-    rows, egos = [], []
+    lid_id = 'recon-lidar'
+    if rec.lidar_spec is not None:
+        os.makedirs(os.path.join(out_dir, 'lidar', lid_id), exist_ok=True)
+    rows, egos, actor_rows = [], [], []
     t0 = time.perf_counter()
     cam0 = None
     for n, f in enumerate(frames):
@@ -98,8 +114,22 @@ def rerender(recon, out_dir: str, lateral_m=0.0, forward_m=0.0, up_m=0.0, yaw_de
             files[f'{cam_id}/semantic'] = rel
         ego = carla_pose_of(cam['ego'])
         egos.append((float(f['t']), ego))
-        rows.append({'step': n, 'frame': int(f['index']), 'sim_t': round(float(f['t']), 6), 'files': files,
-                     'ego': ego, 'recorded': True, 'control': None, 'source_split': f['split']})
+        row = {'step': n, 'frame': int(f['index']), 'sim_t': round(float(f['t']), 6), 'files': files,
+               'ego': ego, 'recorded': True, 'control': None, 'source_split': f['split']}
+        if rec.lidar_spec is not None:
+            sw = rec.lidar_sweep(cam['ego'], float(f['t']))
+            pts = sw['points'].copy()
+            pts[:, 1] *= -1.0                              # right-handed -> CARLA's sensor axes
+            rel = f'lidar/{lid_id}/{n:06d}.bin'
+            pts.astype(np.float32).tofile(os.path.join(out_dir, rel))
+            files[f'{lid_id}/lidar'] = rel
+            from .data import S4
+            Tc = S4 @ sw['T_world_sensor'] @ S4
+            row['lidar_pose'] = {lid_id: [round(float(v), 6) for v in Tc[:3, :].reshape(-1)]}
+        if rec.actors:
+            actor_rows.append({'step': n, 'sim_t': round(float(f['t']), 6),
+                               'actors': [_hero(ego, rec)] + _actor_rows(rec, float(f['t']))})
+        rows.append(row)
         em.progress((n + 1) / len(frames), f'frame {n + 1} of {len(frames)}')
     t_render = time.perf_counter() - t0
     for k, row in enumerate(rows):          # speed from the shifted positions (central differences)
@@ -110,6 +140,10 @@ def rerender(recon, out_dir: str, lateral_m=0.0, forward_m=0.0, up_m=0.0, yaw_de
     with open(os.path.join(out_dir, 'frames.jsonl'), 'w', encoding='utf-8') as fh:
         for row in rows:
             fh.write(json.dumps(row, separators=(',', ':')) + '\n')
+    if actor_rows:
+        with open(os.path.join(out_dir, 'actors.jsonl'), 'w', encoding='utf-8') as fh:
+            for row in actor_rows:
+                fh.write(json.dumps(row, separators=(',', ':')) + '\n')
     w, h = cam0['size']
     K = cam0['K']
     fov_h = math.degrees(2 * math.atan(w / (2 * K[0])))
@@ -117,6 +151,13 @@ def rerender(recon, out_dir: str, lateral_m=0.0, forward_m=0.0, up_m=0.0, yaw_de
     sensor = {'id': cam_id, 'name': cam_id, 'type': 'camera.pinhole', 'width': int(w), 'height': int(h),
               'fov': round(fov_h, 6), 'pose': carla_pose_of(cam0['mount'], optical=True),
               'labels': ['depth'] + (['semantic'] if votes else [])}
+    extra_sensors = []
+    if rec.lidar_spec is not None:
+        sp = rec.lidar_spec
+        extra_sensors.append({'id': lid_id, 'name': lid_id, 'type': 'lidar', 'pose': carla_pose_of(rec.lidar_mount),
+                              'channels': sp.rings, 'upper_fov': float(sp.elevations.max()),
+                              'lower_fov': float(sp.elevations.min()), 'range': sp.range_max, 'labels': [],
+                              'note': 'the reconstruction\'s neural lidar (rendered)'})
     src_ds, src_drive = {}, {}
     if src['kind'] == 'falcon':
         for name, store in (('dataset.json', src_ds), ('drive.json', src_drive)):
@@ -127,13 +168,17 @@ def rerender(recon, out_dir: str, lateral_m=0.0, forward_m=0.0, up_m=0.0, yaw_de
             shutil.copyfile(os.path.join(src['path'], 'lanes.json'), os.path.join(out_dir, 'lanes.json'))
     times = [r['sim_t'] for r in rows]
     fps = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 and times[-1] > times[0] else 10.0
-    what = {'from': 'a 3D Gaussian Splatting reconstruction of the static scene (core.recon)',
+    na = not_available(rec)
+    what = {'from': 'a 3D Gaussian Splatting reconstruction of the ' + ('scene and its tracked road users (dynamic)'
+                                                                       if rec.actors else 'static scene') +
+            ' (core.recon)',
             'reconstruction': rec.path, 'shift': shift,
             'labels': {'rgb': 'rendered', 'range': 'the reconstruction\'s depth (not ground truth)',
                        'semantic': 'voted from the source\'s semantic labels (an estimate)' if votes else
                        'not available (the source had no semantic labels)'},
-            'not_available': list(NOT_AVAILABLE) + ([] if votes else ['semantic']),
-            'static_scene': 'moving actors were masked out of training and are not drawn',
+            'not_available': na + ([] if votes else ['semantic']), 'radar': RADAR_NOTE,
+            'static_scene': 'the tracked actors are drawn at each frame\'s time (their logged motion)' if rec.actors
+            else 'moving actors were masked out of training and are not drawn',
             'world': rec.views.get('world'), 'carla_exact': bool(rec.views.get('carla_exact'))}
     labels = {'range': {'encoding': 'uint16 PNG, round(range_m × 256) along each pixel\'s ray, 0 = nothing; the '
                                     'reconstruction\'s depth, not ground truth'}}
@@ -155,7 +200,7 @@ def rerender(recon, out_dir: str, lateral_m=0.0, forward_m=0.0, up_m=0.0, yaw_de
                                                               'weather_source', 'fps', 'seed')},
                  schema='falcon.drive/1', name=ds['name'], rig={'id': 'recon', 'name': 'reconstruction camera',
                                                                 'vehicle': (src_drive.get('rig') or {})
-                                                                .get('vehicle'), 'sensors': [sensor]},
+                                                                .get('vehicle'), 'sensors': [sensor] + extra_sensors},
                  reconstruction=what, out=out_dir)
     drive.setdefault('fps', round(fps, 6))
     PV.write_json(os.path.join(out_dir, 'dataset.json'), ds)
@@ -163,9 +208,41 @@ def rerender(recon, out_dir: str, lateral_m=0.0, forward_m=0.0, up_m=0.0, yaw_de
     run.update(status='ok', exit_code=0, finished=PV.utc_now(), name=ds['name'], reconstruction=what,
                timings={'render_s': round(t_render, 2), 'frames_per_s': round(len(rows) / max(t_render, 1e-9), 3)},
                notes=[f'labels not available: {", ".join(what["not_available"])}',
-                      'range (and semantic) are the reconstruction\'s estimates, not ground truth',
-                      'the static scene only: moving actors are not drawn'])
+                      'range (and semantic, lidar) are the reconstruction\'s estimates, not ground truth',
+                      what['static_scene'], RADAR_NOTE])
     run['outputs'] = PV.hash_tree(out_dir, skip=('run.json',))
     PV.write_json(os.path.join(out_dir, 'run.json'), run)
     return {'run': out_dir, 'frames': len(rows), 'camera': cam_id, 'labels': sorted(ds['sensors'][0]['streams']),
             'not_available': what['not_available'], 'render_s': round(t_render, 2)}
+
+
+def _hero(ego: dict, rec) -> dict:
+    """The (shifted) ego as actors.jsonl's hero row."""
+    return dict({k: ego[k] for k in ('x', 'y', 'z', 'roll', 'pitch', 'yaw')}, id=0, vx=0.0, vy=0.0, vz=0.0,
+                type_id='vehicle.recon.ego', category='vehicle.car', role='hero', extent=[2.45, 1.05, 0.75],
+                bbox_center=[0.0, 0.0, 0.75])
+
+
+def _actor_rows(rec, t: float) -> list:
+    """actors.jsonl rows (CARLA's convention) of a dynamic reconstruction's actors at t, posed as drawn (the logged
+    box with the learned correction)."""
+    import torch
+    from .scene import carla_pose_of
+    out = []
+    with torch.no_grad():
+        for a in rec.actors:
+            po = a.pose_at(t)
+            if po is None:
+                continue
+            T = np.eye(4)
+            T[:3, :3], T[:3, 3] = po[0].cpu().numpy(), po[1].cpu().numpy()
+            p = carla_pose_of(T)
+            v = a.track.velocity(t)
+            L, W, H = a.track.size
+            walker = a.track.kind == 'pedestrian'
+            out.append(dict(p, id=int(a.track.id), vx=round(float(v[0]), 4), vy=round(float(-v[1]), 4),
+                            vz=round(float(v[2]), 4),
+                            type_id='walker.pedestrian.recon' if walker else 'vehicle.recon.track',
+                            category='human.pedestrian.adult' if walker else 'vehicle.car', role='',
+                            extent=[round(L / 2, 4), round(W / 2, 4), round(H / 2, 4)], bbox_center=[0.0, 0.0, 0.0]))
+    return out

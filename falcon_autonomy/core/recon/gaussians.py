@@ -34,6 +34,10 @@ import numpy as np
 import torch
 
 PARAMS = ('means', 'log_scales', 'quats', 'opacity_logits', 'sh_dc', 'sh_rest')
+# optional per-Gaussian parameters (N,) beside them, optimised and density-controlled like the rest, saved in
+# extras.npz: the neural lidar's intensity and ray-drop logits (core.recon.lidar)
+EXTRA_PARAMS = ('lidar_int', 'lidar_drop')
+EXTRA_INIT = {'lidar_int': 0.0, 'lidar_drop': -3.0}
 
 
 def inverse_sigmoid(x):
@@ -49,9 +53,10 @@ def rgb_to_sh0(rgb):
 class Gaussians:
     """The parameters (requires_grad leaves) and per-Gaussian extras of one reconstruction."""
 
-    def __init__(self, means, log_scales, quats, opacity_logits, sh_dc, sh_rest, sky=None, votes=None):
+    def __init__(self, means, log_scales, quats, opacity_logits, sh_dc, sh_rest, sky=None, votes=None, extra=None):
         self.p = {'means': means, 'log_scales': log_scales, 'quats': quats, 'opacity_logits': opacity_logits,
                   'sh_dc': sh_dc, 'sh_rest': sh_rest}
+        self.p.update(extra or {})                # optional per-Gaussian parameters (EXTRA_PARAMS: the lidar's)
         n = means.shape[0]
         self.sky = torch.zeros(n, dtype=torch.bool, device=means.device) if sky is None else sky.to(means.device)
         self.votes = votes
@@ -115,13 +120,26 @@ class Gaussians:
         return render(self.p['means'], self.scales(), self.p['quats'], self.opacities(), self.sh(), viewmat, K,
                       width, height, background, deg, **kw)
 
+    def extras(self) -> dict:
+        return {k: self.p[k] for k in EXTRA_PARAMS if k in self.p}
+
+    def add_lidar(self):
+        """Give every Gaussian the lidar's intensity and ray-drop logits (EXTRA_INIT) if it has none."""
+        n, dev = len(self), self.device
+        for k in EXTRA_PARAMS:
+            if k not in self.p:
+                self.p[k] = torch.full((n,), EXTRA_INIT[k], device=dev).requires_grad_()
+        return self
+
     def detach_copy(self) -> 'Gaussians':
         return Gaussians(*(self.p[k].detach().clone() for k in PARAMS), self.sky.clone(),
-                         None if self.votes is None else self.votes.clone())
+                         None if self.votes is None else self.votes.clone(),
+                         {k: v.detach().clone() for k, v in self.extras().items()})
 
     def to(self, device) -> 'Gaussians':
         return Gaussians(*(self.p[k].detach().to(device) for k in PARAMS), self.sky.to(device),
-                         None if self.votes is None else self.votes.to(device))
+                         None if self.votes is None else self.votes.to(device),
+                         {k: v.detach().to(device) for k, v in self.extras().items()})
 
     # ------------------------------------------------------------------------------------------- .ply
     def write_ply(self, path: str):
@@ -143,6 +161,8 @@ class Gaussians:
                  ''.join(f'property float {k}\n' for k in names) + 'end_header\n'
         atomic_write(path, header.encode('ascii') + np.ascontiguousarray(data, '<f4').tobytes())
         extras = {'sky': self.sky.cpu().numpy()}
+        for k, v in self.extras().items():
+            extras[k] = v.detach().cpu().numpy().astype(np.float32)
         if self.votes is not None:
             extras['votes'] = self.votes.cpu().numpy().astype(np.float32)
         xp = os.path.join(os.path.dirname(os.path.abspath(path)), 'extras.npz')
@@ -164,15 +184,19 @@ class Gaussians:
             if nrest else np.zeros((n, 0, 3), np.float32)
         xp = os.path.join(os.path.dirname(os.path.abspath(path)), 'extras.npz')
         sky = votes = None
+        extra = {}
         if os.path.isfile(xp):
             with np.load(xp) as z:
                 if 'sky' in z and len(z['sky']) == n:
                     sky = torch.as_tensor(z['sky'].astype(bool))
                 if 'votes' in z and len(z['votes']) == n:
                     votes = torch.as_tensor(z['votes'], device=device)
+                for k in EXTRA_PARAMS:
+                    if k in z and len(z[k]) == n:
+                        extra[k] = t(z[k])
         return cls(t(g('x', 'y', 'z')), t(g('scale_0', 'scale_1', 'scale_2')),
                    t(g('rot_0', 'rot_1', 'rot_2', 'rot_3')), t(data[:, col['opacity']]),
-                   t(g('f_dc_0', 'f_dc_1', 'f_dc_2')).reshape(n, 1, 3), t(rest), sky, votes)
+                   t(g('f_dc_0', 'f_dc_1', 'f_dc_2')).reshape(n, 1, 3), t(rest), sky, votes, extra)
 
 
 def ply_properties(sh_degree: int) -> list:
@@ -322,7 +346,8 @@ class Densifier:
             keep_c[top] = True
             clone, split = clone & keep_c, split & keep_c
         p = {k: v.detach() for k, v in gs.p.items()}
-        rows = {k: [p[k][clone]] for k in PARAMS}
+        keys = list(gs.p)                         # PARAMS and any EXTRA_PARAMS the Gaussians carry
+        rows = {k: [p[k][clone]] for k in keys}
         sky_rows = [gs.sky[clone]]
         ns = int(split.sum())
         if ns:
@@ -333,8 +358,9 @@ class Densifier:
                 z = torch.randn(ns, 3, device=gs.device, generator=self.gen, dtype=s.dtype)
                 rows['means'].append(p['means'][split] + (R @ (s * z)[..., None])[..., 0])
                 rows['log_scales'].append(torch.log(s / 1.6))
-                for k in ('quats', 'opacity_logits', 'sh_dc', 'sh_rest'):
-                    rows[k].append(p[k][split])
+                for k in keys:
+                    if k not in ('means', 'log_scales'):
+                        rows[k].append(p[k][split])
                 sky_rows.append(gs.sky[split])
         n_new = sum(len(r) for r in rows['means'])
         if n_new:

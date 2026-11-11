@@ -7,7 +7,9 @@ other road users) as a replay scenario, variations for the rare-case search and 
 *Hybrid world* composites CARLA's actors over the reconstruction (core.recon.hybrid): a recorded
 drive of the same world, or a new CARLA drive of the log's path with seeded traffic and the ego at the slider's offset
 (a replay job, then the composite on the GPU queue). torch is imported only when a reconstruction is opened, on a
-worker thread."""
+worker thread. *Moving road users* trains a dynamic (4D) reconstruction — the source's tracked actors learned, not
+masked — with the neural lidar when the source has one; *Drive a policy here* runs a policy in closed loop through it
+(core.recon.closedloop: a run folder per episode, the deviation from the logged path against the trust envelope)."""
 from __future__ import annotations
 
 import os
@@ -15,8 +17,8 @@ import os
 import numpy as np
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QSlider,
-                             QSpinBox, QWidget)
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+                             QSlider, QSpinBox, QWidget)
 
 from ...core.jobs import DONE, FINAL
 from ..widgets import Form, KeyValues, Section, SliderField, button, label, set_enabled
@@ -83,8 +85,11 @@ class ReconPanel(QWidget):
             self.backend.addItem(text, k)
         self.backend.setToolTip('Triton trains 6–12× faster on the RTX 5080 at the same quality (docs/reconstruction.md);'
                                 ' PyTorch is the reference implementation')
+        self.dynamic = QCheckBox('Learn the moving road users (4D) and the lidar')
+        self.dynamic.setToolTip('the source\'s tracks (a Falcon run\'s actors.jsonl, nuScenes\' annotations) become '
+                                'Gaussians that move with them; the lidar is learned too when the source has one')
         for text, w in (('Steps', self.iters), ('Image width', self.width_px), ('Start from', self.init),
-                        ('Device', self.device), ('Rasteriser', self.backend)):
+                        ('Device', self.device), ('Rasteriser', self.backend), ('Moving road users', self.dynamic)):
             f.row(text, w)
         sec.add(f)
         b = QHBoxLayout()
@@ -113,6 +118,13 @@ class ReconPanel(QWidget):
         b.addWidget(button('Re-render the log from the shifted path', self.rerender,
                            tip='a falcon-raw run of rendered images (RGB, the reconstruction\'s depth, voted classes '
                                'for Falcon sources) the harness can run models on'))
+        self.policy = QLineEdit('constant')
+        self.policy.setToolTip('a policy folder (falcon policy bc|ppo), or constant[:KMH]')
+        self.policy.setMaximumWidth(180)
+        b.addWidget(self.policy)
+        b.addWidget(button('Drive a policy here', self.closedloop,
+                           tip='closed loop through the reconstruction: the policy sees it rendered from where it '
+                               'drove; episodes end 3 m off the logged path (outside the reconstruction)'))
         b.addStretch(1)
         sec.add(b)
         self.note = label('', muted=True, wrap=True)
@@ -450,8 +462,42 @@ class ReconPanel(QWidget):
                 '--width', str(self.width_px.value()), '--init', self.init.currentData(), '--device',
                 self.device.currentData(), '--seed', str(self.page.seed.value()),
                 '--raster-backend', self.backend.currentData()]
+        if self.dynamic.isChecked():
+            argv += ['--dynamic', '--camera', 'all'] + (['--lidar'] if self._has_lidar() else [])
         if self._submit('train', argv, f'Reconstruct {os.path.basename(self.rec_dir)}'):
             self.info.set('Reconstruction', f'training: {self.rec_dir}')
+
+    def _has_lidar(self) -> bool:
+        """Whether the log's source has lidar sweeps (a Falcon run with a lidar, nuScenes' LIDAR_TOP)."""
+        src = (self.source or '').partition(':')[2].partition('?')[0]
+        if not src:
+            return False
+        if self.source.startswith('nuscenes:'):
+            return True
+        try:
+            import json
+            with open(os.path.join(src, 'drive.json'), encoding='utf-8') as fh:
+                rig = json.load(fh).get('rig') or {}
+            return any(s.get('type') == 'lidar' for s in rig.get('sensors') or [])
+        except (OSError, ValueError):
+            return False
+
+    def closedloop(self, out: str | None = None):
+        if self.rec is None:
+            self.note.setText('open a reconstruction first')
+            return None
+        if not self.rec.actors:
+            self.note.setText('closed loop drives through a dynamic reconstruction (train with Moving road users): '
+                              'a static one has no other road users')
+        from ...core.drive import run_dir_name
+        out = out or os.path.join(self.win.service.runs_dir() or os.path.join(self.win.workspace(), 'runs'),
+                                  run_dir_name(f'neural-{os.path.basename(self.rec_dir)}'))
+        argv = ['closedloop', self.rec_dir, '--policy', self.policy.text().strip() or 'constant', '--out', out,
+                '--deviate', '3.0', '--device', self.device.currentData()]
+        job = self._submit('closedloop', argv, f'Closed loop in {os.path.basename(self.rec_dir)}')
+        if job:
+            self.note.setText(f'driving in closed loop into {out}')
+        return out
 
     def evaluate(self):
         if not os.path.isfile(os.path.join(self.rec_dir, 'point_cloud.ply')):
