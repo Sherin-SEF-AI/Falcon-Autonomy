@@ -208,8 +208,12 @@ def split(units: list, shares: dict, seed: int = 0, weights: dict | None = None)
     return out
 
 
-def make_version(spec: dict, runs: list, splits: dict, by: str, number: int, workspace: str) -> dict:
-    """A dataset version: the runs (with their run.json hashes), the split assignment, the spec, provenance."""
+def make_version(spec: dict, runs: list, splits: dict, by: str, number: int, workspace: str,
+                 lineage: bool = True) -> dict:
+    """A dataset version: the runs (with their run.json hashes), the split assignment, the spec, provenance — and
+    its content lineage (core.lineage.write_splits): datasets/<spec>/splits/v<NNN>.parquet with every sample's
+    frame and label addresses, every file put into the workspace's content-addressed store, the Merkle root of the
+    whole version and of each split ("lineage"; None with a note when pyarrow is not installed)."""
     from .provenance import block, sha256_file
     entries = []
     for r in runs:
@@ -219,5 +223,14 @@ def make_version(spec: dict, runs: list, splits: dict, by: str, number: int, wor
     doc = {'schema': DATASET_VERSION_SCHEMA, 'spec': spec['id'], 'name': spec['name'], 'version': number,
            'created': utc_now(), 'split_by': by, 'splits': splits, 'runs': entries, 'spec_snapshot': spec,
            'provenance': block(seed=spec.get('seed'), settings={'split_by': by})}
+    if lineage:
+        from . import lineage as L
+        try:
+            lin = L.write_splits(workspace, spec['id'], number, splits)
+            doc['provenance']['store'] = lin.pop('methods')
+            doc['lineage'] = lin
+        except L.LineageError as e:
+            doc['lineage'] = None
+            doc['provenance']['notes'] = [f'no content lineage: {e}']
     doc['sha256'] = sha256_json({k: v for k, v in doc.items() if k not in ('created', 'provenance')})
     return doc

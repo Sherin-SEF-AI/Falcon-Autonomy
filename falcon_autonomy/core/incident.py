@@ -5,12 +5,14 @@ search (numpy at import; scipy for the lane snapping).
 Input. A reconstruction made by `falcon recon from-dashcam` (core.recon.fromdashcam): posed/posed.json gives every
 posed frame's time, the vehicle's pose (world ← vehicle, local east-north-up metres about the segment's first GPS
 fix: monocular visual odometry held to the GPS, core.recon.vo), the camera's view matrix and intrinsics. Other road
-users come from a detections file, since Falcon runs no detector on dashcam footage:
+users come from a detections file (core.nearmiss writes one from its detector and tracker; or by hand):
 
     {"schema": "falcon.dashcam_detections/1",
      "frames": [{"index": video frame n | "t": seconds from the first posed frame,
                  "boxes": [{"box": [x1, y1, x2, y2] (pixels of the posed images), "kind": car | truck | bus | van |
-                            motorcycle | bicycle | pedestrian | child | autorickshaw | …, "track": id (optional)}]}]}
+                            motorcycle | bicycle | pedestrian | child | autorickshaw | …, "track": id (optional),
+                            "range_m": horizontal distance from the camera (optional: measured, e.g. by
+                            core.nearmiss; otherwise the box is cast onto the road plane)}]}]}
 
 Without one the scenario has the ego only.
 
@@ -20,12 +22,13 @@ Steps.
    (core.dashcam.to_world), snapped to the world's lanes (core.dashcam_route.snap_to_lanes: a Viterbi pass over the
    lane centres within 8 m and 45°). The ego is put on the matched lane's centre; its offset from it (GPS noise
    dominates it) is kept in incident.json only.
-3. Other road users: a box's bottom centre is cast onto the road plane (z = 0 under the camera, the reconstruction's
-   own plane), then pushed half the kind's typical length further along the ray for a vehicle (the box's bottom edge
-   is its near face); boxes beyond 60 m or above the horizon are dropped. Positions are taken in the vehicle's frame
-   (the odometry's relative geometry) and attached to the snapped ego pose, so the conflict's geometry is the
-   reconstruction's. Boxes without a track id are joined frame to frame by the nearest of the same kind within 3 m.
-   Tracks are median-filtered over three samples; speed and heading from central differences (the ego's heading for
+3. Other road users: a box's bottom centre is cast onto the road plane (z = 0 under the camera, the reconstruction's own
+   plane) — or, when the box carries a measured range_m, placed at that horizontal distance along the bottom centre's
+   bearing (range_point) — then pushed half the kind's typical length further along the ray for a vehicle (the box's
+   bottom edge is its near face); boxes beyond 60 m or above the horizon are dropped. Positions are taken in the
+   vehicle's frame (the odometry's relative geometry) and attached to the snapped ego pose, so the conflict's geometry
+   is the reconstruction's. Boxes without a track id are joined frame to frame by the nearest of the same kind within 3
+   m. Tracks are median-filtered over three samples; speed and heading from central differences (the ego's heading for
    an actor moving under 1 m/s).
 4. Two scenarios (core.scenarios): scenario.json replays the event — the ego (driver "replay") and every actor on
    its recorded track, kinematically, at the matched start ("start", "route_xy"; workers.director); variations.json
@@ -127,6 +130,17 @@ def ground_point(K, view, u: float, v: float):
     return p[:2], C[:2]
 
 
+def range_point(K, view, u: float, v: float, range_m: float):
+    """The point at horizontal distance range_m from the camera along pixel (u, v)'s bearing (a box whose range was
+    measured, e.g. by core.nearmiss's fused monocular depth), and the camera's position: as ground_point returns."""
+    fx, fy, cx, cy = K[:4]
+    R, tvec = view[:3, :3], view[:3, 3]
+    d = R.T @ np.array([(u - cx) / fx, (v - cy) / fy, 1.0])
+    C = -R.T @ tvec
+    h = d[:2] / max(float(np.hypot(d[0], d[1])), 1e-9)
+    return C[:2] + h * float(range_m), C[:2]
+
+
 def _wrap(a):
     return (a + 180.0) % 360.0 - 180.0
 
@@ -168,10 +182,13 @@ def actor_points(rec: dict, frames: list, keep) -> list:
         for b in f.get('boxes') or ():
             x1, y1, x2, y2 = (float(v) for v in b['box'])
             kind = str(b.get('kind') or 'car')
-            hit = ground_point(rec['K'][k], rec['view'][k], (x1 + x2) / 2.0, y2)
-            if hit is None:
-                continue
-            p, C = hit
+            if b.get('range_m') is not None:          # a measured range (core.nearmiss): along the bottom ray
+                p, C = range_point(rec['K'][k], rec['view'][k], (x1 + x2) / 2.0, y2, float(b['range_m']))
+            else:
+                hit = ground_point(rec['K'][k], rec['view'][k], (x1 + x2) / 2.0, y2)
+                if hit is None:
+                    continue
+                p, C = hit
             ray = p - C
             rng = float(np.hypot(*ray))
             if rng > MAX_RANGE_M or rng < 0.5:

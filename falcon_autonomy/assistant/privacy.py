@@ -5,16 +5,18 @@ is), and anything shaped like a credential replaced by [secret] (a Groq key gsk_
 token, a password= or token= value). Applied to every tool result (tool_api.ToolContext.redact) and to every message
 before it leaves the machine.
 
-private_reason(path): why a file or folder must not reach the model, or None. The user's dashcam footage is private:
-it shows where and when they drove. Refused: anything under ~/Videos; a run, reconstruction, image set, translator
-or world whose own records say it came from dashcam footage — a drive along a dashcam route (dashcam_route in its
-settings, or in its provenance.settings, where run.json keeps the config), a reconstruction posed from a dashcam
-segment (dashcam.json), frames extracted from clips (worker dashcam-extract), a real image set or translator of kind
-dashcam, an OSM import whose source is a dashcam route, an incident made a scenario (worker dashcam-incident) and
-any drive, stack run or study of such a scenario (its scenario's source {"format": "dashcam"}, in drive.json,
-stack.json, study.json or run.json's provenance). The markers are read from the folder's own run.json /
-import.json / model json (and its parent's, for a file in a run); a folder without any record is not private by this
-test — the tools only hand over Falcon's own outputs.
+private_reason(path): why a file or folder must not reach the model, or None. The user's dashcam footage is private: it
+shows where and when they drove. Refused: anything under ~/Videos; a run, reconstruction, image set, translator or world
+whose own records say it came from dashcam footage — a drive along a dashcam route (dashcam_route in its settings, or in
+its provenance.settings, where run.json keeps the config), a reconstruction posed from a dashcam segment (dashcam.json),
+frames extracted from clips (worker dashcam-extract), a real image set or translator of kind dashcam, an OSM import
+whose source is a dashcam route, an incident made a scenario (worker dashcam-incident) and any drive, stack run or study
+of such a scenario (its scenario's source {"format": "dashcam"}, in drive.json, stack.json, study.json or run.json's
+provenance), and a folder of clips ingested for near-miss mining (core.dashcam_ingest): the folder, every clip in it and
+everything under its falcon-ingest/ (perception, rankings, event folders, cut clips) — found at any depth by the
+ingest's own record, falcon-ingest/ingest.json. The markers are read from the folder's own run.json / import.json /
+model json (and its parent's, for a file in a run); a folder without any record is not private by this test — the tools
+only hand over Falcon's own outputs.
 
 guard(path): raise ToolError(private_reason) when it is private. Tools call it on every path they read before
 returning anything from it.
@@ -89,6 +91,24 @@ def _says_dashcam(doc) -> str | None:
     return None
 
 
+INGEST_DIR = 'falcon-ingest'               # core.dashcam_ingest.INGEST_DIR (not imported: this module stays light)
+
+
+def ingest_reason(p: str) -> str | None:
+    """A folder ingested for near-miss mining, anything in it, or anything under its falcon-ingest/ (every ancestor
+    is looked at: event folders are deep)."""
+    d = p if os.path.isdir(p) else os.path.dirname(p)
+    while True:
+        if os.path.basename(d) == INGEST_DIR and os.path.isfile(os.path.join(d, 'ingest.json')):
+            return 'made from dashcam footage (near-miss mining)'
+        if os.path.isfile(os.path.join(d, INGEST_DIR, 'ingest.json')):
+            return 'a folder of dashcam footage ingested for near-miss mining'
+        up = os.path.dirname(d)
+        if up == d:
+            return None
+        d = up
+
+
 def private_reason(path: str) -> str | None:
     if not path:
         return None
@@ -96,6 +116,9 @@ def private_reason(path: str) -> str | None:
     videos = os.path.realpath(os.path.join(HOME, 'Videos'))
     if p == videos or p.startswith(videos + os.sep):
         return 'the user\'s own footage folder is private'
+    why = ingest_reason(p)
+    if why:
+        return why
     folders = [p] if os.path.isdir(p) else []
     d = os.path.dirname(p)
     for _ in range(3):                       # a file inside a run, or a run inside a set: its owners' records too

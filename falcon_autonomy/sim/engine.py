@@ -118,5 +118,15 @@ def new_version(workspace: str, spec: dict, by: str, shares: dict, seed: int = 0
         splits = D.split(rel, shares, seed, w)
     n = len(versions(workspace, spec['id'])) + 1
     doc = D.make_version(spec, runs, splits, by, n, workspace)
-    write_json(os.path.join(spec_dir(workspace, spec['id']), 'versions', f'v{n:03d}.json'), doc)
+    path = os.path.join(spec_dir(workspace, spec['id']), 'versions', f'v{n:03d}.json')
+    write_json(path, doc)
+    from ..core.catalog import Catalog, catalog_path
+    try:                                  # the catalogue's dataset row (its content lineage); the file is the truth
+        cat = Catalog(catalog_path(workspace))
+        try:
+            cat.add_dataset(path)
+        finally:
+            cat.close()
+    except Exception:                     # noqa: BLE001 (sqlite3.Error, OSError: the catalogue can be rebuilt)
+        pass
     return doc

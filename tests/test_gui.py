@@ -461,6 +461,9 @@ def test_datasets_tab_and_browser_layers(window, qapp, tmp_path):
     assert pump(qapp, lambda: tab.bars.rows and tab.bars.rows[0][1] > 0, 20)
     tab.new_version()
     assert tab.versions.count() == 1 and 'v1' in tab.versions.item(0).text()
+    assert ' root ' in tab.versions.item(0).text() and ' root —' not in tab.versions.item(0).text()   # its lineage
+    assert 'Merkle root' in tab.versions.item(0).toolTip()
+    assert window.service.catalog.get(f'dataset:{spec["id"]}@v1')['summary']['merkle_root']
     run_dir = jobs[0].spec.run_dir
     data.show_run(run_dir)
     b = data.browse

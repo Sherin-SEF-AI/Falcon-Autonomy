@@ -242,8 +242,14 @@ class DatasetsTab(QWidget):
         if self.win.project.path:
             for v in E.versions(self.win.workspace(), s['id']):
                 n = {k: len(x) for k, x in v['splits'].items()}
+                lin = v.get('lineage') or {}                 # its content lineage (core.lineage)
+                root = lin.get('merkle_root')
+                rs = f'{root.split(":")[0]}:{root[-64:][:12]}' if root else '—'
                 self.versions.addItem(f'v{v["version"]}  {v["created"]}  by {v["split_by"]}  {n}  '
-                                      f'{v["sha256"][:12]}')
+                                      f'{v["sha256"][:12]}  root {rs}')
+                self.versions.item(self.versions.count() - 1).setToolTip(
+                    f'Merkle root of its {lin.get("rows")} samples\' frame and label hashes: {root}\n'
+                    f'splits: {lin.get("splits")}' if root else 'made before content lineage (or without pyarrow)')
 
     def show_coverage(self, s):
         if not self.win.project.path:
