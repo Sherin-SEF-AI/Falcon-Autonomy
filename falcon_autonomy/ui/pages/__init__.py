@@ -15,13 +15,14 @@ from .scenarios import ScenariosPage
 from .settings import SettingsPage
 from .stack import StackPage
 from .training import TrainingPage
+from .triage import TriagePage
 from .worlds import WorldsPage
 
 GROUPS = [
     ('', [HomePage]),
     ('Build', [WorldsPage, RigsPage, ScenariosPage]),
     ('Drive', [LivePage, DataPage, ReplayPage]),
-    ('Improve', [LoopPage, RareCasesPage, TrainingPage, ModelsPage]),
+    ('Improve', [LoopPage, RareCasesPage, TriagePage, TrainingPage, ModelsPage]),
     ('Ship', [StackPage, HardwarePage, ReportsPage]),
     ('', [SettingsPage, HelpPage]),
 ]

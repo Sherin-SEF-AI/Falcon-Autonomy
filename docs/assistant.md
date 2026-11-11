@@ -68,11 +68,12 @@ mode the model can ask to be resumed when a job it queued finishes (`plan_wait_j
 
 ## Tools on demand, and the per-minute token limit
 
-Falcon's 105 tools ([the list](assistant-tools.md)) are in nine groups whose compact schemas weigh, in tokens
+Falcon's 109 tools ([the list](assistant-tools.md)) are in nine groups whose compact schemas weigh, in tokens
 (characters / 4), about: project 3,000 (25 tools), jobs 3,200 (29), analysis 940 (11), lab 860 (7: hardware in the
-loop, deployment, CI mode, log replay, adversarial traffic, experiments, VLM evaluation), research 610 (6: the
+loop, deployment, CI mode, log replay, adversarial traffic, experiments, VLM evaluation), research 1,110 (10: the
 planner benchmark and its results, a dashcam incident made a scenario, ablations, the experiment registry, outputs for
-papers; [experiments](experiments.md)), runs 850 (11), ui 650 (8), knowledge 310 (4), system 180 (4) — 10,600 in all,
+papers, failure modes, the triage queue and its edits, regression bisect; [experiments](experiments.md)), runs 850 (11),
+ui 670 (8), knowledge 310 (4), system 180 (4) — 11,100 in all,
 more than Groq's base per-minute limit. So each step sends:
 
 - the **core**: the runtime's own `plan_update`, `plan_wait_jobs`, `tools_find` and `tools_load`, with the two small
@@ -130,10 +131,10 @@ whole conversation, the activity log and the tokens used — never the key.
 ## Suggestions
 
 Falcon watches the project for next steps worth taking and shows them as one-click **chips** under the heading of the
-page they concern (Worlds, Scenarios, Live, Data, Rare cases, Training, Stack testing; at most three a page) and the
-best of all as the **Next best action** on Home (the work's own *Next step* when there is none). Each is found by a
-fixed rule from the app's state and the workspace's files (`assistant.suggest`), carries the exact tool call that acts
-on it, and says why with numbers read from the files:
+page they concern (Worlds, Scenarios, Live, Data, Rare cases, Triage, Training, Stack testing; at most three a page)
+and the best of all as the **Next best action** on Home (the work's own *Next step* when there is none). Each is found
+by a fixed rule from the app's state and the workspace's files (`assistant.suggest`), carries the exact tool call that
+acts on it, and says why with numbers read from the files:
 
 | Trigger | When | The call |
 |---|---|---|
@@ -151,6 +152,7 @@ on it, and says why with numbers read from the files:
 | no evaluation | models and drives, no evaluation | `jobs_evaluate` on the newest drives |
 | no scenarios | no scenario of the project's own | `project_scenario_create` (a copy of lead_brake) |
 | no rules | no trigger rules | `project_trigger_add` (an example rule, checked when added) |
+| new failure mode | the newest CI run whose failures fall in no known failure cluster (its `failure-modes.json`, [failure clusters](failure-clusters.md)) | `research_clusters` with that CI run |
 
 **A click** opens the Assistant panel with that call, as your permission mode says: in Ask an approval card with the
 call's exact preview and estimate (nothing runs until you approve); in Auto and Autopilot a change runs at once (and is

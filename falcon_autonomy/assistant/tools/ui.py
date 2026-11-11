@@ -10,7 +10,7 @@ import os
 from ..tool_api import ToolError, tool
 from . import _common as C
 
-PAGE_KEYS = ('home', 'worlds', 'rigs', 'scenarios', 'live', 'data', 'replay', 'loop', 'rarecases', 'training',
+PAGE_KEYS = ('home', 'worlds', 'rigs', 'scenarios', 'live', 'data', 'replay', 'loop', 'rarecases', 'triage', 'training',
              'models', 'stack', 'hardware', 'reports', 'settings', 'help')
 
 

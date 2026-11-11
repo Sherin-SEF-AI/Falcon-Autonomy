@@ -66,8 +66,8 @@ def window(qapp, tmp_path, project):
 
 def test_pages_and_navigation(window, qapp):
     keys = [p.key for p in window.pages]
-    assert keys == ['home', 'worlds', 'rigs', 'scenarios', 'live', 'data', 'replay', 'loop', 'rarecases', 'training',
-                    'models', 'stack', 'hardware', 'reports', 'settings', 'help']
+    assert keys == ['home', 'worlds', 'rigs', 'scenarios', 'live', 'data', 'replay', 'loop', 'rarecases', 'triage',
+                    'training', 'models', 'stack', 'hardware', 'reports', 'settings', 'help']
     assert window.stack.currentWidget().key == 'home'           # the start page
     assert window.go('data') is window.stack.currentWidget()
     window.actions_['page_worlds'].trigger()

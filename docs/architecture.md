@@ -42,7 +42,9 @@ They talk over the [local protocol](protocol.md): JSON lines on stdin/stdout (an
 - The **workspace** (`*.falcon/` beside it): `runs/<stamp-name>/` (each with `drive.json`, `run.json`, the data),
   `logs/`, `catalog.sqlite`.
 - The **catalogue** indexes runs (and, as milestones land, datasets, models, evaluations, experiments); it can be
-  rebuilt from the files (`falcon runs PROJECT --rebuild`), which are the truth.
+  rebuilt from the files (`falcon runs PROJECT --rebuild`), which are the truth. In a [team workspace](team.md) on a
+  shared folder it is a per-user copy in the cache folder (SQLite is not safe on NFS or SMB), rebuilt on open; the
+  shared files (`team/`: comments, triage events, run owners) are append-only, one file each.
 - The **experiment registry** is the workspace's `experiments/<id>/` folders (each with its definition and hash, plan
   and pins, tracked runs and results) and the catalogue's experiment rows ([experiments](experiments.md#the-registry));
   outputs for papers go to `paper/`.

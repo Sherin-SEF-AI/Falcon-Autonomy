@@ -52,6 +52,11 @@
     falcon v2x junctions|place|list|remove|drive|benefit|decode|converter ...   roadside units, CPMs (docs/v2x.md)
     falcon ci run CONFIG [--out DIR] | validate | init [TARGET] [--github] | post | lint   CI mode (docs/ci.md)
     falcon assistant tools|call NAME JSON      the assistant's tools from the command line (docs/assistant-tools.md)
+    falcon team init|info|owner|lock PROJECT …   a shared team workspace on a shared folder (docs/team.md)
+    falcon triage list|show|add|assign|state|link PROJECT …   the triage queue of failures (docs/team.md)
+    falcon comment PROJECT REF [TEXT]          comments on runs, failures, triage items (docs/team.md)
+    falcon bisect run REPO --config F --good A --bad B | show OUT   the commit that broke a scenario (docs/bisect.md)
+    falcon clusters build|show|check PROJECT …   failure modes: failures clustered and named (docs/failure-clusters.md)
     falcon schema                              print the project schema's path
 
 Exit codes: 0 ok; otherwise the worker's code (falcon_autonomy.core.protocol: 2 failed, 3 cancelled, 4 server lost,
@@ -283,10 +288,10 @@ def cmd_reproduce(a) -> int:
 
 
 def cmd_runs(a) -> int:
-    from .core.catalog import Catalog
+    from .core.catalog import Catalog, catalog_path
     from .core.paths import tilde, workspace_for
     ws = workspace_for(a.project)
-    cat = Catalog(os.path.join(ws, 'catalog.sqlite'))
+    cat = Catalog(catalog_path(ws))
     if a.rebuild:
         print(f'indexed {cat.rebuild(ws)} runs')
     for r in cat.list('run'):
@@ -400,6 +405,11 @@ def parser() -> argparse.ArgumentParser:
                               'run|validate|init|summary|post|lint (see docs/ci.md)')
     sub.add_parser('assistant', help='the assistant\'s tools: falcon assistant tools [--json] | call NAME JSON '
                                      '[--project P] [--allow-act] (see docs/assistant-tools.md)')
+    sub.add_parser('team', help='a shared team workspace: falcon team init|info|owner|lock (see docs/team.md)')
+    sub.add_parser('triage', help='the triage queue: falcon triage list|show|add|assign|state|link (see docs/team.md)')
+    sub.add_parser('comment', help='comments: falcon comment PROJECT REF [TEXT] (see docs/team.md)')
+    sub.add_parser('bisect', help='the commit that broke a scenario: falcon bisect run|show (see docs/bisect.md)')
+    sub.add_parser('clusters', help='failure modes: falcon clusters build|show|check (see docs/failure-clusters.md)')
     sub.add_parser('assets', help='Indian road assets: falcon assets inventory|list|show ID|verify (see '
                                   'docs/indian-assets.md)')
     return ap
@@ -534,6 +544,15 @@ def main(argv=None) -> int:
     if argv[:1] == ['assistant']:                 # the assistant's tools from the command line (assistant.cli)
         from .assistant.cli import main_assistant
         return main_assistant(argv[1:])
+    if argv[:1] in (['team'], ['triage'], ['comment']):     # the shared team workspace (core.team)
+        from .core import team
+        return {'team': team.main_team, 'triage': team.main_triage, 'comment': team.main_comment}[argv[0]](argv[1:])
+    if argv[:1] == ['bisect']:                    # regression bisect through CI mode (core.regbisect)
+        from .core.regbisect import main_bisect
+        return main_bisect(argv[1:])
+    if argv[:1] == ['clusters']:                  # failure clustering (core.failclusters)
+        from .core.failclusters import main_clusters
+        return main_clusters(argv[1:])
     if argv[:1] == ['assets']:                    # Indian road assets within the packaged CARLA (core.assets)
         from .core.assets import main_assets
         return main_assets(argv[1:])

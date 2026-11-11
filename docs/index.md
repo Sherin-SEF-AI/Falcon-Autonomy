@@ -27,9 +27,9 @@ does; the [roadmap](roadmap.md) lists what is planned.
   as a chip (its dot green when ready, amber and pulsing while it starts, red when it crashed; a click goes Home) and
   the **Assistant** button.
 - **Navigator** (left): Home, then the pages in groups — **Build** (Worlds, Rigs, Scenarios), **Drive** (Live, Data,
-  Replay), **Improve** (Loop, Rare cases, Training, Models), **Ship** (Stack testing, Hardware, Reports) — and Settings
-  and Help, each with its count beside it (worlds, rigs, your scenarios, recorded runs, models). Ctrl+0 goes Home,
-  Ctrl+1 … Ctrl+9 to the next nine pages; the rest by the command palette.
+  Replay), **Improve** (Loop, Rare cases, Triage, Training, Models), **Ship** (Stack testing, Hardware, Reports) —
+  and Settings and Help, each with its count beside it (worlds, rigs, your scenarios, recorded runs, models). Ctrl+0
+  goes Home, Ctrl+1 … Ctrl+9 to the next nine pages; the rest by the command palette.
 - **Page header**: every page opens with its title, what it is for, and its next-step chips (the assistant's
   suggestions for that page). Its sections are cards; numbers are in a monospaced face, right-aligned in tables; one
   blue button per area is the main action; green, amber and red mean a state (ready, a warning, a failure) and
@@ -201,6 +201,16 @@ with an encounter rate you give ([failure rate](failure-rate.md)). **Operating-d
 weather × road × actor × speed × light have been tested and how often, and fills the gaps with a scenario and a search
 per cell ([ODD coverage](odd-coverage.md)).
 
+### Triage
+The team's queue of failures ([team workspace](team.md)): items assigned, investigated, fixed and verified, with
+links to runs, scenarios, cases, clusters and commits, a history of who changed what, and comments. **Make this a team
+workspace** for a project on a shared folder or NAS: comments, triage events and run owners are one file each, the
+project is saved under a lock and never over another member's save, and the catalogue stays on each machine.
+**Failure modes**: every failure of the workspace — studies', suites' and CI runs' — clustered and named from what
+sets each mode apart ([failure clusters](failure-clusters.md)); *Triage this cluster* opens an item for one. A CI
+run flags failures that fall in no known mode. **Regression bisect**: a stack's git history bisected through CI mode
+to the first commit that broke each scenario ([bisect](bisect.md)).
+
 ### Models
 Register a perception model (ONNX, TorchScript or a plug-in; its licence and pinned SHA-256 shown, AGPL refused,
 weights downloaded only when asked), **evaluate** it on checked drives — AP/AR or mIoU with a 95 % bootstrap interval
@@ -320,8 +330,8 @@ dataset export carries a data card ([experiments](experiments.md#outputs-for-pap
 
 ### Settings
 Where CARLA and its Python are; Falcon's ports, the server's memory cap and quality; the render budget; the theme;
-whether place-name search may use the network. Stored in `$XDG_CONFIG_HOME/FalconAutonomy/settings.json`, never in a
-project.
+whether place-name search may use the network; your name in a team workspace (Team). Stored in
+`$XDG_CONFIG_HOME/FalconAutonomy/settings.json`, never in a project.
 
 **Ports.** Falcon starts its own server on its own RPC port (default 2310; CARLA also listens on the next two) and
 traffic-manager port (8310). It never touches a server it did not start, nor ports 2000–2010 and 8100 (CARLA's

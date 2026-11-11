@@ -13,11 +13,12 @@ import sys
 
 from ..core import protocol as P
 from ..core.budget import Throughput
-from ..core.catalog import Catalog
+from ..core.catalog import Catalog, catalog_path
 from ..core.jobs import JobQueue, JobSpec
 from ..core.paths import ensure_dir, tilde
 from ..core.provenance import read_json, write_json
 from ..core.settings import MEMORY_RESERVE_GB, Settings
+from ..core.team import identity, is_team, record_owner
 from . import server as S
 
 
@@ -44,7 +45,9 @@ class CarlaService:
         if self.catalog is not None:
             self.catalog.close()
         self.workspace = workspace
-        self.catalog = Catalog(os.path.join(ensure_dir(workspace), 'catalog.sqlite')) if workspace else None
+        self.catalog = Catalog(catalog_path(ensure_dir(workspace))) if workspace else None
+        if self.catalog is not None and is_team(workspace):     # a local catalogue of a shared folder (core.team)
+            self.catalog.rebuild(workspace)
 
     @property
     def carla_root(self) -> str:
@@ -201,15 +204,25 @@ class CarlaService:
         run_dir = ensure_dir(cfg['out'])
         path = os.path.join(run_dir, 'drive.json')
         write_json(path, cfg)
+        self._owner(run_dir, kind)
         spec = self.worker_spec('drive', [path], title or cfg.get('name', 'drive'), kind, run_dir,
                                 meta={'config': path})
         return self.queue.submit(spec)
+
+    def _owner(self, run_dir: str, what: str):
+        """Who started the run, in a team workspace (core.team.record_owner; nothing in a solo one)."""
+        if self.workspace and is_team(self.workspace):
+            try:
+                record_owner(self.workspace, run_dir, identity(self.settings), what)
+            except OSError:
+                pass
 
     def submit_live(self, cfg: dict, title: str = 'Live session'):
         """Write a live config into its run folder (live.json) and queue the session (it runs until stopped)."""
         run_dir = ensure_dir(cfg['out'])
         path = os.path.join(run_dir, 'live.json')
         write_json(path, cfg)
+        self._owner(run_dir, 'live')
         spec = self.worker_spec('live', [path], title, 'live', run_dir, meta={'config': path})
         return self.queue.submit(spec)
 

@@ -527,6 +527,12 @@ class BrowseTab(QWidget):
         self.rules = RulesPanel(self)
         rules.add(self.rules)
         bv.addWidget(rules)
+        from ..team import CommentsPanel                 # the team's comments on this run (core.team)
+        csec = Section('Comments', 'Kept in the workspace\'s team folder, one file each with its author: in a team '
+                                   'workspace on a shared folder every member sees them (docs/team.md).')
+        self.comments = CommentsPanel(page.win)
+        csec.add(self.comments)
+        bv.addWidget(csec)
         vsplit = QSplitter(Qt.Orientation.Vertical)
         vsplit.addWidget(right)
         vsplit.addWidget(scroll(below))
@@ -683,6 +689,7 @@ class BrowseTab(QWidget):
         self.frames, self.cache = [], None
         self.info.clear()
         self.rules.show_run(path)
+        self._show_team(path)
         self.sensor.blockSignals(True)
         self.sensor.clear()
         self.sensor.blockSignals(False)
@@ -733,6 +740,18 @@ class BrowseTab(QWidget):
         self.slider.setRange(0, max(len(self.frames) - 1, 0))
         self.slider.setValue(0)
         self.load_frame(0)
+
+    def _show_team(self, path):
+        """The run's comments, and who recorded it in a team workspace (core.team)."""
+        from ...core import team as TM
+        ws = os.path.realpath(self.page.win.workspace())
+        rp = os.path.realpath(path) if path else ''
+        inside = bool(rp) and rp.startswith(ws + os.sep)
+        self.comments.set_ref('run:' + os.path.relpath(rp, ws) if inside else '')
+        if inside and TM.is_team(ws):
+            o = TM.owner_of(ws, rp)
+            self.info.set('Recorded by', f'{o["user"]} on {o["host"]}' if o else 'not recorded (before the workspace '
+                                                                                 'was shared)')
 
     def load_frame(self, i):
         if not self.frames or not 0 <= i < len(self.frames):

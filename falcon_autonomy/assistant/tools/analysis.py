@@ -24,10 +24,11 @@ OUTPUTS = {'study': ('studies', ('study.json',)), 'evaluation': ('evaluations', 
            'adversary': ('adversary', ('adversary-eval.json', os.path.join('policy', 'policy.json'))),
            'experiment': ('experiments', ('experiment.json',)),
            'vlm': (os.path.join('vlm', 'evaluations'), ('scores.json', 'run.json')), 'log': ('logs', ('log.json',)),
-           'hil': ('runs', ('hil.json',)), 'replay_comparison': ('runs', ('comparison.json',))}
+           'hil': ('runs', ('hil.json',)), 'replay_comparison': ('runs', ('comparison.json',)),
+           'bisect': ('bisect', ('bisect.json',))}
 # the failure rate and the coverage of the operating domain (tools/_failrate.py): read here, queued by jobs_search
 OUTPUTS.update({'failure_rate': ('studies', ('failure-rate.json',)), 'coverage': ('', ('',))})
-LAB = ('ci', 'deploy', 'adversary', 'experiment', 'vlm', 'log', 'hil', 'replay_comparison')
+LAB = ('ci', 'deploy', 'adversary', 'experiment', 'vlm', 'log', 'hil', 'replay_comparison', 'bisect')
 READER = {'study': 'analysis_study', 'evaluation': 'analysis_evaluation', 'comparison': 'analysis_evaluation',
           'gap': 'analysis_gap', 'suite': 'analysis_suite', 'rootcause': 'analysis_rootcause',
           'v2x_benefit': 'analysis_v2x_benefit'}
@@ -78,6 +79,9 @@ def analysis_outputs(ctx, kind, id='', limit=20):
         if kind not in LAB:
             raise ToolError(f'read a {kind} with {READER[kind]}' if kind in READER else
                             f'a {kind} id is used by the jobs tools; nothing more to read here')
+        if kind == 'bisect':                     # a regression bisect (tools/failures.py)
+            from .failures import bisect_result
+            return bisect_result(ctx, id)
         from .lab import result
         return result(ctx, kind, id)
     folder, must = OUTPUTS[kind]

@@ -97,6 +97,16 @@ class SettingsPage(Page):
                   'machine')
         look.add(h)
         v.addWidget(look)
+        team = Section('Team', 'Who you are in a shared team workspace (docs/team.md): the owner of the runs you '
+                               'record and the author of your comments and triage changes. A label, not an account.')
+        tf = Form()
+        from ...core.team import identity
+        self.user_name = QLineEdit(st.get('user_name') or '')
+        self.user_name.setPlaceholderText(identity(None)['user'])
+        self._row(tf, 'Your name', self.user_name,
+                  f'empty: $FALCON_USER or the login name; host {identity(None)["host"]}')
+        team.add(tf)
+        v.addWidget(team)
         self._assistant_section(v)
         b = QHBoxLayout()
         b.addWidget(button('Apply', self.apply, role='primary'))
@@ -410,6 +420,7 @@ class SettingsPage(Page):
         st.set('render_budget_mpx', self.budget.value(), save=False)
         st.set('geocoding_allowed', self.geo.isChecked(), save=False)
         st.set('notify_jobs', self.notify.isChecked(), save=False)
+        st.set('user_name', ' '.join(self.user_name.text().split())[:64], save=False)
         if not self._assistant_apply(avals):
             return
         st.save()
