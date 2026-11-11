@@ -53,7 +53,10 @@ Ids match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` and are unique within their list.
 
 ## rig and sensor
 
-A rig: `id`, `name`, `vehicle` (a CARLA blueprint id, `vehicle.*`), `sensors`. A sensor:
+A rig: `id`, `name`, `vehicle` (a CARLA blueprint id, `vehicle.*`), `sensors`, and for a rig imported from a Vantage
+project an optional `vantage` block — the file and its SHA-256, the variant, the seams, the body centre, the CARLA car
+match and the import's notes ([rig comparison](rig-compare.md)); its sensors carry their Vantage uid, module and lens.
+No migration: older builds read such a rig and ignore the block. A sensor:
 
 | field | meaning |
 |---|---|

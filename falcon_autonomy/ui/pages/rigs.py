@@ -96,6 +96,11 @@ class RigsPage(Page):
         m.addAction('Export as ROS URDF…', lambda: self.export_file('urdf'))
         m.addAction('Export ROS TF (static transforms, JSON)…', lambda: self.export_file('tf'))
         m.addAction('Export nuScenes calibration…', lambda: self.export_file('nuscenes'))
+        m.addSeparator()                         # Vantage's variants, compared by perception (ui.rigcompare)
+        from .. import rigcompare as RCU
+        m.addAction('Import variants from a Vantage project…', lambda: RCU.import_vantage(self))
+        m.addAction('Compare rigs by perception…', lambda: RCU.compare_rigs(self))
+        m.addAction('Rig studies…', lambda: RCU.open_studies(self))
         io.setMenu(m)
         rb.addWidget(io)
         lv.addLayout(rb)

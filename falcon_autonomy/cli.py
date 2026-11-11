@@ -46,6 +46,7 @@
     falcon v2x junctions|place|list|remove|drive|benefit|decode|converter ...   roadside units, CPMs (docs/v2x.md)
     falcon ci run CONFIG [--out DIR] | validate | init [TARGET] [--github] | post | lint   CI mode (docs/ci.md)
     falcon assistant tools|call NAME JSON      the assistant's tools from the command line (docs/assistant-tools.md)
+    falcon rigs vantage|import|compare|report|note ...   Vantage rig variants compared by perception (docs/rig-compare.md)
     falcon schema                              print the project schema's path
 
 Exit codes: 0 ok; otherwise the worker's code (falcon_autonomy.core.protocol: 2 failed, 3 cancelled, 4 server lost,
@@ -337,6 +338,8 @@ def parser() -> argparse.ArgumentParser:
     ru.add_argument('project')
     ru.add_argument('--rebuild', action='store_true')
     sub.add_parser('schema', help='print the project schema\'s path')
+    sub.add_parser('rigs', help='Vantage rig variants as rigs, recorded on the same scenarios and compared by a '
+                   'detector: falcon rigs vantage|import|compare|report|note (see docs/rig-compare.md)')
     sub.add_parser('export', help='export runs: falcon export RUN... --format F --out DIR (see docs/cli.md)')
     sub.add_parser('derive', help='world-model, language or synthetic audio data from a drive: falcon derive '
                                   'worldmodel|language|audio RUN --out DIR')
@@ -538,6 +541,9 @@ def main(argv=None) -> int:
     if argv[:1] == ['vlm']:                       # vision-language explanations scored against the truth (core.vlm)
         from .core.vlm_eval import main_vlm
         return main_vlm(argv[1:])
+    if argv[:1] == ['rigs']:                      # rig variants compared by perception (sim.rigstudy)
+        from .sim.rigstudy import main_rigs
+        return main_rigs(argv[1:])
     if argv[:1] in (['sweep'], ['search']):       # scenario studies (sim.studio)
         from .sim.studio import main_study
         return main_study(argv)

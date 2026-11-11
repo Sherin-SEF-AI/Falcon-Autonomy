@@ -24,8 +24,9 @@ OUTPUTS = {'study': ('studies', ('study.json',)), 'evaluation': ('evaluations', 
            'adversary': ('adversary', ('adversary-eval.json', os.path.join('policy', 'policy.json'))),
            'experiment': ('experiments', ('experiment.json',)),
            'vlm': (os.path.join('vlm', 'evaluations'), ('scores.json', 'run.json')), 'log': ('logs', ('log.json',)),
-           'hil': ('runs', ('hil.json',)), 'replay_comparison': ('runs', ('comparison.json',))}
-LAB = ('ci', 'deploy', 'adversary', 'experiment', 'vlm', 'log', 'hil', 'replay_comparison')
+           'hil': ('runs', ('hil.json',)), 'replay_comparison': ('runs', ('comparison.json',)),
+           'rigstudy': ('rigstudies', ('study.json',))}
+LAB = ('ci', 'deploy', 'adversary', 'experiment', 'vlm', 'log', 'hil', 'replay_comparison', 'rigstudy')
 READER = {'study': 'analysis_study', 'evaluation': 'analysis_evaluation', 'comparison': 'analysis_evaluation',
           'gap': 'analysis_gap', 'suite': 'analysis_suite', 'rootcause': 'analysis_rootcause',
           'v2x_benefit': 'analysis_v2x_benefit'}
@@ -59,7 +60,8 @@ def compact(v, depth=0, cap=10):
       'sessions, replay comparisons). Use the ids in the analysis and jobs tools. With id, a lab output\'s numbers: '
       'a CI run\'s verdict and gates, a HIL session\'s latency per stage and deadlines, a deployment\'s engines '
       '(latency, power, AP ratio, gate verdict), failure rates, an experiment\'s arms with intervals, VLM scores '
-      '(text only), a log\'s actors and duration, a replay comparison\'s differences.',
+      '(text only), a log\'s actors and duration, a replay comparison\'s differences, a rig study\'s recall per '
+      'rig with intervals and its paired verdicts.',
       C.obj({'kind': C.s('what to list', enum=sorted(OUTPUTS)),
              'id': C.s('a lab output\'s id: its numbers (a run id for hil)'),
              'limit': C.i('rows (default 20)', minimum=1, maximum=50)}, ['kind']))

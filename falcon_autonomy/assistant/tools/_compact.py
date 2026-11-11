@@ -70,6 +70,9 @@ SHORT = {
     'lab_adversary': 'Queue training or evaluating adversarial traffic.',
     'lab_experiment': 'Queue a mixed sim/real or active-learning experiment.',
     'lab_vlm': 'Queue scoring a VLM\'s driving explanations.',
+    # research
+    'research_rig_compare': 'Queue recording rigs on the same scenarios and comparing a detector\'s recall on '
+                            'them.',
     # knowledge
     'knowledge_manual': 'Search the built-in manual offline: best sections with heading, link and text.',
     'knowledge_cli': 'Falcon\'s command-line commands with what they do, optionally filtered.',
