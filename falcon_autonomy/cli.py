@@ -321,6 +321,8 @@ def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog='falcon', description=f'{APP_NAME} {__version__}')
     ap.add_argument('--version', action='version', version=f'{APP_NAME} {__version__}')
     ap.add_argument('--fake-carla', default='', help=argparse.SUPPRESS)   # tests and CI: a fake carla package
+    ap.add_argument('--mcp', action='store_true', help='serve Falcon\'s tools to an MCP client such as Claude Code on '
+                    'stdin and stdout (docs/mcp.md); --mcp-project FILE: the project when no window is open')
     sub = ap.add_subparsers(dest='cmd')
     g = sub.add_parser('gui', help='the application (the default)')
     g.add_argument('project', nargs='?')
@@ -544,6 +546,9 @@ def main_derive(argv) -> int:
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ['--mcp']:                     # an MCP server on stdio for Claude Code (falcon_autonomy.mcp)
+        from .mcp.server import main as main_mcp
+        return main_mcp(argv)
     if argv[:1] == ['export']:                    # its own parser (core.exporters.main_export)
         from .core.exporters import main_export
         return main_export(argv[1:])
