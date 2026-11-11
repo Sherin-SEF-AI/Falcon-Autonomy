@@ -120,6 +120,20 @@ autorickshaw stand-ins — a lateral position of their own: the lane line, betwe
 oncoming lane. [Indian road assets](indian-assets.md#lateral-filtering) has the design, the measurements on this
 world and the limits.
 
+**The behaviour model** (Worlds page, traffic profile; `behaviour.model` in the project): *CARLA traffic manager* (the
+default, `tm`) or *Level-k (game-theoretic road users)* (`levelk`), which drives the profile's vehicles by
+[level-k](levelk.md) instead — each one choosing its acceleration and lateral position against what it predicts the
+others will do — in every worker that spawns traffic. For level-k a compact table sets the level *k*, the rationality
+*λ* and the assertiveness *α* per kind (cars, two-wheelers, autorickshaws, buses and trucks, pedestrians), written to
+`behaviour.levelk` keyed by kind; desired speeds and gap acceptance set elsewhere (a calibration, the project file) are
+kept and shown. *Load calibrated parameters…* reads a `falcon levelk calibrate` result (its `behaviour.levelk`),
+replaces the kinds it covers and sets the model to level-k. Every change — the model, one value, a loaded calibration —
+is one undoable edit. Parameters calibrated on your dashcam near-misses carry their mark (`behaviour.levelk_source`,
+format `dashcam`): the profile then stays on this machine — the assistant does not read the runs that use it, and
+cluster and cloud bundles refuse it ([level-k: calibrated on your
+near-misses](levelk.md#calibrated-on-your-near-misses-private)); *Forget the calibrated parameters* removes both.
+Level-k road users choose their own lateral positions, so *Lateral filtering* is not used with them.
+
 ## Speed limits and speed breakers
 
 CARLA 0.9.16's traffic manager drives every autopilot vehicle at `Vehicle.get_speed_limit()`: the limit of the last

@@ -16,9 +16,10 @@ so core.policy.rollout and every policy that drives the CARLA environment drive 
   no road surface model). Actions are the environment's: [steer, accel] in [−1, 1]² or a Discrete(25) index
   (core.drivefeatures.to_control).
 * The other road users: an ActorController — LoggedActors (the default) replays every track's logged motion; a
-  reactive controller (level-k traffic, wave 2) implements the same three methods and sees the ego's state. A
-  controller says where each track's box is at t; the reconstruction draws that track's Gaussians there (its
-  appearance is the logged one; an actor driven off its logged path keeps its own look but meets lighting and
+  reactive controller (core.recon.levelk_actors.LevelKActors: level-k road users) implements the same three methods
+  and sees the ego's state; one with episode_doc() / run_record() adds a file to each episode and keys to its
+  run.json. A controller says where each track's box is at t; the reconstruction draws that track's Gaussians there
+  (its appearance is the logged one; an actor driven off its logged path keeps its own look but meets lighting and
   backgrounds it was never seen against).
 * Every step renders the reconstruction's cameras (the trained cameras' mounts, at obs_size) at the ego's pose and
   the step's time; the observation is FalconDriveEnv's: 'state' (core.drivefeatures.Featuriser on the logged ego
@@ -263,7 +264,7 @@ class NeuralSim:
         self.episodes_path = os.path.join(self.out, 'episodes.jsonl')
         self.summary = {'schema': SCHEMA, 'reconstruction': self.rec.path, 'envelope': self.envelope,
                         'deviate_m': self.deviate_m, 'cameras': self.cameras, 'obs_size': list(self.obs_size),
-                        'fps': self.fps, 'episodes': []}
+                        'fps': self.fps, 'actors': getattr(self.controller, 'name', 'logged'), 'episodes': []}
         from .scene import private_source
         self.private = private_source(self.rec.path)      # a dashcam reconstruction: every record says so
         if self.private:
@@ -615,6 +616,14 @@ class NeuralSim:
         run.update(status='ok', exit_code=0, finished=PV.utc_now(), name=drive['name'], neural=what,
                    notes=['the camera images are the reconstruction\'s renders, not a simulator\'s ground truth',
                           f'{ep["flagged"]} step(s) beyond the {self.deviate_m} m limit'], **mark)
+        if callable(getattr(self.controller, 'episode_doc', None)):      # a reactive controller's own record
+            PV.write_json(os.path.join(d, 'levelk.json' if getattr(self.controller, 'name', '') == 'levelk' else
+                                       'actors.json'), dict(self.controller.episode_doc(), **mark))
+        if callable(getattr(self.controller, 'run_record', None)):
+            rr = dict(self.controller.run_record())
+            if 'source' in run:                          # the reconstruction's own mark stands
+                rr.pop('source', None)
+            run.update(rr)
         run['outputs'] = PV.hash_tree(d, skip=('run.json',))
         PV.write_json(os.path.join(d, 'run.json'), run)
 
@@ -628,11 +637,12 @@ class NeuralSim:
 
 def run_closedloop(recon: str, out_dir: str, policy: str = 'constant', episodes: int = 1, seed: int = 0,
                    deviate_m: float = DEVIATE_M, obs_size=(160, 90), device: str = 'auto', options=None,
-                   emitter=None) -> dict:
+                   emitter=None, controller=None) -> dict:
     """`falcon recon closedloop`: episodes of a policy in the NeuralSim through core.policy.rollout (rollout.json in
-    out_dir); returns the summary."""
+    out_dir); returns the summary. controller: an ActorController (default LoggedActors)."""
     from ..policy import rollout
-    sim = NeuralSim(recon, out_dir, obs_size=obs_size, deviate_m=deviate_m, device=device, seed=seed)
+    sim = NeuralSim(recon, out_dir, obs_size=obs_size, deviate_m=deviate_m, device=device, seed=seed,
+                    controller=controller)
     pol = policy_of(policy, 'cpu')
     try:
         def prog(k, summ):
@@ -642,4 +652,5 @@ def run_closedloop(recon: str, out_dir: str, policy: str = 'constant', episodes:
     finally:
         sim.close()
     return {'run': out_dir, 'episodes': [e['run_dir'] for e in doc['episodes']], 'aggregate': doc['aggregate'],
-            'envelope': sim.envelope, 'deviation': [e['deviation'] for e in doc['episodes']]}
+            'envelope': sim.envelope, 'deviation': [e['deviation'] for e in doc['episodes']],
+            'actors': sim.summary['actors']}

@@ -122,7 +122,13 @@ def project_get(ctx, kind, id=''):
             return {'scenario': SC.builtin(id), 'builtin': True}
     if kind == 'model':
         return {'model': C.find(ctx, 'models', id, 'model')[1]}
-    return {kind: C.rounded(C.find(ctx, SECTIONS[kind], id, kind.replace('_', ' '))[1])}
+    item = C.find(ctx, SECTIONS[kind], id, kind.replace('_', ' '))[1]
+    if kind == 'traffic_profile':
+        from ..privacy import levelk_reason
+        if levelk_reason(item):                  # level-k parameters calibrated on the dashcam footage stay here
+            item = dict(item, behaviour=dict(item.get('behaviour') or {},
+                                             levelk=f'private: {levelk_reason(item)} — not shown'))
+    return {kind: C.rounded(item)}
 
 
 @tool('project_scenarios', 'project', 'read',

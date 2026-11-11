@@ -133,7 +133,10 @@ def z_of(theta: dict):
 
 
 def _batches(samples: list, dtype):
-    """Samples grouped by plan count, the gaps padded to the largest other count with 1e6 m (no barrier)."""
+    """Samples grouped by plan count, the gaps padded to the largest other count with 1e6 m (no barrier). A sample's
+    'choice' is the observed plan's index; a sample may instead carry 'choices', the indices of the plans the
+    observation cannot tell apart (core.levelk_nearmiss: the jerk limit or a standstill makes several plans move the
+    same way) — a group with any such sample gets a (B, P) boolean mask instead of the (B,) indices."""
     torch = _torch()
     groups: dict = {}
     for smp in samples:
@@ -150,7 +153,13 @@ def _batches(samples: list, dtype):
              for key in ('ds', 'v', 'a', 'latmove', 'coll', 'red', 'lane')}
         F['gaps'] = torch.as_tensor(gaps, dtype=dtype)
         F['H'] = float(ss[0]['features']['H'])
-        out.append((F, torch.as_tensor([s['choice'] for s in ss])))
+        if any(s.get('choices') for s in ss):
+            mask = torch.zeros((len(ss), P), dtype=torch.bool)
+            for k, s in enumerate(ss):
+                mask[k, list(s.get('choices') or [s['choice']])] = True
+            out.append((F, mask))
+        else:
+            out.append((F, torch.as_tensor([s['choice'] for s in ss])))
     return out
 
 
@@ -159,8 +168,11 @@ def batched_utility(theta: dict, F: dict, weights: dict | None = None):
     return LK.utility(_Torch(), theta, F, weights)
 
 
-def nll(z, batches, weights=None, fixed: dict | None = None):
-    """The negative log-likelihood of the observed plans (module doc)."""
+def nll(z, batches, weights=None, fixed: dict | None = None, lapse: float = 0.0):
+    """The negative log-likelihood of the observed plans (module doc). lapse ε > 0: a trembling hand — each decision
+    is the quantal response with probability 1 − ε and any plan alike with ε (P = (1 − ε) softmax + ε / P), so one
+    decision the model cannot explain (an observed plan inside its collision margin, from noisy tracks) does not
+    decide the estimate; 0 (the default) is the plain quantal response."""
     torch = _torch()
     th = theta_of(z)
     th.update({k: torch.as_tensor(v, dtype=z.dtype) for k, v in (fixed or {}).items()})
@@ -168,12 +180,20 @@ def nll(z, batches, weights=None, fixed: dict | None = None):
     for F, choice in batches:
         U = batched_utility(th, F, weights)
         lp = torch.log_softmax(th['lam'] * U, dim=1)
-        total = total - lp.gather(1, choice[:, None]).sum()
+        if lapse > 0.0:
+            # logsumexp of the pair (torch.logaddexp's double backward is NaN far below the floor)
+            lp = torch.logsumexp(torch.stack([lp + math.log1p(-lapse),
+                                              torch.full_like(lp, math.log(lapse / lp.shape[1]))]), dim=0)
+        if choice.dtype == torch.bool:              # a set of plans the observation cannot tell apart: P(set)
+            # a finite fill: −inf there turns the Hessian's double backward into NaN
+            total = total - torch.logsumexp(lp.masked_fill(~choice, -1e30), dim=1).sum()
+        else:
+            total = total - lp.gather(1, choice[:, None]).sum()
     return total
 
 
 def calibrate(samples: list, init: dict | None = None, steps: int = 300, lr: float = 0.05, weights=None,
-              fixed: dict | None = None, log=None) -> dict:
+              fixed: dict | None = None, log=None, lapse: float = 0.0) -> dict:
     """Maximum-likelihood θ (module doc): {'estimates', 'se', 'ci95', 'loglik', 'n_decisions', 'converged'}."""
     torch = _torch()
     if not samples:
@@ -185,7 +205,7 @@ def calibrate(samples: list, init: dict | None = None, steps: int = 300, lr: flo
     opt = torch.optim.Adam([z], lr=lr)
     for k in range(int(steps)):
         opt.zero_grad()
-        loss = nll(z, batches, weights, fixed)
+        loss = nll(z, batches, weights, fixed, lapse)
         loss.backward()
         opt.step()
         if log and (k % 50 == 0 or k == steps - 1):
@@ -194,14 +214,14 @@ def calibrate(samples: list, init: dict | None = None, steps: int = 300, lr: flo
 
     def closure():
         lb.zero_grad()
-        loss_ = nll(z, batches, weights, fixed)
+        loss_ = nll(z, batches, weights, fixed, lapse)
         loss_.backward()
         return loss_
     lb.step(closure)
     zf = z.detach().clone()
-    loss = float(nll(zf, batches, weights, fixed))
-    grad = torch.autograd.functional.jacobian(lambda q: nll(q, batches, weights, fixed), zf)
-    H = torch.autograd.functional.hessian(lambda q: nll(q, batches, weights, fixed), zf)
+    loss = float(nll(zf, batches, weights, fixed, lapse))
+    grad = torch.autograd.functional.jacobian(lambda q: nll(q, batches, weights, fixed, lapse), zf)
+    H = torch.autograd.functional.hessian(lambda q: nll(q, batches, weights, fixed, lapse), zf)
     th = {k: float(v) for k, v in theta_of(zf).items()}
     se, ci = {}, {}
     free = [k for k in FREE if k not in (fixed or {})]
@@ -222,7 +242,7 @@ def calibrate(samples: list, init: dict | None = None, steps: int = 300, lr: flo
         th[k] = float(fixed[k])
     return {'estimates': th, 'se': se, 'ci95': ci, 'loglik': -loss, 'n_decisions': len(samples),
             'gradient_norm': float(grad.norm()), 'converged': bool(float(grad.norm()) < 1e-2 * max(len(samples), 1)),
-            'fixed': dict(fixed or {}),
+            'fixed': dict(fixed or {}), 'lapse': float(lapse),
             'assumption': 'quantal best response to the others\' observed motion (not their level-(k−1) prediction); '
                           'Wald intervals assume independent decisions (optimistic)'}
 

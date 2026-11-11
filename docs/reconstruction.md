@@ -852,18 +852,26 @@ sensor axes, `lidar_pose` in frames.jsonl) — rendered, not ground truth.
 
 **Closed loop** (`falcon recon closedloop`; `core.recon.closedloop.NeuralSim`). A policy drives an ego through the
 reconstruction and sees it rendered from wherever its decisions took it. NeuralSim has the learning environment's
-surface (`reset`, `step`, `feature_names`, the observation and action spaces), so `core.policy.rollout` and every
-policy trained for the CARLA environment run unchanged; observations are the environment's (`state` from
+surface (`reset`, `step`, `feature_names`, the observation and action spaces), so `core.policy.rollout` and every policy
+trained for the CARLA environment run unchanged; observations are the environment's (`state` from
 `core.drivefeatures.Featuriser` on the logged ego path as the route; `camera` the first camera's render). The ego is the
 kinematic bicycle model of the CARLA environment's kinematic motion (a numpy port of the director's); the other road
-users come from an `ActorController` — `LoggedActors` replays their logged motion; a reactive controller (level-k
-traffic) implements the same `reset`, `step`, `poses`. Each episode is written as a **normal Falcon run folder**
-(frames.jsonl, actors.jsonl, rgb/, drive.json, dataset.json, run.json), so the traffic rules, STL, criticality and the
-exporters read it as they read a CARLA run. **The trust envelope**: from the reconstruction's own lateral-shift
-measurement (`eval --warp-shift`), the largest shift at which the PSNR is within 3 dB of the unshifted control on both
-sides; every step records the ego's deviation from the logged path, the PSNR expected there and whether it is inside
-the envelope, and beyond `--deviate` (3 m) the step is flagged and the episode ends (truncated, termination
-`outside_reconstruction`).
+users come from an `ActorController` — `LoggedActors` replays their logged motion; `LevelKActors` (`--actors levelk`, or
+*Level-k road users* beside *Drive a policy here* on the Replay page) starts every tracked road user from its logged
+state and lets [level-k](levelk.md#in-the-neural-closed-loop) decide its acceleration and lateral offset each step
+against the policy's ego and the others, still with its logged appearance (`core/recon/levelk_actors.py`). Each episode
+is written as a **normal Falcon run folder** (frames.jsonl, actors.jsonl, rgb/, drive.json, dataset.json, run.json), so
+the traffic rules, STL, criticality and the exporters read it as they read a CARLA run. **The trust envelope**: from the
+reconstruction's own lateral-shift measurement (`eval --warp-shift`), the largest shift at which the PSNR is within 3 dB
+of the unshifted control on both sides; every step records the ego's deviation from the logged path, the PSNR expected
+there and whether it is inside the envelope, and beyond `--deviate` (3 m) the step is flagged and the episode ends
+(truncated, termination `outside_reconstruction`). With level-k road users each episode also gets `levelk.json` (their
+trajectories, the realism of their motion and whether a two-wheeler inched in front of the ego).
+
+```sh
+falcon recon closedloop RECON --policy ID --out DIR [--actors logged|levelk] [--levelk-params JSON|FILE]
+                        [--levelk-mode sample|best] [--episodes N] [--seed N] [--deviate M] [--obs-size WxH]
+```
 
 ### Moving road users from a dashcam
 

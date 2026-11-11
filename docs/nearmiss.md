@@ -154,6 +154,12 @@ a private reconstruction is private while that exists) — and no bundle carries
 about an ingest (`dashcam_ingest.summary`) is counts and event ids only — no clip names, places, times, positions or
 images; no image or track is sent to any model.
 
+**Level-k parameters from your near-misses** (`falcon levelk calibrate --from-nearmiss DIR`;
+[level-k](levelk.md#calibrated-on-your-near-misses-private)) are derived from the footage too: they are written into
+`falcon-ingest/levelk/` by default and carry the dashcam markers wherever they are written, and a traffic profile they
+are loaded into is marked (`behaviour.levelk_source`) — the runs that use it are private to the assistant and cluster
+and cloud bundles refuse it.
+
 ## Measured
 
 On a synthetic clip (tests/test_dashcam_nearmiss.py: 7 s at 10 frames/s, 320 × 180, a textured road, a lead car

@@ -228,6 +228,14 @@ def main_recon(argv) -> int:
     cl.add_argument('--obs-size', default='160x90', help='WIDTHxHEIGHT of each rendered camera')
     cl.add_argument('--start', type=float, default=0.0, help='seconds into the drive to start from')
     cl.add_argument('--lateral', type=float, default=0.0, help='start this far to the right of the logged path, m')
+    cl.add_argument('--actors', default='logged', choices=('logged', 'levelk'),
+                    help='the other road users: logged (replay their logged motion) or levelk (level-k road users '
+                         'that react to the ego and each other, from their logged states; core.recon.levelk_actors)')
+    cl.add_argument('--levelk-params', default='', metavar='JSON',
+                    help='with --actors levelk: {kind: {k, lambda, alpha, v_des, t_gap}} inline, or a JSON file (a '
+                         'traffic profile or a falcon levelk calibrate result: its behaviour.levelk)')
+    cl.add_argument('--levelk-mode', default='sample', choices=('sample', 'best'),
+                    help='sample the quantal response (seeded by the episode) or take the most likely plan')
     cl.add_argument('--device', default='auto')
     i = sub.add_parser('info', help='what a reconstruction is and how it measured')
     i.add_argument('recon')
@@ -320,8 +328,15 @@ def main_recon(argv) -> int:
         if a.cmd == 'closedloop':
             from .closedloop import run_closedloop
             w, _, h = a.obs_size.lower().partition('x')
+            ctl = None
+            if a.actors == 'levelk':
+                from .levelk_actors import LevelKActors, load_params
+                block, src = load_params(a.levelk_params)
+                ctl = LevelKActors(block, mode=a.levelk_mode, source=src)
+            elif a.levelk_params:
+                raise ValueError('--levelk-params needs --actors levelk')
             res = run_closedloop(a.recon, a.out, a.policy, a.episodes, a.seed, a.deviate, (int(w), int(h)), a.device,
-                                 {'start_s': a.start, 'lateral_m': a.lateral}, em)
+                                 {'start_s': a.start, 'lateral_m': a.lateral}, em, controller=ctl)
             em.result('ok', run=a.out, summary=res)
             return P.OK
         if a.cmd == 'eval':

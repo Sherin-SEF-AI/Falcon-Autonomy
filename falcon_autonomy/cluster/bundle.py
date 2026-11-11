@@ -171,7 +171,7 @@ def make_study(project, command: str, scenario: dict, world: str, rig: str, name
                           'cloud study runs on a CARLA town')
     tp_id = w.get('traffic_profile') or 'tp-default'
     tps = [x for x in doc.get('traffic_profiles') or () if x.get('id') == tp_id]
-    why = _private({'scenario': scenario}, [])
+    why = _private({'scenario': scenario, 'traffic_profiles': tps}, [])     # level-k parameters from a dashcam too
     if why:
         raise BundleError(f'private: {why} — dashcam-derived data never leaves this machine')
     if no_render:

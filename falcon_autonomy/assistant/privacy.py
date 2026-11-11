@@ -13,15 +13,18 @@ frames extracted from clips (worker dashcam-extract), a real image set or transl
 whose source is a dashcam route, an incident made a scenario (worker dashcam-incident) and any drive, stack run or study
 of such a scenario (its scenario's source {"format": "dashcam"}, in drive.json, stack.json, study.json or run.json's
 provenance), and a folder of clips ingested for near-miss mining (core.dashcam_ingest): the folder, every clip in it and
-everything under its falcon-ingest/ (perception, rankings, event folders, cut clips) — found at any depth by the
-ingest's own record, falcon-ingest/ingest.json. A reconstruction of a dashcam segment or near-miss (dashcam.json; its
-posed/tracks.json of the ingest's road users with it) and everything rendered from it — re-rendered runs, hybrid runs,
-closed-loop drives (their records carry the source marker {"format": "dashcam"}, and closedloop.json is read too) —
-are private; a record that names the reconstruction it was rendered from (its 'reconstruction', under 'neural' or
-'hybrid' too), or a reconstruction's run.json naming its source, is private when that is (followed two levels), so
-older outputs without the marker are covered while their reconstruction exists. The markers are read from the
-folder's own run.json / import.json / model json (and its parent's, for a file in a run); a folder without any record
-is not private by this test — the tools only hand over Falcon's own outputs.
+everything under its falcon-ingest/ (perception, rankings, event folders, cut clips, level-k calibrations) — found
+at any depth by the ingest's own record, falcon-ingest/ingest.json. A reconstruction of a dashcam segment or near-miss
+(dashcam.json; its posed/tracks.json of the ingest's road users with it) and everything rendered from it — re-rendered
+runs, hybrid runs, closed-loop drives (their records carry the source marker {"format": "dashcam"}, and closedloop.json
+is read too) — are private; a record that names the reconstruction it was rendered from (its 'reconstruction', under
+'neural' or 'hybrid' too), or a reconstruction's run.json naming its source, is private when that is (followed two
+levels), so older outputs without the marker are covered while their reconstruction exists. Level-k traffic parameters
+calibrated on the footage (core.levelk_nearmiss) are private too: the calibration's own record, and a traffic profile
+they were loaded into (behaviour.levelk_source), with every drive, run and study bundle that carries that profile
+(levelk_reason). The markers are read from the folder's own run.json / import.json / model json (and its parent's, for
+a file in a run); a folder without any record is not private by this test — the tools only hand over Falcon's own
+outputs.
 
 guard(path): raise ToolError(private_reason) when it is private. Tools call it on every path they read before
 returning anything from it.
@@ -65,6 +68,25 @@ def redact(obj):
     return obj
 
 
+def levelk_reason(doc) -> str | None:
+    """Level-k traffic parameters calibrated on the dashcam footage (falcon levelk calibrate --from-nearmiss), as a
+    traffic profile carries them once loaded (behaviour.levelk_source {"format": "dashcam"}): in the record itself (a
+    profile, a calibration), in a drive's config ("traffic"), in run.json's provenance settings, or in a project's or a
+    study bundle's traffic_profiles."""
+    if not isinstance(doc, dict):
+        return None
+    pst = (doc.get('provenance') or {}).get('settings') if isinstance(doc.get('provenance'), dict) else None
+    profiles = [doc, doc.get('traffic'), (pst or {}).get('traffic') if isinstance(pst, dict) else None]
+    tps = doc.get('traffic_profiles')
+    profiles += list(tps) if isinstance(tps, list) else []
+    for tp in profiles:
+        beh = tp.get('behaviour') if isinstance(tp, dict) else None
+        src = beh.get('levelk_source') if isinstance(beh, dict) else None
+        if isinstance(src, dict) and 'dashcam' in (str(src.get('format', '')), str(src.get('kind', ''))):
+            return 'level-k traffic parameters calibrated on the dashcam footage'
+    return None
+
+
 def _says_dashcam(doc) -> str | None:
     """A record's own word that it came from dashcam footage (the markers in the module doc)."""
     if not isinstance(doc, dict):
@@ -82,6 +104,8 @@ def _says_dashcam(doc) -> str | None:
         src = scn.get('source') if isinstance(scn, dict) else None
         if isinstance(src, dict) and src.get('format') == 'dashcam':
             return 'a scenario made from an event in the dashcam footage'
+    if levelk_reason(doc):
+        return levelk_reason(doc)
     worker = str(doc.get('worker') or (doc.get('provenance') or {}).get('worker') or '')
     if worker.startswith('dashcam'):
         return 'made from the dashcam footage'

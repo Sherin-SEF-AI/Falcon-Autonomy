@@ -533,8 +533,10 @@ class RoadFeatures(Section):
 
 
 class TrafficEditor(Section):
-    """The world's traffic profile: counts, fleet shares, behaviour. Edits go to the profile (shared by every world
-    that uses it)."""
+    """The world's traffic profile: counts, fleet shares, behaviour, and the model that drives it — CARLA's traffic
+    manager or level-k road users (core.levelk) with their level k, rationality λ and assertiveness α per kind, or
+    parameters calibrated on near-misses (falcon levelk calibrate --from-nearmiss). Edits go to the profile (shared by
+    every world that uses it), each one undoable edit."""
     BEHAVIOUR = (('distance_to_leading_m', 'Gap to the vehicle ahead', 0.0, 20.0, 'm'),
                  ('speed_spread_pct', 'Speed spread (±, per vehicle)', 0.0, 80.0, '%'),
                  ('speed_difference_pct', 'Speed below the limit', -50.0, 80.0, '%'),
@@ -607,6 +609,7 @@ class TrafficEditor(Section):
             sb.editingFinished.connect(lambda k=k, w=sb: self.set(['traffic_profiles', i, 'behaviour', k],
                                                                    w.value()))
             self.form.row(text, sb)
+        self.levelk_rows(i, tp)
         self.lateral_rows(i, tp)
         notes = []
         if tp.get('fleet_source'):
@@ -615,9 +618,15 @@ class TrafficEditor(Section):
             notes.append('CARLA 0.9.16 has no autorickshaw: the Microlino, the nearest vehicle in measured size, '
                          'stands in with a three-wheeler\'s top speed and acceleration, labelled "autorickshaw '
                          '(stand-in)" (docs/indian-assets.md).')
-        if not (tp.get('lateral_filtering') or {}).get('enabled'):
+        from ...core.project import traffic_model
+        if traffic_model(tp) == 'levelk':
+            notes.append('Level-k road users choose their own lateral positions (lane line, squeezing past): lateral '
+                         'filtering is not used.')
+        elif not (tp.get('lateral_filtering') or {}).get('enabled'):
             notes.append('The traffic manager keeps vehicles on their lane centres: turn on lateral filtering for '
                          'two-wheelers that ride the lane line and pass between vehicles.')
+        if self.calibrated(tp):
+            notes.append(self.PRIVATE_NOTE)
         self.notes.setText(' '.join(notes))
 
     LATERAL_TIP = ('Two-wheelers choose their own lateral position over the same-direction lanes every 0.1 s: they '
@@ -660,6 +669,179 @@ class TrafficEditor(Section):
                                                'vehicle keeps to its lane centre (CARLA\'s traffic manager)')
         self.form.row('', auto)
         self.form.row('Controller', ctl)
+
+    # ------------------------------------------------------------------ level-k (core.levelk)
+    LEVELK_KINDS = (('car', 'Cars'), ('two_wheeler', 'Two-wheelers'), ('autorickshaw', 'Autorickshaws'),
+                    ('bus', 'Buses and trucks'), ('pedestrian', 'Pedestrians'))
+    LEVELK_TIP = ('Level-k road users choose an acceleration and a lateral position every 0.25 s by best-responding '
+                  'to what they predict the others will do, a level below their own (core.levelk; docs/levelk.md). '
+                  'k: 0 car-following and gap acceptance, 1 and up strategic; λ: how sharply they pick the best plan; '
+                  'α: assertiveness, safety traded for progress.')
+    PRIVATE_NOTE = ('Level-k parameters calibrated on your dashcam footage: this profile now stays on this machine — '
+                    'the assistant does not read the runs that use it, and cluster and cloud bundles refuse it.')
+
+    @staticmethod
+    def calibrated(tp) -> bool:
+        from ...assistant.privacy import levelk_reason
+        return bool(levelk_reason(tp or {}))
+
+    def levelk_rows(self, i, tp):
+        """The behaviour model, and for level-k the parameters per kind and Load calibrated parameters…"""
+        from PyQt6.QtWidgets import QDoubleSpinBox, QGridLayout, QSpinBox
+        from ...core import levelk as LK
+        from ...core.project import traffic_model
+        model = QComboBox()
+        model.addItem('CARLA traffic manager', 'tm')
+        model.addItem('Level-k (game-theoretic road users)', 'levelk')
+        model.setCurrentIndex(max(model.findData(traffic_model(tp)), 0))
+        model.setToolTip(self.LEVELK_TIP)
+        model.activated.connect(lambda _: self.set_model(i, model.currentData()))
+        self.model_box = model
+        self.form.row('Behaviour model', model, 'level-k drives the profile\'s vehicles instead of the traffic '
+                                                'manager, in every worker that spawns traffic')
+        self.levelk_spins = {}
+        b = QHBoxLayout()
+        b.addWidget(button('Load calibrated parameters…', lambda: self.load_calibrated(),
+                           tip='a falcon levelk calibrate result (calibration.json): its behaviour.levelk block, '
+                               'kinds it covers replaced, the model set to level-k'))
+        if self.calibrated(tp):
+            b.addWidget(button('Forget the calibrated parameters', lambda: self.forget_calibrated(i),
+                               tip='remove the level-k parameters loaded from a calibration (and the mark that keeps '
+                                   'this profile on this machine)'))
+        b.addStretch(1)
+        self.form.row('', b)
+        if traffic_model(tp) != 'levelk':
+            return
+        try:
+            table = LK.profile_params(tp)
+        except ValueError as e:
+            self.form.row('Level-k', label(f'⚠ {e}', wrap=True))
+            table = {}
+        g = QGridLayout()
+        for c, text in enumerate(('', 'k', 'λ', 'α')):
+            g.addWidget(label(text, muted=True, small=True), 0, c)
+        for r, (typ, text) in enumerate(self.LEVELK_KINDS, start=1):
+            try:
+                p = LK.params_for(table, typ)
+            except ValueError:
+                p = LK.params_of({}, typ)
+            g.addWidget(label(text), r, 0)
+            k = QSpinBox()
+            k.setRange(*LK.PARAM_BOUNDS['level'])
+            k.setValue(int(p['level']))
+            lam = QDoubleSpinBox()
+            lam.setRange(*LK.PARAM_BOUNDS['lam'])
+            lam.setDecimals(2)
+            lam.setValue(float(p['lam']))
+            al = QDoubleSpinBox()
+            al.setRange(*LK.PARAM_BOUNDS['alpha'])
+            al.setDecimals(2)
+            al.setSingleStep(0.05)
+            al.setValue(float(p['alpha']))
+            for c, (key, w) in enumerate((('k', k), ('lambda', lam), ('alpha', al)), start=1):
+                w.setToolTip(self.LEVELK_TIP)
+                w.editingFinished.connect(lambda t=typ, kk=key, ww=w: self.set_levelk(i, t, kk, ww.value()))
+                g.addWidget(w, r, c)
+                self.levelk_spins[(typ, key)] = w
+        self.form.row('Level-k per kind', g)
+        extra = sorted({f'{typ} {kk} {v:g}' for typ, p in table.items() for kk, v in p.items()
+                        if kk in ('v_des', 't_gap', 'compliance') and isinstance(v, (int, float))})
+        if extra:
+            self.form.row('', label('Also set (kept): ' + ', '.join(extra), muted=True, small=True, wrap=True))
+
+    def _behaviour(self, i) -> dict:
+        import copy
+        return copy.deepcopy(self.page.win.project.doc['traffic_profiles'][i].get('behaviour') or {})
+
+    def set_model(self, i, model: str):
+        """behaviour.model: 'levelk' or 'tm' (written only when it changes; absent means tm)."""
+        from ...core.project import traffic_model
+        beh = self._behaviour(i)
+        if traffic_model({'behaviour': beh}) == model:
+            return
+        beh['model'] = model
+        self.page.win.edit(Edit('set', ['traffic_profiles', i, 'behaviour'], beh,
+                                text='Traffic: level-k road users' if model == 'levelk' else
+                                'Traffic: CARLA\'s traffic manager'))
+
+    def set_levelk(self, i, typ: str, key: str, value):
+        """One kind's level-k parameter (k, lambda or alpha) in behaviour.levelk, keyed by core.levelk's type (entries
+        of scenario kinds of that type merged into it)."""
+        from ...core import levelk as LK
+        beh = self._behaviour(i)
+        block = dict(beh.get('levelk') or {})
+        entry = {}
+        for kind in list(block):
+            if kind == typ or (kind in LK.KIND_TYPE and LK.agent_type(kind) == typ):
+                entry.update(block.pop(kind) or {})
+        value = int(value) if key == 'k' else round(float(value), 4)
+        if entry.get(key) == value:
+            return
+        entry[key] = value
+        block[typ] = entry
+        beh['levelk'] = block
+        LK.profile_params({'behaviour': beh})
+        self.page.win.edit(Edit('set', ['traffic_profiles', i, 'behaviour'], beh,
+                                text=f'Traffic: level-k {typ.replace("_", " ")} {key}'))
+
+    def load_calibrated(self, path: str | None = None) -> bool:
+        """Apply a calibration's behaviour.levelk (a falcon levelk calibrate result, or any JSON with that block or a
+        levelk block) to the profile: the kinds it covers replaced, the model set to level-k; dashcam-derived
+        parameters carry their mark (behaviour.levelk_source). One undoable edit."""
+        import json
+        import os
+        from ...assistant.privacy import _says_dashcam, private_reason
+        from ...core import levelk as LK
+        i, tp = self.profile()
+        if tp is None:
+            return False
+        if path is None:
+            from PyQt6.QtWidgets import QFileDialog
+            start = ''
+            try:
+                start = self.page.win.workspace()
+            except Exception:                    # noqa: BLE001 (no window or workspace: the home folder)
+                start = os.path.expanduser('~')
+            path, _ = QFileDialog.getOpenFileName(self, 'Load calibrated level-k parameters', start,
+                                                  'Level-k calibration (*.json)')
+            if not path:
+                return False
+        try:
+            with open(path, encoding='utf-8') as fh:
+                doc = json.load(fh)
+            src = doc.get('behaviour') if isinstance(doc.get('behaviour'), dict) else doc
+            block = src.get('levelk') if isinstance(src.get('levelk'), dict) else None
+            if not block:
+                raise ValueError('no level-k parameters in it (a falcon levelk calibrate result has them)')
+            LK.profile_params({'behaviour': {'levelk': block}})
+        except (OSError, ValueError, AttributeError) as e:
+            self.notes.setText(f'Could not load the parameters: {e}')
+            return False
+        beh = self._behaviour(i)
+        merged = dict(beh.get('levelk') or {})
+        for kind, p in block.items():
+            typ = '*' if kind == '*' else LK.agent_type(kind)
+            for old in [k for k in merged if k == kind or (k != '*' and LK.agent_type(k) == typ)]:
+                merged.pop(old)
+            merged[typ if kind != '*' else '*'] = dict(p)
+        beh.update(model='levelk', levelk=merged)
+        private = private_reason(path) or _says_dashcam(doc)
+        if private:
+            beh['levelk_source'] = dict((src.get('levelk_source') if isinstance(src.get('levelk_source'), dict)
+                                         else None) or {'format': 'dashcam', 'kind': 'nearmiss'})
+            beh['levelk_source']['format'] = 'dashcam'
+        LK.profile_params({'behaviour': beh})
+        self.page.win.edit(Edit('set', ['traffic_profiles', i, 'behaviour'], beh,
+                                text=f'Traffic: calibrated level-k parameters ({", ".join(sorted(block))})'))
+        return True
+
+    def forget_calibrated(self, i):
+        """Remove the level-k parameters and their dashcam mark (one undoable edit)."""
+        beh = self._behaviour(i)
+        beh.pop('levelk', None)
+        beh.pop('levelk_source', None)
+        self.page.win.edit(Edit('set', ['traffic_profiles', i, 'behaviour'], beh,
+                                text='Traffic: forget the calibrated level-k parameters'))
 
     def set(self, path, value):
         cur = self.page.win.project.doc

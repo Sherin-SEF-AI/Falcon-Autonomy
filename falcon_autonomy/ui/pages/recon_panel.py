@@ -9,7 +9,8 @@ drive of the same world, or a new CARLA drive of the log's path with seeded traf
 (a replay job, then the composite on the GPU queue). torch is imported only when a reconstruction is opened, on a
 worker thread. *Moving road users* trains a dynamic (4D) reconstruction — the source's tracked actors learned, not
 masked — with the neural lidar when the source has one; *Drive a policy here* runs a policy in closed loop through it
-(core.recon.closedloop: a run folder per episode, the deviation from the logged path against the trust envelope)."""
+(core.recon.closedloop: a run folder per episode, the deviation from the logged path against the trust envelope),
+with the other road users as logged or as level-k road users (core.recon.levelk_actors)."""
 from __future__ import annotations
 
 import os
@@ -122,6 +123,13 @@ class ReconPanel(QWidget):
         self.policy.setToolTip('a policy folder (falcon policy bc|ppo), or constant[:KMH]')
         self.policy.setMaximumWidth(180)
         b.addWidget(self.policy)
+        self.actors = QComboBox()
+        self.actors.addItem('Road users as logged', 'logged')
+        self.actors.addItem('Level-k road users', 'levelk')
+        self.actors.setToolTip('logged: the other road users replay their logged motion; level-k: they start from '
+                               'their logged states and react to the policy\'s ego and each other (core.recon.'
+                               'levelk_actors) — still with their logged appearance')
+        b.addWidget(self.actors)
         b.addWidget(button('Drive a policy here', self.closedloop,
                            tip='closed loop through the reconstruction: the policy sees it rendered from where it '
                                'drove; episodes end 3 m off the logged path (outside the reconstruction)'))
@@ -493,7 +501,7 @@ class ReconPanel(QWidget):
         out = out or os.path.join(self.win.service.runs_dir() or os.path.join(self.win.workspace(), 'runs'),
                                   run_dir_name(f'neural-{os.path.basename(self.rec_dir)}'))
         argv = ['closedloop', self.rec_dir, '--policy', self.policy.text().strip() or 'constant', '--out', out,
-                '--deviate', '3.0', '--device', self.device.currentData()]
+                '--deviate', '3.0', '--device', self.device.currentData(), '--actors', self.actors.currentData()]
         job = self._submit('closedloop', argv, f'Closed loop in {os.path.basename(self.rec_dir)}')
         if job:
             self.note.setText(f'driving in closed loop into {out}')

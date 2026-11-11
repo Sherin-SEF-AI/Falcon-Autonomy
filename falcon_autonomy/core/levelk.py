@@ -7,6 +7,8 @@ differentiable rollout; docs/levelk.md is the guide.
     falcon levelk simulate [--scene crossing|merge|filtering|pedestrian|platoon] [--level K]... [--seconds S] --out DIR
     falcon levelk check [--scene NAME]... [--seeds N] [--out DIR]     realism of simulated agents (core.advfeatures)
     falcon levelk calibrate --log FILE... --out DIR                   maximum likelihood (core.trafficgraph; torch)
+    falcon levelk calibrate --from-nearmiss INGEST_DIR [--kind K]...   on your dashcam near-misses (core.levelk_nearmiss;
+                                                                      private: never leaves the machine)
 
 Frames and units as core.drivefeatures: CARLA's (x forward, y right, z up, left-handed), metres, seconds; a heading
 yaw has its right at (−sin yaw, cos yaw).
@@ -999,7 +1001,8 @@ def main_levelk(argv) -> int:
     usage = ('usage: falcon levelk simulate [--scene NAME] [--level ID=K]... [--param ID.KEY=V]... [--seconds S] '
              '[--seed N] --out DIR\n'
              '       falcon levelk check [--scene NAME]... [--seeds N] [--seconds S] [--out DIR]\n'
-             '       falcon levelk calibrate --log FILE... [--agent ID]... [--steps N] --out DIR')
+             '       falcon levelk calibrate --log FILE... [--agent ID]... [--steps N] --out DIR\n'
+             '       falcon levelk calibrate --from-nearmiss INGEST_DIR [--kind K]... [--depth-draws N] [--out DIR]')
     if not argv or argv[0] not in ('simulate', 'check', 'calibrate'):
         print(usage, flush=True)
         return P.FAILED if argv and argv[0] not in ('-h', '--help') else 0
@@ -1020,18 +1023,43 @@ def main_levelk(argv) -> int:
             ap.add_argument('--seeds', type=int, default=5)
         ap.add_argument('--out', '-o', default='' if what == 'check' else None, required=what == 'simulate')
     else:
-        ap.add_argument('--log', action='append', required=True,
+        ap.add_argument('--log', action='append', default=None,
                         help='a levelk simulate result (trajectories.json) or an episodes.jsonl of a CARLA run')
         ap.add_argument('--agent', action='append', default=None, help='agents to calibrate (default: all '
                                                                        'controlled)')
+        ap.add_argument('--from-nearmiss', metavar='INGEST_DIR',
+                        help='a folder ingested by falcon dashcam ingest: calibrate per kind on its near-miss tracks '
+                             '(private: written into its falcon-ingest/levelk/ unless --out says otherwise, and never '
+                             'leaves this machine)')
+        ap.add_argument('--kind', action='append', default=None,
+                        help='with --from-nearmiss: a kind to calibrate (car, bus, two-wheeler, autorickshaw, '
+                             'pedestrian, or a near-miss kind such as motorcycle; repeat; default all)')
+        ap.add_argument('--depth-draws', type=int, default=20,
+                        help='with --from-nearmiss: redraws of the monocular depth scale (±10%%) propagated into the '
+                             'intervals (0: stated, not propagated)')
+        ap.add_argument('--min-decisions', type=int, default=20)
+        ap.add_argument('--seed', type=int, default=0)
         ap.add_argument('--steps', type=int, default=300)
-        ap.add_argument('--out', '-o', required=True)
+        ap.add_argument('--out', '-o', default='')
     try:
         a = ap.parse_args(argv[1:])
     except SystemExit as e:
         return P.OK if e.code == 0 else P.FAILED
     try:
+        if what == 'calibrate' and bool(a.log) == bool(a.from_nearmiss):
+            raise ValueError('calibrate takes --log FILE... or --from-nearmiss INGEST_DIR (one of them)')
+        if what == 'calibrate' and a.from_nearmiss:
+            from .levelk_nearmiss import calibrate_nearmiss
+            doc = calibrate_nearmiss(a.from_nearmiss, a.out, a.kind, a.steps, a.depth_draws, a.seed,
+                                     a.min_decisions, log=lambda m: print(m, flush=True))
+            print(json.dumps({'out': doc['out'], 'behaviour': doc['behaviour'],
+                              'kinds': {k: {x: v.get(x) for x in ('decisions', 'road_users', 'estimates', 'combined95',
+                                                                  'note') if x in v}
+                                        for k, v in doc['kinds'].items()}}, indent=2, default=float), flush=True)
+            return P.OK
         if what == 'calibrate':
+            if not a.out:
+                raise ValueError('calibrate --log needs --out DIR')
             from .trafficgraph import calibrate_logs
             doc = calibrate_logs(a.log, a.out, agents=a.agent, steps=a.steps, log=lambda m: print(m, flush=True))
             print(json.dumps({k: doc[k] for k in ('estimates', 'n_decisions', 'loglik')}, indent=2, default=float),
