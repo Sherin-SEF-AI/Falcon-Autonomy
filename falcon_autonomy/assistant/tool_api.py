@@ -51,6 +51,7 @@ class ToolContext:
     workspace: str = ''
     emit: Callable = field(default=lambda kind, payload: None)
     redact: Callable = field(default=lambda obj: obj)
+    approval: dict = field(default_factory=dict)  # how the user approved this call: {'how', 'options'} (Tool.approval)
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,9 @@ class Tool:
     estimate: Callable | None = None        # estimate(ctx, **args) -> {'seconds': float | None, 'what': str}
     preview: Callable | None = None         # preview(ctx, **args) -> str: the command, or the change as a diff
     gui: bool = False                       # needs the window (ctx.win)
+    approval: Callable | None = None        # approval(ctx, **args) -> None (the mode decides) or {'ask': True — a card
+    #                                         in every mode, 'allow_all', 'options': {key: label}, 'why'} or {'ask':
+    #                                         False, 'why'}: approved ahead by the user, no card in any mode
 
 
 REGISTRY: dict = {}

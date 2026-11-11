@@ -121,6 +121,10 @@ SHORT = {
     'research_triage': 'The triage queue, one item\'s history and comments, or an object\'s comments.',
     'research_bisect': 'Queue a regression bisect: the first commit of a stack that broke each scenario.',
     'research_triage_edit': 'Comment, or add, assign, move or link a triage item (append-only, as the user).',
+    # research (tools/autopilot.py)
+    'research_autopilot': 'A research study end to end: start, follow_up, resume, report or stop; compute asks the '
+                          'user.',
+    'research_studies': 'Research studies with state and next step; with study, its rounds; suggest: questions.',
     # runs
     'runs_search': 'Search runs with the run query language (e.g. "weather:rain dur>20 events:collision").',
     'runs_get': 'One run compactly: settings, performance, summary, scenario result, streams held.',

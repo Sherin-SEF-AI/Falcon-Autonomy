@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **The research autopilot** (`core/autoresearch.py`, `assistant/tools/autopilot.py`, `ui/research_view.py`,
+  `assistant/agent.py`, `assistant/tool_api.py`, Assistant panel ▸ Research; docs/research-autopilot.md): a question
+  taken through the research loop by a deterministic, resumable state machine stored with its experiment
+  (`experiments/<id>/autopilot.json`): the model writes the ablation spec, the user approves the plan on a card (its
+  cells, replicates from the power analysis and cost), the run is queued through the job queue, analysed, followed up
+  when a round was inconclusive for want of power (a fresh experiment at the observed spread, or the `by` factor
+  narrowed to its inconclusive levels; alpha halves with each look, so a false "supported" over all looks stays below
+  twice the first alpha) and written up as `report.md` with every contrast's interval and effect size, the pins and
+  the paper outputs; every number is checked against the study's own facts and a report with one that is not stays a
+  draft. Every step that queues compute asks on a card in every permission mode, Autopilot included, without
+  *approve all* — unless the first card's box approved the study's follow-ups ahead, within its factors and levels,
+  until Stop; the orchestrator refuses compute without that approval whoever calls it. A tool can now have its own
+  say on its card (`Tool.approval`; how a call was approved reaches it in `ToolContext.approval`). Questions are
+  suggested from failure modes, operating-domain cells, failure-rate estimates and bisect regressions, with anything
+  from the dashcam footage left out before it is counted. The Research tab shows each study's state machine with Stop,
+  Undo and Resume. The assistant: `research_autopilot`, `research_studies` (266 tokens). Tested with the scripted
+  model and the simulated executor (the loop in each mode, a resume after a restart mid-round, Stop, a draft report,
+  a private failure mode) and one real `falcon experiment ablation run` job (16 simulated runs, 0.12 s); not yet run
+  against the real model or with the detection executor on a real server.
+
 - **A scenario from a description, checked against its run** (`core/scenario_text.py`, `core/scenario_check.py`,
   `schemas/scenario.schema.json`, `workers/director.py`, `core/drive.py`, `sim/scenariotext.py`,
   `ui/scenario_text_panel.py`, Scenarios ▸ Describe a scenario, `falcon scenario from-text|check`;

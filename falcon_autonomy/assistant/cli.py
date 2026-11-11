@@ -197,6 +197,8 @@ def main_assistant(argv) -> int:
     except (OSError, ProjectError) as e:
         print(json.dumps({'error': f'cannot open the project: {e}'}))
         return 2
+    if tl.tier == 'act':                     # --allow-act: the user typed this call (a study's compute step needs it)
+        ctx.approval = {'how': 'command line'}
     before = {j.id for j in ctx.queue.jobs}
     code = 0
     try:

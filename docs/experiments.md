@@ -157,6 +157,9 @@ The assistant's **research** tools: `research_ablation` with `action` create (fr
 the plan), run and rerun (jobs), analyse, export; `research_registry` lists the registry and, with an id, reads an
 experiment's plan or results; `research_paper` writes the outputs for a paper of an experiment, an evaluation or a
 comparison, or an export's data card. `analysis_outputs` with kind `experiment` lists the same rows.
+The **research autopilot** takes a question through ablations end to end — the plan approved on a card, the runs,
+the analysis, follow-ups of an inconclusive round, a report whose numbers are checked
+([research autopilot](research-autopilot.md)).
 
 ## The command
 
