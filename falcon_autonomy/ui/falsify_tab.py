@@ -7,7 +7,11 @@ the workspace's safety/formulas.json. The study runs as a job (`falcon falsify r
 scenario, method (CMA-ES, the cross-entropy method, Bayesian optimisation …) and budget, on the page's world, rig,
 seed and rate. The results: the best (lowest) robustness ρ, the falsified runs (ρ < 0), the near misses (0 ≤ ρ <
 margin), and the ρ(t) trace of the chosen run with the time that decides it. Every run can be browsed or replayed from
-the page above (its folder is in the list)."""
+the page above (its folder is in the list).
+
+Runs on (ui.placement): this machine, the cluster or one of its pools — the drives then run on the cluster's nodes
+(`--on`), the study itself here. A scenario or world made from the dashcam footage never leaves this machine: the
+reason shows under the choice and the study is not queued."""
 from __future__ import annotations
 
 import json
@@ -22,6 +26,7 @@ from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QHBoxLayout, QPlainTextE
 
 from ..core import stlobjective as SO
 from ..core.jobs import FINAL, JobSpec
+from .placement import PlacementCombo
 from .theme import STATUS, THEME
 from .widgets import Form, KeyValues, button, label
 
@@ -112,7 +117,7 @@ class FalsifyTab(QWidget):
         self._debounce.timeout.connect(self.check)
         f = Form()
         self.scenario = QComboBox()
-        self.scenario.currentIndexChanged.connect(lambda _: self.load())
+        self.scenario.currentIndexChanged.connect(lambda _: (self._placement_changed(), self.load()))
         self.method = QComboBox()
         for k, t in METHODS:
             self.method.addItem(t, k)
@@ -136,10 +141,17 @@ class FalsifyTab(QWidget):
         self.margin.setValue(SO.DEFAULT_MARGIN)
         self.margin.setToolTip('a near miss: 0 ≤ ρ < margin (in the predicate\'s units)')
         self.margin.valueChanged.connect(lambda _: self.load())
+        self.placement = PlacementCombo(getattr(self.win, 'settings', None))
+        self.placement.currentIndexChanged.connect(lambda _: self._placement_changed())
         for text, w in (('Scenario', self.scenario), ('Method', self.method), ('Evaluations', self.budget),
-                        ('Scale', self.scale), ('Smoothing β', self.smooth), ('Near miss below ρ', self.margin)):
+                        ('Scale', self.scale), ('Smoothing β', self.smooth), ('Near miss below ρ', self.margin),
+                        ('Runs on', self.placement)):
             f.row(text, w)
         v.addLayout(f)
+        self.where = label('', small=True, wrap=True, sel=True)
+        self.where.setStyleSheet(f'color: {STATUS["critical"]}')
+        self.where.hide()
+        v.addWidget(self.where)
         b = QHBoxLayout()
         self.start_btn = button('Falsify', self.start, role='primary', tip='falcon falsify run (a job; resumable)')
         b.addWidget(self.start_btn)
@@ -162,6 +174,7 @@ class FalsifyTab(QWidget):
 
     def showEvent(self, ev):                                      # noqa: N802 (another project, new studies)
         super().showEvent(ev)
+        self.placement.reload()                                   # nodes added in Settings ▸ Compute meanwhile
         self.refresh()
 
     # ------------------------------------------------------------------ the requirement
@@ -251,7 +264,7 @@ class FalsifyTab(QWidget):
             except SO.STLObjectiveError as e:
                 self.parse.setText(f'✗ {e}')
                 self.parse.setStyleSheet(f'color: {STATUS["critical"]}')
-        self.start_btn.setEnabled(self.spec is not None)
+        self._placement_changed()
         self.load()
 
     def save_formula(self):
@@ -269,6 +282,28 @@ class FalsifyTab(QWidget):
             k = self.source.findData(f'name:{name.strip()}')
             if k >= 0:
                 self.source.setCurrentIndex(k)
+
+    # ------------------------------------------------------------------ where its runs go
+    def _scenario_doc(self) -> dict | None:
+        ident = self.scenario.currentData()
+        return next((s for k, s in self._scenarios() if k == ident), None)
+
+    def _world_doc(self) -> dict | None:
+        wid = self._page_value('world', '')
+        try:
+            return self.win.project.item('worlds', wid) if wid else None
+        except AttributeError:
+            return None
+
+    def placement_refusal(self) -> str:
+        """Why the chosen scenario cannot run where chosen ('' when it can): dashcam-derived data stays here."""
+        return self.placement.refusal(self._scenario_doc(), self._world_doc())
+
+    def _placement_changed(self):
+        why = self.placement_refusal()
+        self.where.setText(why)
+        self.where.setVisible(bool(why))
+        self.start_btn.setEnabled(self.spec is not None and not why)
 
     # ------------------------------------------------------------------ the study
     def _page_value(self, name, default):
@@ -304,18 +339,25 @@ class FalsifyTab(QWidget):
         argv += ['--scale', str(req.get('scale', 1.0)), '--smooth', str(req.get('smooth') or 0.0)]
         if getattr(w, 'fake_carla', ''):
             argv += ['--fake-carla', w.fake_carla]
-        return argv
+        return argv + self.placement.argv()
 
     def start(self):
         w = self.win
         if self.spec is None or (self.job is not None and self.job.state not in FINAL):
             return
+        why = self.placement_refusal()
+        if why:
+            self._placement_changed()
+            self.kv.set('State', f'not queued: {why}')
+            return
         if not w.project.path or w.project.dirty:
             if not w.save():
                 return
         argv = [sys.executable, '-m', 'falcon_autonomy'] + self.argv()
+        on = self.placement.placement()
         self.job = w.queue.submit(JobSpec('study', f'Falsify {self.scenario.currentText()} '
-                                                   f'({self.method.currentText()}, {self.budget.value()})', argv,
+                                                   f'({self.method.currentText()}, {self.budget.value()})'
+                                                   + ('' if on == 'local' else f' on {on}'), argv,
                                           memory_gb=0.5, resumable=True))
         if hasattr(w, 'jobs_dock'):
             w.jobs_dock.raise_()

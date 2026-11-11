@@ -141,8 +141,11 @@ narrow proposal cannot show the target's spread — so 21, 30, 38 and 40 of the 
 ## The page and the command
 
 Rare cases ▸ **Failure rate** uses the search's scenario, objective, world, rig, threshold, weather searched, rate and
-seed, and adds *Runs per stage*, *Final runs*, *Stages at most*, *A failure is* (the judge), and the *Rate* (per
-encounter, km or hour, with the encounters per unit and their source). It queues `falcon failrate run` as a job and
+seed, and adds *Runs per stage*, *Final runs*, *Stages at most*, *A failure is* (the judge), the *Rate* (per
+encounter, km or hour, with the encounters per unit and their source) and *Runs on* — this machine, the cluster or one
+of its pools ([cluster](cluster.md): the drives go to the nodes as `--on`, the estimate itself runs here; a scenario
+or world made from the dashcam footage never leaves this machine: the reason shows and nothing is queued). It queues
+`falcon failrate run` as a job and
 shows the probability per encounter with its interval, the rate per exposure unit, the effective failures, the runs,
 the reasons for a refusal or a warning, and what plain Monte Carlo would have needed. Each scenario, objective (and
 model), weather searched, rate and judge has its own study, `studies/rate-<scenario>…`.
@@ -151,7 +154,8 @@ model), weather searched, rate and judge has its own study, `studies/rate-<scena
 falcon failrate run PROJECT --scenario lead_brake [--name N] [--stage-size 100] [--final 200] [--max-stages 6] \
     [--rho 0.1] [--defensive 0.1] [--batch 4] [--threshold 0.5] [--judge objective|checks|rules|stl] \
     [--exposure-per km|hour --encounters X --exposure-source TEXT] [--world W] [--rig R] [--seed N] \
-    [--search-seed N] [--objective criticality|perception|both --model ID] [--weather FIELD[:LO:HI]] [--fps F]
+    [--search-seed N] [--objective criticality|perception|both --model ID] [--weather FIELD[:LO:HI]] [--fps F] \
+    [--on local|cluster|cluster:POOL]
 falcon failrate show STUDY_DIR | PROJECT --name N [--json] [--exposure-per km --encounters X]
 falcon failrate check [--p 1e-4,1e-6] [--dims 2,5] [--problems tail,corner] [--seeds 50] [--stage-size 500] \
     [--final 1000] [--family mean_shift|full] [--json]

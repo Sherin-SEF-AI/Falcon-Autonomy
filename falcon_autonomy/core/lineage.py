@@ -435,7 +435,8 @@ def materialise(splits_parquet: str, dest: str, store: C.Store, how: str = 'hard
 # ================================================================================================ roots and gc
 def roots(workspace: str) -> set:
     """Every address the workspace still refers to: dataset versions' splits parquet files (frames, label files and
-    label sets), run indexes and trainings' data.json. gc keeps exactly these."""
+    label sets), run indexes — the workspace's runs, a study's runs, a dataset's drives and a trashed run (it can be
+    restored) — and trainings' data.json. gc keeps exactly these."""
     out = set()
 
     def add(a):
@@ -459,7 +460,9 @@ def roots(workspace: str) -> set:
                     add(r['label'])
     import glob
     for p in sorted(glob.glob(os.path.join(workspace, 'runs', '*', INDEX_FILE)) +
-                    glob.glob(os.path.join(workspace, 'datasets', '*', 'drives', '*', INDEX_FILE))):
+                    glob.glob(os.path.join(workspace, 'datasets', '*', 'drives', '*', INDEX_FILE)) +
+                    glob.glob(os.path.join(workspace, 'studies', '*', 'runs', '*', INDEX_FILE)) +
+                    glob.glob(os.path.join(workspace, 'trash', '*', '*', INDEX_FILE))):
         for r in read_table(p)[0]:                   # a run's index sits at the run's top (index_path)
             add(r['frame'])
             add(r['label'])

@@ -10,6 +10,12 @@ tools/cloud.py.
     cluster_dispatch  act    a sweep, rare-case search or failure-rate estimate whose drives run on a pool of the
                              cluster (`falcon sweep|search|failrate run … --on cluster[:POOL]`): the study itself runs
                              here; its preview is the command line, its estimate the runs over the pool's slots
+    cluster_cache_gc  act    the caches nothing refers to (cluster.gc; `falcon cluster gc`): a dry run (the default)
+                             lists each item with its size and keeps the list as a plan for an hour; removing takes
+                             that plan's id, asks the user on a card in every mode (no "approve all": it cannot be
+                             undone) whose preview lists what goes now with sizes, and removes only what the plan
+                             listed that is still removable. Never a run folder, the trash, private data, the cloud's
+                             ledger or anything referenced
 
 A module adds its tools' one-line descriptions to _compact.SHORT itself (MINE below; tools/__init__ explains why)."""
 from __future__ import annotations
@@ -22,6 +28,8 @@ MINE = {
     'cluster_nodes': 'Compute nodes jobs may run on: this machine with its GPUs and the configured nodes.',
     'cluster_quotas': 'The cluster\'s pools: nodes, slots, limits, jobs started today and running now.',
     'cluster_dispatch': 'Queue a sweep, search or failure-rate study whose runs go to a cluster pool.',
+    'cluster_cache_gc': 'Clear caches nothing refers to, here and on cluster nodes: dry run first, then remove its '
+                        'plan.',
 }
 assert not set(MINE) & set(_compact.SHORT), set(MINE) & set(_compact.SHORT)
 _compact.SHORT.update(MINE)
@@ -136,3 +144,110 @@ def cluster_dispatch(ctx, **a):
         raise ToolError(f'private: {why} — dashcam-derived data never leaves this machine')
     kind, title, argv, kw = _built(ctx, **a)
     return C.cli_job(ctx, kind, title, argv, **kw)
+
+
+# ------------------------------------------------------------------------------------------------ cache gc
+def _gc_ws(ctx) -> str:
+    try:
+        return C.workspace(ctx)
+    except ToolError:
+        return ''                                    # no project: the nodes only
+
+
+def _gc_keep(ctx) -> set:
+    """Global ids of this session's cluster jobs that are not finished (running, waiting or re-queueable)."""
+    from ...core.jobs import FINAL
+    q = ctx.queue if ctx.win is None else ctx.win.queue
+    return {j.spec.gid for j in (q.jobs if q is not None else ()) if j.spec.placement != 'local' and j.spec.gid
+            and j.state not in FINAL}
+
+
+def _gc_plan(ctx, node, older_than_h, plan):
+    from ...cluster import gc as G
+    if not plan:
+        raise ToolError('removing needs the plan id of a dry run (call with dry_run true first)')
+    try:
+        doc = G.load_plan(plan)
+    except G.GCError as e:
+        raise ToolError(str(e)) from None
+    want = {'workspace': _gc_ws(ctx), 'node': node, 'older_than_h': float(older_than_h)}
+    if doc['args'] != want:
+        raise ToolError(f'the dry run {plan} was made with other arguments: run a new dry run with these (node '
+                        f'{doc["args"].get("node") or "all"}, older_than_h {doc["args"].get("older_than_h")})')
+    return doc
+
+
+def _gc_brief(res: dict, limit: int = 5) -> list:
+    from ...cluster.gc import human
+    out = []
+    for sec in res['sections']:
+        row = {'where': sec['where'], 'items': sec['count'], 'size': human(sec['bytes'])}
+        if sec['kind'] == 'store' and sec['frees'] != sec['bytes']:
+            row['frees'] = human(sec['frees'])
+        if not res['dry_run']:
+            row.update(removed=sec['removed'], freed=human(sec['bytes_freed']))
+        if sec['kept_why']:
+            row['kept'] = sec['kept_why']
+        top = sorted(sec['items'], key=lambda x: -int(x.get('bytes') or 0))[:limit]
+        if top:
+            row['largest'] = [f'{it["name"]} {human(it.get("bytes") or 0)}' for it in top]
+        if sec['notes']:
+            row['notes'] = sec['notes']
+        if sec['error']:
+            row['error'] = sec['error']
+        out.append(row)
+    return out
+
+
+def _gc_preview(ctx, node='', older_than_h=24.0, dry_run=True, plan=''):
+    from ...cluster import gc as G
+    if dry_run:
+        return 'a dry run: lists what would be removed, with sizes, and removes nothing'
+    doc = _gc_plan(ctx, node, older_than_h, plan)
+    res = G.collect(_settings(ctx), _gc_ws(ctx), node, older_than_h, dry_run=True, only=doc['items'],
+                    keep=_gc_keep(ctx))
+    return '\n'.join([f'remove for good what dry run {plan} listed and is still removable:']
+                     + G.lines(res, 12)[:-1] + [f'{res["count"]} item(s), {G.human(res["bytes"])} — this cannot be '
+                                                'undone'])
+
+
+def _gc_gate(ctx, dry_run=True, **_a):
+    """Tool.approval: a dry run is the mode's to decide; removing asks in every mode, never "approve all"."""
+    if dry_run:
+        return None
+    return {'ask': True, 'allow_all': False,
+            'why': 'it deletes cache files for good (they do not go to the trash): every clean-up asks you, in every '
+                   'mode'}
+
+
+@tool('cluster_cache_gc', 'cluster', 'act',
+      'Clear the caches nothing refers to (docs/cluster.md, "Cleaning up"): this machine\'s content store (objects no '
+      'dataset version, run index or training names), and on the cluster\'s nodes the scratch run folders and CARLA '
+      'logs of jobs no longer there and Slurm array folders, each unchanged for older_than_h hours (default 24) and '
+      'not of a running or re-queueable job. Never a run folder, the trash, private (dashcam) data, the cloud\'s '
+      'ledger or anything referenced. dry_run (the default) lists what would go with sizes and returns a plan id '
+      '(valid an hour); then dry_run false with that plan removes only what it listed and is still removable — the '
+      'user approves it on a card in every mode. node: one node only.',
+      C.obj({'node': C.s('one node\'s caches only (default: this machine, every node, the cloud)', maxLength=40),
+             'older_than_h': C.n('hours unchanged (default 24)', minimum=0, maximum=87600),
+             'dry_run': C.b('list only (default true)'),
+             'plan': C.s('the dry run\'s plan id, to remove it', pattern='^[0-9a-f]{16}$')}),
+      preview=_gc_preview, approval=_gc_gate)
+def cluster_cache_gc(ctx, node='', older_than_h=24.0, dry_run=True, plan=''):
+    from ...cluster import gc as G
+    if node and node not in {n['name'] for n in _cfg(ctx)['nodes']}:
+        raise ToolError(f'no node {node!r} (cluster_nodes lists them)')
+    try:
+        if dry_run:
+            res = G.plan(_settings(ctx), _gc_ws(ctx), node, older_than_h, keep=_gc_keep(ctx))
+            pid = G.save_plan(res)
+            return {'dry_run': True, 'plan': pid, 'would_remove': res['count'], 'size': G.human(res['bytes']),
+                    'sections': _gc_brief(res), 'errors': res['errors'],
+                    'next': f'to remove exactly these: dry_run false, plan {pid} (the user approves it)'}
+        doc = _gc_plan(ctx, node, older_than_h, plan)
+        res = G.collect(_settings(ctx), _gc_ws(ctx), node, older_than_h, dry_run=False, only=doc['items'],
+                        keep=_gc_keep(ctx))
+    except G.GCError as e:
+        raise ToolError(str(e)) from None
+    return {'dry_run': False, 'plan': plan, 'removed': res['removed'], 'freed': G.human(res['bytes_freed']),
+            'sections': _gc_brief(res), 'errors': res['errors']}

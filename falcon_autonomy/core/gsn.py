@@ -28,7 +28,22 @@ result must show:
     verdict       a CI run's verdict equals `equals` (default "passed")
     field         any number of the result's JSON at a dotted `path`, compared by `op` (<=, <, >=, >, ==) with limit
                   (or equal to `equals`) — e.g. a lineage file's Merkle root
+    data_root     a trained model's data (kind lineage; ref the training folder or its model.onnx): the ONNX file's
+                  metadata_props falcon.data_merkle_root is the root of the data the claim binds (`data`: the
+                  training's own data.json, by default, or a dataset version's JSON) — core.lineage.verify_model's
+                  checks (the ONNX metadata against data.json, data.json's roots against its per-sample addresses,
+                  the registration's SHA-256), and for a version: the training names that version, every training
+                  frame is in its train split and its splits file gives the root it records. Binding pins the model
+                  and the data's files (data.sha256), so a changed model or changed data is amber; roots that
+                  disagree are red
     (no claim)    the hash alone
+
+Where it ran. Binding a failrate or falsify result also records where its runs were made (where_ran): on this machine,
+on the cluster (each node's name and how many runs, the pools, the kinds and every job's global id, from the `node`
+block of each run's run.json) or on a cloud burst (the provider, the burst's id, the GPU, the approved estimate's id
+and the instance, from cloud.json in the study). It is checked again at every verification: a result whose runs were
+since made elsewhere is amber until re-bound. A result from the cluster or a cloud burst is bound by hash and claim
+exactly as a local one.
 
 VERIFY (verify()) gives every node a status:
     green   a Solution whose file's hash is the pinned one and whose claim holds (or has no claim)
@@ -80,7 +95,10 @@ SUPPORTERS = ('Goal', 'Strategy')
 SUPPORTED = ('Goal', 'Strategy', 'Solution', 'AwayGoal')
 CONTEXTS = ('Context', 'Assumption', 'Justification')
 KINDS = ('failrate', 'suite', 'ci', 'falsify', 'rules', 'lineage')
-MEASURES = ('failure_rate', 'pass_rate', 'min_robustness', 'falsified_runs', 'violations_per_km', 'verdict', 'field')
+MEASURES = ('failure_rate', 'pass_rate', 'min_robustness', 'falsified_runs', 'violations_per_km', 'verdict', 'field',
+            'data_root')
+NO_LIMIT = ('verdict', 'data_root')            # measures that compare no number with a limit
+WHERE_KINDS = ('failrate', 'falsify')          # results whose evidence records where their runs were made
 BOUNDS = ('clopper_pearson_upper', 'clopper_pearson_lower', 'estimate', 'ci95_upper')
 STATUSES = ('green', 'amber', 'red', 'grey')
 RANK = {'green': 0, 'grey': 1, 'amber': 2, 'red': 3}
@@ -220,8 +238,13 @@ def _evidence_problems(ev) -> list:
                 out.append(f'claim bound: one of {", ".join(BOUNDS)}')
             if c.get('conf') is not None and not 0 < float(c['conf']) < 1:
                 out.append('claim conf lies in (0, 1)')
-            if c['measure'] not in ('verdict',) and c.get('limit') is None and c.get('equals') is None:
+            if c['measure'] not in NO_LIMIT and c.get('limit') is None and c.get('equals') is None:
                 out.append('claim: a limit (or equals)')
+            if c['measure'] == 'data_root':
+                if ev.get('kind') != 'lineage':
+                    out.append('claim data_root: on lineage evidence (a trained model)')
+                if c.get('data') is not None and (not isinstance(c['data'], str) or not c['data']):
+                    out.append('claim data_root: data is the bound data\'s path (a data.json or a dataset version)')
             if c['measure'] == 'field' and not c.get('path'):
                 out.append('claim field: its dotted path in the result')
             if c.get('op') is not None and c['op'] not in ('<=', '<', '>=', '>', '=='):
@@ -315,6 +338,15 @@ def resolve(workspace: str, ev: dict, overrides: dict | None = None) -> tuple:
         p = ref if os.path.isabs(ref) else os.path.join(workspace, ref)
         if os.path.isdir(p) and ev['kind'] in RESULT_FILE:
             p = os.path.join(p, RESULT_FILE[ev['kind']])
+        elif os.path.isdir(p) and ev['kind'] == 'lineage':        # a training folder: its model, else its data.json
+            p = os.path.join(p, 'model.onnx') if os.path.isfile(os.path.join(p, 'model.onnx')) else \
+                os.path.join(p, 'data.json')
+        elif ev['kind'] == 'lineage' and os.path.basename(p) == 'model.json' and os.path.isfile(p):
+            try:                                                   # a registration: the model it registers
+                from .lineage import resolve_model
+                p = resolve_model(p)['onnx'] or p
+            except Exception:                                      # noqa: BLE001 (pinned as the file it is)
+                pass
     if not os.path.isfile(p):
         return None, None, f'{p} is missing'
     return p, None, alias
@@ -478,6 +510,193 @@ def _sha(p: str) -> str:
     return sha256_file(p)
 
 
+# ------------------------------------------------------------------------------------------------ where it ran
+def where_ran(study_dir: str) -> dict:
+    """Where a study's runs were made (module doc, "Where it ran"): {'on': 'cloud', 'provider', 'burst', 'gpu',
+    'estimate_id', 'instance_id'} from the study's cloud.json; {'on': 'cluster', 'nodes': {name: runs}, 'pools',
+    'kinds', 'runs', 'local_runs', 'gids'} when any of its runs' run.json has a `node` block; else {'on': 'local',
+    'runs': n}. Its runs: results.jsonl's and failure-rate.json's final runs."""
+    cj = os.path.join(study_dir, 'cloud.json')
+    if os.path.isfile(cj):
+        try:
+            d = _read(cj) or {}
+        except (OSError, ValueError):
+            d = {}
+        return dict({'on': 'cloud'}, **{k: d[k] for k in ('provider', 'burst', 'gpu', 'estimate_id', 'instance_id')
+                                         if d.get(k)})
+    runs = set()
+    ws = os.path.dirname(os.path.dirname(os.path.abspath(study_dir)))
+    try:
+        for r in _read(os.path.join(study_dir, 'results.jsonl')) or ():
+            if isinstance(r, dict) and r.get('run'):
+                runs.add(r['run'])
+    except (OSError, ValueError):
+        pass
+    try:
+        for r in (_read(os.path.join(study_dir, 'failure-rate.json')) or {}).get('final_runs') or ():
+            if isinstance(r, dict) and r.get('run'):
+                runs.add(r['run'])
+    except (OSError, ValueError, AttributeError):
+        pass
+    nodes, pools, kinds, gids, local = {}, set(), set(), set(), 0
+    for run in sorted(runs):
+        run = run if os.path.isabs(run) else os.path.join(ws, run)
+        try:
+            with open(os.path.join(run, 'run.json'), encoding='utf-8') as fh:
+                n = json.load(fh).get('node')
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(n, dict) and n.get('name'):
+            nodes[n['name']] = nodes.get(n['name'], 0) + 1
+            pools.add(str(n.get('pool') or 'default'))
+            kinds.add(str(n.get('kind') or ''))
+            gid = str(n.get('dispatch') or '').split('.', 1)[0]
+            if gid:
+                gids.add(gid)
+        else:
+            local += 1
+    if not nodes:
+        return {'on': 'local', 'runs': local}
+    return {'on': 'cluster', 'nodes': dict(sorted(nodes.items())), 'pools': sorted(pools), 'kinds': sorted(kinds),
+            'runs': sum(nodes.values()), 'local_runs': local, 'gids': sorted(gids)}
+
+
+def where_text(w: dict | None) -> str:
+    """Where it ran, in a few words (the tab, the report, the template's texts)."""
+    if not w:
+        return ''
+    if w.get('on') == 'cloud':
+        return 'on a cloud burst' + (f' ({w["provider"]}' + (f' {w["gpu"]}' if w.get('gpu') else '') +
+                                     (f', burst {w["burst"]}' if w.get('burst') else '') + ')'
+                                     if w.get('provider') else '')
+    if w.get('on') == 'cluster':
+        names = ', '.join(f'{k} {v}' for k, v in (w.get('nodes') or {}).items())
+        return (f'on the cluster ({names}' + (f'; {w["local_runs"]} here' if w.get('local_runs') else '') +
+                f'; {len(w.get("gids") or ())} jobs)')
+    return 'on this machine'
+
+
+# ------------------------------------------------------------------------------------------------ a model's data
+def _rel(workspace: str, p: str) -> str:
+    """A path as evidence keeps it: relative to the workspace when it is inside it."""
+    ap = os.path.abspath(p)
+    return os.path.relpath(ap, workspace) if ap.startswith(os.path.abspath(workspace) + os.sep) else ap
+
+
+def _data_files(workspace: str, model_path: str, claim: dict) -> dict:
+    """{'ref', 'kind': 'training' | 'version', 'files': [absolute paths whose bytes the data is]} of a data_root
+    claim's data: its `data` (a dataset version's JSON: the JSON and its splits file; a data.json or its training
+    folder), or the model's own data.json."""
+    ref = claim.get('data') or ''
+    if ref:
+        p = ref if os.path.isabs(ref) else os.path.join(workspace, ref)
+    else:
+        p = os.path.join(os.path.dirname(model_path), 'data.json')
+        ref = _rel(workspace, p)
+    if os.path.isdir(p):
+        p = os.path.join(p, 'data.json')
+    if not os.path.isfile(p):
+        raise GSNError(f'the data {ref} is missing')
+    try:
+        doc = _read(p) if p.endswith('.json') else None
+    except (OSError, ValueError) as e:
+        raise GSNError(f'the data {ref} cannot be read: {e}') from None
+    if isinstance(doc, dict) and doc.get('schema') == 'falcon.dataset_version/1':
+        lin = doc.get('lineage') or {}
+        if not lin.get('splits'):
+            raise GSNError(f'{ref}: the dataset version has no lineage (made before lineage, or without pyarrow)')
+        vws = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(p)))))
+        return {'ref': ref, 'kind': 'version', 'files': [p, os.path.join(vws, lin['splits'])]}
+    if isinstance(doc, dict) and (doc.get('train') is not None or doc.get('hash_alg')):
+        return {'ref': ref, 'kind': 'training', 'files': [p]}
+    raise GSNError(f'{ref}: neither a training\'s data.json nor a dataset version')
+
+
+def _pin_data(workspace: str, model_path: str, claim: dict) -> dict:
+    d = _data_files(workspace, model_path, claim)
+    return {'ref': d['ref'], 'kind': d['kind'], 'sha256': {_rel(workspace, f): _sha(f) for f in d['files']}}
+
+
+def _data_changed(workspace: str, pinned: dict) -> str:
+    """Why the bound data is no longer what was pinned ('' when it is)."""
+    for rel, sha in (pinned.get('sha256') or {}).items():
+        f = rel if os.path.isabs(rel) else os.path.join(workspace, rel)
+        if not os.path.isfile(f):
+            return f'the data\'s {rel} is missing'
+        now = _sha(f)
+        if now != sha:
+            return f'the data changed since it was bound ({rel}: {sha[:12]} → {now[:12]}): re-bind to accept it'
+    return ''
+
+
+def _version_label(doc: dict) -> str:
+    """How a training names a dataset version (core.training.dataset_version_of)."""
+    return f'{doc.get("name")} v{doc.get("version")} ({doc.get("spec")} sha256 {str(doc.get("sha256"))[:12]})'
+
+
+def data_root_claim(workspace: str, model_path: str, claim: dict) -> dict:
+    """evaluate_claim's answer for a data_root claim (module doc): ok True when the model names exactly the bound
+    data, False when the roots (or the version's name, or its frames) disagree, None when it cannot be told."""
+    from . import lineage as L
+    if not model_path.endswith('.onnx'):
+        return {'ok': None, 'measured': None, 'detail': 'no model.onnx: there is no root in a model to compare'}
+    try:
+        d = _data_files(workspace, model_path, claim)
+        chk = L.verify_model(model_path, reread=False)
+    except (GSNError, L.LineageError) as e:
+        return {'ok': None, 'measured': None, 'detail': str(e)}
+    except ImportError as e:
+        return {'ok': None, 'measured': None, 'detail': f'the ONNX metadata cannot be read here ({e.name} is not '
+                                                        'installed)'}
+    except (OSError, ValueError) as e:
+        return {'ok': None, 'measured': None, 'detail': f'the model cannot be read: {e}'}
+    onnx_root = (chk['checked'].get('onnx_metadata') or {}).get('falcon.data_merkle_root')
+    problems = list(chk['problems'])
+    if d['kind'] == 'training':
+        mine = os.path.realpath(os.path.join(chk['model']['dir'], 'data.json'))
+        if os.path.realpath(d['files'][0]) != mine:          # another training's data: compare with its root
+            other = _read(d['files'][0])
+            alg = other.get('hash_alg')
+            rows = (other.get('train') or {}).get('images') or []
+            want = L.pairs_root(((r.get('frame'), r.get('label')) for r in rows), alg) if alg else None
+            if want != onnx_root:
+                problems.append(f'the model\'s falcon.data_merkle_root {onnx_root} is not {d["ref"]}\'s training '
+                                f'root {want}')
+        if problems:
+            return {'ok': False, 'measured': onnx_root, 'detail': '; '.join(problems)}
+        return {'ok': True, 'measured': onnx_root, 'detail': f'the model\'s falcon.data_merkle_root {onnx_root} is '
+                f'the root of {d["ref"]}\'s training samples'}
+    vdoc = _read(d['files'][0])
+    lin = vdoc.get('lineage') or {}
+    try:
+        rows, meta = L.read_table(d['files'][1])
+    except (L.LineageError, OSError, ValueError) as e:
+        return {'ok': None, 'measured': onnx_root, 'detail': f'the version\'s splits cannot be read: {e}'}
+    alg = meta.get('hash_alg') or lin.get('hash_alg')
+    vroot = L.pairs_root(((r['frame'], r['label']) for r in rows), alg)
+    if vroot != lin.get('merkle_root'):
+        problems.append(f'the version\'s splits give root {vroot}, it records {lin.get("merkle_root")}')
+    tdoc = _read(os.path.join(chk['model']['dir'], 'data.json'))
+    label = _version_label(vdoc)
+    if label not in str(tdoc.get('dataset_version') or ''):
+        problems.append(f'the model names its data as {tdoc.get("dataset_version") or "none"!r}, not {label!r}')
+    if tdoc.get('hash_alg') != alg:
+        return {'ok': None, 'measured': onnx_root, 'detail': f'the model is hashed with {tdoc.get("hash_alg")} and '
+                f'the version with {alg}: they cannot be compared'}
+    split = 'train' if any(r['split'] == 'train' for r in rows) else None
+    have = {r['frame'] for r in rows if split is None or r['split'] == split}
+    frames = [r.get('frame') for r in (tdoc.get('train') or {}).get('images') or ()]
+    outside = sum(1 for f in frames if f not in have)
+    if outside:
+        problems.append(f'{outside} of the model\'s {len(frames)} training frames are not in the version\'s '
+                        f'{split or "samples"}')
+    if problems:
+        return {'ok': False, 'measured': onnx_root, 'detail': '; '.join(problems)}
+    return {'ok': True, 'measured': onnx_root, 'detail': f'the model\'s falcon.data_merkle_root {onnx_root} is the '
+            f'root of its {len(frames)} training samples, every one a frame of {label}\'s {split or "samples"} '
+            f'(version root {vroot})'}
+
+
 def check_evidence(workspace: str, ev: dict, overrides: dict | None = None) -> dict:
     """A Solution's evidence → {'status', 'why', 'path', 'sha256', 'alias', 'claim': evaluate_claim(...)}."""
     p, d, alias = resolve(workspace, ev, overrides)
@@ -498,9 +717,24 @@ def check_evidence(workspace: str, ev: dict, overrides: dict | None = None) -> d
             return dict(out, status='amber', why=f'the result cannot be read: {e}')
     else:
         out['sha256'] = None                       # an in-memory result (a CI run at its end)
-    if ev['kind'] == 'lineage' and not ev.get('claim'):
+    if ev.get('where') is not None:
+        out['where'] = ev['where']
+        now = where_ran(os.path.dirname(p))
+        if now != ev['where'] and not alias:
+            return dict(out, status='amber', where_now=now,
+                        why=f'its runs were made {where_text(now)} now, {where_text(ev["where"])} when bound: re-bind '
+                            'to accept it')
+    claim = ev.get('claim') or {}
+    if ev.get('data'):
+        why = _data_changed(workspace, ev['data'])
+        if why:
+            return dict(out, status='amber', why=why)
+    if ev['kind'] == 'lineage' and not claim:
         return dict(out, status='green', why='the pinned hash matches', claim=None)
-    c = evaluate_claim(ev['kind'], ev.get('claim'), d)
+    if claim.get('measure') == 'data_root':
+        c = data_root_claim(workspace, p, claim)
+    else:
+        c = evaluate_claim(ev['kind'], ev.get('claim'), d)
     out['claim'] = c
     if c['ok'] is None:
         return dict(out, status='amber', why=f'the claim cannot be evaluated: {c["detail"]}')
@@ -526,6 +760,10 @@ def bind(workspace: str, doc: dict, nid: str, kind: str, ref: str, claim: dict |
     if p is None:
         raise GSNError(f'cannot bind {nid}: {why}')
     ev.update(sha256=_sha(p), path=os.path.relpath(p, workspace), bound_at=utc_now())
+    if kind in WHERE_KINDS:
+        ev['where'] = where_ran(os.path.dirname(p))
+    if (claim or {}).get('measure') == 'data_root':
+        ev['data'] = _pin_data(workspace, p, claim)
     n['evidence'] = ev
     n.pop('undeveloped', None)
     return ev
@@ -628,7 +866,36 @@ def evidence_candidates(workspace: str) -> dict:
     for s in ls('rules'):
         if os.path.isfile(os.path.join(workspace, 'rules', s, 'rules.json')):
             out['rules'].append(f'rules/{s}')
+    for t in ls('training'):                           # trained models that name their data (core.lineage)
+        d = os.path.join(workspace, 'training', t)
+        if os.path.isfile(os.path.join(d, 'model.onnx')):
+            try:
+                with open(os.path.join(d, 'data.json'), encoding='utf-8') as fh:
+                    if json.load(fh).get('hash_alg'):
+                        out['lineage'].append(f'training/{t}')
+            except (OSError, ValueError, AttributeError):
+                continue
     return out
+
+
+def model_data(workspace: str, ref: str) -> str:
+    """What a template binds a model's data_root claim to: the dataset version its training names (found in the
+    workspace's datasets/*/versions), else the training's own data.json."""
+    d = os.path.join(workspace, ref)
+    try:
+        named = str((_read(os.path.join(d, 'data.json')) or {}).get('dataset_version') or '')
+    except (OSError, ValueError):
+        named = ''
+    if named and named != 'none':
+        import glob
+        for v in sorted(glob.glob(os.path.join(workspace, 'datasets', '*', 'versions', 'v*.json'))):
+            try:
+                doc = _read(v)
+            except (OSError, ValueError):
+                continue
+            if isinstance(doc, dict) and (doc.get('lineage') or {}).get('splits') and _version_label(doc) in named:
+                return os.path.relpath(v, workspace)
+    return f'{ref}/data.json'
 
 
 def template(kind: str, workspace: str = '', title: str = '') -> dict:
@@ -713,12 +980,15 @@ def template(kind: str, workspace: str = '', title: str = '') -> dict:
                 links.append(_l('G2', 'C2', 'InContextOf'))
             except Exception:                    # noqa: BLE001 (no coverage to state: the template goes without)
                 pass
+        def ran(r):
+            w = where_text(where_ran(os.path.join(workspace, r))) if workspace else ''
+            return f' ({w})' if w and w != 'on this machine' else ''
         for r in cand['falsify'][:8]:
             sol('G3', 'falsify', r, {'measure': 'min_robustness', 'limit': 0.0},
-                f'falsification {r}: the requirement was not falsified')
+                f'falsification {r}{ran(r)}: the requirement was not falsified')
         for r in cand['failrate'][:8]:
             sol('G3', 'failrate', r, {'measure': 'failure_rate', 'bound': 'ci95_upper', 'limit': 1e-3},
-                f'failure rate {r}: its 95 % upper bound is below the limit')
+                f'failure rate {r}{ran(r)}: its 95 % upper bound is below the limit')
         if not (cand['suite'] or cand['ci']):
             nodes.append(_n('G5', 'Goal', 'Scenario suites cover the known hazardous scenarios', undeveloped=True))
             links.append(_l('G2', 'G5'))
@@ -749,6 +1019,16 @@ def template(kind: str, workspace: str = '', title: str = '') -> dict:
         else:
             n4 = node({'nodes': nodes}, 'G4')
             n4['undeveloped'] = True
+        if cand['lineage']:                          # machine-learned functions: each model's data, by its root
+            nodes += [_n('G7', 'Goal', 'The machine-learned models are trained on the data stated for them, and '
+                                       'neither changed since'),
+                      _n('C3', 'Context', 'Each model\'s ONNX file names its training data by an RFC 6962 Merkle root '
+                                          '(falcon.data_merkle_root; core.lineage)')]
+            links += [_l('S1', 'G7'), _l('G7', 'C3', 'InContextOf')]
+            for r in cand['lineage'][:8]:
+                data = model_data(workspace, r)
+                sol('G7', 'lineage', r, {'measure': 'data_root', 'data': data},
+                    f'model {r}: its data_merkle_root is the root of {data}')
     return {'schema': SCHEMA, 'title': title or {'iso26262': 'Functional safety (ISO 26262)',
                                                   'sotif': 'Safety of the intended functionality (ISO 21448)',
                                                   'blank': 'Safety case'}[kind],
@@ -900,7 +1180,9 @@ def report(src: str):
         ev = n.get('evidence') or {}
         cls = {'green': 'good', 'red': 'crit', 'amber': 'warn'}.get(r['status'], 'muted')
         rows.append([esc(n['id']), f'<span class="{cls}">{esc(r["status"])}</span>', esc(ev.get('kind')),
-                     f'<span class="mono">{esc(ev.get("ref"))}</span>', esc(json.dumps(ev.get('claim'))),
+                     f'<span class="mono">{esc(ev.get("ref"))}</span>'
+                     + (f'<br>{esc(where_text(ev.get("where")))}' if ev.get('where') else ''),
+                     esc(json.dumps(ev.get('claim'))),
                      f'<span class="mono">{esc((ev.get("sha256") or "")[:16])}</span>', esc(r['why'])])
     pg.add(table(['node', 'status', 'kind', 'result', 'claim', 'pinned SHA-256', 'why'], rows))
     pg.h2('Nodes')
@@ -991,6 +1273,8 @@ def main_gsn(argv) -> int:
     b.add_argument('--bound', choices=BOUNDS, default=None)
     b.add_argument('--conf', type=float, default=0.95)
     b.add_argument('--limit', type=float, default=None)
+    b.add_argument('--data', default='', help='data_root: the data the model must name (a dataset version\'s JSON '
+                                              'or a data.json; default the training\'s own)')
     b.add_argument('--claim', default='', help='the claim as JSON (instead of --measure …)')
     b.add_argument('--unbind', action='store_true', help='remove the evidence (the Solution becomes undeveloped)')
     v = sub.add_parser('verify', help='re-verify every node; --gate exits 1 when a top goal is red')
@@ -1038,8 +1322,10 @@ def main_gsn(argv) -> int:
                 print(f'{a.node}: evidence removed')
                 return 0
             claim = json.loads(a.claim) if a.claim else (
-                {k: x for k, x in {'measure': a.measure, 'bound': a.bound, 'conf': a.conf, 'limit': a.limit}.items()
-                 if x not in (None, '')} if a.measure else None)
+                {k: x for k, x in {'measure': a.measure, 'bound': a.bound, 'conf': a.conf, 'limit': a.limit,
+                                   'data': a.data}.items() if x not in (None, '')} if a.measure else None)
+            if claim and claim.get('measure') == 'data_root':
+                claim = {k: x for k, x in claim.items() if k in ('measure', 'data')}
             kind = a.kind or (old or {}).get('kind')
             ref = a.ref or (old or {}).get('ref')
             if not kind or not ref:

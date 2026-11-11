@@ -300,6 +300,10 @@ def test_a_burst_from_launch_to_confirmed_termination(cloud, capsys):
     assert len(rows) == 3 and all(r['status'] == 'ok' for r in rows)
     assert all(r['run'].startswith(cloud['project'].workspace) for r in rows)   # the machine's paths made this one's
     assert os.path.isfile(os.path.join(rows[0]['run'], 'run.json'))
+    origin = json.load(open(os.path.join(cloud['project'].workspace, 'studies', est['bundle']['name'], 'cloud.json')))
+    assert {k: origin[k] for k in ('provider', 'burst', 'gpu', 'estimate_id', 'instance_id')} == {
+        'provider': 'runpod', 'burst': out['burst'], 'gpu': 'NVIDIA RTX A5000', 'estimate_id': est['estimate_id'],
+        'instance_id': 'pod1'}                              # where it ran, for the safety case (core.gsn.where_ran)
     assert cloud['timer_calls'] == ['start', 'stop']
     assert C.alert() is None
 

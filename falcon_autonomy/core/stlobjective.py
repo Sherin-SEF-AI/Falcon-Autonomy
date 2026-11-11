@@ -30,6 +30,8 @@ study's key hashes the formula's normal form (or the rule set's SHA-256 and the 
 core.rules.SIGNALS_VERSION, so another formula never reuses another's scores (its runs are re-scored, not re-driven).
 
     falcon falsify run PROJECT --scenario S (--stl TEXT | --rule SET:ID) [--method cmaes|cem|bayes|…] [--budget N] …
+                                           [--on local|cluster|cluster:POOL]  the drives on the cluster's nodes (the
+                                           study here); a dashcam-derived scenario or world is refused off this machine
     falcon falsify show STUDY_DIR          falsify.json: best ρ, falsified runs (ρ < 0), near misses (0 ≤ ρ < margin)
     falcon falsify check                   the planted-landscape comparison of robustness against a binary objective
     falcon stl compile TEXT|--rule SET:ID [--save NAME --project P]    parse, normal form, horizon (formulas.json)
@@ -469,6 +471,8 @@ def main_falsify(argv) -> int:
     r.add_argument('--no-feasibility', action='store_true')
     r.add_argument('--fps', type=float, default=0.0)
     r.add_argument('--fake-carla', default='')
+    from ..sim.service import placement_arg
+    placement_arg(r)
     s = sub.add_parser('show', help='a falsification study\'s result: falcon falsify show STUDY_DIR')
     s.add_argument('study')
     s.add_argument('--json', action='store_true')
@@ -534,7 +538,17 @@ def _run(a) -> int:
         print(f'failed: {e}', flush=True)
         return P.REFUSED
     name = a.study or study_name(scn['id'], spec, [w.split(':')[0] for w in a.weather], a.fps or 20)
-    svc = study_service(workspace=proj.workspace, fake_carla=a.fake_carla)
+    from ..cluster.bundle import placement_refusal
+    world = a.world or proj.doc['worlds'][0]['id']
+    why = placement_refusal(a.on, scn, proj.item('worlds', world))
+    if why:
+        print(f'failed: {why}', flush=True)
+        return P.REFUSED
+    try:
+        svc = study_service(workspace=proj.workspace, fake_carla=a.fake_carla, placement=a.on)
+    except ValueError as e:
+        print(f'failed: {e}', flush=True)
+        return P.REFUSED
     em = P.Emitter()
     em.hello('falsify')
     try:

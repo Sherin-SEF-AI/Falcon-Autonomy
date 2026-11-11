@@ -22,9 +22,10 @@ class Daemons:
     def __init__(self, base, heartbeat=1.0):
         self.base, self.heartbeat = str(base), heartbeat
         self.procs: dict = {}
+        self.homes: dict = {}
         self.nodes: list = []
 
-    def start(self, name: str, pool: str = 'default', slot: int = 0) -> dict:
+    def start(self, name: str, pool: str = 'default', slot: int = 0, fake: str = FAKE) -> dict:
         port = free_port()
         home = os.path.join(self.base, name)
         os.makedirs(home, exist_ok=True)
@@ -33,7 +34,7 @@ class Daemons:
                    PYTHONPATH=ROOT, PYTHONUNBUFFERED='1')
         log = open(os.path.join(home, 'daemon.log'), 'w')
         p = subprocess.Popen([sys.executable, '-m', 'falcon_autonomy.cluster.daemon', 'serve', '--slot', str(slot),
-                              '--port', str(port), '--fake-carla', FAKE, '--heartbeat', str(self.heartbeat)],
+                              '--port', str(port), '--fake-carla', fake, '--heartbeat', str(self.heartbeat)],
                              env=env, stdout=log, stderr=subprocess.STDOUT, cwd=home)
         t0 = time.monotonic()
         while 'listening' not in open(os.path.join(home, 'daemon.log')).read():
@@ -41,6 +42,7 @@ class Daemons:
             assert time.monotonic() - t0 < 30, 'the daemon did not start'
             time.sleep(0.05)
         self.procs[name] = p
+        self.homes[name] = home
         node = {'name': name, 'kind': 'local', 'pool': pool, 'slots': [{'slot': slot, 'port': port}],
                 'token_dir': os.path.join(home, 'config', 'FalconAutonomy')}
         self.nodes.append(node)

@@ -4,7 +4,9 @@
         slot N of this machine: listens on 127.0.0.1:2350+N only (another machine reaches it through an SSH tunnel
         with the user's key), runs the jobs it is sent with its own Settings, CarlaService (CARLA on 2310+10N, its
         traffic manager on 8310+N) and JobQueue, in a scratch workspace (~/.cache/FalconAutonomy/worker-N), and sends
-        each run folder back. Packaged as the systemd user unit falcon-worker-daemon@N (packaging/cluster).
+        each run folder back. Packaged as the systemd user unit falcon-worker-daemon@N (packaging/cluster). Its
+        hello names the CARLA backends this machine has (sim.backends.advertised), which the scheduler matches a
+        job's backend against; a client's gc request collects its scratch (Daemon.gc; `falcon cluster gc`).
     falcon worker-daemon oneshot --bundle FILE --out DIR [--hold-s S]
         one bundle, then exit with the worker's code (a Slurm array task, a Kubernetes Job, a cloud instance): its
         protocol lines on stdout, the run (or the study) in DIR, DIR/exit.json at the end. --hold-s keeps the process
@@ -36,6 +38,27 @@ from . import protocol as W
 
 RID = re.compile(r'^[A-Za-z0-9_.-]{1,80}$')
 RETAIN_S = 3600.0                    # an artifact nobody collected is deleted after this long
+GC_TTL_S = 24 * 3600.0               # gc: a scratch folder unchanged for this long (the client's --older-than)
+SCRATCH = re.compile(r'^[0-9a-f]{20}\.[0-9]{1,3}$')     # runs/<gid>.<attempt>: the scheduler's dispatch ids only
+LOG = re.compile(r'^carla-[0-9]{2,5}\.log$')
+
+
+def tree_size(path: str) -> tuple:
+    """(bytes, newest modification time) of a file or a folder's tree, links not followed."""
+    st = os.lstat(path)
+    if not os.path.isdir(path) or os.path.islink(path):
+        return st.st_size, st.st_mtime
+    total, newest = 0, st.st_mtime
+    for dp, dns, fns in os.walk(path):
+        for n in fns + dns:
+            try:
+                s = os.lstat(os.path.join(dp, n))
+            except OSError:
+                continue
+            if n in fns:
+                total += s.st_size
+            newest = max(newest, s.st_mtime)
+    return total, newest
 
 
 def slot_ports(slot: int) -> tuple:
@@ -43,15 +66,24 @@ def slot_ports(slot: int) -> tuple:
     return W.PORT_BASE + int(slot), 2310 + 10 * int(slot), 8310 + int(slot)
 
 
-def node_info() -> dict:
+def node_info(settings=None, fake_carla: str = '') -> dict:
+    """What the daemon's hello says about this machine: its name, Falcon's version, the codecs, its memory, and the
+    CARLA backends it has (sim.backends.advertised: each one's id in `backends`, its capabilities and maps — declared,
+    or read by `falcon backend probe` — in `capabilities`)."""
     from .. import __version__
     from ..core.sysinfo import meminfo
+    from ..sim import backends as SB
     try:
         mem = round(float(meminfo().get('total_gb') or 0.0), 1)
     except (OSError, ValueError, TypeError):
         mem = 0.0
+    if settings is None:
+        from ..core.settings import Settings
+        settings = Settings()
+    caps = SB.advertised(settings, fake_carla)
     return {'node': socket.gethostname(), 'app_version': __version__, 'codecs': W.codecs(), 'memory_gb': mem,
-            'backends': ['carla-0.9.16'], 'carla': '0.9.16'}
+            'backends': list(caps), 'capabilities': caps,
+            'carla': SB.get(next(iter(caps))).carla if caps else ''}
 
 
 def use_backend(svc, b: dict):
@@ -101,7 +133,7 @@ class Daemon:
         self.queue.subscribe(self._on_job)
         self.heartbeat_s = float(heartbeat_s)
         self.token = W.write_token(self.slot)
-        self.info = dict(node_info(), slot=self.slot, backends=[self.svc.backend])
+        self.info = dict(node_info(st, fake_carla), slot=self.slot)
         self.lock = threading.RLock()
         self.records: dict = {}          # rid -> {'job', 'chan', 'dir', 'done': (head, payload) | None, 't'}
         self.chans: set = set()
@@ -229,6 +261,16 @@ class Daemon:
                     ch.send({'t': 'state', 'rid': r, 'state': d['job'].state})
         elif t == 'release':
             self._release(rid)
+        elif t == 'gc':
+            try:
+                res = self.gc(float(msg.get('older_than_s') or GC_TTL_S), bool(msg.get('dry_run', True)),
+                              keep=msg.get('keep') or (), only=msg.get('only'))
+            except (OSError, ValueError, TypeError) as e:
+                res = {'error': str(e)[:300]}
+            for k, cap in (('items', 2000), ('kept', 500)):           # a message is at most 1 MiB
+                if len(res.get(k) or ()) > cap:
+                    res[f'{k}_total'], res[k] = len(res[k]), res[k][:cap]
+            ch.send(dict(res, t='gc'))
 
     def _submit(self, ch, rid, payload):
         if not RID.match(rid):
@@ -317,6 +359,69 @@ class Daemon:
             d = self.records.pop(rid, None)
         if d is not None:
             shutil.rmtree(d['dir'], ignore_errors=True)
+
+    # ---------------------------------------------------------------- the cache's garbage collection
+    def gc(self, older_than_s: float = 0.0, dry_run: bool = True, keep=(), only=None) -> dict:
+        """The slot's scratch workspace collected (docs/cluster.md, "Cleaning up"): runs/<gid>.<attempt> folders (the
+        scheduler's dispatch ids, nothing else) of jobs this daemon no longer runs — orphans of an earlier life of the
+        daemon, artifacts nobody collected — and its CARLA logs (logs/*.log), each when nothing in it changed for
+        older_than_s. Never a job running or waiting here to be collected that is younger, never one whose global id
+        is in keep (a job the client still has: running, or lost and re-queueable), never a link, never anything
+        private (assistant.privacy). only: remove (or list) only these names (the client's approved plan).
+        {'items': [{'name', 'what', 'bytes', 'age_h'}], 'kept': [{'name', 'why'}], 'removed': n, 'bytes_freed'}."""
+        from ..assistant.privacy import private_reason
+        keep = {str(g) for g in keep or ()}
+        only = None if only is None else {str(x) for x in only}
+        now = time.time()
+        with self.lock:
+            live = {r: d for r, d in self.records.items()}
+        items, kept = [], []
+        for sub, pattern, what in (('runs', SCRATCH, 'scratch run'), ('logs', LOG, 'CARLA log')):
+            base = os.path.join(self.workspace, sub)
+            for name in sorted(os.listdir(base)) if os.path.isdir(base) else ():
+                path = os.path.join(base, name)
+                if not pattern.match(name) or os.path.islink(path):
+                    continue
+                if only is not None and f'{sub}/{name}' not in only:
+                    continue
+                d = live.get(name)
+                if d is not None and d['done'] is None:
+                    kept.append({'name': f'{sub}/{name}', 'why': 'its job runs here'})
+                    continue
+                if d is not None and time.monotonic() - d['t'] < RETAIN_S:
+                    kept.append({'name': f'{sub}/{name}', 'why': 'finished: waiting to be collected'})
+                    continue
+                if sub == 'runs' and name.split('.', 1)[0] in keep:
+                    kept.append({'name': f'{sub}/{name}', 'why': 'the client still has its job'})
+                    continue
+                size, newest = tree_size(path)
+                age = now - newest
+                if age < older_than_s:
+                    kept.append({'name': f'{sub}/{name}', 'why': f'changed {age / 3600.0:.1f} h ago'})
+                    continue
+                why = private_reason(path)
+                if why:
+                    kept.append({'name': f'{sub}/{name}', 'why': f'private: {why} (never touched)'})
+                    continue
+                items.append({'name': f'{sub}/{name}', 'what': what + (' (an artifact nobody collected)' if d
+                                                                       else ''),
+                              'bytes': size, 'age_h': round(age / 3600.0, 2)})
+        removed = freed = 0
+        if not dry_run:
+            for it in items:
+                sub, name = it['name'].split('/', 1)
+                if sub == 'runs' and name in live:
+                    self._release(name)
+                else:
+                    p = os.path.join(self.workspace, sub, name)
+                    if os.path.isdir(p) and not os.path.islink(p):
+                        shutil.rmtree(p, ignore_errors=True)
+                    elif os.path.isfile(p):
+                        os.unlink(p)
+                removed += 1
+                freed += it['bytes']
+        return {'items': items, 'kept': kept, 'removed': removed, 'bytes_freed': freed, 'dry_run': bool(dry_run),
+                'older_than_s': float(older_than_s), 'node': self.info.get('node'), 'slot': self.slot}
 
 
 # ================================================================================================ oneshot

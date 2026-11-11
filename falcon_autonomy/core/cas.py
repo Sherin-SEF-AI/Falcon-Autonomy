@@ -23,7 +23,8 @@ EOPNOTSUPP (measured on this machine's ext4): a put is a hard link.
 Garbage collection (Store.gc). Mark and sweep: the caller passes every address still referenced (the roots — a
 lineage index's frames.parquet, a dataset version's splits/<v>.parquet, a training's data.json: core.lineage.roots());
 objects not among them are removed, except objects whose inode changed (ctime) within `grace_s` (a put whose
-reference is not yet written: a link or a chmod updates ctime). It holds the lock exclusively, so no put runs during
+reference is not yet written: a link or a chmod updates ctime — a put of bytes already stored chmods the object, so
+one re-used by a version being written is spared too). It holds the lock exclusively, so no put runs during
 it. An address that cannot be parsed in the roots aborts the sweep (CASError): a bad root never means "collect
 everything". dry_run lists what would go.
 
@@ -212,6 +213,7 @@ class Store:
                 dst = self.object_path(address)
                 if os.path.isfile(dst):
                     os.unlink(tmp)
+                    os.chmod(dst, MODE)             # renews its ctime: gc's grace spares an object just re-used
                     self.methods['present'] += 1
                     return {'address': address, 'method': 'present', 'path': dst}
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -228,12 +230,13 @@ class Store:
     def put_bytes(self, data: bytes) -> str:
         address = hash_bytes(data, self.alg)
         dst = self.object_path(address)
-        if os.path.isfile(dst):
-            return address
         tmpd = os.path.join(self.root, 'tmp')
         os.makedirs(tmpd, exist_ok=True)
         fd = self._lock(False)
         try:
+            if os.path.isfile(dst):
+                os.chmod(dst, MODE)                 # renews its ctime: gc's grace spares an object just re-used
+                return address
             tmp = os.path.join(tmpd, uuid.uuid4().hex)
             with open(tmp, 'wb') as fh:
                 fh.write(data)

@@ -4,8 +4,12 @@ docs/cluster.md, "Scheduling").
 * Slots. A daemon node (ssh, local) has slots, each one daemon with one CARLA (slot N: 127.0.0.1:2350+N on the node);
   a batch node (slurm, k8s) has max_jobs. A slot takes one of this process's jobs at a time.
 * Matching. A job goes to a node of its pool (placement 'cluster:<pool>'; plain 'cluster' is every pool) that has its
-  backend (meta['backend'], default carla-0.9.16; a node that lists no backends has the default) and at least its
-  video memory (meta['vram_gb'] against the node's vram_gb). No such node: refused. Busy: it waits in the queue.
+  backend (meta['backend'], CarlaService.worker_spec's: carla-0.9.16 unless the project or setting names another),
+  the map and capabilities its run needs (sim.backends.needs_of its config, checked by check_needs against what the
+  node advertised) and at least its video memory (meta['vram_gb'] against the node's vram_gb). What a daemon slot has
+  is what its hello said (sim.backends.advertised: each backend its machine has, with its capabilities and maps);
+  before it answered, the node's configured `backends`; a batch node has those, or carla-0.9.16. No such node:
+  refused ("no node has carla-ue5 (…)"). Busy, or a slot not yet heard from: it waits in the queue.
 * Pools and quotas. A pool may cap the jobs it runs at once (max_running: they wait) and per day (max_per_day: refused
   past it; counted in cluster/usage.json in the config folder).
 * Ids. A job keeps one global id (JobSpec.gid, a random 20-hex id); each dispatch of it is "<gid>.<attempt>".
@@ -153,7 +157,8 @@ class Slot:
                           f'falcon-worker-daemon@{self.slot})')
         return out.decode().strip(), ('127.0.0.1', self.conn.tunnel(self.port))
 
-    def connect(self):
+    def open_channel(self) -> tuple:
+        """(a new channel to the slot's daemon after the hello, the daemon's hello); OSError when it refuses."""
         tok, addr = self._token_and_address()
         if not tok:
             raise OSError(f'slot {self.slot}\'s daemon has written no token (is it running?)')
@@ -167,7 +172,29 @@ class Slot:
         if msg.get('t') != 'hello':
             ch.close()
             raise OSError(str(msg.get('why') or 'the daemon refused the connection'))
-        s.settimeout(None)
+        return ch, msg
+
+    def ask(self, msg: dict, answer: str, timeout: float = 120.0) -> dict:
+        """One request on a connection of its own (not the scheduler's: its reader takes every message there): the
+        daemon's first message of type `answer` (heartbeats skipped). OSError when it cannot be reached."""
+        ch, hello = self.open_channel()
+        try:
+            ch.sock.settimeout(timeout)
+            ch.send(msg)
+            while True:
+                got, _ = ch.recv()
+                if got.get('t') == answer:
+                    return dict(got, hello=hello)
+                if got.get('t') == 'error':
+                    raise OSError(str(got.get('why') or 'the daemon refused it'))
+        except (W.ProtocolError, socket.timeout) as e:
+            raise OSError(f'{self.key}: {e}') from None
+        finally:
+            ch.close()
+
+    def connect(self):
+        ch, msg = self.open_channel()
+        ch.sock.settimeout(None)
         self.chan, self.info = ch, msg
         self.state, self.error = 'up', ''
         self.last_rx = self.sched.clock()
@@ -253,21 +280,60 @@ class Scheduler:
         self.thread.start()
 
     # ---------------------------------------------------------------- placement
+    @staticmethod
+    def _backends_of(where) -> tuple:
+        """(the backends a slot or batch node has, whether that is known): a slot that answered says it in its hello
+        (what it measured: sim.backends.advertised); otherwise the node's configured `backends`; a batch node (or a
+        slot never heard from) without them is taken to have CARLA 0.9.16 — known only when configured."""
+        info = getattr(where, 'info', None) or {}
+        if 'backends' in info:
+            return list(info.get('backends') or []), True
+        if where.node.get('backends'):
+            return list(where.node['backends']), True
+        return [N.DEFAULT_BACKEND], not isinstance(where, Slot)
+
+    def _fit(self, where, backend: str, needs: dict) -> str:
+        """'' when the slot or node can run a job of this backend with these needs (sim.backends.check_needs on what
+        it advertised: its maps and capabilities), else why not."""
+        from ..sim import backends as SB
+        have, known = self._backends_of(where)
+        if backend not in have:
+            return f'{where.key} has {", ".join(have) or "no CARLA"}' if known else ''
+        adv = ((getattr(where, 'info', None) or {}).get('capabilities') or {}).get(backend)
+        if needs and isinstance(adv, dict):
+            try:
+                why = SB.check_needs(backend, needs, probe={'maps': adv.get('maps') or [], 'caps': adv.get('caps')
+                                                            or {}})
+            except SB.BackendError:
+                return ''
+            if why:
+                return f'{where.key}: {why[0]}'
+        return ''
+
     def _candidates(self, job) -> tuple:
+        """(pool, slots, batch nodes) that could ever take the job — of its pool, with its backend (as each says
+        it has: _backends_of), the maps and capabilities its run needs and its video memory. Refused when none."""
         _w, pool = N.parse_placement(job.spec.placement)
         backend = job.spec.meta.get('backend') or N.DEFAULT_BACKEND
         vram = float(job.spec.meta.get('vram_gb') or 0.0)
-
-        def fits(n):
-            return (not pool or n.get('pool', 'default') == pool) and \
-                backend in (n.get('backends') or [N.DEFAULT_BACKEND]) and float(n.get('vram_gb') or 1e9) >= vram
-        slots = [s for s in self.slots if fits(s.node)]
-        batch = [b for b in self.batch if fits(b.node)]
-        if not slots and not batch:
-            what = f'pool {pool!r}' if pool else 'the cluster'
-            need = f' with {backend}' + (f' and {vram:g} GB of video memory' if vram else '')
-            raise Refused(f'no node of {what}{need} (Settings ▸ Compute, or falcon cluster nodes add)')
-        return pool, slots, batch
+        needs = getattr(job, '_needs', None) or {}
+        in_pool = [x for x in self.slots + self.batch if not pool or x.node.get('pool', 'default') == pool]
+        where = f' of pool {pool!r}' if pool else ''
+        if not in_pool:
+            raise Refused(f'no node{where} (Settings ▸ Compute, or falcon cluster nodes add)')
+        why = {x.key: self._fit(x, backend, needs) for x in in_pool}
+        ok = [x for x in in_pool if not why[x.key]]
+        if not ok:
+            if not any(backend in self._backends_of(x)[0] for x in in_pool):
+                raise Refused(f'no node{where} has {backend} ('
+                              + '; '.join(why[x.key] for x in in_pool[:6]) + '): a node advertises the backends it '
+                              'has when its daemon starts — install that CARLA there, or run the job here')
+            raise Refused(f'no node{where} with {backend} can run it: ' + '; '.join(why[x.key] for x in in_pool
+                                                                               if why[x.key])[:600])
+        ok = [x for x in ok if float(x.node.get('vram_gb') or 1e9) >= vram]
+        if not ok:
+            raise Refused(f'no node{where} with {backend} has {vram:g} GB of video memory')
+        return pool, [x for x in ok if isinstance(x, Slot)], [x for x in ok if not isinstance(x, Slot)]
 
     def _pool_wait(self, pool_name: str) -> str:
         p = self.pools.get(pool_name) or {}
@@ -292,7 +358,7 @@ class Scheduler:
                           'every pool that could run it has used its quota of jobs for today')
         slots = [s for s in slots if not used[s.pool]]
         batch = [b for b in batch if not used[b.node.get('pool', 'default')]]
-        free_slots = [s for s in slots if s.state == 'up' and not s.running]
+        free_slots = [s for s in slots if s.state == 'up' and not s.running and self._backends_of(s)[1]]
         free_batch = [b for b in batch if b.free() > 0]
         waits = []
         for s in sorted(free_slots, key=lambda s: (int(s.info.get('jobs') or 0), s.key)):
@@ -316,10 +382,13 @@ class Scheduler:
     def can_start(self, job) -> str:
         with self.lock:
             if getattr(job, '_bundle', None) is None:
+                from ..sim.backends import needs_of
                 try:
-                    job._bundle = B.encode(B.make(job.spec))
+                    b = B.make(job.spec)
+                    job._bundle = B.encode(b)
                 except B.BundleError as e:
                     raise Refused(str(e)) from None
+                job._needs = needs_of(b.get('config') or {})
             _where, why = self._pick(job)
             return why
 
@@ -487,7 +556,8 @@ class Scheduler:
         out = []
         for s in self.slots:
             out.append({'slot': s.key, 'pool': s.pool, 'state': s.state, 'running': len(s.running),
-                        'error': s.error, 'node': s.info.get('node', ''), 'app_version': s.info.get('app_version')})
+                        'error': s.error, 'node': s.info.get('node', ''), 'app_version': s.info.get('app_version'),
+                        'backends': self._backends_of(s)[0]})
         for b in self.batch:
             out.append({'slot': b.key, 'pool': b.node.get('pool', 'default'), 'state': 'batch',
                         'running': b.running(), 'error': b.error})

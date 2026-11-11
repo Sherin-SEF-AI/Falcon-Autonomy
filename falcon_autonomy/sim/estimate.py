@@ -334,6 +334,11 @@ def _run(a) -> int:
     except (ValueError, FR.FailRateError) as e:
         print(f'failed: {e}', flush=True)
         return P.REFUSED
+    from ..cluster.bundle import placement_refusal
+    why = placement_refusal(a.on, scn, proj.item('worlds', a.world or proj.doc['worlds'][0]['id']))
+    if why:                                                    # dashcam-derived: before anything is queued
+        print(f'failed: {why}', flush=True)
+        return P.REFUSED
     try:
         svc = study_service(None, proj.workspace, fake_carla=a.fake_carla, placement=a.on)
     except ValueError as e:

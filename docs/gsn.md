@@ -18,7 +18,7 @@ its Solution red, the red propagates to the top goal, and a CI gate can fail the
 | Reports ▸ *Safety case (GSN)* | the argument drawn in GSN shapes, each node coloured by its status as verified now; click a node for its text, status, why and evidence (result, claim, pinned SHA-256, when bound); *New from the template*, *Verify now*, *Re-bind* (undoable: *Undo* puts the previous evidence back), *Export HTML…* / *Export SVG…* |
 | `falcon gsn new --project P [--template sotif\|iso26262\|blank] [--bind] [--force]` | start from a template; `--bind` pins every result it points at |
 | `falcon gsn show --project P [--json]` | the tree with each node's status and why |
-| `falcon gsn bind --project P NODE [--kind K --ref REF] [--measure M --bound B --conf C --limit L \| --claim JSON] [--unbind]` | bind or re-bind (keeping the claim when none is given) |
+| `falcon gsn bind --project P NODE [--kind K --ref REF] [--measure M --bound B --conf C --limit L --data REF \| --claim JSON] [--unbind]` | bind or re-bind (keeping the claim when none is given) |
 | `falcon gsn verify --project P [--json] [--gate] [--fail-on red\|amber]` | verify and log; `--gate` exits 1 when a top goal is red |
 | `falcon gsn export --project P --out FILE.html\|FILE.svg` | the HTML report (also Reports ▸ *Safety case (GSN)* as a report kind, `falcon report gsn`) or an SVG |
 | `falcon ci run` | re-verifies `ci:<name>@latest` evidence at the end of every run; `gates.gsn` fails the run on a red top goal ([CI](ci.md#the-living-safety-case)) |
@@ -56,7 +56,7 @@ this and names what is wrong.
 | `ci` | `ci/<run>`, or the alias **`ci:<name>@latest`** — the newest CI run of that config name under `<workspace>/ci/` | `ci-results.json` |
 | `falsify` | `studies/<falsification study>` | `falsify.json` ([falsification](falsification.md)) |
 | `rules` | `rules/<check>` | `rules.json` ([traffic rules](traffic-rules.md)) |
-| `lineage` | any file (a dataset's `data.json`, a model) | the file itself |
+| `lineage` | any file (a dataset's `data.json`, a model); a training folder `training/<id>` | the file itself; a training folder's `model.onnx` (its `data.json` when it has no model), a `model.json`'s registered model |
 
 | claim `measure` | on | holds when |
 |---|---|---|
@@ -67,10 +67,50 @@ this and names what is wrong.
 | `violations_per_km` | rules, ci | violations per km ≤ `limit` |
 | `verdict` | ci | the verdict equals `equals` (default `passed`) |
 | `field` | any JSON | the number at the dotted `path` compared by `op` (`<=` `<` `>=` `>` `==`) with `limit`, or equal to `equals` (e.g. a lineage file's Merkle root) |
+| `data_root` | lineage (a trained model) | the model names exactly the data bound in `data` (below) |
 | (none) | any | the pinned hash alone |
 
 **Binding** resolves the ref to its file, pins the file's SHA-256 and the time. An `@latest` alias pins its current
 target too, but follows the newest result afterwards: that is what makes the case *living*.
+
+#### Where it ran
+
+A `failrate` or `falsify` result's evidence also records, when it is bound, **where its runs were made**
+(`evidence.where`, from core.gsn's `where_ran`):
+
+| `on` | from | recorded |
+|---|---|---|
+| `local` | runs without a `node` block | the number of runs |
+| `cluster` | the `node` block of each run's run.json ([cluster](cluster.md#results)) | each node's name and its runs, the pools, the node kinds, the runs made here too, and every job's global id (`gids`, 20 hex digits each) |
+| `cloud` | the study's `cloud.json`, written when a burst's summary comes back ([cloud](cloud.md#a-bursts-life)) | the provider, the burst's id, the GPU, the approved estimate's id and the instance |
+
+Such a result is bound by hash and claim exactly as a local one. At every verification `where` is worked out again: a
+result whose runs were since made elsewhere (a run driven again on another node) is **amber** until it is re-bound.
+The Reports tab shows it as *Ran* (the jobs' ids in its tooltip), the HTML report under the result, and
+`formal_gsn_tree` as `ran`.
+
+#### A model's data: `data_root`
+
+`falcon gsn bind NODE --kind lineage --ref training/<id> --measure data_root [--data REF]` — the claim that the
+model's ONNX `metadata_props` `falcon.data_merkle_root` ([lineage](lineage.md#models)) is the root of the data in
+`data`: by default the training's own `data.json`, or a **dataset version** (`datasets/<spec>/versions/vNNN.json`).
+Binding pins the model (its `model.onnx`) and the data's files (`evidence.data.sha256`: the `data.json`, or the
+version's JSON and its splits file). Verification:
+
+- **amber** when the model changed since it was bound, the data changed or is missing (re-bind to accept it), or the
+  check cannot be made (no `model.onnx`, the `onnx` package not installed, a version hashed with the other algorithm);
+- **red** when the roots disagree — core.lineage's `verify_model` (without re-reading the images): the ONNX
+  metadata against `data.json`'s roots, those roots against its per-sample addresses, the registration's SHA-256 —
+  and, for another training's `data.json`, its training root against the model's; for a dataset version: the training
+  names a different version (`falcon.dataset_version` / `data.json`'s `dataset_version`), a training frame is not a
+  frame of the version's train split, or the version's splits file does not give the root it records;
+- **green** otherwise.
+
+A model's root and a version's root are never equal numbers: a version's leaves are every sensor's frames with
+their **label files**, a model's the camera images it trained on with the labels **as trained** (after the class
+selection and the ignore rule; [lineage](lineage.md#limits)). So against a version the claim checks what the roots
+can show — the model's root is that of its samples, every sample's frame is in the version's train split, and the
+training names the version — rather than comparing the two roots.
 
 ## Verification
 
@@ -100,6 +140,12 @@ opened for appending: `new`, `bind` (with the previous evidence, so any re-bind 
   declared distributions are how they occur; **triggering conditions** — a Context per study whose failures
   core.safetycase's `triggering_conditions` finds (the failing range of each parameter against the range tried),
   and the falsification study that found them. Where the workspace has no such result the goal is left undeveloped.
+  A failure rate or falsification made on the cluster or a cloud burst says so in its Solution's text ("on the
+  cluster (ws1 120, ws2 80; 200 jobs)", "on a cloud burst (runpod …)"). When the workspace has trained models that
+  name their data (`training/<id>` with a `model.onnx` and a `data.json` with addresses), a goal **G7** "the
+  machine-learned models are trained on the data stated for them, and neither changed since" holds a `data_root`
+  Solution per model, bound to the dataset version its training names when that version is in the workspace, else to
+  its own `data.json`.
 - **ISO 26262**: G1 "the item is free of unreasonable risk due to hazards caused by malfunctioning behaviour of E/E
   systems", in the context of the item definition and the HARA; argued over the safety goals: the HARA and the safety
   concepts (undeveloped: outside Falcon), the verification evidence Falcon produces (suites, CI, rule checks) under the
@@ -115,7 +161,12 @@ The templates are starting points; the argument, its wording and the limits are 
 lifts the bound to 0.146 — the `@latest` alias follows it and the Solution, its goal and the top goal turn red; a
 re-run suite turns its Solution amber until it is re-bound; `falcon ci run` on the fake carla with the gate fails
 (exit 1) once the claim's limit is one two runs cannot meet; the Reports tab is driven offscreen (verify, re-bind,
-undo, export).
+undo, export). `tests/test_gsn_evidence.py`: a failure rate estimated with `--on cluster` on two local worker daemons
+(the fake carla) is bound with both nodes, their run counts and a global id per run, verifies green, turns amber when
+one run's node block changes and green again once re-bound; a summary pulled back from a cloud burst records the
+provider and the burst; three trained models (tiny ONNX files whose metadata core.training wrote) against a dataset
+version: the one trained on it is green, one with a frame from the version's test split and one naming another
+version are red; a changed ONNX root is amber, then red once re-bound; an edited version is amber.
 
 ## Limits
 

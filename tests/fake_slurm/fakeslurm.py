@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """A fake Slurm for the tests (sbatch, squeue, sacct, scancel are links to this file): array tasks run here, at once,
 as background processes; their state lives in $FAKE_SLURM_DIR. $FAKE_SLURM_NODE_FAIL=<task index> makes sacct report
-NODE_FAIL for that task of the first array (once), killing it — a lost compute node."""
+NODE_FAIL for that task of the first array (once), killing it — a lost compute node. `squeue -h -o %j` (no -j) lists
+the names of the arrays with a task still running; $FAKE_SLURM_SQUEUE_FAIL makes squeue fail (no controller)."""
 import json
 import os
 import re
@@ -81,6 +82,16 @@ def _kill(task):
 
 
 def squeue(args):
+    if os.environ.get('FAKE_SLURM_SQUEUE_FAIL'):
+        print('squeue: error: slurm_load_jobs error: Unable to contact slurm controller', file=sys.stderr)
+        sys.exit(1)
+    if '-j' not in args:                        # squeue -h -o %j: the names of the jobs in the queue
+        for ln in open(os.path.join(D, 'submitted')) if os.path.exists(os.path.join(D, 'submitted')) else ():
+            sub = json.loads(ln)
+            name = re.search(r'#SBATCH --job-name=(\S+)', sub['text'])
+            if name and any(_state(t) == 'RUNNING' for t in _tasks(sub['job'])):
+                print(name.group(1))
+        return
     jid = args[args.index('-j') + 1]
     for t in _tasks(jid):
         open(os.path.join(D, 'squeue-seen-' + t), 'w').write('')

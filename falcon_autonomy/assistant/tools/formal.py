@@ -227,6 +227,8 @@ def formal_gsn_tree(ctx, node='', events=5):
         if ev:
             row['evidence'] = {'kind': ev['kind'], 'ref': ev['ref'], 'claim': ev.get('claim'),
                                'sha256': (ev.get('sha256') or '')[:12] or None, 'bound_at': ev.get('bound_at')}
+            if ev.get('where'):                      # a failure rate or falsification: where its runs were made
+                row['evidence']['ran'] = G.where_text(ev['where'])
         rows.append(row)
     if node and not rows:
         raise ToolError(f'no node {node!r}')

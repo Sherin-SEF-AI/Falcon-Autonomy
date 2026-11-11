@@ -257,6 +257,29 @@ def maps(backend_id: str, probe: dict | None = None) -> tuple:
     return tuple(p.get('maps') or get(backend_id).maps)
 
 
+def advertised(settings, fake_carla: str = '') -> dict:
+    """What a cluster node says it can run (its daemon's hello; docs/cluster.md): {backend id: {'caps': {cap: bool},
+    'maps': [...], 'probed': when `falcon backend probe` last read them ('' never), 'measured': bool, 'title'}} for
+    every backend this machine has — its CARLA folder holds that backend's server and its client Python is there
+    (root_for, python_for) — with the capabilities and maps as capabilities()/maps() give them (declared, replaced by
+    the probe cache where one was read). A fake carla (tests) is the one backend it is."""
+    if fake_carla:
+        ids = [fake_backend(fake_carla)]
+    else:
+        ids = []
+        for b in BACKENDS.values():
+            root = root_for(settings, b.id)
+            py = python_for(settings, b.id, root) if root else ''
+            if detect_root(root) == b.id and py and os.access(py, os.X_OK):
+                ids.append(b.id)
+    out = {}
+    for bid in ids:
+        p = load_probe(bid)
+        out[bid] = {'title': get(bid).title, 'caps': capabilities(bid, p), 'maps': list(maps(bid, p)),
+                    'probed': p.get('probed', ''), 'measured': get(bid).measured}
+    return out
+
+
 def needs_of(cfg: dict) -> dict:
     """What a run config (drive, scenario, live) needs of its backend: {'town', 'opendrive_world', 'lane_offset'}."""
     out = {}
