@@ -32,7 +32,7 @@
     falcon failrate run|show|check ...   a scenario's failure rate with a 95 % interval (adaptive importance sampling)
     falcon coverage show|fill PROJECT ...   coverage of the operating domain; scenarios and searches for its gaps
     falcon stack topics|image|bridge|run|suite|replay|odd|report ...   stack testing: ROS 2 bridge, suites, safety case
-    falcon hil device|deploy|session|report|acceptance ...   hardware in the loop: a Jetson (or a simulated device)
+    falcon hil device|deploy|session|report|acceptance|setup|can|ptp|v4l2 ...   hardware in the loop: a Jetson (or a simulated device)
     falcon deploy check|build|profile|accuracy|gate|report|all ...   TensorRT engines on the Jetson, profiled and gated
     falcon loop PROJECT [status|next|run --until STEP|show N|new|set]   the closed loop (docs/loop.md)
     falcon report KIND SRC --out FILE          a self-contained HTML report (docs/reports.md)
@@ -163,6 +163,10 @@ def cmd_doctor(a) -> int:
     used = [p for p in range(port, port + 3) if S.port_open('127.0.0.1', p)]
     row('Falcon\'s ports', not used, f'RPC {port}, traffic manager {st.get("tm_port")}' +
         (f' — in use: {used}' if used else ' (free)'))
+    from .hil.cli import doctor_rows as hil_rows
+    print('  hardware in the loop (optional):')
+    for name, ok, detail in hil_rows(st):                  # informational: never fails doctor
+        print(f'  {"ok " if ok else "-- "} {name:22s} {detail}')
     return 0 if ok_all else P.FAILED
 
 
@@ -392,7 +396,7 @@ def parser() -> argparse.ArgumentParser:
                                     'docs/odd-coverage.md)')
     sub.add_parser('stack', help='stack testing: the ROS 2 bridge, scenario suites, the safety-case report (see '
                                  'docs/stack-testing.md)')
-    sub.add_parser('hil', help='hardware in the loop: falcon hil device|deploy|session|report|acceptance (see '
+    sub.add_parser('hil', help='hardware in the loop: falcon hil device|deploy|session|report|acceptance|setup|can|ptp|v4l2 (see '
                                'docs/hardware.md)')
     sub.add_parser('deploy', help='TensorRT engines on the Jetson AGX Orin (or the simulated device), profiled and '
                                   'gated: falcon deploy check|build|profile|accuracy|gate|report|all (see '

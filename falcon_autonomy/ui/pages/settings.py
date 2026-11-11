@@ -16,7 +16,8 @@ from ..widgets import Form, Page, Section, button, label
 # 4.0 (in progress): sections a later module adds, if this build has it — falcon_autonomy.<module>.section(page)
 # returns the section widget; a section with apply(settings) -> str ('' ok, else why not) is applied, unsaved, by
 # Apply before the settings are saved.
-SECTIONS = ['ui.settings_backend', 'ui.settings_profile', 'ui.settings_compute', 'ui.settings_provider']
+SECTIONS = ['ui.settings_backend', 'ui.settings_profile', 'ui.settings_compute', 'ui.settings_provider',
+            'ui.settings_hardware']
 
 
 def extra_sections(page) -> list:

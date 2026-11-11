@@ -92,5 +92,8 @@ class HardwareSection(Section):
         return ''
 
 
-def section(page) -> HardwareSection:
+def section(page) -> HardwareSection | None:
+    """The Hardware section, or None when the page has no window (it reads and writes the window's settings)."""
+    if getattr(getattr(page, 'win', None), 'settings', None) is None:
+        return None
     return HardwareSection(page)
