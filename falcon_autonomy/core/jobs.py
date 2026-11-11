@@ -31,15 +31,29 @@ FINAL = (DONE, FAILED, CANCELLED)
 
 
 class JobSpec:
-    """What to run: argv and env (a worker command), and what it needs. run_dir holds its run.json."""
+    """What to run: argv and env (a worker command), and what it needs. run_dir holds its run.json.
+
+    Where it may run (4.0, recorded but not yet acted on — every job runs locally in this build): placement 'local'
+    (or, to come, 'cluster[:pool]'); gid a global id across machines ('' locally); inputs the files a remote run would
+    need (paths); outputs what a remote run brings back ('all', or a list of paths relative to run_dir).
+    meta['interactive'] marks a job that drives something live (gym, adversary, live view, HIL): never placed
+    remotely."""
 
     def __init__(self, kind: str, title: str, argv: list, env: dict | None = None, needs_carla=False,
                  needs_gpu=False, memory_gb=1.0, run_dir: str = '', cwd: str | None = None, resumable=False,
-                 meta: dict | None = None):
+                 meta: dict | None = None, placement: str = 'local', gid: str = '', inputs=(), outputs='all'):
         self.kind, self.title, self.argv, self.env = kind, title, list(argv), env
         self.needs_carla, self.needs_gpu, self.memory_gb = bool(needs_carla), bool(needs_gpu), float(memory_gb)
         self.run_dir, self.cwd, self.resumable = run_dir, cwd, bool(resumable)
         self.meta = dict(meta or {})
+        self.placement, self.gid = placement or 'local', gid
+        self.inputs = tuple(inputs or ())
+        self.outputs = outputs if outputs == 'all' else tuple(outputs or ())
+
+    @property
+    def interactive(self) -> bool:
+        """A live job (meta['interactive']): data only in this build."""
+        return bool(self.meta.get('interactive'))
 
 
 class Job:

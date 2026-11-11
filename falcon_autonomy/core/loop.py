@@ -1913,9 +1913,7 @@ def main_loop(argv) -> int:
         proj.save()
         return P.OK
     # next, run, new
-    from .jobs import JobQueue, SubprocessLauncher
-    from .settings import Settings
-    from ..sim.service import CarlaService
+    from ..sim.service import study_service
     if a.action == 'run' and a.until not in STEPS:
         try:
             a.until = STEPS[int(a.until) - 1]
@@ -1937,7 +1935,7 @@ def main_loop(argv) -> int:
             _thread.interrupt_main(signal.SIGTERM)
     old = (signal.signal(signal.SIGTERM, on_sig), signal.signal(signal.SIGINT, on_sig))
     P.CommandReader(on_cmd).start()
-    svc = CarlaService(Settings(), JobQueue(SubprocessLauncher()), ws, fake_carla=a.fake_carla)
+    svc = study_service(None, ws, fake_carla=a.fake_carla)
     r = Runner(proj, svc, em, lambda: state['cancel'])
     code = P.OK
     try:

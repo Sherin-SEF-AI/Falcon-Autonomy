@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout
 
 from ...core.jobs import FINAL
 from ..theme import STATUS, THEME
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
+from ..widgets import Form, KeyValues, Page, Section, button, label, optional_tab, scroll
 
 KINDS = (('', 'Detect from the path'), ('nuscenes', 'nuScenes (JSON tables)'), ('waymo', 'Waymo Open Dataset v2'),
          ('ros2', 'ROS 2 bag (MCAP or .db3)'), ('kitti_raw', 'KITTI raw (OXTS)'), ('falcon', 'Falcon run'))
@@ -219,6 +219,7 @@ class ReplayPage(Page):
         from .recon_panel import ReconPanel
         self.recon = ReconPanel(self)          # the log's own appearance, reconstructed (core.recon)
         lv.addWidget(self.recon)
+        self.nearmiss = optional_tab(lv, 'ui.dashcam_ingest', 'NearMissTab', 'Near-misses', self)   # 4.0, in progress
         lv.addStretch(1)
         split.addWidget(scroll(left))
 

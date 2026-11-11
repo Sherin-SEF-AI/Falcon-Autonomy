@@ -146,6 +146,8 @@ GROUP_ABOUT = {
     'ui': 'Falcon\'s window: the open page, go to a page, show a run or frame, outline a control',
     'knowledge': 'the manual (search), the command line, settings, the tools themselves',
     'system': 'the CARLA server, the machine, the queue\'s locks, versions',
+    'cluster': 'compute nodes and job placement; cloud bursts, priced and approved first',
+    'formal': 'signal temporal logic formulas: check, robustness, falsification; the GSN safety case',
 }
 CORE = ('plan_update', 'plan_wait_jobs', 'tools_find', 'tools_load')     # always sent
 ALWAYS = ('knowledge', 'system')        # small groups sent with the core (about 500 tokens); the rest on demand

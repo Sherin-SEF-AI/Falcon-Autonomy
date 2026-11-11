@@ -83,6 +83,19 @@ same configs, job queue (with the machine-wide CARLA lock and memory guard), wor
 | `falcon bisect run REPO --config F --good A --bad B [--out DIR] [--repeats N] [--alpha 0.05] [--scenario ID]… [--build CMD] [--max-steps N] [--fake-carla DIR]` · `falcon bisect show OUT` | the scenarios a stack's commits made worse (paired runs when deterministic, Fisher's exact test over repeats otherwise) and the first commit that broke each, by bisecting through CI mode; unbuildable commits skipped as `git bisect skip` ([bisect](bisect.md)) |
 | `falcon clusters build PROJECT [--sources search,suite,ci] [--cut 0.3]` · `show PROJECT [CLUSTER]` · `check PROJECT CI_DIR` | the workspace's failures clustered into named failure modes (Gower distance, average linkage); a CI run's failures in a known mode or new ([failure clusters](failure-clusters.md)) |
 | `falcon team init\|info\|owner\|lock …` · `falcon triage list\|show\|add\|assign\|state\|link PROJECT …` · `falcon comment PROJECT KIND:ID [TEXT]` | a shared team workspace on a shared folder: who you are, members, run owners, a shared file's lock; the triage queue (open → assigned → investigating → fixed → verified); comments on runs, failures and items ([team workspace](team.md)) |
+| `falcon cluster …` | (4.0, in progress) compute nodes, job placement and quotas; until its module lands it exits 2 "not in this build" |
+| `falcon cloud …` | (4.0, in progress) cloud bursts on RunPod or Lambda: an estimate first, a burst only with its approved estimate id and under the caps in Settings |
+| `falcon worker-daemon serve --slot N` · `oneshot …` (also `falcon-worker-daemon`) | (4.0, in progress) a compute node's job daemon on 127.0.0.1, port 2350 + N |
+| `falcon backend list\|check\|probe` | (4.0, in progress) the CARLA backends: 0.9.16 (UE4) and the UE5 line (0.10.x) |
+| `falcon profile …` | (4.0, in progress) performance profiles: `low_vram` for cards of about 8 GB |
+| `falcon lineage index\|verify\|prove\|diff\|gc` | (4.0, in progress) content-addressed lineage of runs, datasets and models |
+| `falcon bev stitch\|export\|bench` | (4.0, in progress) the surround view stitched from a rig's cameras |
+| `falcon falsify …` | (4.0, in progress) falsification of a signal temporal logic requirement by its robustness |
+| `falcon stl compile\|robustness` | (4.0, in progress) signal temporal logic formulas: checked and compiled; a run's robustness |
+| `falcon gsn …` | (4.0, in progress) the living GSN safety case, re-verified against its evidence |
+| `falcon introspect attention\|intervene\|audit` | (4.0, in progress) attention, token interventions and bias audits of driving policies |
+| `falcon levelk calibrate\|simulate\|check` | (4.0, in progress) level-k game-theoretic traffic |
+| `falcon dashcam ingest\|nearmiss …` | (4.0, in progress) near-miss mining from your dashcam footage: detection, tracking, depth, criticality; private like all dashcam data |
 
 Commands that need CARLA start Falcon's own server when none is running and stop it at the end (`--keep-server`
 leaves it running). Ctrl+C cancels the job politely — the worker tidies the server — and a second Ctrl+C kills it.

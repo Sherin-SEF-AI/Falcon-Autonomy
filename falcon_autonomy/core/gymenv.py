@@ -322,7 +322,7 @@ class FalconDriveEnv(_EnvBase):
             cfg_path = os.path.join(run_dir, 'gym.json')
             write_json(cfg_path, self.cfg)
             spec = self.svc.worker_spec(self.worker, [cfg_path], title, self.worker, run_dir,
-                                        meta={'config': cfg_path})
+                                        meta={'config': cfg_path, 'interactive': True})
             self.job = self.svc.queue.submit(spec)
             t0 = time.monotonic()
             while True:

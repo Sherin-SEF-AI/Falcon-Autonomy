@@ -29,7 +29,7 @@ from ...core.provenance import read_json
 from ..drivesets import DriveSetBar
 from ..theme import SEQ, STATUS, THEME, mono
 from ..widgets import (INTERVAL_ROLE, Form, IntervalDelegate, KeyValues, Page, PlaceholderList, PlaceholderTree,
-                       Section, button, callout, label, scroll)
+                       Section, button, callout, label, optional_tab, scroll)
 
 SYNTHETIC = {'name': 'Synthetic detector (testing only)', 'kind': 'detector', 'runtime': 'python',
              'entry': 'falcon_autonomy.plugins.synthetic_detector:SyntheticDetector', 'licence': 'GPL-3.0-or-later',
@@ -358,6 +358,8 @@ class ModelsPage(Page):
         from ..deploy_tab import DeployTab          # TensorRT engines on the Jetson, profiled and gated (core.deploy)
         self.deploy = DeployTab(self)
         self.tabs.addTab(self.deploy, 'Deploy')
+        self.introspect = optional_tab(self.tabs, 'ui.introspect_tab', 'IntrospectTab', 'Introspection', self)  # 4.0
+        self.lineage = optional_tab(self.tabs, 'ui.lineage_tab', 'LineageTab', 'Lineage', self)   # 4.0, in progress
         split.addWidget(self.tabs)
         split.setSizes([440, 860])
         self.timer = QTimer(self)

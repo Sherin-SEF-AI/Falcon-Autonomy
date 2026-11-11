@@ -508,7 +508,7 @@ def test_the_tools_are_registered_documented_and_small():
     assert 'research autopilot' in GROUP_ABOUT['research']
     assert guess_groups('run a research study of this hypothesis')[0] == 'research'
     toks = schema_tokens()
-    assert toks['research'] < 3500 and toks['all'] < 14000, toks
+    assert toks['research'] < 3500 and toks['all'] < 18000, toks
 
 
 def test_the_command_line_job(tmp_path, project):

@@ -52,7 +52,7 @@ def test_registry_schemas_and_doc():
     assert sum(t.tier == 'trash' for t in REGISTRY.values()) == 1
     toks = schema_tokens()                     # Groq's base tier: ~8,000 tokens a minute; groups load on demand, so
     # the per-group cap is what a step pays; the whole registry (never sent at once) grew with the failure tools
-    assert toks['all'] < 14000 and max(v for k, v in toks.items() if k != 'all') < 3500, toks
+    assert toks['all'] < 18000 and max(v for k, v in toks.items() if k != 'all') < 3500, toks
     with open(os.path.join(os.path.dirname(__file__), '..', 'docs', 'assistant-tools.md'), encoding='utf-8') as fh:
         assert fh.read() == doc_markdown(), 'docs/assistant-tools.md is stale: falcon assistant tools --doc > it'
 

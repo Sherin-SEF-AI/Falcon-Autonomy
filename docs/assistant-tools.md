@@ -14,9 +14,9 @@ user's dashcam footage to the model.
 From the command line: `falcon assistant tools [--json]` lists them; `falcon assistant call NAME '{"arg": …}'
 --project P.falcon.json` runs a read tool (`--allow-act` lets an act tool run; trash tools never run from there).
 
-115 tools: project 25, runs 11, jobs 29, analysis 11, lab 7, research 16, window 8, knowledge 4, system 4.
+117 tools: project 25, runs 11, jobs 29, analysis 11, lab 7, research 16, window 8, knowledge 4, system 4, cluster 1, formal 1.
 
-What the model is sent is each tool's one-line description and a compact schema (tools/_compact.py); the texts below are the full ones. Schema size, estimated as characters / 4: project 3003, runs 850, jobs 3200, analysis 951, lab 862, research 1851, window 670, knowledge 309, system 182; all 11853 tokens.
+What the model is sent is each tool's one-line description and a compact schema (tools/_compact.py); the texts below are the full ones. Schema size, estimated as characters / 4: project 3003, runs 850, jobs 3200, analysis 951, lab 862, research 1851, window 670, knowledge 317, system 182, cluster 51, formal 123; all 12035 tokens.
 
 ## Project
 
@@ -177,3 +177,15 @@ What the model is sent is each tool's one-line description and a compact schema 
 | `system_machine` | read | — | The machine: memory (total, available, swap) and the memory Falcon keeps free, the NVIDIA GPUs from nvidia-smi (name, memory used/total, utilisation, driver), the Vulkan driver check and systemd-run — the checks `falcon doctor` runs without CARLA. Measured now; nothing is estimated. |
 | `system_queue` | read | — | The job queue's state: how many jobs run, wait (and why) and are queued; who holds the machine-wide CARLA lock and the GPU lock (a process id; this process or another Falcon process), and the extra memory the next CARLA job's server start needs. jobs_list lists the jobs themselves. |
 | `system_versions` | read | — | Versions: Falcon's, the project format it reads, Python's, CARLA's (from the CARLA folder in Settings, when found) and the open project's name, file and the app version that last saved it. |
+
+## Cluster
+
+| tool | tier | arguments | what it does |
+|---|---|---|---|
+| `cluster_nodes` | read | — | The compute nodes Falcon may place jobs on: this machine as the local node (its NVIDIA GPUs from nvidia-smi: name, memory total and used) and the nodes configured in Settings ▸ Compute, each by name, slots, pool and backends — never its address, SSH user or key path. In this build every job runs on the local node; placement on other nodes is in progress (4.0). |
+
+## Formal
+
+| tool | tier | arguments | what it does |
+|---|---|---|---|
+| `formal_stl_check` | read | `formula` the formula, e.g. "always[0,10] (lead_gap_m >= 5)"<br>`consts`? named constants substituted into the formula (name → number) | Check a signal temporal logic formula (core.stl's language: always[a,b], eventually[a,b], until, since, and/or/not/->, comparisons of expressions over signals) against the signals the traffic rules can read (core.rules.SIGNALS). Returns ok, the formula in normal form (full parentheses), the signals it reads with their units, and its horizon — how many seconds it looks back and ahead (null: unbounded); or ok false with the parse error and its column, or the unknown signal names. Reads nothing from runs; changes nothing. |

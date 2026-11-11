@@ -442,10 +442,8 @@ def main_study(argv) -> int:
     """falcon sweep|search PROJECT --scenario KEY --name NAME [--world W] [--rig R] [--objective …] …  (exit codes as
     the CLI's)."""
     import argparse
-    from ..core.jobs import JobQueue, SubprocessLauncher
     from ..core.project import Project, ProjectError
-    from ..core.settings import Settings
-    from .service import CarlaService
+    from .service import study_service
     ap = argparse.ArgumentParser(prog='falcon sweep|search')
     ap.add_argument('kind', choices=('sweep', 'search'))
     ap.add_argument('project')
@@ -484,7 +482,7 @@ def main_study(argv) -> int:
     except ValueError as e:
         print(f'failed: {e}', flush=True)
         return P.REFUSED
-    svc = CarlaService(Settings(), JobQueue(SubprocessLauncher()), proj.workspace, fake_carla=a.fake_carla)
+    svc = study_service(None, proj.workspace, fake_carla=a.fake_carla)
     em = P.Emitter()
     em.hello(a.kind)
     try:

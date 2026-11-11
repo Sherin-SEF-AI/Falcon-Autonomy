@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLay
 from ...core import reports as R
 from ...core.jobs import FINAL, JobSpec
 from ...core.paths import tilde
-from ..widgets import KeyValues, Page, PlaceholderTree, Section, button, label
+from ..widgets import KeyValues, Page, PlaceholderTree, Section, button, label, optional_tab
 
 KIND_TITLES = {'iteration': 'Loop iteration', 'evaluation': 'Model evaluation', 'dataset': 'Dataset coverage',
                'study': 'Rare-case study', 'leaderboard': 'Leaderboard result', 'rules': 'Traffic-rule check',
@@ -74,6 +74,7 @@ class ReportsPage(Page):
         self.info = KeyValues(('Title', 'Kind', 'Source', 'Created', 'Files read', 'File'))
         sec.add(self.info)
         v.addWidget(sec)
+        self.gsn = optional_tab(v, 'ui.gsn_tab', 'GsnTab', 'Safety case (GSN)', self)   # 4.0, in progress
         v.addStretch(1)
         win.bridge.finished.connect(self._finished)
         self.refresh()

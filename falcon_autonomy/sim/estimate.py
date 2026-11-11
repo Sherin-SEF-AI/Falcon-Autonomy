@@ -285,11 +285,9 @@ def main_failrate(argv) -> int:
 
 
 def _run(a) -> int:
-    from ..core.jobs import JobQueue, SubprocessLauncher
     from ..core.project import Project, ProjectError
-    from ..core.settings import Settings
     from ..core import scenarios as SC
-    from .service import CarlaService
+    from .service import study_service
     from .studio import Study, objective_from_args
     try:
         proj = Project.load(a.project)
@@ -311,7 +309,7 @@ def _run(a) -> int:
     except (ValueError, FR.FailRateError) as e:
         print(f'failed: {e}', flush=True)
         return P.REFUSED
-    svc = CarlaService(Settings(), JobQueue(SubprocessLauncher()), proj.workspace, fake_carla=a.fake_carla)
+    svc = study_service(None, proj.workspace, fake_carla=a.fake_carla)
     em = P.Emitter()
     em.hello('failrate')
     name = a.name or estimate_name(scn['id'], spec['objective'], a.model, [w.split(':')[0] for w in a.weather],

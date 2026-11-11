@@ -13,6 +13,24 @@ from ...sim import server as S
 from .. import tasks
 from ..widgets import Form, Page, Section, button, label
 
+# 4.0 (in progress): sections a later module adds, if this build has it — falcon_autonomy.<module>.section(page)
+# returns the section widget; a section with apply(settings) -> str ('' ok, else why not) is applied, unsaved, by
+# Apply before the settings are saved.
+SECTIONS = ['ui.settings_backend', 'ui.settings_profile', 'ui.settings_compute', 'ui.settings_provider']
+
+
+def extra_sections(page) -> list:
+    """The SECTIONS this build has, built for the page (a module that is missing or fails to import is skipped)."""
+    import importlib
+    out = []
+    for name in SECTIONS:
+        try:
+            make = getattr(importlib.import_module(f'falcon_autonomy.{name}'), 'section')
+        except (ImportError, AttributeError):
+            continue
+        out.append(make(page))
+    return out
+
 
 class SettingsPage(Page):
     key, title, icon = 'settings', 'Settings', 'gear'
@@ -108,6 +126,9 @@ class SettingsPage(Page):
         team.add(tf)
         v.addWidget(team)
         self._assistant_section(v)
+        self.extra = extra_sections(self)          # 4.0 sections (SECTIONS), when this build has them
+        for w in self.extra:
+            v.addWidget(w)
         b = QHBoxLayout()
         b.addWidget(button('Apply', self.apply, role='primary'))
         b.addStretch(1)
@@ -423,6 +444,11 @@ class SettingsPage(Page):
         st.set('user_name', ' '.join(self.user_name.text().split())[:64], save=False)
         if not self._assistant_apply(avals):
             return
+        for w in self.extra:
+            why = w.apply(st) if hasattr(w, 'apply') else ''
+            if why:
+                QMessageBox.warning(self, 'Settings', why)
+                return
         st.save()
         self._assistant_changed()
         self.win.log.append_line(f'settings saved ({tilde(st.path)})')

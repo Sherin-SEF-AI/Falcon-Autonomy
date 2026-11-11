@@ -44,6 +44,14 @@ ASSISTANT_DEFAULTS = {
                'qwen/qwen3.8-27b': [0.80, 4.00]},
     'models': [],                        # the server's last model list ({id, context_window}), from Refresh
     'models_checked': '',
+    'provider': 'groq',                  # assistant.provider.PROFILES (4.0: groq; local vllm/ollama/sglang to come)
+}
+# a cloud burst (4.0, cluster/cloud): never without an approved estimate, and refused over these caps even when approved
+CLOUD_DEFAULTS = {
+    'provider': '',                      # '' (none), 'runpod' or 'lambda'; the API key is in the keyring (keystore)
+    'max_usd_per_burst': 10.0,
+    'max_usd_month': 50.0,
+    'ttl_factor': 1.5,                   # a burst's instances are terminated past its estimate × this
 }
 
 DEFAULTS = {
@@ -68,6 +76,17 @@ DEFAULTS = {
     'user_name': '',                     # who you are in a team workspace (core.team): a label, not an account
     'hil_device': {},                    # the HIL device: address, ports, SSH user and key path (core.hil); no password
     'assistant': copy.deepcopy(ASSISTANT_DEFAULTS),
+    # 4.0 (in progress): a second CARLA backend, the low-VRAM profile, cluster and cloud execution, CAN and PTP HIL
+    'carla_roots': {},                   # backend id -> its CARLA folder (empty: carla_root / the first found)
+    'client_pythons': {},                # backend id -> the venv its workers run in (empty: client_python / beside it)
+    'default_backend': 'carla-0.9.16',   # 'carla-0.9.16' or 'carla-ue5' (a project's simulator.backend overrides it)
+    'profile': 'standard',               # 'standard' or 'low_vram' (core.profiles)
+    'inference_precision': 'fp32',       # 'fp32', 'fp16' or 'auto' (fp16 kept only when accuracy holds)
+    'texture_pool_mb': 0,                # the server's texture streaming pool; 0: CARLA's own
+    'cluster': {'nodes': []},            # compute nodes: {name, host, ssh_user, ssh_key (a path), slots, pool}; no secret
+    'cloud': copy.deepcopy(CLOUD_DEFAULTS),
+    'hil_can': {'interfaces_allowed': ['vcan*']},  # CAN interfaces Falcon may open (patterns); real ones added by hand
+    'hil_ptp': {'interface': '', 'clock_source': 'auto'},   # PTP on this NIC, or an NTP-style fallback (recorded)
 }
 
 
@@ -115,8 +134,29 @@ EXPLAIN = {
                   'the server, the main and fast models, the token limit, temperature, reasoning effort, permission '
                   'mode, the price table, next-step suggestions on or off, show-me mode; never the key (keyring or '
                   'secrets file)'),
+    'carla_roots': ('Settings ▸ Simulator (4.0, in progress)', 'the CARLA folder of each backend (carla-0.9.16, '
+                    'carla-ue5); empty: the CARLA folder setting or the first one found'),
+    'client_pythons': ('Settings ▸ Simulator (4.0, in progress)', 'the venv each backend\'s workers run in; empty: '
+                       'the CARLA Python setting or the venv beside that backend\'s folder'),
+    'default_backend': ('Settings ▸ Simulator (4.0, in progress)', 'the CARLA backend runs use when the project does '
+                        'not name one: carla-0.9.16 (UE4) or carla-ue5 (0.10.x)'),
+    'profile': ('Settings ▸ Performance (4.0, in progress)', 'standard, or low_vram: Low quality, a smaller texture '
+                'pool and render budget, FP16 inference, for cards of about 8 GB'),
+    'inference_precision': ('Settings ▸ Performance (4.0, in progress)', 'fp32, fp16 or auto (fp16 kept only when '
+                            'the accuracy drop stays within half a point)'),
+    'texture_pool_mb': ('Settings ▸ Performance (4.0, in progress)', 'the server\'s texture streaming pool in MB; 0: '
+                        'CARLA\'s own'),
+    'cluster': ('Settings ▸ Compute (4.0, in progress)', 'compute nodes jobs may be placed on: address, SSH user, key '
+                'path, slots and pool (private: addresses; never a password)'),
+    'cloud': ('Settings ▸ Compute (4.0, in progress)', 'cloud bursts: the provider, the caps per burst ($10) and per '
+              'month ($50) that refuse a burst even when approved, and the factor over the estimate after which its '
+              'machines are terminated; the API key is kept in the keyring'),
+    'hil_can': ('Settings ▸ Hardware (4.0, in progress)', 'the CAN interfaces Falcon may open (patterns; vcan* by '
+                'default, a real adapter only once confirmed there)'),
+    'hil_ptp': ('Settings ▸ Hardware (4.0, in progress)', 'the network interface for PTP time sync, and the clock '
+                'source (auto: PTP when available, else an NTP-style fallback; both recorded)'),
 }
-PRIVATE_SETTINGS = ('recent_projects', 'hil_device', 'cloud_llm')
+PRIVATE_SETTINGS = ('recent_projects', 'hil_device', 'cloud_llm', 'cluster')
 
 class Settings:
     def __init__(self, path: str | None = None):
@@ -133,7 +173,10 @@ class Settings:
         if isinstance(d, dict):
             for k, v in d.items():
                 if k in DEFAULTS:
-                    self.data[k] = v
+                    dv = DEFAULTS[k]
+                    # a settings file from an older build: a group's keys added since keep their defaults
+                    self.data[k] = ({**copy.deepcopy(dv), **v} if isinstance(dv, dict) and dv and isinstance(v, dict)
+                                    else v)
 
     def save(self):
         atomic_write(self.path, json.dumps(self.data, indent=2) + '\n')

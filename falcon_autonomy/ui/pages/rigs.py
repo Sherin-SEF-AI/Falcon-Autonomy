@@ -17,7 +17,7 @@ from ...core import rig as R
 from ...core.project import Edit, new_id
 from .. import icons
 from ..view3d import make_view
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll, set_enabled
+from ..widgets import Form, KeyValues, Page, Section, button, label, optional_tab, scroll, set_enabled
 
 LABELS = ('semantic', 'instance', 'depth', 'boxes2d', 'boxes3d', 'flow')
 TYPE_NAMES = {'camera.pinhole': 'Pinhole camera', 'camera.fisheye': 'Fisheye camera', 'lidar': 'Lidar',
@@ -162,6 +162,7 @@ class RigsPage(Page):
         self.sensor_sec.add(self.cost)
         self.rv.addWidget(self.sensor_sec)
         self.rv.addStretch(1)
+        self.surround = optional_tab(self.rv, 'ui.bev_tab', 'BevTab', 'Surround view', self)   # 4.0, in progress
         split.addWidget(scroll(right))
         split.setSizes([300, 620, 480])
         self.refresh()

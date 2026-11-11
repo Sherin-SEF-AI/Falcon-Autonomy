@@ -44,7 +44,8 @@ From the command line: `falcon assistant tools [--json]` lists them; `falcon ass
 """
 GROUP_TITLES = {'project': 'Project', 'runs': 'Runs', 'jobs': 'Jobs', 'analysis': 'Analysis', 'lab': 'Lab',
                 'research': 'Research',
-                'ui': 'Window', 'knowledge': 'Knowledge', 'system': 'System'}
+                'ui': 'Window', 'knowledge': 'Knowledge', 'system': 'System', 'cluster': 'Cluster',
+                'formal': 'Formal'}
 
 
 def doc_markdown() -> str:

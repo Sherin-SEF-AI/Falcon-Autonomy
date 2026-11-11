@@ -198,7 +198,7 @@ def submit_session(svc, cfg: dict, address: str = '', title: str = ''):
     path = os.path.join(run_dir, 'hil.json')
     write_json(path, cfg)
     spec = svc.worker_spec('hil', [path], title or cfg.get('name', 'HIL session'), 'hil', run_dir,
-                           meta={'config': path})
+                           meta={'config': path, 'interactive': True})
     if address:
         spec.env = dict(spec.env or os.environ, FALCON_HIL_ADDRESS=address)
     return svc.queue.submit(spec)

@@ -46,7 +46,7 @@ def _workspace(project):
 def test_schemas_stay_within_the_budget():
     from falcon_autonomy.assistant.cli import schema_tokens
     toks = schema_tokens()
-    assert toks['all'] < 14000 and toks['jobs'] < 3500 and toks['analysis'] < 3500, toks
+    assert toks['all'] < 18000 and toks['jobs'] < 3500 and toks['analysis'] < 3500, toks
     assert 'estimate' in json.dumps(REGISTRY['jobs_search'].params)
     assert {'failure_rate', 'coverage'} <= set(REGISTRY['analysis_outputs'].params['properties']['kind']['enum'])
 

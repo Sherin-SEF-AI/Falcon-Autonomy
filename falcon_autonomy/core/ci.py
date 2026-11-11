@@ -1494,12 +1494,10 @@ def _project(cfg, out):
 
 
 def _service(cfg, out, workspace):
-    from .jobs import JobQueue, SubprocessLauncher
-    from .settings import Settings
-    from ..sim.service import CarlaService
+    from ..sim.service import study_service
     fake = cfg['carla'].get('fake_carla', '') if cfg['carla']['mode'] == 'fake' else ''
     lock_dir = os.path.join(out, '.locks') if fake else None      # no server: never wait on the machine's CARLA lock
-    return CarlaService(Settings(), JobQueue(SubprocessLauncher(), lock_dir), workspace, fake_carla=fake)
+    return study_service(None, workspace, fake_carla=fake, lock_dir=lock_dir)
 
 
 def subject_label(cfg: dict, suite: dict | None) -> str:

@@ -30,6 +30,9 @@
     "infrastructure": {"type": "object", "description": "Roadside units standing in the worlds (docs/v2x.md).",
                        "properties": {"rsus": {"type": "array", "items": {"$ref": "#/$defs/rsu"}}},
                        "additionalProperties": false},
+    "simulator": {"type": "object", "description": "The simulator the project's runs use; absent: carla-0.9.16 (written only when another backend is chosen; 4.0, in progress).",
+                  "properties": {"backend": {"enum": ["carla-0.9.16", "carla-ue5"]}},
+                  "additionalProperties": false},
     "loop": {
       "type": "object",
       "properties": {
@@ -116,7 +119,14 @@
         "vehicles": {"type": "integer", "minimum": 0, "maximum": 500},
         "walkers": {"type": "integer", "minimum": 0, "maximum": 500},
         "fleet": {"type": "object", "description": "Share of each vehicle class (weights, normalised at run time).", "additionalProperties": {"type": "number", "minimum": 0}},
-        "behaviour": {"type": "object"},
+        "behaviour": {
+          "type": "object",
+          "description": "Traffic-manager settings (distance_to_leading_m, speed_difference_pct, ignore_lights_pct, ignore_signs_pct, auto_lane_change, walker_crossing_factor), and optionally the model that drives the traffic.",
+          "properties": {
+            "model": {"enum": ["tm", "levelk"], "description": "tm (absent: the default): CARLA's traffic manager; levelk: level-k game-theoretic traffic (core.levelk, 4.0, in progress) with the levelk parameters."},
+            "levelk": {"type": "object", "description": "Level-k parameters per agent kind (car, two_wheeler, autorickshaw, pedestrian, …): {kind: {k, lambda, alpha}}; permissive while level-k is in progress."}
+          }
+        },
         "lateral_filtering": {
           "type": "object",
           "description": "Background two-wheelers (and, when named, the autorickshaw stand-ins) that filter laterally — ride the lane line, pass between vehicles, keep to the kerb side — instead of keeping to the lane centre (workers.lateral; docs/indian-assets.md). Absent or enabled false: off. controller 'tm': the traffic manager's per-vehicle lane offset with the chooser's clearance (the default); 'own': driven off the autopilot by Falcon's own pure-pursuit controller (kept for comparison).",

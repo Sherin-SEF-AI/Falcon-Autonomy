@@ -21,7 +21,7 @@ from ...core import scenarios as SC
 from ...core import search as S
 from ...core.jobs import FINAL, JobSpec
 from ..theme import SEQ, STATUS, THEME
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll, set_enabled
+from ..widgets import Form, KeyValues, Page, Section, button, label, optional_tab, scroll, set_enabled
 
 METHODS = (('bayes', 'Bayesian optimisation'),
            ('bayes-pof', 'Bayesian optimisation, probability of failure (maps the region)'), ('cmaes', 'CMA-ES'),
@@ -226,6 +226,7 @@ class RareCasesPage(Page):
         self.rates, self.coverage = attach_rates(self)           # core.oddcoverage)
         lv.addWidget(self.rates)
         lv.addWidget(self.coverage)
+        self.falsify = optional_tab(lv, 'ui.falsify_tab', 'FalsifyTab', 'Falsify', self)   # STL (4.0, in progress)
         lv.addStretch(1)
         split.addWidget(scroll(left))
         right = QWidget()

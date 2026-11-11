@@ -1198,10 +1198,8 @@ def main_ablation(argv) -> int:
         if s['run']['executor'] == 'detection':
             if proj is None:
                 raise AblationError('the detection executor needs --project')
-            from .jobs import JobQueue, SubprocessLauncher
-            from .settings import Settings
-            from ..sim.service import CarlaService
-            svc = CarlaService(Settings(), JobQueue(SubprocessLauncher()), ws, fake_carla=a.fake_carla)
+            from ..sim.service import study_service
+            svc = study_service(None, ws, fake_carla=a.fake_carla)
         if a.action == 'run':
             res = run(ws, a.id, proj, svc, None, em, lambda: state['cancel'])
             print(table(res), flush=True)

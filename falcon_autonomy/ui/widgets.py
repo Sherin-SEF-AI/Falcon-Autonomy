@@ -725,3 +725,36 @@ def fit_splitter(split: QSplitter):
     if not getattr(split, '_fit', None):
         split._fit = _SplitFit(split)
     return split._fit
+
+
+# ------------------------------------------------------------------------------------------- optional tabs (4.0)
+def optional_tab(host, module: str, cls: str, title: str, owner=None):
+    """A tab (or section) a later module adds to a page, if this build has it: falcon_autonomy.<module>.<cls>,
+    imported only now and built as cls(owner) (cls() without an owner) — the page passes itself, so the tab reaches the
+    window as owner.win. host is the page's QTabWidget (the widget becomes a tab titled `title`) or a page's column
+    layout (it goes in a Section titled `title`, before the column's closing stretch). Returns the widget, or None —
+    silently — when the module, the class or something they import is not in this build (ImportError,
+    AttributeError): the page is then exactly as before."""
+    import importlib
+
+    from PyQt6.QtWidgets import QBoxLayout, QSpacerItem, QTabWidget
+    try:
+        kind = getattr(importlib.import_module(f'falcon_autonomy.{module}'), cls)
+    except (ImportError, AttributeError):
+        return None
+    w = kind(owner) if owner is not None else kind()
+    if isinstance(host, QTabWidget):
+        host.addTab(w, title)
+        return w
+    sec = Section(title)
+    sec.add(w)
+    if isinstance(host, QBoxLayout):
+        n = host.count()
+        last = host.itemAt(n - 1) if n else None
+        if last is not None and isinstance(last.spacerItem(), QSpacerItem):
+            host.insertWidget(n - 1, sec)
+        else:
+            host.addWidget(sec)
+    else:
+        host.addWidget(sec)
+    return w

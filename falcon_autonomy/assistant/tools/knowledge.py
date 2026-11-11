@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 
-from ..tool_api import ToolError, tool
+from ..tool_api import GROUPS, ToolError, tool
 from . import _common as C
 
 
@@ -88,7 +88,7 @@ def knowledge_setting(ctx, key=''):
       'purpose. What is never possible: deleting runs or projects, changing settings or ports, starting or stopping '
       'servers outside the job queue, running a shell, pushing or posting, downloading models, seeing images or '
       'dashcam-derived data.',
-      C.obj({'group': C.s('one group', enum=['project', 'runs', 'jobs', 'analysis', 'lab', 'ui', 'knowledge', 'system'])}))
+      C.obj({'group': C.s('one group', enum=list(GROUPS))}))
 def knowledge_tools(ctx, group=''):
     from ..tool_api import NEVER, REGISTRY
     rows = [{'name': t.name, 'group': t.group, 'tier': t.tier, 'gui': t.gui,

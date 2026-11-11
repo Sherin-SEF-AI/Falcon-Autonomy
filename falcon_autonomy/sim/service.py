@@ -223,7 +223,7 @@ class CarlaService:
         path = os.path.join(run_dir, 'live.json')
         write_json(path, cfg)
         self._owner(run_dir, 'live')
-        spec = self.worker_spec('live', [path], title, 'live', run_dir, meta={'config': path})
+        spec = self.worker_spec('live', [path], title, 'live', run_dir, meta={'config': path, 'interactive': True})
         return self.queue.submit(spec)
 
     def submit_osm_import(self, cfg: dict, title: str = ''):
@@ -328,3 +328,19 @@ class CarlaService:
         if self.catalog is not None:
             self.catalog.close()
             self.catalog = None
+
+
+PLACEMENTS = ('local',)          # where a study's jobs may run (4.0: 'cluster[:pool]' and cloud bursts to come)
+
+
+def study_service(settings: Settings | None = None, workspace: str = '', fake_carla: str = '',
+                  placement: str = 'local', lock_dir: str | None = None) -> CarlaService:
+    """The CarlaService a headless study command runs its jobs through (sweep, search, failrate, ablation, the loop,
+    CI): the user's settings (or `settings`), a job queue with the subprocess launcher (lock_dir: its own lock folder,
+    for a fake server that must not wait on the machine's CARLA lock), on `workspace`. placement: where the jobs run;
+    only 'local' in this build."""
+    from ..core.jobs import SubprocessLauncher
+    if placement not in PLACEMENTS:
+        raise ValueError(f'placement {placement!r} is not in this build (only: {", ".join(PLACEMENTS)})')
+    return CarlaService(settings if settings is not None else Settings(), JobQueue(SubprocessLauncher(), lock_dir),
+                        workspace, fake_carla=fake_carla)

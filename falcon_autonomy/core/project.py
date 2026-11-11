@@ -26,6 +26,9 @@ VERSION = 1
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'schemas',
                            'project.schema.json')
 SECTIONS = ('worlds', 'traffic_profiles', 'rigs', 'scenarios', 'dataset_specs', 'models', 'experiments')
+BACKENDS = ('carla-0.9.16', 'carla-ue5')        # the schema's simulator.backend (4.0: sim.backends describes each)
+DEFAULT_BACKEND = BACKENDS[0]                   # a project without 'simulator' runs on this one
+TRAFFIC_MODELS = ('tm', 'levelk')               # a traffic profile's behaviour.model (absent: tm)
 
 
 class ProjectError(ValueError):
@@ -278,3 +281,36 @@ class Project:
 
     def item(self, section: str, ident: str) -> dict | None:
         return self.find(section, ident)[1]
+
+    # -- the simulator (4.0)
+    def backend(self) -> str:
+        """The CARLA backend the project's runs use: simulator.backend, or DEFAULT_BACKEND when absent."""
+        return backend_of(self.doc)
+
+
+def backend_of(doc: dict) -> str:
+    """A project document's simulator backend (DEFAULT_BACKEND when it names none)."""
+    return ((doc or {}).get('simulator') or {}).get('backend') or DEFAULT_BACKEND
+
+
+def backend_edit(doc: dict, backend: str) -> 'Edit | None':
+    """The undoable edit that makes the project use `backend` (None: it already does). The default is written as no
+    'simulator' at all, so a project that never chose another backend stays readable by builds without the field."""
+    if backend not in BACKENDS:
+        raise ProjectError(f'unknown simulator backend {backend!r}: one of {", ".join(BACKENDS)}')
+    if backend == backend_of(doc) and (backend != DEFAULT_BACKEND or 'simulator' not in doc):
+        return None
+    text = f'simulator backend {backend}'
+    if backend == DEFAULT_BACKEND:
+        return _Unset(['simulator'], text)
+    return Edit('set', ['simulator'], {'backend': backend}, text=text)
+
+
+def traffic_model(tp: dict) -> str:
+    """A traffic profile's traffic model: 'tm' (CARLA's traffic manager, the default) or 'levelk'."""
+    return ((tp or {}).get('behaviour') or {}).get('model') or 'tm'
+
+
+def levelk_params(tp: dict) -> dict:
+    """A traffic profile's level-k parameters per agent kind ({kind: {k, lambda, alpha}}; {} when none)."""
+    return dict(((tp or {}).get('behaviour') or {}).get('levelk') or {})

@@ -1,9 +1,21 @@
 """The assistant's tools: importing this package registers every one in tool_api.REGISTRY (docs/assistant-tools.md is
-generated from it). One module per group — project, runs, jobs, analysis, lab, research, ui, knowledge, system; the
-research group also has failures (failure modes, triage, bisect) and autopilot (the research autopilot) — each
-calling the code the GUI pages and the CLI call; _common holds what they share (ids to workspace paths, privacy
-checks, edits, jobs, compact results); _compact holds each tool's one-line description for the model (the full texts
-are the doc).
+generated from it). One module per group — project, runs, jobs, analysis, lab, research, ui, knowledge, system,
+cluster (cluster, cloud), formal; the research group also has failures (failure modes, triage, bisect) and autopilot
+(the research autopilot); introspect is the introspection tools' module (4.0, in progress) — each calling the code the
+GUI pages and the CLI call; _common holds what they share (ids to workspace paths, privacy checks, edits, jobs, compact
+results); _compact holds the one-line descriptions for the model (the full texts are the doc).
+
+Adding a module (the convention since 4.0; nobody else edits _compact.SHORT): the module keeps its own one-line
+descriptions and adds them at import time, before compact_registry() below runs —
+
+    MINE = {'cluster_nodes': 'Compute nodes jobs may run on: …'}
+    assert not set(MINE) & set(_compact.SHORT), set(MINE) & set(_compact.SHORT)
+    _compact.SHORT.update(MINE)
+
+— and is imported in the block below. Every module is imported before compact_registry() runs, so its SHORT entries
+are in place when the registry is compacted. DETAILS is not touched: compact_registry() fills it from each tool's
+registered (full) description and schema, and skips a tool already in it — a module that wrote DETAILS itself would
+leave its tool uncompacted. A tool's name starts with its group (tool_api.GROUPS).
 
 context(project_path, fake_carla) builds a ToolContext for the command line (`falcon assistant call`): the project
 loaded, the user's settings, a job queue with the subprocess launcher and a CarlaService on the project's workspace.
@@ -14,6 +26,7 @@ from ..tool_api import REGISTRY
 from . import analysis, jobs, knowledge, lab, project, research, runs, system, ui  # noqa: F401 (registers them)
 from . import failures  # noqa: F401,E402 (failure modes, triage, bisect: registers them)
 from . import autopilot  # noqa: F401,E402 (the research autopilot and its studies: registers them)
+from . import cloud, cluster, formal, introspect  # noqa: F401,E402 (4.0: their tools and their SHORT entries)
 from ._compact import compact_registry
 
 compact_registry(REGISTRY)          # what the model is sent: one-line descriptions, short argument texts (_compact)

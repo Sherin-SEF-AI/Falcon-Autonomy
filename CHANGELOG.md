@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **4.0 scaffolding** (`cli.py`, `pyproject.toml`, `core/settings.py`, `core/project.py`, `schemas/project.schema.json`,
+  `core/jobs.py`, `sim/service.py`, `assistant/keystore.py`, `assistant/tools/{cluster,cloud,formal,introspect}.py`,
+  `ui/widgets.py`, the pages' hooks, `tests/conftest.py`): the shared files the 4.0 workstreams build on, final before
+  they start. New top-level commands `cluster`, `cloud`, `worker-daemon` (and the `falcon-worker-daemon` script),
+  `backend`, `profile`, `lineage`, `bev`, `falsify`, `stl`, `gsn`, `introspect`, `levelk` and `dashcam
+  ingest|nearmiss`, each importing its module lazily and exiting 2 "not in this build" until it lands; `falcon --help`
+  lists `v2x`, `generate` and `scenario` too. Settings for the second CARLA backend, the low-VRAM profile, inference
+  precision, the texture pool, cluster nodes (private), cloud bursts (caps $10 a burst, $50 a month), CAN and PTP, and
+  the assistant's provider; an older settings file gains a group's new keys with their defaults. `KeyStore(name=…)`
+  keeps the RunPod and Lambda keys like the assistant's, with `clear()`. A project may name its simulator backend
+  (`simulator.backend`, written only when not `carla-0.9.16`) and a traffic profile its traffic model (`behaviour.model:
+  levelk` with level-k parameters) — no format version change. `sim.service.study_service` replaces the five copies of
+  the service a study command built (failrate, sweep/search, ablation, the loop, CI). A job spec records placement,
+  a global id, inputs and outputs, and gym, adversary, live and HIL jobs are marked interactive (data only: every job
+  still runs locally). The assistant gains the cluster group (`cluster_nodes`: this machine's GPUs and the configured
+  nodes, never their addresses) and the formal group (`formal_stl_check`: an STL formula over the rule signals, its
+  signals and horizon, or the error with its column); a tool module now adds its own one-line descriptions. Pages take
+  4.0 tabs when their module exists (`ui.widgets.optional_tab`) and Settings its 4.0 sections. Optional extras
+  `lineage`, `hil`, `cluster`, `perception`, `secrets`. Tests: `--help` of every command under the system Python with
+  a lint for bare `%` in help strings; markers for UE5, vcan, V4L2, real clusters, paid cloud, the Orin, nuScenes,
+  model weights, CUDA and the network, each run only with its variable; no test reaches the network; temporary files on
+  disk (`/var/tmp`) instead of the `/tmp` tmpfs.
+
 - **The research autopilot** (`core/autoresearch.py`, `assistant/tools/autopilot.py`, `ui/research_view.py`,
   `assistant/agent.py`, `assistant/tool_api.py`, Assistant panel ▸ Research; docs/research-autopilot.md): a question
   taken through the research loop by a deterministic, resumable state machine stored with its experiment

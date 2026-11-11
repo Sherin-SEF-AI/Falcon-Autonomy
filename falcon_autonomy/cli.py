@@ -60,6 +60,15 @@
     falcon rigs vantage|import|compare|report|note ...   Vantage rig variants compared by perception (docs/rig-compare.md)
     falcon schema                              print the project schema's path
 
+4.0, in progress (each command's module is added by its workstream; until then it exits 2 "not in this build"):
+    falcon cluster …    compute nodes, placement, quotas        falcon cloud …       priced, approved cloud bursts
+    falcon worker-daemon …   a node's job daemon (also falcon-worker-daemon)
+    falcon backend list|check|probe   CARLA backends            falcon profile …     the low-VRAM profile
+    falcon lineage index|verify|prove|diff|gc   data lineage    falcon bev stitch|export|bench   surround view
+    falcon falsify …    STL falsification                       falcon stl compile|robustness   STL formulas
+    falcon gsn …        the living GSN safety case              falcon introspect attention|intervene|audit
+    falcon levelk calibrate|simulate|check   level-k traffic    falcon dashcam ingest|nearmiss   near-miss mining
+
 Exit codes: 0 ok; otherwise the worker's code (falcon_autonomy.core.protocol: 2 failed, 3 cancelled, 4 server lost,
 5 no server, 6 refused, 7 no carla) or 2 for a usage error. docs/cli.md is the reference.
 """
@@ -394,7 +403,8 @@ def parser() -> argparse.ArgumentParser:
                                  'rerender|info (see '
                                  'docs/reconstruction.md)')
     sub.add_parser('dashcam', help='a dashcam\'s clips, GPS track and frames: falcon dashcam list|gps|extract|match|'
-                                   'route (see docs/dashcam.md)')
+                                   'route|incident (see docs/dashcam.md); ingest|nearmiss: near-miss mining (4.0, '
+                                   'in progress)')
     sub.add_parser('vlm', help='vision-language explanations scored against ground truth: falcon vlm '
                                'list|verify|fetch|eval|finetune (see docs/vlm.md)')
     sub.add_parser('triggers', help='live trigger rules: falcon triggers list|check|add|remove|signals (see '
@@ -415,7 +425,65 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser('clusters', help='failure modes: falcon clusters build|show|check (see docs/failure-clusters.md)')
     sub.add_parser('assets', help='Indian road assets: falcon assets inventory|list|show ID|verify (see '
                                   'docs/indian-assets.md)')
+    sub.add_parser('v2x', help='roadside units and their CPMs: falcon v2x junctions|place|list|remove|drive|benefit|'
+                               'decode|converter (see docs/v2x.md)')
+    sub.add_parser('generate', help='generation rounds for the weakest cells: falcon generate plan|new|run|show|list '
+                                    '(see docs/generation.md)')
+    sub.add_parser('scenario', help='a scenario from a description, a run checked against it: falcon scenario '
+                                    'from-text|check (see docs/scenario-text.md)')
+    for name, (_module, _fn, text) in LAZY.items():
+        sub.add_parser(name, help=f'{text} (4.0, in progress; see docs/cli.md)')
     return ap
+
+
+# 4.0 (in progress): top-level commands whose module a workstream adds; until then `falcon NAME` exits 2 with
+# "failed: NAME is not in this build". name -> (module under falcon_autonomy, its main function, help text)
+LAZY = {
+    'cluster': ('cluster.cli', 'main_cluster', 'compute nodes, job placement and quotas: falcon cluster …'),
+    'cloud': ('cluster.cloudcli', 'main_cloud', 'cloud bursts on RunPod or Lambda, priced and approved first: '
+                                                 'falcon cloud …'),
+    'worker-daemon': ('cluster.daemon', 'main', 'a compute node\'s job daemon: falcon worker-daemon serve|oneshot'),
+    'backend': ('sim.backends', 'main_backend', 'the CARLA backends (0.9.16, UE5): falcon backend list|check|probe'),
+    'profile': ('core.profiles', 'main_profile', 'performance profiles (low_vram): falcon profile …'),
+    'lineage': ('core.lineage', 'main_lineage', 'content-addressed data lineage: falcon lineage '
+                                                'index|verify|prove|diff|gc'),
+    'bev': ('core.bevstitch', 'main_bev', 'the surround view stitched from a rig\'s cameras: falcon bev '
+                                          'stitch|export|bench'),
+    'falsify': ('core.stlobjective', 'main_falsify', 'falsify a signal temporal logic requirement: falcon falsify …'),
+    'stl': ('core.stlobjective', 'main_stl', 'signal temporal logic formulas: falcon stl compile|robustness'),
+    'gsn': ('core.gsn', 'main_gsn', 'the living GSN safety case: falcon gsn …'),
+    'introspect': ('core.introspect', 'main_introspect', 'attention, interventions and bias audits of driving '
+                                                         'policies: falcon introspect attention|intervene|audit'),
+    'levelk': ('core.levelk', 'main_levelk', 'level-k game-theoretic traffic: falcon levelk calibrate|simulate|check'),
+}
+# `falcon dashcam ingest|nearmiss …` (4.0, in progress): core.dashcam_ingest.main_ingest gets ['ingest'|'nearmiss', …]
+DASHCAM_LAZY = ('ingest', 'nearmiss')
+
+
+def run_lazy(cmd: str, module: str, fn: str, argv: list) -> int:
+    """`falcon CMD …` through falcon_autonomy.MODULE.FN(argv); 2 with "failed: CMD is not in this build" when the
+    module or the function does not exist (a 4.0 command whose workstream has not landed)."""
+    import importlib
+    full = f'{__package__}.{module}'
+    try:
+        mod = importlib.import_module(full)
+    except ModuleNotFoundError as e:
+        parts = full.split('.')
+        if e.name in {'.'.join(parts[:i]) for i in range(1, len(parts) + 1)}:
+            print(f'failed: {cmd} is not in this build', file=sys.stderr)
+            return 2
+        print(f'failed: {cmd}: {e}', file=sys.stderr)          # the module is here; something it needs is not
+        return 2
+    main_fn = getattr(mod, fn, None)
+    if not callable(main_fn):
+        print(f'failed: {cmd} is not in this build', file=sys.stderr)
+        return 2
+    return main_fn(argv)
+
+
+def main_worker_daemon(argv=None) -> int:
+    """The `falcon-worker-daemon` console script: `falcon worker-daemon …`."""
+    return run_lazy('worker-daemon', *LAZY['worker-daemon'][:2], sys.argv[1:] if argv is None else argv)
 
 
 
@@ -568,6 +636,8 @@ def main(argv=None) -> int:
     if argv[:1] == ['recon']:                     # neural reconstruction of a drive (core.recon)
         from .core.recon.commands import main_recon
         return main_recon(argv[1:])
+    if argv[:1] == ['dashcam'] and argv[1:2] and argv[1] in DASHCAM_LAZY:   # near-miss mining (core.dashcam_ingest)
+        return run_lazy(f'dashcam {argv[1]}', 'core.dashcam_ingest', 'main_ingest', argv[1:])
     if argv[:2] == ['dashcam', 'incident']:       # a reconstructed dashcam event as a scenario (core.incident)
         from .core.incident import main_incident
         return main_incident(argv[2:])
@@ -601,6 +671,8 @@ def main(argv=None) -> int:
     if argv[:1] in (['sweep'], ['search']):       # scenario studies (sim.studio)
         from .sim.studio import main_study
         return main_study(argv)
+    if argv[:1] and argv[0] in LAZY:              # 4.0 commands (LAZY): their module, or "not in this build"
+        return run_lazy(argv[0], *LAZY[argv[0]][:2], argv[1:])
     ap = parser()
     a = ap.parse_args(argv)
     if a.cmd is None or a.cmd == 'gui':
