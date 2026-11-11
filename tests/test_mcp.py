@@ -236,12 +236,19 @@ def test_windows_are_found_only_from_the_users_own_private_files(tmp_path, monke
 
 
 # ======================================================================= the window, through its bridge
+_APP = []          # the QApplication lives for the whole session: if this module held the only reference, Qt would
+#                    destroy the application when the module ends and take the shared theme object with it, breaking
+#                    every GUI test that runs after this file
+
+
 @pytest.fixture(scope='module')
 def qapp():
     pytest.importorskip('PyQt6')
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     from falcon_autonomy.ui.app import make_app
-    return make_app()
+    if not _APP:
+        _APP.append(make_app())
+    return _APP[0]
 
 
 def pump(app, cond, timeout=20.0):

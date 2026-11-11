@@ -28,7 +28,9 @@ def extra_sections(page) -> list:
             make = getattr(importlib.import_module(f'falcon_autonomy.{name}'), 'section')
         except (ImportError, AttributeError):
             continue
-        out.append(make(page))
+        w = make(page)
+        if w is not None:                       # a section may decline a page it cannot serve (no window, say)
+            out.append(w)
     return out
 
 

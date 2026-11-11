@@ -211,5 +211,9 @@ class ProviderSection(Section):
 
 
 def section(page):
+    """The Provider section, or None when the page has no window with an assistant service (it reads and changes the
+    service's settings; a Settings page built on its own has nothing for it to act on)."""
+    if getattr(getattr(page, 'win', None), 'assistant', None) is None:
+        return None
     return ProviderSection(page)
 
