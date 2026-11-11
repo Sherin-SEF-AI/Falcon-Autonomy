@@ -140,13 +140,9 @@ GROUP_ABOUT = {
     'analysis': 'studies, failure maps, criticality, root causes, evaluations, the gap, suites, V2X, traffic rules',
     'lab': 'hardware in the loop, deployment, CI mode, log replay, adversarial traffic, experiments, VLM evaluation; '
            'their results',
-    'research': 'ablations of a hypothesis (plan with a power analysis, run, analyse, re-run and check), the '
-                'experiment registry, tables, figures and data cards for papers; the closed-loop planner benchmark '
-                '(PDM score) and its results; a dashcam incident made a scenario; failure modes (failures clustered '
-                'and named, a CI run\'s new ones), the triage queue and comments, regression bisect of a stack\'s '
-                'commits; rig variants (from Vantage) recorded on the same scenarios and compared by a detector; a '
-                'scenario written from a description in words and a run checked against it; generation rounds (data '
-                'generated for the weakest cells, retrained, compared)',
+    'research': 'ablations and the experiment registry, paper outputs, the planner benchmark, dashcam incidents as '
+                'scenarios, failure modes, triage, regression bisect, Vantage rig comparison, scenarios from words, '
+                'generation rounds',
     'ui': 'Falcon\'s window: the open page, go to a page, show a run or frame, outline a control',
     'knowledge': 'the manual (search), the command line, settings, the tools themselves',
     'system': 'the CARLA server, the machine, the queue\'s locks, versions',
