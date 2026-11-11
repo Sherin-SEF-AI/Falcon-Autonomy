@@ -5,6 +5,12 @@ Falcon's server (started on demand before the first CARLA job, under its memory 
 server the user chose in Settings, which it never starts or stops), writes each job's inputs into its run folder,
 submits the job to the JobQueue, and after a job: indexes the run in the catalogue, updates the measured throughput,
 and tidies the server when a worker died without tidying up itself.
+
+Placement (docs/cluster.md): a service whose placement is 'cluster' or 'cluster:<pool>' marks the jobs of the workers a
+node runs (cluster.bundle.WORKERS: drives) for the cluster — the queue hands them to the cluster's scheduler and the
+run folder fills when the node's artifact comes back; every other job stays on this machine and says so in its log.
+study_service builds the service a headless study runs through, with its placement. NodeService is a node's own service
+(cluster.daemon): its slot's ports, optionally without rendering.
 """
 from __future__ import annotations
 
@@ -35,6 +41,7 @@ class CarlaService:
         self.catalog: Catalog | None = None
         self.listeners: list = []
         self.server_error = ''
+        self.placement = 'local'                  # where allow-listed workers' jobs run (study_service sets it)
         queue.before_start = self._before_start
         queue.subscribe(self._on_job)
         if workspace:
@@ -222,8 +229,19 @@ class CarlaService:
             raise RuntimeError('No Python for CARLA\'s client: choose CARLA\'s folder (and its venv) in Settings.')
         argv, env = S.worker_command(py, worker, args, S.WORKER_MEMORY_GB, scope=self.scope,
                                      extra_path=[self.fake_carla] if self.fake_carla else (), backend=self.backend)
-        return JobSpec(kind, title, argv, env, needs_carla=needs_carla, memory_gb=memory_gb, run_dir=run_dir,
+        meta = dict(meta or {}, worker=worker)
+        meta.setdefault('backend', self.backend)        # the cluster sends it only to a node that has this backend
+        spec = JobSpec(kind, title, argv, env, needs_carla=needs_carla, memory_gb=memory_gb, run_dir=run_dir,
                        meta=meta)
+        if self.placement != 'local':
+            from ..cluster.bundle import WORKERS
+            if worker in WORKERS and not spec.interactive:
+                spec.placement = self.placement
+                spec.resumable = True             # a drive writes only its own folder: run again elsewhere if lost
+            else:
+                spec.meta['placement_note'] = (f'runs on this machine: the {worker} worker does not run on the '
+                                               'cluster')
+        return spec
 
     def submit_drive(self, cfg: dict, title: str = '', kind='drive'):
         """Write cfg into its run folder (drive.json) and queue the drive."""
@@ -356,17 +374,73 @@ class CarlaService:
             self.catalog = None
 
 
-PLACEMENTS = ('local',)          # where a study's jobs may run (4.0: 'cluster[:pool]' and cloud bursts to come)
+class NodeService(CarlaService):
+    """A cluster node's service (cluster.daemon, and a study a cloud instance runs): the CARLA ports of its slot
+    instead of the settings', and no_render — the server started with -nullrhi (no GPU rendering: actor states only,
+    for a criticality study in a container that may lack Vulkan)."""
+
+    def __init__(self, settings: Settings, queue: JobQueue, workspace: str = '', fake_carla: str = '',
+                 port: int = 0, tm_port: int = 0, no_render: bool = False):
+        self._port, self._tm_port, self.no_render = int(port), int(tm_port), bool(no_render)
+        super().__init__(settings, queue, workspace, fake_carla=fake_carla)
+
+    @property
+    def port(self) -> int:
+        return self._port or int(self.settings.get('rpc_port'))
+
+    @property
+    def tm_port(self) -> int:
+        return self._tm_port or int(self.settings.get('tm_port'))
+
+    def ensure_server_object(self) -> S.Server:
+        srv = super().ensure_server_object()
+        if not srv.running:
+            srv.no_render = self.no_render
+        return srv
+
+
+PLACEMENTS = ('local', 'cluster')   # where a study's jobs may run: this machine, or the cluster ('cluster:<pool>')
+NODE_OVERRIDES: dict = {}           # set by a node running a whole study (cluster.daemon oneshot): port, tm_port,
+#                                     no_render — every study_service in that process is then a NodeService
 
 
 def study_service(settings: Settings | None = None, workspace: str = '', fake_carla: str = '',
                   placement: str = 'local', lock_dir: str | None = None) -> CarlaService:
     """The CarlaService a headless study command runs its jobs through (sweep, search, failrate, ablation, the loop,
     CI): the user's settings (or `settings`), a job queue with the subprocess launcher (lock_dir: its own lock folder,
-    for a fake server that must not wait on the machine's CARLA lock), on `workspace`. placement: where the jobs run;
-    only 'local' in this build."""
+    for a fake server that must not wait on the machine's CARLA lock), on `workspace`. placement: 'local', 'cluster'
+    or 'cluster:<pool>' (ValueError otherwise, or when no cluster is set up): the drives then run on the cluster's
+    nodes, the study itself here."""
     from ..core.jobs import SubprocessLauncher
-    if placement not in PLACEMENTS:
+    st = settings if settings is not None else Settings()
+    where, _pool = _placement(placement)
+    q = JobQueue(SubprocessLauncher(), lock_dir)
+    if NODE_OVERRIDES:
+        svc = NodeService(st, q, workspace, fake_carla=fake_carla, **NODE_OVERRIDES)
+    else:
+        svc = CarlaService(st, q, workspace, fake_carla=fake_carla)
+    if where == 'cluster':
+        from ..cluster.launcher import RemoteLauncher
+        from ..core.jobs import Refused
+        try:
+            q.remote = RemoteLauncher.for_settings(st)
+        except Refused as e:
+            svc.shutdown()
+            raise ValueError(str(e)) from None
+        svc.placement = placement
+    return svc
+
+
+def _placement(placement: str) -> tuple:
+    from ..cluster.nodes import parse_placement
+    where, pool = parse_placement(placement)
+    if where not in PLACEMENTS:
         raise ValueError(f'placement {placement!r} is not in this build (only: {", ".join(PLACEMENTS)})')
-    return CarlaService(settings if settings is not None else Settings(), JobQueue(SubprocessLauncher(), lock_dir),
-                        workspace, fake_carla=fake_carla)
+    return where, pool
+
+
+def placement_arg(ap):
+    """`--on local|cluster[:POOL]` (falcon sweep, search, failrate run, bisect run)."""
+    ap.add_argument('--on', default='local', metavar='WHERE',
+                    help='where the runs go: local (this machine, the default), cluster or cluster:POOL (the nodes of '
+                         'Settings ▸ Compute; docs/cluster.md)')

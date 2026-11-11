@@ -116,8 +116,10 @@ def test_study_service_and_job_spec_fields(tmp_path, fake_carla):
         assert svc.queue.carla_lock is not None
     finally:
         svc.shutdown()
-    with pytest.raises(ValueError, match='not in this build'):
+    with pytest.raises(ValueError, match='no cluster is set up'):        # placement works now: but no node here
         study_service(None, '', placement='cluster')
+    with pytest.raises(ValueError, match='local, cluster or cluster:<pool>'):
+        study_service(None, '', placement='elsewhere')
     s = JobSpec('drive', 'd', ['x'])
     assert (s.placement, s.gid, s.inputs, s.outputs, s.interactive) == ('local', '', (), 'all', False)
     s = JobSpec('gym', 'g', ['x'], meta={'interactive': True}, inputs=['a'], outputs=['run.json'])
@@ -149,7 +151,8 @@ def test_cluster_nodes_and_formal_stl_check(tmp_path, monkeypatch):
                                                                'driver': 'x'}])
     ctx = ToolContext(settings=st)
     r = call(ctx, 'cluster_nodes', {})
-    assert r['local']['gpus'][0]['memory_total_mb'] == 16000.0 and r['nodes'] == [{'name': 'ws2', 'slots': 2}]
+    assert r['local']['gpus'][0]['memory_total_mb'] == 16000.0
+    assert r['nodes'] == [{'name': 'ws2', 'kind': 'ssh', 'pool': 'default', 'slots': 2}]
     assert '10.0.0.7' not in json.dumps(r)
     r = call(ctx, 'formal_stl_check', {'formula': 'always[0,10] (lead_gap_m >= gap)', 'consts': {'gap': 5}})
     assert r['ok'] and r['signals'] == [{'name': 'lead_gap_m', 'unit': 'm'}] and r['horizon_s']['future'] == 10

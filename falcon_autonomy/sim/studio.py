@@ -443,7 +443,7 @@ def main_study(argv) -> int:
     the CLI's)."""
     import argparse
     from ..core.project import Project, ProjectError
-    from .service import study_service
+    from .service import placement_arg, study_service
     ap = argparse.ArgumentParser(prog='falcon sweep|search')
     ap.add_argument('kind', choices=('sweep', 'search'))
     ap.add_argument('project')
@@ -463,6 +463,7 @@ def main_study(argv) -> int:
     ap.add_argument('--threshold', type=float, default=0.5)
     ap.add_argument('--fps', type=float, default=0.0, help='the simulation step rate (default 20)')
     ap.add_argument('--fake-carla', default='')
+    placement_arg(ap)
     objective_args(ap)
     a = ap.parse_args(argv)
     try:
@@ -482,7 +483,11 @@ def main_study(argv) -> int:
     except ValueError as e:
         print(f'failed: {e}', flush=True)
         return P.REFUSED
-    svc = study_service(None, proj.workspace, fake_carla=a.fake_carla)
+    try:
+        svc = study_service(None, proj.workspace, fake_carla=a.fake_carla, placement=a.on)
+    except ValueError as e:
+        print(f'failed: {e}', flush=True)
+        return P.REFUSED
     em = P.Emitter()
     em.hello(a.kind)
     try:

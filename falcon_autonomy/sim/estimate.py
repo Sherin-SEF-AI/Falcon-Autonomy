@@ -191,6 +191,7 @@ def main_failrate(argv) -> int:
     """falcon failrate run PROJECT --scenario S … | show STUDY|PROJECT [--name N] | check […]  (docs/cli.md)."""
     import argparse
     import json
+    from .service import placement_arg
     from .studio import objective_args
     ap = argparse.ArgumentParser(prog='falcon failrate', description='the failure rate of a scenario with a 95 % '
                                  'interval, by adaptive importance sampling (docs/failure-rate.md)')
@@ -216,6 +217,7 @@ def main_failrate(argv) -> int:
     r.add_argument('--exposure-source', default='', help='where the encounter rate comes from')
     r.add_argument('--fps', type=float, default=0.0)
     r.add_argument('--fake-carla', default='')
+    placement_arg(r)
     objective_args(r)
     s = sub.add_parser('show', help='an estimate: falcon failrate show STUDY_DIR | PROJECT --name N')
     s.add_argument('target')
@@ -309,7 +311,11 @@ def _run(a) -> int:
     except (ValueError, FR.FailRateError) as e:
         print(f'failed: {e}', flush=True)
         return P.REFUSED
-    svc = study_service(None, proj.workspace, fake_carla=a.fake_carla)
+    try:
+        svc = study_service(None, proj.workspace, fake_carla=a.fake_carla, placement=a.on)
+    except ValueError as e:
+        print(f'failed: {e}', flush=True)
+        return P.REFUSED
     em = P.Emitter()
     em.hello('failrate')
     name = a.name or estimate_name(scn['id'], spec['objective'], a.model, [w.split(':')[0] for w in a.weather],

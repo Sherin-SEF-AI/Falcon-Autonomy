@@ -1493,11 +1493,14 @@ def _project(cfg, out):
     return p
 
 
-def _service(cfg, out, workspace):
+def _service(cfg, out, workspace, placement: str = 'local'):
     from ..sim.service import study_service
     fake = cfg['carla'].get('fake_carla', '') if cfg['carla']['mode'] == 'fake' else ''
     lock_dir = os.path.join(out, '.locks') if fake else None      # no server: never wait on the machine's CARLA lock
-    return study_service(None, workspace, fake_carla=fake, lock_dir=lock_dir)
+    try:                                                          # placement: where its drives run (docs/cluster.md)
+        return study_service(None, workspace, fake_carla=fake, lock_dir=lock_dir, placement=placement)
+    except ValueError as e:
+        raise CIError(str(e)) from None
 
 
 def subject_label(cfg: dict, suite: dict | None) -> str:
@@ -1615,7 +1618,7 @@ def run_ci(config_path: str, overrides: dict | None = None, log=None, env=None) 
             raise CIError('flaky.retries: this mode is deterministic (kinematic, no traffic) — a retry repeats the '
                           'run bit for bit, failure included. Retries are for physics, traffic or a stack declared '
                           'non-deterministic (subject.stack.deterministic: false)')
-        svc = _service(cfg, out, proj.workspace)
+        svc = _service(cfg, out, proj.workspace, o.get('placement') or 'local')
         ctx = Ctx(cfg, out, svc, proj, suite, log)
         log(f'falcon ci: {res["subject"]["label"]}, {cfg["carla"]["mode"]} CARLA, output {out}')
         subj = {'stack': run_stack, 'policy': run_policy, 'model': run_model}[kind](ctx)

@@ -8,12 +8,12 @@ import signal
 from PyQt6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, pyqtSignal
 
 from ..core import protocol as P
-from ..core.jobs import JobQueue, Launcher
+from ..core.jobs import JobQueue, Launcher, reads_stdin
 
 
 class _QHandle:
-    def __init__(self, proc: QProcess):
-        self.proc = proc
+    def __init__(self, proc: QProcess, stdin_cancel: bool = False):
+        self.proc, self.stdin_cancel = proc, stdin_cancel
 
     def send(self, cmd: dict) -> bool:
         import json
@@ -22,9 +22,13 @@ class _QHandle:
         return self.proc.write((json.dumps(cmd) + '\n').encode()) > 0
 
     def cancel(self):
+        """A worker gets the stdin cancel alone (a SIGTERM too would be its second cancel: core.jobs.reads_stdin);
+        anything else SIGTERM."""
         if self.proc.state() == QProcess.ProcessState.NotRunning:
             return
-        self.proc.write(b'{"cmd": "cancel"}\n')
+        sent = self.proc.write(b'{"cmd": "cancel"}\n') > 0
+        if sent and self.stdin_cancel:
+            return
         self.proc.terminate()                    # SIGTERM: the worker's watchdog takes it
 
     def kill(self):
@@ -83,10 +87,28 @@ class QProcessLauncher(Launcher):
         proc.errorOccurred.connect(failed)
         proc.start(s.argv[0], s.argv[1:])
         self.procs[job.id] = proc
-        return _QHandle(proc)
+        return _QHandle(proc, reads_stdin(s.argv))
 
     def running(self) -> int:
         return sum(1 for p in self.procs.values() if p.state() != QProcess.ProcessState.NotRunning)
+
+
+def node_text(job) -> str:
+    """Where a job runs, for the Jobs dock's Node column: '' on this machine; the cluster node and slot (or the
+    batch node) once placed; the pool it waits for before."""
+    if job.spec.placement == 'local':
+        return ''
+    if job.node:
+        return job.node
+    return 'cluster' if job.spec.placement == 'cluster' else job.spec.placement.replace('cluster:', 'pool ')
+
+
+def node_tip(job) -> str:
+    if job.spec.placement == 'local':
+        return 'this machine'
+    extra = f'; queued again {job.requeues} time{"s" * (job.requeues > 1)} after a lost node' if job.requeues else ''
+    gid = f' — job {job.spec.gid}' if job.spec.gid else ''
+    return f'placement {job.spec.placement}{gid}{extra}'
 
 
 class JobsBridge(QObject):

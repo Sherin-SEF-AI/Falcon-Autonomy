@@ -9,6 +9,11 @@ JobQueue starts a job when what it needs is free:
   a CARLA job waits for it), so the two never run at full load together;
 * memory_gb: MemAvailable must cover it plus the reserve; else the job waits (it is never started to overcommit).
 
+A job whose placement is not 'local' ('cluster' or 'cluster:<pool>') runs on another machine (falcon_autonomy.cluster,
+docs/cluster.md): poll() hands it to the queue's remote launcher — the cluster's scheduler, which says when a slot is
+free — and takes none of this machine's locks or memory for it (the node's own queue does). An interactive job (a live
+session, the gym, the adversary, HIL: meta['interactive']) is refused remotely; so is any job when no cluster is set up.
+
 The queue is driven by poll(), called from the GUI's timer or the CLI's loop; a Launcher actually starts the
 process (a QProcess in the GUI, subprocess in the CLI) and reports protocol messages and the exit back. The same job
 specs, worker commands and protocol run in both, so the GUI and the CLI share every code path below the window.
@@ -33,11 +38,11 @@ FINAL = (DONE, FAILED, CANCELLED)
 class JobSpec:
     """What to run: argv and env (a worker command), and what it needs. run_dir holds its run.json.
 
-    Where it may run (4.0, recorded but not yet acted on — every job runs locally in this build): placement 'local'
-    (or, to come, 'cluster[:pool]'); gid a global id across machines ('' locally); inputs the files a remote run would
-    need (paths); outputs what a remote run brings back ('all', or a list of paths relative to run_dir).
-    meta['interactive'] marks a job that drives something live (gym, adversary, live view, HIL): never placed
-    remotely."""
+    Where it runs: placement 'local' (this machine), 'cluster' or 'cluster:<pool>' (falcon_autonomy.cluster); gid its
+    id across machines (the cluster's scheduler gives one when empty); inputs the files the job reads besides its
+    config (paths: a remote job's bundle carries their content, never the paths); outputs what a remote run brings
+    back ('all', or a list of paths relative to run_dir). meta['interactive'] marks a job that drives something live
+    (gym, adversary, live view, HIL): never placed remotely."""
 
     def __init__(self, kind: str, title: str, argv: list, env: dict | None = None, needs_carla=False,
                  needs_gpu=False, memory_gb=1.0, run_dir: str = '', cwd: str | None = None, resumable=False,
@@ -52,7 +57,7 @@ class JobSpec:
 
     @property
     def interactive(self) -> bool:
-        """A live job (meta['interactive']): data only in this build."""
+        """A live job (meta['interactive']): refused on the cluster."""
         return bool(self.meta.get('interactive'))
 
 
@@ -77,6 +82,8 @@ class Job:
         self.handle = None
         self.cancel_requested = False
         self.other: list = []           # protocol messages of other types (a worker's own: server, recording, …)
+        self.node = ''                  # where it runs: '' on this machine, else the cluster node and slot
+        self.requeues = 0               # times a lost node's job was queued again (falcon_autonomy.cluster)
 
     @property
     def elapsed(self) -> float:
@@ -142,6 +149,18 @@ class FileLock:
         return self.fd is not None
 
 
+class Refused(Exception):
+    """A remote launcher's refusal of a job (it never starts): the message says why."""
+
+
+def reads_stdin(argv) -> bool:
+    """Whether the command is one of Falcon's workers (`-m falcon_autonomy.workers …`), which take a cancel on stdin.
+    A worker counts a second cancel as "stop tidying up now" (workers.common), so it is sent the stdin line alone —
+    SIGTERM as well would be that second cancel, and the worker would exit mid-tidy (its run.json saying it crashed).
+    Any other command (a study, `falcon …`) gets SIGTERM."""
+    return 'falcon_autonomy.workers' in [str(a) for a in argv]
+
+
 class Launcher:
     """Starts a job's process. start() returns a handle with cancel() (polite: stdin cancel, then SIGTERM) and
     kill(); the launcher calls queue.on_message(job, msg) per protocol line and queue.on_exit(job, code) once."""
@@ -158,7 +177,7 @@ class SubprocessLauncher(Launcher):
         s = job.spec
         p = subprocess.Popen(s.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              env=s.env, cwd=s.cwd, text=True, bufsize=1, start_new_session=True)
-        h = _ProcHandle(p)
+        h = _ProcHandle(p, reads_stdin(s.argv))
 
         def out():
             for line in p.stdout:
@@ -181,8 +200,8 @@ class SubprocessLauncher(Launcher):
 
 
 class _ProcHandle:
-    def __init__(self, p):
-        self.p = p
+    def __init__(self, p, stdin_cancel: bool = False):
+        self.p, self.stdin_cancel = p, stdin_cancel
 
     def send(self, cmd: dict) -> bool:
         import json
@@ -194,11 +213,17 @@ class _ProcHandle:
             return False
 
     def cancel(self):
+        """Polite: a worker gets the stdin cancel (SIGTERM only when that cannot be written), anything else SIGTERM
+        (reads_stdin says why)."""
+        sent = False
         try:
             self.p.stdin.write('{"cmd": "cancel"}\n')
             self.p.stdin.flush()
+            sent = True
         except (OSError, ValueError):
             pass
+        if sent and self.stdin_cancel:
+            return
         try:
             self.p.terminate()
         except OSError:
@@ -227,6 +252,7 @@ class JobQueue:
         self.extra_memory_gb = 0.0      # memory the server about to start for a job needs (set by the GUI/CLI)
         self._lock = threading.RLock()
         self.before_start = None        # callable(job) -> str | None: '' to start, or a reason to wait (server start)
+        self.remote = None              # the launcher of jobs placed elsewhere (cluster.launcher.RemoteLauncher)
 
     def subscribe(self, fn):
         self.listeners.append(fn)
@@ -241,6 +267,8 @@ class JobQueue:
 
     def submit(self, spec: JobSpec) -> Job:
         job = Job(spec)
+        if spec.meta.get('placement_note'):             # placed elsewhere but not able to go: says where it runs
+            job.log.append(('info', spec.meta['placement_note']))
         with self._lock:
             self.jobs.append(job)
         self._emit('added', job)
@@ -281,6 +309,9 @@ class JobQueue:
                 if job.state not in (QUEUED, WAITING):
                     continue
                 s = job.spec
+                if s.placement != 'local':
+                    self._poll_remote(job)
+                    continue
                 why = ''
                 if s.needs_carla and (carla_busy or gpu_busy):
                     why = 'waiting for the running CARLA job' if carla_busy else 'waiting for the GPU job to finish'
@@ -315,6 +346,59 @@ class JobQueue:
                 carla_busy = carla_busy or s.needs_carla
                 gpu_busy = gpu_busy or s.needs_gpu
                 self._emit('changed', job)
+
+    def _poll_remote(self, job):
+        """A job placed on the cluster: refused (interactive, no cluster, the launcher's refusal), waiting for a slot,
+        or started there. None of this machine's locks or memory are taken for it."""
+        why = ''
+        if job.spec.interactive:
+            why = ('refused: an interactive job (a live session, the gym, the adversary, HIL) runs on this machine '
+                   'only')
+        elif self.remote is None:
+            try:
+                from ..cluster.launcher import default_launcher
+                self.remote = default_launcher()
+            except Refused as e:
+                why = f'refused: {e}'
+        wait = ''
+        if not why:
+            try:
+                wait = self.remote.can_start(job) or ''
+            except Refused as e:
+                why = f'refused: {e}'
+        if why:
+            job.log.append(('error', why))
+            self._finish(job, P.REFUSED)
+            return
+        if wait:
+            if job.state != WAITING or job.wait_reason != wait:
+                job.state, job.wait_reason = WAITING, wait
+                self._emit('changed', job)
+            return
+        job.state, job.started, job.wait_reason = RUNNING, time.time(), ''
+        try:
+            job.handle = self.remote.start(job, self)
+        except (OSError, Refused) as e:
+            job.log.append(('error', f'could not start on the cluster: {e}'))
+            self._finish(job, P.REFUSED if isinstance(e, Refused) else P.FAILED)
+            return
+        if job.handle is None:                          # the slot went in the meantime: it waits again
+            job.state, job.started = WAITING, None
+            job.wait_reason = 'waiting for a free slot on the cluster'
+        self._emit('changed', job)
+
+    def requeue(self, job: Job, why: str):
+        """A remote job whose node was lost, queued again (the scheduler decides whether it may be: resumable, at
+        most cluster.scheduler.MAX_REQUEUES times)."""
+        with self._lock:
+            if job.state in FINAL:
+                return
+            job.requeues += 1
+            job.handle, job.node, job.started = None, '', None
+            job.progress, job.eta_s = 0.0, None
+            job.state, job.wait_reason = WAITING, why
+            job.log.append(('warning', why))
+        self._emit('changed', job)
 
     def _release_unused(self):
         if not any(j.state == RUNNING and j.spec.needs_carla for j in self.jobs):

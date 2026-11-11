@@ -1,0 +1,29 @@
+# Falcon's worker daemon, one slot per instance: falcon-worker-daemon@0 listens on 127.0.0.1:2350, @1 on 2351 …
+# (docs/cluster.md, "A workstation as a node"). A systemd *user* unit — Falcon never needs root:
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp falcon-worker-daemon@.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now falcon-worker-daemon@0
+#   loginctl enable-linger "$USER"     # optional: keep it running while you are logged out
+#
+# The daemon listens on loopback only; the machine running Falcon reaches it through an SSH tunnel with your key.
+# Each slot runs one CARLA server at a time (slot N: RPC port 2310+10N, traffic manager 8310+N) under Falcon's own
+# memory caps; MemoryMax below caps the daemon and everything it starts, CARLA included.
+
+[Unit]
+Description=Falcon Autonomy worker daemon, slot %i
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/falcon-worker-daemon serve --slot %i
+Restart=on-failure
+RestartSec=10
+MemoryMax=24G
+MemorySwapMax=0
+Nice=5
+# Falcon's settings and scratch workspace for the slot are the user's own (~/.config, ~/.cache/FalconAutonomy/worker-%i)
+
+[Install]
+WantedBy=default.target

@@ -23,7 +23,7 @@ from ..core.project import Edit, Project, ProjectError
 from ..core.settings import MEMORY_RESERVE_GB
 from ..sim.service import CarlaService
 from . import icons, tasks
-from .qtjobs import JobsBridge, QProcessLauncher
+from .qtjobs import JobsBridge, QProcessLauncher, node_text, node_tip
 from .notify import Notifier
 from .frame import COUNT_ROLE, ICON_ROLE
 from .theme import STATUS, THEME, mono, sans
@@ -137,8 +137,8 @@ class JobsDock(QWidget):
     """This session's jobs: what each is, where it is (its state, current step and progress), how long it has run
     and how long it has left, and what can be done with it. Elapsed time ticks every second while a job runs (a job
     only reports when it has something to say)."""
-    COLS = ('Job', 'Status', 'Step', 'Progress', 'Elapsed', 'Remaining', '')
-    TITLE, STATUS, STEP, PROGRESS, ELAPSED, LEFT, ACTIONS = range(7)
+    COLS = ('Job', 'Status', 'Step', 'Progress', 'Elapsed', 'Remaining', 'Node', '')
+    TITLE, STATUS, STEP, PROGRESS, ELAPSED, LEFT, NODE, ACTIONS = range(8)   # Node: shown once a job is placed remotely
     STATUS_TEXT = {'queued': 'Queued', 'waiting': 'Waiting', 'running': 'Running', 'done': 'Done',
                    'failed': 'Failed', 'cancelled': 'Cancelled'}
 
@@ -159,12 +159,13 @@ class JobsDock(QWidget):
         hd.setStretchLastSection(False)
         hd.setSectionResizeMode(self.STEP, QHeaderView.ResizeMode.Stretch)
         for c, w in ((self.TITLE, 260), (self.STATUS, 90), (self.PROGRESS, 170), (self.ELAPSED, 76),
-                     (self.LEFT, 90), (self.ACTIONS, self._actions_width())):
+                     (self.LEFT, 90), (self.NODE, 120), (self.ACTIONS, self._actions_width())):
             hd.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
             self.tree.setColumnWidth(c, w)
         hd.setSectionResizeMode(self.ACTIONS, QHeaderView.ResizeMode.Fixed)
         for c in (self.ELAPSED, self.LEFT):
             self.tree.headerItem().setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.tree.setColumnHidden(self.NODE, True)          # every job on this machine: no column to show
         self.tree.itemDoubleClicked.connect(lambda it, _c: self.win.open_job(it.data(0, 256)))
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._menu)
@@ -240,6 +241,11 @@ class JobsDock(QWidget):
             step = ''
         it.setText(self.STEP, step)
         it.setToolTip(self.STEP, step)
+        node = node_text(job)
+        it.setText(self.NODE, node)
+        it.setToolTip(self.NODE, node_tip(job))
+        if job.spec.placement != 'local' and self.tree.isColumnHidden(self.NODE):
+            self.tree.setColumnHidden(self.NODE, False)
         it.setToolTip(self.STATUS, job.summary())
         self.tree.itemWidget(it, self.PROGRESS).set(job.progress, st in (RUNNING, WAITING) or
                                                       (st in FINAL and st != 'done' and job.progress > 0))
@@ -664,6 +670,8 @@ class MainWindow(QMainWindow):
         install_suggestions(self)                        # next-step chips on the pages and Home's next best action
         from .mcp_bridge import install as install_mcp
         install_mcp(self)                                # MCP clients (Claude Code) in this window (docs/mcp.md)
+        from .cloud_banner import install as install_cloud
+        install_cloud(self, mv)                          # the red banner when a cloud machine could not be terminated
         self.projectChanged.connect(self._on_project_changed)
         self.undo.cleanChanged.connect(lambda _: self._update_title())
         self.service.subscribe(self._on_service)

@@ -1,0 +1,36 @@
+# The Kubernetes Job Falcon makes for one remote run (falcon_autonomy/cluster/k8s.py builds the same object as JSON;
+# docs/cluster.md, "Kubernetes"). Shown here for reading and for a manual test:
+#
+#   kubectl create configmap falcon-test --from-file=bundle=bundle.bin
+#   kubectl apply -f k8s-job.yaml
+#   kubectl logs -f job/falcon-test
+#
+# NAME, IMAGE, the GPU count, the deadline and the hold are the node's settings (falcon cluster nodes add --kind k8s).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: falcon-test
+  labels: {app: falcon-worker}
+spec:
+  backoffLimit: 0                    # Falcon decides whether a lost run is queued again
+  activeDeadlineSeconds: 3600        # deadline_s
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels: {app: falcon-worker}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: worker
+          image: registry.example/falcon-worker:4.0     # image
+          args: [falcon-worker-daemon, oneshot, --bundle, /bundle/bundle, --out, /work/run, --hold-s, "900"]
+          resources:
+            limits: {nvidia.com/gpu: 1}                 # gpu
+          volumeMounts:
+            - {name: bundle, mountPath: /bundle, readOnly: true}
+            - {name: work, mountPath: /work}
+      volumes:
+        - name: bundle
+          configMap: {name: falcon-test}
+        - name: work
+          emptyDir: {}

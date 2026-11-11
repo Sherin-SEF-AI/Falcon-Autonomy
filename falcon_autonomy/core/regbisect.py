@@ -560,6 +560,8 @@ def main_bisect(argv) -> int:
     r.add_argument('--max-steps', type=int, default=0, help='stop after this many commits tested')
     r.add_argument('--fake-carla', default='', help='CI mode against the fake carla (tests)')
     r.add_argument('--keep-checkouts', action='store_true')
+    from ..sim.service import placement_arg
+    placement_arg(r)
     s = sub.add_parser('show', help='print a bisect\'s summary')
     s.add_argument('out')
     s.add_argument('--json', action='store_true')
@@ -582,7 +584,8 @@ def main_bisect(argv) -> int:
     em.hello('bisect')
     try:
         doc = bisect_stack(a.repo, a.config, a.good, a.bad, out, a.repeats, a.alpha, a.scenario, a.build,
-                           a.max_steps or None, {'fake_carla': a.fake_carla} if a.fake_carla else {},
+                           a.max_steps or None, dict({'fake_carla': a.fake_carla} if a.fake_carla else {},
+                                                     **({'placement': a.on} if a.on != 'local' else {})),
                            a.keep_checkouts, log=lambda t: em.log(t),
                            progress=lambda f, t: em.progress(f, t, force=True))
     except BisectError as e:
