@@ -30,6 +30,7 @@ from ..drivesets import DriveSetBar
 from ..theme import STATUS, THEME
 from ..widgets import Form, KeyValues, Page, PlaceholderList, Section, button, label, scroll
 from .ablations_tab import AblationsTab
+from .generation_tab import GenerationTab
 from .translation import TranslationTab
 from .worldmodel_tab import WorldModelTab
 
@@ -195,6 +196,8 @@ class TrainingPage(Page):
         self.tabs.addTab(self._perception_tab(), 'Detectors')
         self.tabs.addTab(self._experiment_tab(), 'Sim + real experiment')
         self.tabs.addTab(self._active_tab(), 'Active learning')
+        self.generation = GenerationTab(self)             # generation rounds: weak cells → new data (core.genround)
+        self.tabs.addTab(self.generation, 'Generation')
         self.ablations = AblationsTab(self)               # hypothesis-driven experiments, the registry (core.ablation)
         self.tabs.addTab(self.ablations, 'Ablations')
         self.tabs.addTab(self._policy_tab(), 'Driving policies')
@@ -304,6 +307,7 @@ class TrainingPage(Page):
         self.translation.refresh()
         self.worldmodel.refresh()
         self.ablations.refresh()
+        self.generation.refresh()
 
     @staticmethod
     def _combo_dirs(combo, root, name):

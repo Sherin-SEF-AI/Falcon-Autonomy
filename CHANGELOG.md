@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- **A scenario from a description, checked against its run** (`core/scenario_text.py`, `core/scenario_check.py`,
+  `schemas/scenario.schema.json`, `workers/director.py`, `core/drive.py`, `sim/scenariotext.py`,
+  `ui/scenario_text_panel.py`, Scenarios ▸ Describe a scenario, `falcon scenario from-text|check`;
+  docs/scenario-text.md): the assistant's main model writes a scenario as one JSON object from words such as *an
+  autorickshaw cuts in from the left at a speed breaker at dusk*; Falcon validates it against a new JSON Schema of the
+  scenario format and core.scenarios.validate, and against what the description says as far as the scenario shows it
+  (a lane change into the ego's lane from the named side, the speed-breaker need, a sun altitude in the light's
+  class), and sends the errors back for up to two repair rounds (at most three requests). Only text is sent: the
+  description, the schema, the format's rules, one scenario as an example (Falcon's own draft when it can make one)
+  and the errors; a description naming a private location is refused first. Offline, Falcon drafts the scenario
+  from the phrases it recognises on a library scenario (the manoeuvre picks it; kind, side, light, weather, breaker
+  and the ego's speed set). The run is then checked claim by claim — actor kinds (spawned, recorded, with their
+  subclass), six manoeuvres from trajectories.json in the ego's frame (cut-in: from ≥ 2.0 m to a side into 1.0 m of
+  the ego's centre line, 0–25 m ahead; hard braking ≥ 3 m/s²; crossing; standing still; wrong way; overtaking), a
+  speed breaker, dip or junction within N m (30 m by default) at the manoeuvre's moment, light and weather by the
+  coverage grid's classes, the ego's speed, the outcome — each met, not met or not checkable with the measured value
+  and core.language's grounded words at the moment found (*an autorickshaw ahead on your left*); words outside the
+  documented phrase set are listed as not recognised. A scenario's `needs` may now ask for a `speed_breaker` 10–60 m
+  ahead of the start (an imported world's OpenDRIVE road features; a town is refused before it runs). The assistant:
+  `research_scenario_check` (claims and draft; the agent's own scenario validated — at most five invalid attempts per
+  description; a run checked) and `research_scenario_text` (add and run). Tested with a scripted model and the fake
+  Groq server (one invalid reply repaired) and end to end on the fake CARLA with an IRC hump in the road; not yet on
+  a real server or measured against the real model over a set of descriptions.
+
+- **Generating data, not just selecting it** (`core/genround.py`, `ui/pages/generation_tab.py`, Training ▸ Generation,
+  `falcon generate`; docs/generation.md): a generation round ranks class × condition cells (an operating-domain weather
+  and light) by an expected value — EV = π(w) · max(0, AP_ref − AP(c)) · sqrt(n0/(n0 + n(c))) · (1 + (failures + 1)/(runs
+  + 2)): the condition's exposure share, the cell's AP shortfall on a held-out set, a learning curve's diminishing return
+  on the class's training objects there, the coverage grid's scenario failures — records drives and scenario runs (the
+  coverage fill's `cell_scenario`) for the best cells within a budget of drives and frames, labelled from the ground
+  truth, adds them to a dataset version, retrains the detector from its own settings and compares each cell before and
+  after with a paired bootstrap over drives on a held-out set fixed before the first round (hashed; never trained on:
+  refused by folder, cache key or version). Stops when no chosen cell improves, when no cell has a positive EV, or after
+  its rounds; resumable step by step; each round a tracked run in the experiment registry. The assistant:
+  `research_generate` (116 tokens). Measured on the fake only (a scratch CPU detector that detects nothing: the stop rule
+  ended the chain after round 1, 47 s); not yet run on a real server. Tests: tests/test_genround.py.
+
 - **A closed-loop planner benchmark** (`core/planbench.py`, `sim/benchrun.py`, `ui/bench_panel.py`, Scenarios ▸
   Planner benchmark, `falcon bench`; docs/planner-benchmark.md): fixed routes — a world, a scenario, a pinned seed;
   23 in `falcon-pdm-v1` on central Bengaluru (11), Town10HD_Opt (9) and Town04 (3), kinematic actors, no background

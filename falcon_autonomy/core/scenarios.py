@@ -43,7 +43,10 @@ near side (left in left-hand traffic, right in right-hand), "sidewalk" beyond th
 opposite lanes, "line" the lane line between the ego's lane and the adjacent one (filtering two-wheelers). A
 "distance" trigger fires when the ego comes within lt_m of the actor; an "ahead" trigger when the actor's rear is more
 than gt_m ahead of the ego's front. A scenario that needs a road feature the map lacks around the chosen start is placed elsewhere or
-refused (the runner says which).
+refused (the runner says which). The need "speed_breaker" asks for a speed breaker of the map 10–60 m ahead of the
+start (an imported world's road features, core.roadfeatures; core.drive.map_breakers). A scenario written from a
+description (core.scenario_text) is validated against schemas/scenario.schema.json and keeps its description in
+"source": {"format": "text", …}.
 """
 from __future__ import annotations
 

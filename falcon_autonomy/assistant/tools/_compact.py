@@ -71,6 +71,9 @@ SHORT = {
     'lab_experiment': 'Queue a mixed sim/real or active-learning experiment.',
     'lab_vlm': 'Queue scoring a VLM\'s driving explanations.',
     # research
+    'research_scenario_check': 'A description\'s claims and draft scenario; validate a scenario against it; or '
+                               'check a run against it.',
+    'research_scenario_text': 'Add a validated scenario written from a description and run it once.',
     'research_bench_run': 'Queue the closed-loop planner benchmark (PDM score) for planners on fixed routes.',
     'research_bench_results': 'A planner benchmark\'s scores with intervals and comparisons; or the list.',
     'research_incident': 'Make a scenario from a recorded dashcam event; only counts come back (private).',
@@ -78,6 +81,8 @@ SHORT = {
                          'export.',
     'research_registry': 'Every experiment with hypothesis, factors, status and verdict; with id, its results.',
     'research_paper': 'LaTeX and CSV tables and figures of an experiment or evaluation, or an export\'s data card.',
+    'research_generate': 'Generation rounds: data generated for the weakest cells, retrained, compared on a fixed '
+                         'held-out set.',
     # knowledge
     'knowledge_manual': 'Search the built-in manual offline: best sections with heading, link and text.',
     'knowledge_cli': 'Falcon\'s command-line commands with what they do, optionally filtered.',

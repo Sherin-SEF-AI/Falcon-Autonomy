@@ -4,9 +4,11 @@ drives them, fires the timeline, records trajectories for the criticality measur
 Placement. The ego starts at a spawn point (seeded order) whose lane runs straight for the scenario's length (yaw
 within 10° over 150 m) and has what the scenario needs: "adjacent_same" — a driving lane beside it in the same
 direction on the overtaking side; "opposite" — a lane of the other direction; "junction_turn" — a junction within 60 m
-with a branch turning across the oncoming lanes. Lanes are relative to the traffic's handedness (cfg 'handedness'):
-in right-hand traffic the overtaking side and the oncoming lanes are on the left and the kerb on the right; in
-left-hand traffic the other way round. A scenario no start of the map can host is refused, saying what was missing.
+with a branch turning across the oncoming lanes; "speed_breaker" — a speed breaker of the map (the config's
+"breakers", from the world's OpenDRIVE road features) within 4.5 m of the lane 10–60 m ahead. Lanes are relative
+to the traffic's handedness (cfg 'handedness'): in right-hand traffic the overtaking side and the oncoming lanes are on
+the left and the kerb on the right; in left-hand traffic the other way round. A scenario no start of the map can host
+is refused, saying what was missing.
 
 Control. Every scripted actor is driven through CARLA's physics, deterministically in synchronous mode: vehicles by
 pure-pursuit steering along their path and a speed controller (its set speed ramps at the action's acceleration or
@@ -61,6 +63,7 @@ import numpy as np
 from .common import ROLE_PREFIX, Failed, place_now
 
 STRAIGHT_M, STRAIGHT_DEG = 150.0, 10.0
+BREAKER_AHEAD_M, BREAKER_LATERAL_M = (10.0, 60.0), 4.5     # the need "speed_breaker" (core.scenario_text)
 STEP_M = 1.0
 KIND_BLUEPRINTS = {
     'car': ('vehicle.tesla.model3', 'vehicle.audi.a2', 'vehicle.toyota.prius', 'vehicle.nissan.micra'),
@@ -143,6 +146,7 @@ class Director:
         self.scn = cfg['scenario']
         self.map = world.get_map()
         self.lht = str(cfg.get('handedness', 'RHT')).upper() == 'LHT'
+        self.breakers = [(float(b['x']), float(b['y'])) for b in cfg.get('breakers') or ()]   # need speed_breaker
         self.dt = 1.0 / float(cfg.get('fps', 20.0))
         self.actors = {}                 # id -> {'actor', 'kind', 'path', 's', 'lateral', 'speed', 'target', …}
         self.moves = None                # inside step(): kinematic moves collected for one batch before the tick
@@ -228,7 +232,20 @@ class Director:
             return False, 'no oncoming lane'
         if route == 'turn_across' and self.turn_route(wp) is None:
             return False, 'no junction turn across the traffic within 60 m'
+        if 'speed_breaker' in needs and not self.breaker_ahead(path):
+            return False, (f'no speed breaker {BREAKER_AHEAD_M[0]:g}–{BREAKER_AHEAD_M[1]:g} m ahead'
+                           if self.breakers else 'the map has no speed breakers')
         return True, ''
+
+    def breaker_ahead(self, path) -> bool:
+        """A speed breaker of the map (cfg 'breakers', core.roadfeatures in CARLA's frame) beside the lane path
+        (within BREAKER_LATERAL_M of it: a breaker spans the carriageway) between BREAKER_AHEAD_M along it."""
+        for bx, by in self.breakers:
+            d = np.hypot(path.pts[:, 0] - bx, path.pts[:, 1] - by)
+            k = int(np.argmin(d))
+            if d[k] <= BREAKER_LATERAL_M and BREAKER_AHEAD_M[0] <= path.s[k] <= BREAKER_AHEAD_M[1]:
+                return True
+        return False
 
     def turn_route(self, wp):
         """A route that enters a junction within 60 m and leaves it turning across the oncoming lanes (left in

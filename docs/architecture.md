@@ -46,5 +46,8 @@ They talk over the [local protocol](protocol.md): JSON lines on stdin/stdout (an
 - The **experiment registry** is the workspace's `experiments/<id>/` folders (each with its definition and hash, plan
   and pins, tracked runs and results) and the catalogue's experiment rows ([experiments](experiments.md#the-registry));
   outputs for papers go to `paper/`.
+- A scenario **written from a description** keeps its record (every attempt's validation errors, what was sent) in
+  `scenario-text/<id>.json`; a run checked against a description, its report in `scenario-check.json`
+  ([a scenario from a description](scenario-text.md)).
 - **User settings and secrets** live in `$XDG_CONFIG_HOME/FalconAutonomy/`; secrets in a separate file readable
   only by the user, never shown and never copied into a project.

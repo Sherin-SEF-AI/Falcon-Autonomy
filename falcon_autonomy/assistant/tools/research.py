@@ -9,6 +9,12 @@ private (assistant.privacy: its run.json's worker "dashcam-incident", the scenar
 every drive and study of them), its default name a hash; the search over its variations is queued as a job whose
 study is private too.
 
+A scenario from a description (core.scenario_text, core.scenario_check; Scenarios ▸ Describe a scenario): the agent
+is the model that writes it — research_scenario_check gives the description's claims and Falcon's draft, validates the
+agent's JSON against the scenario schema and the description (the repair rounds, at most five invalid attempts per
+description in a session), and checks a run against the description; research_scenario_text adds a valid one and runs
+it. Nothing recorded goes to the model but the run's claims table (statuses, measured numbers).
+
 And hypothesis-driven experiments and what a paper needs (core.ablation, core.paper; Training ▸
 Ablations, Reports ▸ Outputs for a paper; docs/experiments.md).
 
@@ -179,6 +185,130 @@ def research_incident(ctx, recon, world, start_s=None, end_s=None, search=0):
     return C.rounded(out, 3)
 
 
+# ================================================================================ a scenario from a description
+def _text_rounds(ctx, description: str, add: bool = False) -> int:
+    """Invalid scenarios already checked for this description in this session (the repair rounds' bound)."""
+    seen = ctx.__dict__.setdefault('_scenario_text_rounds', {})
+    k = ' '.join(str(description).split()).lower()
+    if add:
+        seen[k] = seen.get(k, 0) + 1
+    return seen.get(k, 0)
+
+
+def _text_scenario(ctx, description, scenario, world=''):
+    """(the scenario as the project keeps it, its validation) — ToolError when it cannot be used."""
+    from ...core import scenario_check as CK
+    from ...core import scenario_text as T
+    from .jobs import _world_rig
+    w, _r = _world_rig(ctx, world, '')
+    hand = T.world_handedness(C.project(ctx), w['id'])
+    if not isinstance(scenario, dict):
+        raise ToolError('scenario: one JSON object (schemas/scenario.schema.json)')
+    scn = T._strip(scenario)
+    errs = T.problems(scn)
+    claims = CK.extract(description)['claims']
+    mm = [] if errs else T.mismatches(scn, claims, hand)
+    return scn, errs, mm, claims, hand
+
+
+@tool('research_scenario_check', 'research', 'read',
+      'A scenario from a description in words (Scenarios ▸ Describe a scenario; docs/scenario-text.md). Give the '
+      'description and: nothing — its checkable claims (actor kinds, manoeuvres such as a cut-in from the left, a '
+      'speed breaker or junction within N m, light, weather, the ego\'s speed, the outcome), Falcon\'s draft scenario '
+      'from them and the words it did not recognise; scenario — your JSON scenario validated against the scenario '
+      'schema and the description (errors, mismatches): repair it and check again (at most 5 invalid attempts); run '
+      '— a recorded run checked against the description: each claim met, not met or not checkable with the measured '
+      'value.',
+      C.obj({'description': C.s('the scenario in words'),
+             'scenario': {'type': 'object', 'description': 'a scenario to validate (falcon.scenario/1)'},
+             'run': C.s('a run id to check against the description'),
+             'world': C.s('world id (its traffic handedness; default the first)')}, ['description']))
+def research_scenario_check(ctx, description, scenario=None, run='', world=''):
+    from ...core import scenario_check as CK
+    from ...core import scenario_text as T
+    if run:
+        d = C.resolve_run(ctx, run)
+        try:
+            rep = CK.check_run(d, description)
+        except CK.CheckError as e:
+            raise ToolError(str(e)) from None
+        return C.rounded({'run': C.run_id(ctx, d), 'verdict': rep['verdict'], 'counts': rep['counts'],
+                          'claims': [{'claim': r['claim'], 'status': r['status'], 'value': C.clip(r['value'], 240),
+                                      **({'why': r['why']} if r.get('why') else {})} for r in rep['claims']],
+                          'unrecognised': rep['unrecognised']}, 3)
+    if scenario is not None:
+        scn, errs, mm, _claims, _h = _text_scenario(ctx, description, scenario, world)
+        if errs:
+            n = _text_rounds(ctx, description, add=True)
+            if n > T.MAX_ROUNDS:
+                return {'valid': False, 'errors': errs[:12], 'stop': f'{n} invalid attempts: stop and tell the user '
+                                                                     'what the errors are'}
+            return {'valid': False, 'errors': errs[:20], 'attempt': n, 'repair': 'fix these and check again'}
+        return {'valid': True, 'mismatches': mm, 'plan': T.plan_notes(scn),
+                'next': 'research_scenario_text with this scenario adds it and runs it' +
+                        ('; or repair the mismatches first' if mm else '')}
+    from .jobs import _world_rig
+    w, _r = _world_rig(ctx, world, '')
+    hand = T.world_handedness(C.project(ctx), w['id'])
+    ex = CK.extract(description)
+    dr, notes = T.draft(ex['claims'], hand, description)
+    return {'claims': [{'claim': CK.claim_text(c), 'phrase': c['phrase']} for c in ex['claims']],
+            'unrecognised': ex['unrecognised'], 'handedness': hand, 'draft': T.example_for(dr) if dr else None,
+            'draft_notes': notes, 'format': 'schemas/scenario.schema.json; knowledge_manual "scenario format"'}
+
+
+def _text_preview(ctx, description='', scenario=None, world='', rig='', seed=0, run_once=True):
+    scn, errs, mm, _c, _h = _text_scenario(ctx, description, scenario, world)
+    if errs:
+        return 'not valid — nothing will be added:\n' + '\n'.join(errs[:8])
+    acts = ', '.join(f'{a.get("kind")} ({(a.get("place") or {}).get("lane")})' for a in scn.get('actors') or ())
+    then = f', then run it once (seed {int(seed)}) and check the run against the description' if run_once else ''
+    return (f'add the scenario {scn.get("name")!r} to the project ({acts}; needs: '
+            f'{", ".join(scn.get("needs") or ()) or "none"}){then}'
+            + (f'\nmismatches: {"; ".join(mm[:4])}' if mm else ''))
+
+
+@tool('research_scenario_text', 'research', 'act',
+      'Add a scenario written from a description to the project (an undoable edit; its source keeps the description '
+      'and its claims) and, with run_once (default), run it once on Falcon\'s server (Scenarios ▸ Run: the world '
+      'reloaded, background traffic off). Refused when the scenario is not valid (validate it with '
+      'research_scenario_check first). Then jobs_wait, and research_scenario_check with the run checks it against the description.',
+      C.obj({'description': C.s('the scenario in words'),
+             'scenario': {'type': 'object', 'description': 'the scenario (falcon.scenario/1), validated'},
+             'world': C.s('world id'), 'rig': C.s('rig id'), 'seed': C.i('seed (default 0)', minimum=0),
+             'run_once': C.b('run it once after adding it (default true)')}, ['description', 'scenario']),
+      estimate=lambda ctx, **a: {'seconds': None, 'what': 'one scenario run (its duration_s of simulated time)'},
+      preview=_text_preview)
+def research_scenario_text(ctx, description, scenario, world='', rig='', seed=0, run_once=True):
+    from ...core import scenario_text as T
+    from ...core.drive import run_dir_name, scenario_config
+    from ...core.project import Edit, ProjectError
+    from .jobs import _world_rig
+    scn, errs, mm, claims, _h = _text_scenario(ctx, description, scenario, world)
+    if errs:
+        raise ToolError('not valid: ' + '; '.join(errs[:8]))
+    scn = T.finalise(scn, description, claims, 'assistant', _text_rounds(ctx, description))
+    out = {'scenario': scn['id'], 'name': scn['name'], 'mismatches': mm}
+    if C.project(ctx).item('scenarios', scn['id']) is None:
+        out.update(C.apply_edit(ctx, Edit('insert', ['scenarios'], scn,
+                                          text=f'Add the scenario {scn["name"]} (from a description)')))
+    if not run_once:
+        return out
+    w, r = _world_rig(ctx, world, rig)
+    svc = C.need_service(ctx)
+    d = os.path.join(C.workspace(ctx), 'runs', run_dir_name(f'scenario-{scn["id"]}'))
+    try:
+        cfg = scenario_config(C.project(ctx), scn, w['id'], r['id'], d, svc.port, svc.tm_port, seed=int(seed),
+                              render_budget_mpx=float(svc.settings.get('render_budget_mpx')),
+                              workspace=C.workspace(ctx), trigger_rules='project')
+        job = svc.submit_drive(cfg, title=f'{scn["name"]} (seed {int(seed)})')
+    except (ProjectError, RuntimeError, ValueError, OSError) as e:
+        raise ToolError(f'added, but not run: {e}') from None
+    ctx.emit('job_queued', {'job': job.id, 'title': job.spec.title})
+    out.update(job=job.id, run=C.run_id(ctx, d), follow='jobs_wait, then research_scenario_check with run')
+    return out
+
+
 # ================================================================================ ablations, the registry and papers
 ACTIONS = ['create', 'run', 'analyse', 'rerun', 'export']
 PAPER_FOLDERS = {'experiment': ('experiments', ('results.json',)), 'evaluation': ('evaluations', ('evaluation.json',)),
@@ -323,3 +453,59 @@ def _paper(ctx, kind, source, dry=False):
       preview=lambda ctx, **a: _paper(ctx, dry=True, **a)[0])
 def research_paper(ctx, **a):
     return _paper(ctx, **a)[1]
+
+
+# ================================================================================================ generation rounds
+def _generate(ctx, name, spec=None, rounds=0, dry=False):
+    """(preview text, result) of one research_generate call (core.genround)."""
+    from ...core import genround as GR
+    if C._bad_name(name) or '/' in name:
+        raise ToolError(f'{name!r} is not an experiment name')
+    ws, proj = C.workspace(ctx), C.project(ctx)
+    try:
+        if os.path.isfile(os.path.join(GR.exp_dir(ws, name), 'experiment.json')):
+            _d, s, st = GR.load(ws, name)
+            if spec:
+                GR.create(ws, dict(spec, id=name), proj)          # refused unless it is the same definition
+        elif spec:
+            s, st = GR.normalise(dict(spec, id=name), proj), None
+        else:
+            raise ToolError(f'no generation experiment {name!r}: give spec to register it (docs/generation.md)')
+        path = proj.path if dry else _saved(ctx)
+        argv = ['generate', 'run', path or '<the project file>', '--id', name]
+        if rounds:
+            argv += ['--rounds', str(int(rounds))]
+        if _fake(ctx):
+            argv += ['--fake-carla', _fake(ctx)]
+        text = ('' if st else 'register, then ') + C.command_line(argv) + '\n' + GR.describe_plan(s)
+        if dry:
+            return text, None
+        if st is None:
+            GR.create(ws, dict(spec, id=name), proj)
+        out = C.cli_job(ctx, 'experiment', f'Generation {name}', argv, memory_gb=1.5, resumable=True)
+        out['experiment'] = name
+        out['follow'] = 'jobs_wait, then research_registry with the id (results: rounds, cells, verdicts)'
+        return text, out
+    except GR.GenError as e:
+        raise ToolError(str(e)) from e
+
+
+@tool('research_generate', 'research', 'act',
+      'Generation rounds (Training ▸ Generation, `falcon generate`; docs/generation.md): active learning that '
+      'generates data. Each round ranks class × condition cells by expected value — EV = exposure share × the AP '
+      'shortfall on a held-out set × sqrt(n0/(n0 + training objects)) × (1 + the coverage grid\'s failure rate) — '
+      'records drives and scenario runs for the best cells within a budget (labels from the ground truth), adds '
+      'them to a dataset version, retrains the detector from its own settings and compares per cell before and '
+      'after with paired bootstrap intervals on the held-out set fixed before round 1 (never trained on); stops '
+      'when no chosen cell improves. spec registers it (id = name; model, world, rig, conditions weather/light, '
+      'budget {drives, frames}, rounds); then the job runs or resumes rounds. Read with research_registry.',
+      C.obj({'name': C.s('experiment id (experiments/<id>)'),
+             'spec': {'type': 'object', 'description': 'to register: model, world, rig, conditions, budget, rounds, '
+                                                       'acquisition (docs/generation.md)'},
+             'rounds': C.i('at most this many more rounds (default: to the stop rule)', minimum=1, maximum=50)},
+            ['name']),
+      estimate=lambda ctx, **a: {'seconds': None, 'what': 'per round: its drives (the budget), a training and an '
+                                                          'evaluation; the job reports its ETA once running'},
+      preview=lambda ctx, **a: _generate(ctx, dry=True, **a)[0])
+def research_generate(ctx, **a):
+    return _generate(ctx, **a)[1]

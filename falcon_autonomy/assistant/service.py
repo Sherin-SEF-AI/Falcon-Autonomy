@@ -260,6 +260,37 @@ class AssistantService:
         self.add_usage(model, res.usage)
         return (res.content or '').strip()
 
+    def complete(self, messages: list, model: str = '', max_tokens: int = 6000,
+                 cancel: CancelToken | None = None, purpose: str = 'scenario') -> str:
+        """One answer from the main model (or `model`) to messages Falcon composed itself — text only, e.g. a
+        scenario from a description (core.scenario_text): blocking, off the GUI thread; usage counted."""
+        model = model or self.cfg()['main_model']
+        for m in messages:
+            if not isinstance(m.get('content'), str):
+                raise ProviderError('refused', 'Only text is ever sent to the model.')
+        res = self.client(purpose).chat(messages, model, stream=False, temperature=0.2,
+                                        max_completion_tokens=max_tokens, extra=model_params(model), cancel=cancel,
+                                        purpose=purpose)
+        self.add_usage(model, res.usage)
+        return (res.content or '').strip()
+
+    def scenario_writer(self, description: str, cancel: CancelToken | None = None, model: str = ''):
+        """complete(messages) -> str for core.scenario_text.write, with .model; the description is refused first when
+        it names a private location (assistant.agent.compose: the dashcam footage is never read)."""
+        from .agent import compose
+        _text, why = compose(description)
+        if why:
+            raise ProviderError('refused', why)
+        ok, why = self.ready()
+        if not ok:
+            raise ProviderError('consent', why)
+        m = model or self.cfg()['main_model']
+
+        def complete(messages):
+            return self.complete(messages, m, cancel=cancel)
+        complete.model = m
+        return complete
+
     def explain_error(self, error_text: str, where: str = '') -> str:
         return self.quick('Explain this error in two or three sentences for the user, and the most likely fix.',
                           {'where': where, 'error': error_text[-4000:]})

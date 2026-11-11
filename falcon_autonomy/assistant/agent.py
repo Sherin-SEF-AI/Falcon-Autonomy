@@ -142,7 +142,9 @@ GROUP_ABOUT = {
            'their results',
     'research': 'ablations of a hypothesis (plan with a power analysis, run, analyse, re-run and check), the '
                 'experiment registry, tables, figures and data cards for papers; the closed-loop planner benchmark '
-                '(PDM score) and its results; a dashcam incident made a scenario',
+                '(PDM score) and its results; a dashcam incident made a scenario; a scenario written from a '
+                'description in words and a run checked against it; generation rounds (data generated for the '
+                'weakest cells, retrained, compared)',
     'ui': 'Falcon\'s window: the open page, go to a page, show a run or frame, outline a control',
     'knowledge': 'the manual (search), the command line, settings, the tools themselves',
     'system': 'the CARLA server, the machine, the queue\'s locks, versions',
@@ -240,7 +242,8 @@ GUESS = {
     'lab': r'\b(hil|hardware.in.the.loop|deploy\w*|tensorrt|orin|jetson|ci|log.replay|adversar\w*|experiments?|'
            r'active.learning|vlm)\b',
     'research': r'\b(benchmark\w*|pdm|nuplan|navsim|planners?|incidents?|ablations?|hypothes[ie]s|registry|'
-                r'power.analysis|sample.size|latex|paper|data.?cards?|datasheets?)\b',
+                r'power.analysis|sample.size|latex|paper|data.?cards?|datasheets?|describ\w*.(?:a.)?scenarios?|'
+                r'from.(?:a.)?(?:text|description)|cuts?.in|generation.rounds?|weak.cells?)\b',
 }
 PAGE_GROUPS = {'data': 'runs', 'replay': 'runs', 'models': 'analysis', 'loop': 'analysis', 'rarecases': 'analysis',
                'reports': 'analysis', 'training': 'jobs', 'stack': 'jobs', 'scenarios': 'project', 'worlds': 'project',

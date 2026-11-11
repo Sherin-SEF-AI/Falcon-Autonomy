@@ -98,6 +98,24 @@ def smoke_config(project: Project, out_dir: str, port: int, tm_port: int, seed: 
     return cfg
 
 
+def map_breakers(cfg: dict) -> list:
+    """The speed breakers of a drive's map in CARLA's frame ([{'x', 'y', 'kind'}]): the road features an import
+    wrote into its OpenDRIVE file (core.roadfeatures; dips have no crossing speed and are not breakers). A CARLA town
+    carries none; ProjectError when there are none, saying so."""
+    from . import roadfeatures as RF
+    if not cfg.get('xodr'):
+        raise ProjectError('the scenario needs a speed breaker: a CARLA town has none — use an imported world with '
+                           'speed breakers (Worlds ▸ Road features)')
+    with open(cfg['xodr'], encoding='utf-8') as fh:
+        feats = RF.read(fh.read())
+    out = [{'x': float(f['x']), 'y': -float(f['y']), 'kind': f.get('kind')} for f in feats
+           if f.get('crossing_kmh') is not None and f.get('x') is not None and f.get('y') is not None]
+    if not out:
+        raise ProjectError('the scenario needs a speed breaker and this world\'s OpenDRIVE file has none (Worlds ▸ '
+                           'Road features places them)')
+    return out
+
+
 def scenario_config(project: Project, scenario: dict, world_id: str, rig_id: str, out_dir: str, port: int,
                     tm_port: int, seed: int = 0, values: dict | None = None, fps: float = 20.0,
                     traffic_vehicles: int = 0, render_budget_mpx: float = 200.0, workspace: str = '',
@@ -120,6 +138,8 @@ def scenario_config(project: Project, scenario: dict, world_id: str, rig_id: str
             cfg.setdefault('notes', []).append(
                 'puddles (precipitation_deposits) are not drawn on an imported OpenDRIVE world (measured on CARLA '
                 '0.9.16: no visible change on a generated road, a large one on Town10HD); rain and wetness are')
+    if 'speed_breaker' in (conc.get('needs') or ()):      # the director starts it 10–60 m before one of them
+        cfg['breakers'] = map_breakers(cfg)
     cfg['warmup_steps'] = 5
     cfg['reload_world'] = True            # bit-for-bit repetition needs the same initial world state
     if trigger_rules is not None:
