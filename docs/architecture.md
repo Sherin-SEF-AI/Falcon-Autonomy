@@ -42,6 +42,8 @@ They talk over the [local protocol](protocol.md): JSON lines on stdin/stdout (an
 - The **workspace** (`*.falcon/` beside it): `runs/<stamp-name>/` (each with `drive.json`, `run.json`, the data),
   `logs/`, `catalog.sqlite`.
 - The **catalogue** indexes runs (and, as milestones land, datasets, models, evaluations, experiments); it can be
-  rebuilt from the files (`falcon runs PROJECT --rebuild`), which are the truth.
+  rebuilt from the files (`falcon runs PROJECT --rebuild`), which are the truth. In a [team workspace](team.md) on a
+  shared folder it is a per-user copy in the cache folder (SQLite is not safe on NFS or SMB), rebuilt on open; the
+  shared files (`team/`: comments, triage events, run owners) are append-only, one file each.
 - **User settings and secrets** live in `$XDG_CONFIG_HOME/FalconAutonomy/`; secrets in a separate file readable
   only by the user, never shown and never copied into a project.

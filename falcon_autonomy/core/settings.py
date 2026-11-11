@@ -65,6 +65,7 @@ DEFAULTS = {
     'geocoding_allowed': False,          # network place-name search only when the user turns it on
     'cloud_llm': None,                   # never set unless the user configures and approves one
     'notify_jobs': True,                 # a desktop notification when a long job ends while the window is in the back
+    'user_name': '',                     # who you are in a team workspace (core.team): a label, not an account
     'hil_device': {},                    # the HIL device: address, ports, SSH user and key path (core.hil); no password
     'assistant': copy.deepcopy(ASSISTANT_DEFAULTS),
 }
@@ -105,6 +106,9 @@ EXPLAIN = {
                   'otherwise'),
     'notify_jobs': ('Settings ▸ Appearance, privacy and notifications ▸ Job notifications', 'a desktop notification '
                     'when a job of 20 s or more ends while Falcon is in the background; nothing leaves the machine'),
+    'user_name': ('Settings ▸ Team ▸ Your name', 'who you are in a shared team workspace: the owner of the runs '
+                  'you record, the author of your comments and triage changes (a label, not an account; empty: '
+                  '$FALCON_USER or the login name)'),
     'hil_device': ('Hardware page', 'the hardware-in-the-loop device: address, ports, SSH user and key path (private: '
                    'never in a project; no password here)'),
     'assistant': ('Settings ▸ Assistant (and the Assistant panel)', 'the assistant: on or off, the notice accepted, '

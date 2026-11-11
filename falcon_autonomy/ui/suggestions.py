@@ -26,7 +26,7 @@ from . import icons, tasks
 from .theme import THEME
 from .widgets import FlowLayout
 
-BAR_PAGES = ('worlds', 'scenarios', 'live', 'data', 'rarecases', 'training', 'stack')
+BAR_PAGES = ('worlds', 'scenarios', 'live', 'data', 'rarecases', 'triage', 'training', 'stack')
 TICK_MS = 10_000
 
 

@@ -1335,6 +1335,12 @@ def markdown(res: dict, max_rows: int = 30) -> str:
                      f'{_md_cell(why)[:300]} |')
         if len(fails) > max_rows:
             L.append(f'| … {len(fails) - max_rows} more in ci-results.json | | |')
+    fm = res.get('failure_modes') or {}
+    if fm.get('new'):
+        L += ['', f'**New failure modes**: {fm["new"]} of {fm["failures"]} failing runs fall in no failure cluster of '
+              f'the workspace ({(fm.get("reference") or {}).get("failures", 0)} earlier failures; '
+              'docs/failure-clusters.md): ' + '; '.join(f'{_md_cell(m["name"])} ({m["size"]})'
+                                                        for m in fm.get('new_modes') or ())]
     flaky = [r['name'] for r in res.get('runs') or () if r.get('flaky')]
     if flaky:
         L += ['', f'Flaky (failed, then passed on a retry; counted as {res.get("flaky_count_as")}): '
@@ -1672,6 +1678,8 @@ def run_ci(config_path: str, overrides: dict | None = None, log=None, env=None) 
             res['error'] = 'no runs'
         st = [g['status'] for g in res['gates']]
         res['verdict'] = ('error' if res['error'] or 'error' in st else 'failed' if 'failed' in st else 'passed')
+        if any(r.get('passed') is False for r in records):      # new failure modes (core.failclusters)
+            failure_modes(cfg, out, res, records)
     except KeyboardInterrupt:
         res['verdict'], res['error'] = 'cancelled', 'cancelled (SIGINT or SIGTERM)'
     except CIError as e:
@@ -1696,6 +1704,24 @@ def run_ci(config_path: str, overrides: dict | None = None, log=None, env=None) 
         if old is not None:
             for n, h in old.items():
                 signal.signal(n, h)
+
+
+def failure_modes(cfg: dict, out: str, res: dict, records: list):
+    """The run's failures against the failure clusters of its workspace (core.failclusters.check_ci): those in no
+    known mode are new. Written to OUT/failure-modes.json, counted in res['failure_modes'] and the summary. Nothing
+    when the run belongs to no workspace (no project, and OUT is not WORKSPACE/ci/NAME)."""
+    from . import failclusters as FC
+    ws = FC.ci_workspace(cfg, out)
+    if not ws or not os.path.isdir(ws):
+        return
+    try:
+        doc = FC.check_ci(ws, out, records)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        res['notes'].append(f'failure modes not checked: {e}')
+        return
+    res['failure_modes'] = {'failures': doc['failures'], 'known': len(doc['known']), 'new': len(doc['new']),
+                            'reference': doc['reference'], 'new_modes': [{k: m[k] for k in ('id', 'name', 'size')}
+                                                                         for m in doc['new_modes']]}
 
 
 def _finish(cfg, out, res, raw, config_path, tm, env) -> tuple:

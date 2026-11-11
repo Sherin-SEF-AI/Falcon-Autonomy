@@ -101,6 +101,11 @@ SHORT = {
     'project_rsu_set': 'Change a roadside unit: position, yaw, height, CPM settings.',
     'project_odd_set': 'Set the loop\'s ODD or model, or write the safety-case ODD (odd.json).',
     'project_remove': 'Remove one project item by kind and id.',
+    # research (tools/failures.py)
+    'research_clusters': 'Failure modes: failures clustered and named; with ci, that CI run\'s new failure modes.',
+    'research_triage': 'The triage queue, one item\'s history and comments, or an object\'s comments.',
+    'research_bisect': 'Queue a regression bisect: the first commit of a stack that broke each scenario.',
+    'research_triage_edit': 'Comment, or add, assign, move or link a triage item (append-only, as the user).',
     # runs
     'runs_search': 'Search runs with the run query language (e.g. "weather:rain dur>20 events:collision").',
     'runs_get': 'One run compactly: settings, performance, summary, scenario result, streams held.',

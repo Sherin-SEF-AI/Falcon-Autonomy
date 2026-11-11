@@ -37,7 +37,7 @@ def test_lab_tools_are_registered_compact_and_previewed():
         assert len(DETAILS[n]['description']) > 100
     assert 'lab' in GROUP_ABOUT and guess_groups('deploy it to the Orin and run CI')[0] == 'lab'
     toks = schema_tokens()
-    assert toks['all'] < 10000 and toks['lab'] < 3500, toks
+    assert toks['all'] < 14000 and toks['lab'] < 3500, toks       # all: never sent at once (groups load on demand)
     # the compact form drops what only repeats the name, a boolean's default, or an enum's own values
     s = minify({'type': 'object', 'properties': {
         'repeat': {'type': 'string', 'enum': ['once', 'every', 'cooldown'], 'description': 'once, every or cooldown'},

@@ -42,8 +42,8 @@ def _inside(path: str, root: str) -> bool:
 
 
 def _catalog(workspace: str):
-    from .catalog import Catalog
-    p = os.path.join(workspace, 'catalog.sqlite')
+    from .catalog import Catalog, catalog_path
+    p = catalog_path(workspace)
     return Catalog(p) if os.path.isfile(p) else None
 
 

@@ -140,6 +140,8 @@ GROUP_ABOUT = {
     'analysis': 'studies, failure maps, criticality, root causes, evaluations, the gap, suites, V2X, traffic rules',
     'lab': 'hardware in the loop, deployment, CI mode, log replay, adversarial traffic, experiments, VLM evaluation; '
            'their results',
+    'research': 'failure modes (failures clustered and named, a CI run\'s new ones), the triage queue and comments, '
+                'regression bisect of a stack\'s commits',
     'ui': 'Falcon\'s window: the open page, go to a page, show a run or frame, outline a control',
     'knowledge': 'the manual (search), the command line, settings, the tools themselves',
     'system': 'the CARLA server, the machine, the queue\'s locks, versions',
@@ -232,12 +234,14 @@ GUESS = {
     'jobs': r'\b(jobs?|queued?|cancel|sweeps?|train(ing)?|record)\b',
     'project': r'\b(project|worlds?|rigs?|scenarios?|sensors?|cameras?|traffic|weather)\b',
     'analysis': r'\b(evaluat\w*|metrics?|mAP|AP|mIoU|recall|precision|compare|regressions?|failures?|worse|better)\b',
+    'research': r'\b(clusters?|failure.modes?|triage|comments?|assign\w*|bisect\w*|which commit|broke)\b',
     'knowledge': r'(\bhow (do|can|to)\b|\bwhat is\b|\bmanual\b|\bdocs?\b)',
     'system': r'\b(gpu|vram|memory|ram|server|machine)\b',
     'lab': r'\b(hil|hardware.in.the.loop|deploy\w*|tensorrt|orin|jetson|ci|log.replay|adversar\w*|experiments?|'
            r'active.learning|vlm)\b',
 }
 PAGE_GROUPS = {'data': 'runs', 'replay': 'runs', 'models': 'analysis', 'loop': 'analysis', 'rarecases': 'analysis',
+               'triage': 'research',
                'reports': 'analysis', 'training': 'jobs', 'stack': 'jobs', 'scenarios': 'project', 'worlds': 'project',
                'rigs': 'project', 'hardware': 'system', 'help': 'knowledge'}
 

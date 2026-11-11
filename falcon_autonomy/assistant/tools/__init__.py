@@ -1,7 +1,8 @@
 """The assistant's tools: importing this package registers every one in tool_api.REGISTRY (docs/assistant-tools.md is
-generated from it). One module per group — project, runs, jobs, analysis, lab, ui, knowledge, system — each calling the code
-the GUI pages and the CLI call; _common holds what they share (ids to workspace paths, privacy checks, edits, jobs,
-compact results); _compact holds each tool's one-line description for the model (the full texts are the doc).
+generated from it). One module per group — project, runs, jobs, analysis, lab, ui, knowledge, system; failures for the
+research group — each calling the code the GUI pages and the CLI call; _common holds what they share (ids to workspace
+paths, privacy checks, edits, jobs, compact results); _compact holds each tool's one-line description for the model (the
+full texts are the doc).
 
 context(project_path, fake_carla) builds a ToolContext for the command line (`falcon assistant call`): the project
 loaded, the user's settings, a job queue with the subprocess launcher and a CarlaService on the project's workspace.
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 from ..tool_api import REGISTRY
 from . import analysis, jobs, knowledge, lab, project, runs, system, ui  # noqa: F401 (registers the tools)
+from . import failures  # noqa: F401,E402 (failure modes, triage, bisect: registers them)
 from ._compact import compact_registry
 
 compact_registry(REGISTRY)          # what the model is sent: one-line descriptions, short argument texts (_compact)

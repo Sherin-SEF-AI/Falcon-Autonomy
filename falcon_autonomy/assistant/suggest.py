@@ -36,6 +36,12 @@ Triggers (key: what it looks at → the action):
     no_evaluation    models and drives but no evaluation → jobs_evaluate
     no_scenarios     no scenario of the project's own → project_scenario_create (a copy of lead_brake)
     no_rules         no trigger rules → project_trigger_add (an example rule, parsed when added)
+    new_failure_mode a CI run's failures fall in no known failure cluster of the workspace (its failure-modes.json,
+                     core.failclusters) → research_clusters with that CI run
+
+phrase_clusters(service, clusters) asks the fast model for a shorter name of each failure cluster; a name is kept only
+when every number in it is one of the cluster's own (its deterministic name and features), else the deterministic
+name stands.
 """
 from __future__ import annotations
 
@@ -62,6 +68,7 @@ EXAMPLE_RULE = 'when ego.speed > 40 and visibility < 30 -> spawn jaywalker'
 
 P_SERVER, P_FAILED, P_AVOIDABLE, P_MRM, P_GPU, P_WORLD = 95, 90, 72, 70, 62, 56
 P_COVERAGE, P_DUPS, P_DRIFT, P_DONE, P_FIRST, P_EVAL, P_SCN, P_RULES = 50, 46, 40, 38, 34, 30, 24, 18
+P_NEW_MODE = 74
 
 
 @dataclass
@@ -455,8 +462,30 @@ def t_no_rules(state: State) -> list:
                        {'rule': EXAMPLE_RULE})]
 
 
+def t_new_failure_mode(state: State) -> list:
+    """The newest CI run whose failures include a new failure mode (OUT/failure-modes.json, written by `falcon ci run`
+    from core.failclusters.check_ci): read which."""
+    ws = state.workspace
+    for d in _newest(os.path.join(ws, 'ci') if ws else '', 'failure-modes.json', 6):
+        doc = _json(os.path.join(d, 'failure-modes.json'), {}) or {}
+        modes = doc.get('new_modes') or []
+        if not doc.get('new') or not modes:
+            continue
+        cid = os.path.basename(d)
+        top = modes[0]
+        why = (f'CI run {cid}: {len(doc["new"])} of {doc.get("failures")} failing runs fall in no known failure '
+               f'cluster — a new failure mode: {top.get("name")} ({top.get("size")} runs)' +
+               (f', and {len(modes) - 1} more' if len(modes) > 1 else '') + '.')
+        return [Suggestion(f'new_failure_mode:{cid}', 'new_failure_mode', 'See the new failure mode', why,
+                           'research_clusters', {'ci': cid}, P_NEW_MODE, ('stack', 'triage', 'home'),
+                           {'new': len(doc['new']), 'failures': doc.get('failures'), 'modes': len(modes),
+                            'names': [m.get('name') for m in modes[:5]], 'sizes': [m.get('size') for m in modes[:5]]})]
+    return []
+
+
 TRIGGERS = (t_server_crashed, t_job_failed, t_avoidable, t_mrm_failed, t_gpu_idle, t_world_lights, t_coverage_gap,
-            t_duplicates, t_drift_refused, t_job_done, t_first_drive, t_no_evaluation, t_no_scenarios, t_no_rules)
+            t_duplicates, t_drift_refused, t_job_done, t_first_drive, t_no_evaluation, t_no_scenarios, t_no_rules,
+            t_new_failure_mode)
 
 
 def gather(state: State, triggers=TRIGGERS) -> list:
@@ -539,6 +568,46 @@ def phrase(service, cands: list, context: dict | None = None, top: int = PHRASE_
         else:
             rejected[r['key']] = t
     return {'ranked': ranked, 'texts': texts, 'rejected': rejected}
+
+
+CLUSTER_SYSTEM = (
+    'You name failure clusters of a self-driving test suite for engineers. You get clusters as JSON, each with an id, '
+    'its deterministic name and its distinguishing features. Give each a short name (at most 60 characters) an '
+    'engineer would say, e.g. "right turns at night with a late pedestrian". Rules: use only what the features say; '
+    'keep every number exactly as written; add no number or claim. Answer with JSON only: '
+    '{"names": [{"id": "...", "name": "..."}]}.')
+
+
+def phrase_clusters(service, clusters: list, top: int = 8, cancel=None) -> dict:
+    """Ask the fast model for a short name of each cluster (blocking). Returns {'names': {id: kept name},
+    'rejected': {id: a name whose numbers are not the cluster's}}. Raises provider errors (the deterministic names
+    stand)."""
+    pick = [c for c in clusters if c.get('features')][:top]
+    if not pick:
+        return {'names': {}, 'rejected': {}}
+    ctx = {'clusters': [{'id': c['id'], 'name': c['name'], 'size': c['size'],
+                         'features': [f['text'] for f in c['features'][:6]]} for c in pick]}
+    raw = service.quick('Name these failure clusters.', ctx, system=CLUSTER_SYSTEM, max_tokens=500, cancel=cancel)
+    t = (raw or '').strip()
+    m = re.search(r'\{.*\}', t, re.S)
+    try:
+        rows = (json.loads(m.group(0)) if m else {}).get('names') or []
+    except (ValueError, AttributeError):
+        rows = []
+    by = {c['id']: c for c in pick}
+    names, rejected = {}, {}
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict) or r.get('id') not in by or not isinstance(r.get('name'), str):
+            continue
+        c = by[r['id']]
+        text = ' '.join(r['name'].split())[:80]
+        src = [{'role': 'tool', 'content': json.dumps({'name': c['name'], 'size': c['size'],
+                                                       'features': c['features']}, default=str)}]
+        if text and not grounding.check(text, src):
+            names[c['id']] = text
+        else:
+            rejected[c['id']] = text
+    return {'names': names, 'rejected': rejected}
 
 
 def apply_phrasing(cands: list, res: dict):

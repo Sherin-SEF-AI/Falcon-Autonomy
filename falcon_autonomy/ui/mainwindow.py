@@ -581,6 +581,8 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.fake_carla = fake_carla
         self.project = project or Project.new('Untitled')
+        from ..core.team import remember
+        remember(self.project)                   # the file as read: a team workspace's save compares with it
         self.undo = QUndoStack(self)
         self.queue = JobQueue(QProcessLauncher(self), memory_reserve_gb=MEMORY_RESERVE_GB)
         self.bridge = JobsBridge(self.queue, self)
@@ -938,9 +940,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f'{"● " if self.project.dirty else ""}{name}{where} · {APP_NAME}')
 
     def set_project(self, project: Project):
+        from ..core import team as TM
         self.project = project
+        TM.remember(project)                     # what a team workspace's save compares with (core.team)
         self.undo.clear()
         self.service.set_workspace(self.workspace())
+        if project.path and TM.is_team(self.workspace()):
+            TM.seen(self.workspace(), TM.identity(self.settings))
         self._set_history()
         if project.path:
             self.settings.add_recent(project.path)
@@ -986,9 +992,16 @@ class MainWindow(QMainWindow):
     def save(self) -> bool:
         if not self.project.path:
             return self.save_as()
+        from ..core import team as TM
         try:
-            self.project.save()
-        except (OSError, ProjectError) as e:
+            try:                                 # in a team workspace: locked, and refused over another's save
+                TM.save_project(self.project, TM.identity(self.settings))
+            except TM.SaveConflict as e:
+                from .team import save_conflict
+                if not save_conflict(self, e):
+                    return False
+                TM.save_project(self.project, TM.identity(self.settings), force=True)
+        except (OSError, ProjectError, TM.TeamError) as e:
             QMessageBox.warning(self, 'Cannot save', str(e))
             return False
         self.undo.setClean()

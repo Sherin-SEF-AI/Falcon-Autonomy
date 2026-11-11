@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+- **A shared team workspace with triage** (`core/team.py`, `core/catalog.py`, `sim/service.py`, `ui/pages/triage.py`,
+  `ui/team.py`, `ui/mainwindow.py`, `ui/pages/data.py`, Settings ▸ Team; docs/team.md): a project on a plain shared
+  folder or NAS opened by several people's Falcon at once, no server. Comments, triage events, run owners and member
+  visits are one JSON file each, linked (or created exclusively) into place and never rewritten; a triage item's state
+  is its events folded in time order, a change that no longer fits kept in the history as ignored; item numbers
+  claimed by `mkdir`. A lock for the files rewritten whole (the project, saved clusters): a lock file created by
+  `link(2)` (NFS-safe) or `O_EXCL` (SMB), owner, host, pid and token, a 15 s heartbeat, takeover past 120 s by the file
+  server's own clock or at once when its holder's process on this host is gone, by an atomic rename; no fcntl. Safe on
+  local disks, NFSv3/v4 and SMB2/3, not on sync services (said so). The project is saved under the lock and refused
+  over another member's save (who, where, when; *Save anyway*). A team workspace's catalogue is a per-user local copy
+  rebuilt from the run folders (SQLite is unreliable on network shares). Who recorded each run (Data ▸ Browse ▸
+  *Recorded by*); comments on every run in Data ▸ Browse and on triage items; **Triage** (a new page under Improve):
+  the queue open → assigned → investigating → fixed → verified (and back), links to runs, scenarios, cases, clusters
+  and commits, history, comments. `falcon team`, `falcon triage`, `falcon comment`. Tests: four processes counting to
+  60 under the lock with no lost update; eight items created at once by eight threads get eight numbers; two
+  simultaneous "fixed" events fold to one plus one ignored. The NFS and SMB behaviour is from their specifications and
+  the manuals, not measured on a share here.
+- **Regression bisect** (`core/regbisect.py`, Triage ▸ Regression bisect; docs/bisect.md): `falcon bisect run REPO
+  --config F --good A --bad B` runs a stack's CI config (read from each commit, `{repo}` its checkout) at both refs and
+  finds the scenarios that got worse — a run that passed and now fails when the mode is deterministic, else Fisher's
+  exact test (one-sided, alpha 0.05) over `--repeats` (default 5; fewer than four runs per end can never reach 0.05,
+  and the output says so) — then bisects the first-parent history through CI mode, every regressed scenario with its
+  own interval and each tested commit answering for all of them; a commit that does not check out or build
+  (`--build`) is skipped as `git bisect skip`, and only skips left beside the change give the list of candidates.
+  Commits checked out with `git worktree` (removed after), evaluated once and read back on a re-run. Measured on the
+  fake carla: a stand-in stack that stops braking at "raise the cruise speed", with an unbuildable commit before it,
+  bisected to that commit in 3 tested commits (about 5 s).
+- **Failure clustering** (`core/failclusters.py`, Triage ▸ Failure modes, `core/ci.py`; docs/failure-clusters.md):
+  the failures of studies, suites and CI runs, with their scenario, parameters, conditions from the run (world, fog,
+  sun, rain, time of day), outcome and root-cause factors, clustered by a group-weighted Gower distance with average
+  linkage (nearest-neighbour chain, numpy only; matches a brute-force agglomeration) cut at 0.3; each cluster named
+  deterministically from what sets it apart (≥ 75 % inside and 25 points more than outside; numbers by their median
+  shift) — the assistant's fast model may reword a name, kept only when its numbers pass the grounding check. After
+  every `falcon ci run` in a workspace its failures are sorted into known modes or new ones (`failure-modes.json`, a
+  summary line, a suggestion: *See the new failure mode*). `falcon clusters build|show|check`; a documented API
+  (collect, distance_matrix, cluster, assign, check_ci) for other code.
+- **The assistant's research group** (`assistant/tools/failures.py`, `assistant/suggest.py`, `tool_api.GROUPS`): a new
+  tool group loaded on demand (493 tokens) — `research_clusters`, `research_triage`, `research_triage_edit` (comments
+  and triage changes, append-only, written as the user `via assistant`), `research_bisect`; analysis_outputs reads a
+  bisect; the fifteenth suggestion rule (a new failure mode). Private runs (from the dashcam footage) shape no
+  cluster, their triage items are withheld and their comments neither read nor written. The whole registry's schemas
+  are 10,481 tokens: the test's cap on them is raised to 14,000 (they are never sent at once; each group stays under
+  3,500).
+
 - **A lab-console interface** (`ui/theme.py`, `ui/frame.py`, `ui/motion.py`, `ui/widgets.py`; docs/index.md ▸ The
   window): graphite panels and bordered cards with one blue accent for the main action and the selection, status
   colours only for state, monospaced right-aligned numbers, 13 px IBM Plex. A top bar (the project and its folder,

@@ -3,6 +3,10 @@
 The files on disk are the truth (each run folder's run.json, each dataset's manifest); the catalogue indexes them so
 the GUI can list, filter and link them, and can be rebuilt from the workspace at any time (rebuild()). Every row keeps
 the path of the JSON it was read from, so every number shown traces back to the run that produced it.
+
+Where it lives (catalog_path): <workspace>/catalog.sqlite; in a team workspace on a shared folder (core.team) a
+per-user file in the cache folder instead, rebuilt from the run folders when the workspace is opened — SQLite's locking
+is not reliable over NFS or SMB (sqlite.org/faq.html#q5), and the files are the truth anyway.
 """
 from __future__ import annotations
 
@@ -32,6 +36,18 @@ CREATE TABLE IF NOT EXISTS entries (
 CREATE INDEX IF NOT EXISTS entries_kind ON entries(kind, created);
 CREATE TABLE IF NOT EXISTS links (src TEXT, dst TEXT, role TEXT, PRIMARY KEY (src, dst, role));
 """
+
+
+def catalog_path(workspace: str) -> str:
+    """The catalogue's file for a workspace: inside it, or — for a team workspace (core.team.is_team) — this user's
+    local copy, keyed by the workspace's real path."""
+    import hashlib
+    from .team import is_team
+    if workspace and is_team(workspace):
+        from .paths import cache_dir
+        key = hashlib.sha256(os.path.realpath(workspace).encode()).hexdigest()[:16]
+        return os.path.join(cache_dir(), 'catalogues', f'{os.path.basename(os.path.normpath(workspace))}-{key}.sqlite')
+    return os.path.join(workspace, 'catalog.sqlite')
 
 
 class Catalog:
