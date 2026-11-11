@@ -142,7 +142,7 @@ GROUP_ABOUT = {
            'their results',
     'research': 'ablations and the experiment registry, paper outputs, the planner benchmark, dashcam incidents as '
                 'scenarios, failure modes, triage, regression bisect, Vantage rig comparison, scenarios from words, '
-                'generation rounds',
+                'generation rounds, the research autopilot',
     'ui': 'Falcon\'s window: the open page, go to a page, show a run or frame, outline a control',
     'knowledge': 'the manual (search), the command line, settings, the tools themselves',
     'system': 'the CARLA server, the machine, the queue\'s locks, versions',
@@ -239,7 +239,7 @@ GUESS = {
                 r'pdm|nuplan|navsim|planners?|incidents?|ablations?|hypothes[ie]s|registry|power.analysis|'
                 r'sample.size|latex|paper|data.?cards?|datasheets?|vantage|variants?|seams?|stitch\w*|surround.view|'
                 r'bird.s.eye|describ\w*.(?:a.)?scenarios?|from.(?:a.)?(?:text|description)|cuts?.in|generation.rounds?|'
-                r'weak.cells?)\b',
+                r'weak.cells?|autopilot|research)\b',
     'knowledge': r'(\bhow (do|can|to)\b|\bwhat is\b|\bmanual\b|\bdocs?\b)',
     'system': r'\b(gpu|vram|memory|ram|server|machine)\b',
     'lab': r'\b(hil|hardware.in.the.loop|deploy\w*|tensorrt|orin|jetson|ci|log.replay|adversar\w*|experiments?|'
@@ -353,22 +353,28 @@ def compose(text: str, context: dict | None = None, attachments=()) -> tuple:
 
 # --------------------------------------------------------------------------------------------- approvals, host
 class Approval:
-    """One approval card: what the tool will do, decided on the GUI thread, waited for on the agent's."""
+    """One approval card: what the tool will do, decided on the GUI thread, waited for on the agent's. options: boxes
+    the card offers beside its buttons ({key: label}, from the tool's own Tool.approval); chosen: the ones ticked."""
 
-    def __init__(self, call_id, tool, tier, args, preview='', estimate=None, description=''):
+    def __init__(self, call_id, tool, tier, args, preview='', estimate=None, description='', options=None, why=''):
         self.call_id, self.tool, self.tier, self.args = call_id, tool, tier, args
         self.preview, self.estimate, self.description = preview, estimate, description
         self.allow_all = tier == 'act'          # trash always asks: no "approve all" for it
+        self.options = dict(options or {})
+        self.chosen: dict = {}
+        self.why = why                          # why the tool asks in every mode (Tool.approval)
         self.choice = None
         self._ev = threading.Event()
 
-    def decide(self, choice: str):
+    def decide(self, choice: str, options: dict | None = None):
         if choice not in ('approve', 'approve_all', 'reject', 'stopped'):
             raise ValueError(choice)
         if choice == 'approve_all' and not self.allow_all:
             choice = 'approve'
         if self.choice is None:
             self.choice = choice
+            if choice in ('approve', 'approve_all'):
+                self.chosen = {k: bool(v) for k, v in (options or self.chosen or {}).items() if k in self.options}
         self._ev.set()
 
     def wait(self, cancel: CancelToken) -> str:
@@ -433,7 +439,7 @@ def unsent_tool(e) -> str:
 
 
 SUGGESTION_HOW = {'approved': 'you approved it', 'auto': 'your permission mode ran it', 'allowed': 'you allow it',
-                  'read': 'it only reads'}
+                  'read': 'it only reads', 'preapproved': 'you approved it ahead'}
 
 
 def suggestion_line(res: dict, approval: str) -> str:
@@ -466,6 +472,7 @@ class Agent:
         self._job_ev = threading.Event()
         self._subscribed = None
         self.pool = cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix='falcon-tool')
+        self._chosen: dict = {}                 # the boxes ticked on the last approval card
         self._subscribe()
 
     # ------------------------------------------------------------------ control
@@ -980,6 +987,7 @@ class Agent:
             self._finish(tc, {'error': err}, 0.0, tier=tier)
             return
         approval = ''
+        self._chosen = {}
         if tool is not None and tier in ('act', 'trash'):
             approval = self._permit(tc, tool, args)
             if approval in ('rejected', 'stopped'):
@@ -990,6 +998,7 @@ class Agent:
                 return
         sink: list = []
         ctx = self._ctx(sink)
+        ctx.approval = {'how': approval, 'options': dict(self._chosen)} if approval else {}
         before = self._snapshot() if tier in ('act', 'trash') else None
         res, ms = self._call_tool(tool, ctx, tc.name, args)
         self._finish(tc, res, ms, approval, tier)
@@ -1007,8 +1016,26 @@ class Agent:
         if self.cancel.wait(p):
             raise Cancelled()
 
+    def gate(self, tool, args):
+        """The tool's own say on its card (Tool.approval), run where the tool runs: None — the permission mode
+        decides; {'ask': True, …} — a card in every mode; {'ask': False, 'why'} — approved ahead, no card. A gate that
+        fails asks."""
+        fn = getattr(tool, 'approval', None)
+        if fn is None:
+            return None
+        ctx = self._ctx([])
+        try:
+            g = self.host.run_gui(lambda: fn(ctx, **args)) if self.on_gui(tool) else fn(ctx, **args)
+        except Exception:                       # noqa: BLE001 (when in doubt, the user decides)
+            return {'ask': True}
+        return g if isinstance(g, dict) else None
+
     def _permit(self, tc, tool, args) -> str:
-        if tool.tier == 'act':
+        g = self.gate(tool, args) if tool.tier == 'act' else None
+        if g is not None and g.get('ask') is False:
+            return 'preapproved'                # the user approved it ahead (the gate says where)
+        must = bool(g and g.get('ask'))
+        if tool.tier == 'act' and not must:
             if self.showing() and tool.group == 'ui':
                 return 'show_me'                # moving the view is what show-me mode is for
             if self.mode in ('auto', 'autopilot'):
@@ -1030,10 +1057,14 @@ class Agent:
                 preview = v
             else:
                 estimate = v
-        req = Approval(tc.id, tool.name, tool.tier, args, preview or '', estimate, tool.description)
+        req = Approval(tc.id, tool.name, tool.tier, args, preview or '', estimate, tool.description,
+                       (g or {}).get('options'), (g or {}).get('why') or '')
+        if must:
+            req.allow_all = bool(g.get('allow_all', False))
         self.host.event('approval', req)
         choice = req.wait(self.cancel)
-        self.host.event('approval_done', {'id': tc.id, 'choice': choice})
+        self._chosen = dict(req.chosen)
+        self.host.event('approval_done', {'id': tc.id, 'choice': choice, 'options': dict(req.chosen)})
         if choice == 'approve_all':
             with self.session.lock:
                 if tool.name not in self.session.allowed:
@@ -1081,13 +1112,14 @@ class Agent:
             e.update(tool=name, args=args)
             self.host.event('activity', self.session.add_activity(e))
 
-    def run_proposed(self, tool_name: str, args: dict, approval: str = 'approved') -> dict:
+    def run_proposed(self, tool_name: str, args: dict, approval: str = 'approved', options: dict | None = None) -> dict:
         """Run a suggested action the user approved on a card outside a turn (AssistantService.propose): the same
         checks, the same activity log, and a note in the conversation so the model knows. Blocking: call it off the
-        GUI thread (gui tools are run on it by the host)."""
+        GUI thread (gui tools are run on it by the host). options: the boxes ticked on its card."""
         tool = lookup(tool_name)
         sink: list = []
         ctx = self._ctx(sink)
+        ctx.approval = {'how': approval, 'options': dict(options or {})}
         before = self._snapshot() if tool is not None and tool.tier in ('act', 'trash') else None
         res, ms = (self.host.run_gui(lambda: self._timed(ctx, tool_name, args)) if self.on_gui(tool)
                    else self._timed(ctx, tool_name, args))

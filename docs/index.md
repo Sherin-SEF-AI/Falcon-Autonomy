@@ -243,6 +243,10 @@ distance next to its real-vs-real floor; optional appearance matching with its e
   power analysis, the drives and evaluations run as jobs, paired bootstrap intervals with Holm's correction and the
   verdict, every run pinned and the whole experiment re-run and checked with one command; the **registry** lists
   every experiment with its hypothesis, status and verdict ([experiments](experiments.md)).
+- **The research autopilot** (the Assistant panel's Research tab) takes a question — yours, or one found in the
+  project's failure modes, operating-domain cells, failure rates and bisect regressions — through an ablation approved
+  on a card at each step that runs anything, its analysis, follow-ups of an underpowered round and a report whose every
+  number is checked ([research autopilot](research-autopilot.md)).
 - **Driving policies** clones the recorded control of drives, or learns by PPO in CARLA along a scenario curriculum.
 - **Leaderboard** scores a policy as the CARLA Leaderboard scores routes (driving score, route completion, infraction
   penalty, with intervals). Select any infraction and *Replay* it: the episode is re-run exactly with a chase camera

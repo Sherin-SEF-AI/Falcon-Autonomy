@@ -53,7 +53,8 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
   resumable, exported to ONNX and checked), the mixed sim/real experiment with paired intervals, local tracking with
   an MLflow export ([training](docs/training.md)); ablations of a stated hypothesis with a power analysis, paired
   intervals, a registry and re-runs checked against the original, and tables, figures and data cards ready for papers
-  ([experiments](docs/experiments.md)); a CARLA environment with the Gymnasium API, behaviour cloning, PPO
+  ([experiments](docs/experiments.md)), taken end to end by the assistant's research autopilot with a card at each
+  step that runs anything ([research autopilot](docs/research-autopilot.md)); a CARLA environment with the Gymnasium API, behaviour cloning, PPO
   with a scenario curriculum, Leaderboard-style driving scores and one-click replay of any infraction
   ([policies](docs/policies.md)).
 - **Home**, the start page: the next step the project needs, its worlds, rigs, scenarios and models, the server
@@ -149,7 +150,7 @@ FALCON_REAL_CARLA=1 python3 -m pytest -m real_server     # also against a real C
 [The manual](docs/index.md) · [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
 [project format](docs/project-format.md) · [CLI and exit codes](docs/cli.md) · [methods](docs/methods.md) ·
 [CARLA lessons](docs/carla-lessons.md) · [models](docs/models.md) · [sim-to-real](docs/sim-to-real.md) ·
-[world model](docs/world-model.md) · [audio](docs/audio.md) · [training](docs/training.md) · [experiments](docs/experiments.md) · [generating data](docs/generation.md) · [scenarios from text](docs/scenario-text.md) · [policies](docs/policies.md) · [loop](docs/loop.md) · [reports](docs/reports.md) ·
+[world model](docs/world-model.md) · [audio](docs/audio.md) · [training](docs/training.md) · [experiments](docs/experiments.md) · [research autopilot](docs/research-autopilot.md) · [generating data](docs/generation.md) · [scenarios from text](docs/scenario-text.md) · [policies](docs/policies.md) · [loop](docs/loop.md) · [reports](docs/reports.md) ·
 [stack testing](docs/stack-testing.md) · [V2X](docs/v2x.md) · [log replay](docs/log-replay.md) · [hardware](docs/hardware.md) ·
 [packaging](docs/packaging.md) · [deploy](docs/deploy.md) · [CI](docs/ci.md) · [assistant](docs/assistant.md) ·
 [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)

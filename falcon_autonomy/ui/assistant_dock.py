@@ -7,7 +7,8 @@ returned are marked "not from Falcon's data"), tool-call cards (name, arguments,
 cards (what, the exact change from Tool.preview, the estimate, Approve / Approve all of this kind / Reject), the jobs it
 queued with their progress, Falcon's events; then the box: Enter sends, Shift+Enter is a new line, Esc stops.
 Activity: everything it changed, newest first, each with Undo (a project edit through the window's undo stack, a job
-by cancelling it, runs moved to the trash by moving them back).
+by cancelling it, runs moved to the trash by moving them back). Research: the research autopilot's studies and their
+state machines, with Stop and Undo, and the questions the app suggests (ui.research_view).
 
 QtHost connects the Qt-free agent (assistant.agent) to the window: the agent's thread emits events through a signal
 that lands on the GUI thread; gui tools run on the GUI thread; the undo stack is read there.
@@ -269,7 +270,7 @@ class ToolCard(QFrame):
         when = '…' if self.ms is None else (f'{self.ms:.0f} ms' if self.ms < 1000 else f'{self.ms / 1000:.1f} s')
         how = {'approved': 'approved', 'approved_all': 'approved (all of this kind)', 'allowed': 'approved earlier',
                'auto': 'ran without asking', 'rejected': 'declined', 'stopped': 'stopped',
-               'show_me': 'show me', 'read': 'looked'}.get(self.approval, '')
+               'show_me': 'show me', 'read': 'looked', 'preapproved': 'approved ahead'}.get(self.approval, '')
         bits = [self.name, when] + ([how] if how else []) + ([self.summary] if self.summary else [])
         self.head.setText('  ' + ' · '.join(bits))
         self.head.setToolTip(' · '.join(bits))
@@ -329,12 +330,22 @@ class ApprovalCard(QFrame):
             pv.setFixedHeight(min(140, pv.fontMetrics().lineSpacing() * (str(req.preview).count('\n') + 1) + 14))
             pv.setAccessibleName('The exact change')
             v.addWidget(pv)
+        if req.why:                              # why it asks in every permission mode (the tool's own gate)
+            v.addWidget(label(req.why[:1].upper() + req.why[1:] + '.', muted=True, small=True, wrap=True))
         est = req.estimate if isinstance(req.estimate, dict) else {}
         if est:
             s = est.get('seconds')
             txt = ' — '.join(x for x in ((f'about {fmt_duration(s)}' if s else ''), str(est.get('what') or '')) if x)
             if txt:
                 v.addWidget(label(txt, muted=True, small=True, wrap=True))
+        self.boxes = {}
+        for key, text in (req.options or {}).items():      # e.g. "approve the follow-ups of this study"
+            from PyQt6.QtWidgets import QCheckBox
+            cb = QCheckBox(text)
+            cb.setAccessibleName(text)
+            cb.setStyleSheet('QCheckBox { font-size: 11px; }')
+            self.boxes[key] = cb
+            v.addWidget(cb)
         self.row = QHBoxLayout()
         self.approve = button('Approve', lambda: self.decide('approve'), role='primary')
         self.approve.setAccessibleName(f'Approve {req.tool}')
@@ -352,14 +363,22 @@ class ApprovalCard(QFrame):
         self.outcome.hide()
         v.addWidget(self.outcome)
 
+    def ticked(self) -> dict:
+        return {k: cb.isChecked() for k, cb in self.boxes.items()}
+
     def decide(self, choice):
         self.settle(choice)
-        self.on_decide(choice)
+        if self.boxes:
+            self.on_decide(choice, self.ticked())
+        else:
+            self.on_decide(choice)
 
     def settle(self, choice):
         for b in (self.approve, self.all, self.reject):
             if b is not None:
                 b.hide()
+        for cb in self.boxes.values():
+            cb.setEnabled(False)
         self.outcome.setText({'approve': 'Approved', 'approve_all': 'Approved — and the rest of this kind',
                               'reject': 'Rejected', 'stopped': 'Stopped before it ran'}.get(choice, choice))
         self.outcome.show()
@@ -889,6 +908,10 @@ class AssistantPanel(QWidget):
         av.addWidget(self.activity)
         self.tabs.addTab(act, 'Activity')
         self.tabs.currentChanged.connect(lambda i: self._fill_activity() if i == 1 else None)  # jobs end meanwhile
+        from .research_view import ResearchView        # the research autopilot's studies, with Stop and Undo
+        self.research = ResearchView(self)
+        self.tabs.addTab(self.research, 'Research')
+        self.tabs.currentChanged.connect(lambda i: self.research.refresh() if i == 2 else None)
         self.setMinimumWidth(300)
 
         self._render_timer = QTimer(self)
@@ -1242,8 +1265,11 @@ class AssistantPanel(QWidget):
             return None
         args = action.get('args') or {}
         mode = self.agent.mode
+        g = self.agent.gate(t, args) if t.tier == 'act' else None       # the tool's own say (Tool.approval)
         direct = 'read' if t.tier == 'read' else ('auto' if mode in ('auto', 'autopilot') else 'allowed'
                                                   if t.name in self.session.allowed else '') if t.tier == 'act' else ''
+        if g is not None:
+            direct = 'preapproved' if g.get('ask') is False else ('' if g.get('ask') else direct)
         if direct:                               # reads run in every mode; changes as the permission mode says
             from . import tasks
             card = self._add(ToolCard(t.name, json.dumps(args), t.tier))
@@ -1254,19 +1280,19 @@ class AssistantPanel(QWidget):
                                             bool(res.get('error')), direct))
             return card
         req = A.Approval(f'proposal-{id(action)}', t.name, t.tier, args, description=action.get('why') or
-                         t.description)
+                         t.description, options=(g or {}).get('options'), why=(g or {}).get('why') or '')
         req.allow_all = False
         try:
             req.preview = privacy.redact(t.preview(self.host.tool_context(), **args)) if t.preview else ''
         except Exception as e:                  # noqa: BLE001
             req.preview = f'(no preview: {type(e).__name__})'
 
-        def decided(choice):
+        def decided(choice, options=None):
             if choice != 'approve':
                 return
             from . import tasks
             card = self._add(ToolCard(t.name, json.dumps(args)))
-            tasks.run(self, lambda: self.agent.run_proposed(t.name, args),
+            tasks.run(self, lambda: self.agent.run_proposed(t.name, args, 'approved', options),
                       lambda res: card.done(json.dumps(res, default=str), 0.0, A.summarize(res),
                                             bool(res.get('error')), 'approved'))
         card = self._add(ApprovalCard(req, decided))
@@ -1305,12 +1331,14 @@ class AssistantPanel(QWidget):
                       p.get('approval') or '')
         elif kind == 'approval':
             card = ApprovalCard(p, p.decide)
+            self.research.changed()
             self.approvals[p.call_id] = card
             self._add(card)
             self._at_bottom = True
             self.status.setText(f'Waiting for your approval: {p.tool}')
             self.win.show_assistant(True)
         elif kind == 'approval_done':
+            self.research.changed()
             card = self.approvals.pop(p['id'], None)
             if card is not None and card.outcome.isHidden():
                 card.settle(p['choice'])
@@ -1318,6 +1346,7 @@ class AssistantPanel(QWidget):
             self.plan.set_plan(p)
         elif kind == 'job':
             self._add(JobChip(self.win, p))
+            self.research.changed()
         elif kind == 'activity':
             self._fill_activity()
         elif kind == 'event':

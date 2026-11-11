@@ -59,6 +59,10 @@ An **approval card** shows the tool, its arguments, the exact change (the tool's
 a diff), its estimate (time, what it does), and **Approve**, **Approve all of this kind** (for the rest of this
 conversation; not offered for trash) and **Reject**. A rejection goes back to the model as the user declining.
 
+A tool can also have its own say (`Tool.approval`): the **research autopilot** asks on a card at every step that
+queues compute, in every mode — Autopilot too — without *Approve all of this kind*, and its first card has a box to
+approve that study's follow-ups ahead, within its plan, until Stop ([research autopilot](research-autopilot.md)).
+
 **Autopilot** works through a goal across many steps and long jobs: while its plan has open items it is told to go on
 (until it answers without calling a tool after being told — it is done, or blocked, and says which); when jobs it
 queued are still running it waits for the job queue to say one finished (a subscription, not polling) and continues
@@ -68,13 +72,14 @@ mode the model can ask to be resumed when a job it queued finishes (`plan_wait_j
 
 ## Tools on demand, and the per-minute token limit
 
-Falcon's 113 tools ([the list](assistant-tools.md)) are in nine groups whose compact schemas weigh, in tokens
-(characters / 4), about: project 3,000 (25 tools), jobs 3,200 (29), analysis 940 (11), lab 860 (7: hardware in the
-loop, deployment, CI mode, log replay, adversarial traffic, experiments, VLM evaluation), research 1,580 (14: the
+Falcon's 115 tools ([the list](assistant-tools.md)) are in nine groups whose compact schemas weigh, in tokens
+(characters / 4), about: project 3,000 (25 tools), jobs 3,200 (29), analysis 950 (11), lab 860 (7: hardware in the
+loop, deployment, CI mode, log replay, adversarial traffic, experiments, VLM evaluation), research 1,850 (16: the
 planner benchmark and its results, a dashcam incident made a scenario, ablations, the experiment registry, outputs for
 papers, failure modes, the triage queue and its edits, regression bisect, rig variants compared by perception, a scenario from a
-description and its check, generation rounds; [experiments](experiments.md)), runs 850 (11), ui 670 (8), knowledge 310
-(4), system 180 (4) — 11,600 in all,
+description and its check, generation rounds, the research autopilot and its studies; [experiments](experiments.md),
+[research autopilot](research-autopilot.md)), runs 850 (11), ui 670 (8), knowledge 310 (4), system 180 (4) — 11,850
+in all,
 more than Groq's base per-minute limit. So each step sends:
 
 - the **core**: the runtime's own `plan_update`, `plan_wait_jobs`, `tools_find` and `tools_load`, with the two small
@@ -118,6 +123,8 @@ The status bar badge's tooltip shows the last minute's tokens against the limit.
 - **Activity**: everything the assistant changed, newest first, each with **Undo** — project edits through the
   window's undo stack (only while they are the newest steps on it; else undo the later ones first), a queued job by
   cancelling it, runs moved to the trash by moving them back.
+- **Research**: the research autopilot's studies with their state machines, Stop, Undo and Resume, and the questions
+  the app suggests ([research autopilot](research-autopilot.md)).
 - **⋯**: *Show what will be sent before each message* (the exact JSON of the messages after redaction, and the tools
   by name, with Send and Cancel), *Clear the conversation*, *Open the audit log*, *Settings ▸ Assistant*.
 - The **status bar** badge: the model, the tokens of this session and their estimated cost.
@@ -370,8 +377,9 @@ the day.
 
 ## For developers
 
-- `assistant.tool_api` — the tool contract (tiers, the registry, `NEVER`, `call`); `assistant.privacy` — redaction and
-  the private-footage guard.
+- `assistant.tool_api` — the tool contract (tiers, the registry, `NEVER`, `call`; `Tool.approval`, a tool's own say on
+  its card, and `ToolContext.approval`, how a call was approved); `assistant.privacy` — redaction and the
+  private-footage guard.
 - `assistant.groq.GroqClient` — the HTTP client (standard library); `assistant.provider` — results, errors, model
   parameters, cost; `assistant.keystore` — the key.
 - `assistant.agent.Agent` — the loop, Qt-free, driven by a `Host` (the panel's `QtHost`, or a headless one in tests
