@@ -312,6 +312,9 @@ class CarlaService:
                     self.catalog.link('run:' + os.path.basename(s.run_dir), 'run:' + os.path.basename(m['path']),
                                       'recorded')
         code = job.exit_code
+        if code == P.OK and s.run_dir and self.settings.get('lineage_auto_index'):
+            from ..core import lineage
+            lineage.after_job(self, job)              # the run's content index: a cheap CPU job (core.lineage), opt-in
         # a worker that died without tidying (killed, crashed) may leave the server synchronous with its actors
         if s.needs_carla and s.kind != 'tidy' and (code is None or code < 0 or code == P.CRASHED) and \
                 self.server_state() in ('ready', 'external'):

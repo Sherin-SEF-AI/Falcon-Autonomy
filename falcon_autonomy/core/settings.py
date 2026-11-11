@@ -64,6 +64,7 @@ DEFAULTS = {
     'server_quality': 'Epic',
     'server_ros2': False,                # start Falcon's server with --ros2 (CARLA's native ROS 2; docs/stack-testing.md)
     'free_gpu_for_jobs': True,           # stop Falcon's idle server before a GPU job (measured: it holds 5.9 GB idle)
+    'lineage_auto_index': False,         # index every finished run's frames into the content store (core.lineage)
     'render_budget_mpx': 200.0,
     'theme': 'dark',
     'reduce_motion': False,              # no page crossfades, sliding selection or pulsing dots (ui.motion)
@@ -110,6 +111,10 @@ EXPLAIN = {
                     '(docs/stack-testing.md)'),
     'free_gpu_for_jobs': ('Settings ▸ Falcon\'s server ▸ GPU jobs', 'stop Falcon\'s idle server before a training or '
                           'other GPU job: an idle 0.9.16 server holds about 6 GB of video memory'),
+    'lineage_auto_index': ('settings.json (lineage_auto_index)', 'after every finished run, queue the index of its '
+                           'frames into the workspace\'s content store; off by default because the store hard-links '
+                           'the frames, which makes the run\'s own files read-only (falcon lineage index does it on '
+                           'demand)'),
     'render_budget_mpx': ('Settings ▸ Falcon\'s server ▸ Render budget', 'runs rendering more megapixels per step are '
                           'refused before they start'),
     'theme': ('Settings ▸ Appearance ▸ Theme', 'dark or light'),

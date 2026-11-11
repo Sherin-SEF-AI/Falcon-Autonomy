@@ -251,6 +251,7 @@ LOAD_PARAMS = {'type': 'object', 'additionalProperties': False, 'properties': {
 
 # a user's words or page that make a group obviously relevant (loaded with the message; at most two, best first)
 GUESS = {
+    'cluster': r'\b(cluster|nodes?|slurm|kubernetes|k8s|pools?|quotas?|runpod|lambda|cloud|burst|spot)\b',
     'runs': r'\b(runs?|drives?|recorded|recordings?|frames?|datasets?)\b',
     'jobs': r'\b(jobs?|queued?|cancel|sweeps?|train(ing)?|record)\b',
     'project': r'\b(project|worlds?|rigs?|scenarios?|sensors?|cameras?|traffic|weather)\b',
