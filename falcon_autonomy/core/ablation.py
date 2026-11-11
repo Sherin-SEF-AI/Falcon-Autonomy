@@ -577,6 +577,11 @@ def summary(exp_dir: str) -> dict:
         arms = [a for a in res.get('arms') or () if a.get('vs_real_only')]
         if arms:
             row['verdict'] = '; '.join(f'{a["arm"]}: {a["vs_real_only"]["AP"]["verdict"]}' for a in arms)
+    elif doc.get('kind') == 'generation':                 # generation rounds (core.genround)
+        from .genround import HYPOTHESIS
+        s = d.get('spec') or {}
+        row.update(hypothesis=HYPOTHESIS, metric='AP per cell (class × condition)', verdict=res.get('verdict'),
+                   factors={'conditions': list(s.get('conditions') or ())})
     return row
 
 

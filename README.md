@@ -39,7 +39,8 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
   distributions, runs that repeat bit for bit with the same seed (measured), criticality measures (TTC, PET, minimum
   distance, required deceleration), resumable sweeps, rare-case search (Bayesian optimisation, CMA-ES, adaptive
   sampling) with ranked, replayable failures and a failure-region map, OpenSCENARIO import/export
-  ([scenarios](docs/scenarios.md)).
+  ([scenarios](docs/scenarios.md)); a scenario written from a description in words and its run checked against the
+  description claim by claim ([a scenario from a description](docs/scenario-text.md)).
 - **Models and the gap**: register a detector or segmenter (ONNX, TorchScript or a plug-in; licence shown, weights
   downloaded only on request and checked by SHA-256), score it on drives with COCO AP/AR or mIoU and bootstrap
   intervals over whole drives (pycocotools' numbers exactly), breakdowns by range, occlusion and size, a condition
@@ -148,7 +149,7 @@ FALCON_REAL_CARLA=1 python3 -m pytest -m real_server     # also against a real C
 [The manual](docs/index.md) · [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
 [project format](docs/project-format.md) · [CLI and exit codes](docs/cli.md) · [methods](docs/methods.md) ·
 [CARLA lessons](docs/carla-lessons.md) · [models](docs/models.md) · [sim-to-real](docs/sim-to-real.md) ·
-[world model](docs/world-model.md) · [audio](docs/audio.md) · [training](docs/training.md) · [experiments](docs/experiments.md) · [policies](docs/policies.md) · [loop](docs/loop.md) · [reports](docs/reports.md) ·
+[world model](docs/world-model.md) · [audio](docs/audio.md) · [training](docs/training.md) · [experiments](docs/experiments.md) · [generating data](docs/generation.md) · [scenarios from text](docs/scenario-text.md) · [policies](docs/policies.md) · [loop](docs/loop.md) · [reports](docs/reports.md) ·
 [stack testing](docs/stack-testing.md) · [V2X](docs/v2x.md) · [log replay](docs/log-replay.md) · [hardware](docs/hardware.md) ·
 [packaging](docs/packaging.md) · [deploy](docs/deploy.md) · [CI](docs/ci.md) · [assistant](docs/assistant.md) ·
 [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)

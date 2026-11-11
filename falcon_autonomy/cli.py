@@ -592,6 +592,12 @@ def main(argv=None) -> int:
     if argv[:1] == ['rigs']:                      # rig variants compared by perception (sim.rigstudy)
         from .sim.rigstudy import main_rigs
         return main_rigs(argv[1:])
+    if argv[:1] == ['generate']:                  # generation rounds: weak cells → new data → retrain (core.genround)
+        from .core.genround import main_generate
+        return main_generate(argv[1:])
+    if argv[:1] == ['scenario']:                  # a scenario from a description, a run checked against it
+        from .sim.scenariotext import main_scenario  # (core.scenario_text, core.scenario_check)
+        return main_scenario(argv[1:])
     if argv[:1] in (['sweep'], ['search']):       # scenario studies (sim.studio)
         from .sim.studio import main_study
         return main_study(argv)

@@ -188,7 +188,11 @@ visibility < 30 -> spawn jaywalker` — evaluated every tick of drives, scenario
 See [scenarios](scenarios.md). The **Planner benchmark** drives planners (the lane follower, a policy, a ROS 2 stack)
 over fixed routes on central Bengaluru and CARLA's towns and compares them by the nuPlan/NAVSIM-style PDM score with
 bootstrap intervals ([planner benchmark](planner-benchmark.md)); a recorded dashcam event can be made a scenario and
-searched around ([dashcam](dashcam.md#a-real-incident-as-a-scenario)).
+searched around ([dashcam](dashcam.md#a-real-incident-as-a-scenario)). **Describe a scenario** writes one from words — *an
+autorickshaw cuts in from the left at a speed breaker at dusk* — by the assistant's model (validated against the
+scenario schema, repaired from its errors) or from Falcon's own phrase set offline, runs it, and checks the run claim
+by claim against the description: met, not met or not checkable, with the measured value
+([a scenario from a description](scenario-text.md)).
 
 ### Rare cases
 Search a scenario's parameters for where it becomes critical (Bayesian optimisation, CMA-ES, adaptive sampling or
@@ -276,7 +280,9 @@ The run browser checks a drive against **traffic rules** written in temporal log
 overtake on the right, stop at red, yield at crossings, a two-second gap, junctions clear; or a right-hand set, or your
 own): a timeline of violations with how close each rule came to breaking ([traffic rules](traffic-rules.md)). The
 Training page's **Active learning** tab measures which frames help a detector most, against random selection
-([active learning](active-learning.md)).
+([active learning](active-learning.md)); its **Generation** tab closes the loop by generating the data instead: the
+weakest class × condition cells by expected value, new drives and scenario runs for them, the detector retrained and
+compared per cell on a held-out set fixed before the first round ([generating data](generation.md)).
 
 **Runtime ODD monitoring**: put the operational design domain in the workspace (`odd.json`, calibrated with
 `falcon odd calibrate`) and every drive, live session, episode, stack run and HIL session flags when its conditions

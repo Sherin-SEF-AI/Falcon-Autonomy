@@ -153,3 +153,12 @@ drives (or a real set with sequences), and a detector that starts from COCO weig
   0.3 floor and the score threshold (heuristics).
 - The intervals cover the test sample and the seeds; how the pool was recorded (its worlds, weathers, traffic) is not
   resampled, so a finding holds for pools like this one.
+
+## Closing the loop by generation
+
+Active learning here chooses among frames already recorded. [Generation rounds](generation.md) (`falcon generate`,
+Training ▸ Generation) ask the simulator for new frames instead: the class × condition cells are ranked by an expected
+value (the AP shortfall on a held-out set, the condition's exposure, how much of the class is already in training, the
+coverage grid's failures), drives and scenario runs are recorded for the best cells within a budget, the detector is
+retrained, and each cell is compared before and after on a held-out set fixed before the first round — stopping when no
+chosen cell improves.

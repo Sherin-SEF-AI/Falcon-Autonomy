@@ -15,6 +15,11 @@ behind a bus, a wrong-way scooter, a bus pulling out, stray cattle in the lane, 
 autorickshaw cutting in, and the monsoon variant (a lead vehicle braking on a waterlogged road, with the scenario's own
 weather). Copy one into the project to edit it.
 
+A scenario can be **written from a description in words** — by the assistant's model, validated against
+`schemas/scenario.schema.json` and repaired from its errors, or drafted offline from the phrases Falcon recognises —
+and its run checked against the description, claim by claim ([a scenario from a description](scenario-text.md)). A
+scenario's `needs` may also ask for a **speed breaker** 10–60 m ahead of the start (an imported world's road features).
+
 A scenario made from a **recorded event** ([dashcam](dashcam.md#a-real-incident-as-a-scenario)) also carries a fixed
 `start` and `route_xy` on a world's matched road, and tracks (`track`: times and poses) that the director replays
 kinematically — the ego too with the driver `replay`; its parametric twin, `variations.json`, is searched like any
