@@ -180,6 +180,15 @@ class VehicleLightState:
     Position = 1
     LowBeam = 2
     HighBeam = 4
+    Brake = 8                               # CARLA 0.9.16's flags (Brake is what core.tokenfeatures reads)
+    RightBlinker = 16
+    LeftBlinker = 32
+    Reverse = 64
+    Fog = 128
+    Interior = 256
+    Special1 = 512
+    Special2 = 1024
+    All = 0xFFFFFFFF
 
 
 class CityObjectLabel:

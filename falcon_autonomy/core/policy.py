@@ -10,8 +10,11 @@ A policy folder:
                    "camera": {width, height, fov, pose} | null   (an end-to-end net, kind e2e, reads the "camera"
                                observation, H × W × 3 RGB; the environment is opened with this camera),
                    "action": {"kind": "continuous", "keys": ["steer", "accel"]} | {"kind": "discrete", "n": 25},
-                   "net": {"kind": "mlp" | "cnn" | "e2e", "hidden": [...], "activation": "relu" | "tanh",
-                           "output": "tanh" | "linear" | "logits", "conv": [...], e2e: "bev": bool, "bev_conv"},
+                   "net": {"kind": "mlp" | "cnn" | "e2e" | "token", "hidden": [...], "activation": "relu" | "tanh",
+                           "output": "tanh" | "linear" | "logits", "conv": [...], e2e: "bev": bool, "bev_conv";
+                           token: core.tokenpolicy.token_spec},
+                   "tokens": core.tokenfeatures block | null   (a token policy reads the object tokens, their ids
+                               and the ego's speed history; the environment is opened with them),
                    "weights": "weights.pt", "weights_sha256", "drivefeatures": "falcon.drivefeatures/1",
                    "provenance": {...}}
     weights.pt    the network's state_dict (torch.save; loaded with weights_only=True)
@@ -19,7 +22,8 @@ A policy folder:
     run.json      the training run (falcon.run/1 with provenance)
 
 Acting (Policy.act): the observation's "state" vector is reduced to policy.json's features BY NAME (so a policy keeps
-working when FEATURES grows), normalised, and run through the network: output "tanh" (behaviour cloning) is the
+working when FEATURES grows), normalised, and run through the network (a token policy, core.tokenpolicy, also reads
+the camera, the object tokens and the speed history): output "tanh" (behaviour cloning) is the
 action; "linear" (PPO's Gaussian mean) is clipped to [−1, 1]; "logits" (discrete) gives the argmax index. Acting is
 deterministic (the mean, the argmax): rollouts of the same policy on the same seeds repeat.
 
@@ -40,6 +44,13 @@ from . import drivefeatures as DF
 POLICY_SCHEMA = 'falcon.policy/1'
 ROLLOUT_SCHEMA = 'falcon.rollout/1'
 TL_FEATURES = ('tl_known', 'tl_red', 'tl_yellow', 'tl_green', 'tl_distance_m')
+
+
+def env_extras(pol) -> dict:
+    """The environment options a loaded policy needs (gym_config's bev, camera, tokens)."""
+    return {'bev': pol.doc.get('bev') if pol.uses_bev else None,
+            'camera': pol.doc.get('camera') if pol.uses_camera else None,
+            'tokens': pol.doc.get('tokens') if getattr(pol, 'uses_tokens', False) else None}
 
 
 def net_spec(kind='mlp', hidden=(128, 128), activation='relu', output='tanh', conv=(16, 32, 32)) -> dict:
@@ -135,6 +146,9 @@ def _classes() -> dict:
 
 
 def build_net(spec: dict, n_in: int, n_out: int):
+    if spec['kind'] == 'token':
+        from .tokenpolicy import build
+        return build(spec, n_in, n_out)
     c = _classes()
     return c[{'cnn': 'CNNNet', 'e2e': 'E2ENet'}.get(spec['kind'], 'MLPNet')](spec, n_in, n_out)
 
@@ -225,8 +239,11 @@ class Policy:
         self.net = build_net(self.doc['net'], len(self.features), n_out)
         self.net.load_state_dict(torch.load(wp, map_location='cpu', weights_only=True))
         self.net.to(device).eval()
-        self.uses_camera = self.doc['net']['kind'] == 'e2e'
-        self.uses_bev = self.doc['net']['kind'] == 'cnn' or (self.uses_camera and bool(self.doc['net'].get('bev')))
+        self.uses_tokens = self.doc['net']['kind'] == 'token'
+        self.uses_camera = self.doc['net']['kind'] == 'e2e' or (self.uses_tokens and
+                                                               bool(self.doc['net'].get('image', True)))
+        self.uses_bev = self.doc['net']['kind'] == 'cnn' or (self.doc['net']['kind'] == 'e2e' and
+                                                             bool(self.doc['net'].get('bev')))
         self._idx = {}
 
     def index(self, names=DF.FEATURE_NAMES) -> np.ndarray:
@@ -237,8 +254,10 @@ class Policy:
 
     def act_batch(self, states, bevs=None, names=DF.FEATURE_NAMES, cameras=None) -> np.ndarray:
         """Actions for a batch: states (B, len(names)) float; bevs (B, 8, H, W) for a CNN; cameras (B, H, W, 3)
-        uint8 RGB for an end-to-end net. (B, 2) or (B,)."""
+        uint8 RGB for an end-to-end net. (B, 2) or (B,). A token policy acts on whole observations (act)."""
         import torch
+        if self.uses_tokens:
+            raise ValueError('a token policy acts on whole observations (Policy.act), not state batches')
         x = normalise(np.asarray(states)[:, self.index(names)], self.norm)
         with torch.no_grad():
             b = None
@@ -260,6 +279,9 @@ class Policy:
 
     def act(self, obs: dict, names=DF.FEATURE_NAMES):
         """The action for one observation (the environment's dict)."""
+        if self.uses_tokens:
+            from .tokenpolicy import policy_act
+            return policy_act(self, obs, names)
         y = self.act_batch(np.asarray(obs['state'])[None], None if not self.uses_bev else obs['bev'][None], names,
                            None if not self.uses_camera or obs.get('camera') is None else
                            np.asarray(obs['camera'])[None])
@@ -349,6 +371,7 @@ def main_policy(argv) -> int:
     error, a worker's code otherwise."""
     from . import protocol as P
     usage = ('usage: falcon policy bc --run RUN... --out DIR [options]\n'
+             '       falcon policy bc --arch token PROJECT --out DIR [--episodes N] [--scenario K]... [--dagger R]\n'
              '       falcon policy offline --policy DIR --run RUN... [--out DIR]\n'
              '       falcon policy ppo PROJECT --out DIR [--scenario KEY | --curriculum default|FILE] [options]\n'
              '       falcon policy rollout PROJECT --policy DIR --out DIR [--episodes N] [options]\n'
@@ -359,6 +382,9 @@ def main_policy(argv) -> int:
         print(usage, flush=True)
         return P.FAILED if argv and argv[0] not in ('-h', '--help') else 0
     if argv[0] == 'bc':
+        if '--arch' in argv and argv[argv.index('--arch') + 1:argv.index('--arch') + 2] == ['token']:
+            from .tokenpolicy import main_bc_token          # cloned in the environment, not from drives
+            return main_bc_token(argv[1:])
         from .imitation import main_bc
         return main_bc(argv[1:])
     if argv[0] == 'offline':
@@ -388,9 +414,10 @@ def env_args(ap):
     ap.add_argument('--fake-carla', default='')
 
 
-def open_env(a, out_dir, scenario=None, action='continuous', log_actions=True, bev=None, camera=None):
+def open_env(a, out_dir, scenario=None, action='continuous', log_actions=True, bev=None, camera=None, tokens=None):
     """(service, env) for the CLI: Falcon's server and the environment worker, as every CARLA job. bev: a BEV spec
-    dict (a CNN policy's own), else --bev's default; camera: an end-to-end policy's camera spec."""
+    dict (a CNN policy's own), else --bev's default; camera: an end-to-end or token policy's camera spec; tokens: a
+    token policy's token block."""
     from .gymenv import FalconDriveEnv, gym_config, make_service
     from .project import Project
     proj = Project.load(a.project)
@@ -399,7 +426,7 @@ def open_env(a, out_dir, scenario=None, action='continuous', log_actions=True, b
         cfg = gym_config(proj, a.world or proj.doc['worlds'][0]['id'], out_dir, svc.port, svc.tm_port,
                          rig_id=a.rig or None, seed=a.seed, scenario=scenario, motion=a.motion, action=action,
                          bev=bev or bool(a.bev), camera=camera, fps=a.fps, traffic_vehicles=a.traffic,
-                         log_actions=log_actions, workspace=proj.workspace)
+                         log_actions=log_actions, workspace=proj.workspace, tokens=tokens)
         return svc, FalconDriveEnv(cfg, svc)
     except BaseException:
         if not a.keep_server:
@@ -430,7 +457,8 @@ def main_rollout(argv) -> int:
     try:
         svc, env = open_env(a, os.path.join(a.out, 'env'), a.scenario or None, pol.action['kind'],
                             bev=pol.doc.get('bev') if pol.uses_bev else None,
-                            camera=pol.doc.get('camera') if pol.uses_camera else None)
+                            camera=pol.doc.get('camera') if pol.uses_camera else None,
+                            tokens=pol.doc.get('tokens') if pol.uses_tokens else None)
         doc = rollout(pol, env, a.episodes, a.seed, out_dir=a.out,
                       progress=lambda k, s: print(f'episode {k}: return {s["return"]:.2f}, completion '
                                                   f'{s["route_completion"]:.2f}, {s["termination"]}', flush=True))

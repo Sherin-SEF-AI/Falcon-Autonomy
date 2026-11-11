@@ -4,6 +4,10 @@ it in its horizontal plane (Shift: vertically).
 The scene is drawn with QPainter in perspective. On a QOpenGLWidget QPainter paints through OpenGL; when OpenGL is not
 available (no context, a remote display) the same scene is drawn by a plain QWidget in software (make_view chooses).
 Coordinates are CARLA's vehicle frame (x forward, y right, z up, left-handed), shown as seen from above-left-behind.
+
+An overlay (set_overlay) draws what a model attends to (core.introspect): its image patches as points where their rays
+meet the depth, and its object tokens as boxes, both in the vehicle frame and coloured by relevance (pale to deep
+blue, the theme's sequential scale).
 """
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QWidget
 
 from ..core.rig import VEHICLES, carla_rotation
-from .theme import THEME
+from .theme import SEQ, THEME
 
 
 class SceneMixin:
@@ -28,12 +32,57 @@ class SceneMixin:
         self.sel = ''
         self.az, self.el, self.dist = -135.0, 30.0, 12.0
         self.drag = None
+        self.overlay = None
         self.setMinimumSize(360, 300)
         self.setMouseTracking(False)
 
     def set_rig(self, rig, sel=''):
         self.rig, self.sel = rig, sel
         self.update()
+
+    def set_overlay(self, points=None, boxes=None):
+        """The introspection overlay (module doc): points [{'x', 'y', 'z', 'weight'}] and boxes [{'x', 'y', 'yaw',
+        'length', 'width', 'weight', 'class'}] in the vehicle frame; None clears it."""
+        self.overlay = None if points is None and boxes is None else {'points': list(points or []),
+                                                                      'boxes': list(boxes or [])}
+        self.update()
+
+    def _weight_colour(self, w, wmax):
+        k = int(round(min(max(float(w or 0.0) / max(wmax, 1e-12), 0.0), 1.0) * (len(SEQ) - 1)))
+        return QColor(SEQ[k])
+
+    def paint_overlay(self, p: QPainter):
+        ov = self.overlay
+        if not ov:
+            return
+        ws = [float(q.get('weight') or 0.0) for q in ov['points'] + ov['boxes']]
+        wmax = max(ws) if ws else 1.0
+        p.setPen(Qt.PenStyle.NoPen)
+        for q in ov['points']:
+            uv, ok = self.project([[q['x'], q['y'], q['z']]])
+            if ok[0]:
+                c = self._weight_colour(q.get('weight'), wmax)
+                p.setBrush(c)
+                r = 2.0 + 4.0 * float(q.get('weight') or 0.0) / max(wmax, 1e-12)
+                p.drawEllipse(QPointF(uv[0, 0], uv[0, 1]), r, r)
+        for b in ov['boxes']:
+            c = self._weight_colour(b.get('weight'), wmax)
+            p.setPen(QPen(c, 2.0))
+            yaw = math.radians(float(b.get('yaw', 0.0)))
+            cy, sy = math.cos(yaw), math.sin(yaw)
+            hl, hw = float(b.get('length', 4.0)) / 2.0, float(b.get('width', 1.8)) / 2.0
+            pts = [(b['x'] + cy * dx - sy * dy, b['y'] + sy * dx + cy * dy) for dx, dy in
+                   ((hl, hw), (hl, -hw), (-hl, -hw), (-hl, hw))]
+            for z in (0.0, 1.4):
+                for a, c2 in zip(pts, pts[1:] + pts[:1]):
+                    self.line(p, (a[0], a[1], z), (c2[0], c2[1], z))
+            for a in pts:
+                self.line(p, (a[0], a[1], 0.0), (a[0], a[1], 1.4))
+            uv, ok = self.project([[b['x'], b['y'], 1.6]])
+            if ok[0] and b.get('class'):
+                p.setPen(QColor(THEME.tok['ink']))
+                w = b.get('weight')
+                p.drawText(QPointF(uv[0, 0] + 4, uv[0, 1]), f'{b["class"]}' + (f' {w:.2f}' if w is not None else ''))
 
     # ---- camera: a look-at from spherical angles around the car's centre
     def view_matrix(self):
@@ -147,6 +196,7 @@ class SceneMixin:
         for k in range(-10, 11):
             self.line(p, (k, -10, 0), (k, 10, 0))
             self.line(p, (-10, k, 0), (10, k, 0))
+        self.paint_overlay(p)
         if not self.rig:
             return
         L, W, H = VEHICLES.get(self.rig.get('vehicle'), (4.6, 2.0, 1.5))

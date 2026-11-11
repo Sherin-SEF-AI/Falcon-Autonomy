@@ -26,7 +26,9 @@ The Gymnasium API (gymnasium.Env, 1.x), and what of it is honoured:
   (Gymnasium leaves it undefined). An action outside the space is clipped (continuous) or refused (an index out of
   range, a non-finite value: ValueError).
 * observation_space: Dict({'state': Box(−inf, inf, (N,), float32)} + optional 'bev' Box(0, 1, (8, H, W), uint8),
-  'camera' Box(0, 255, (H, W, 3), uint8)); action_space: Box(−1, 1, (2,), float32) or Discrete(25).
+  'camera' Box(0, 255, (H, W, 3), uint8), 'depth' Box(0, 1000, (H, W), float32) (camera depth: true), and with
+  tokens (core.tokenfeatures) 'objects' Box(−inf, inf, (M, F), float32), 'object_ids' Box(−1, 2⁵³, (M,), int64),
+  'ego_history' Box(0, inf, (H,), float32)); action_space: Box(−1, 1, (2,), float32) or Discrete(25).
 * close() ends the worker (it tidies the server) and is idempotent; the env is also a context manager.
 * render() returns None (render_mode None: there is no human view; ask for the 'camera' observation instead).
   metadata = {'render_modes': []}; spec is None; no vector API: one CARLA server can host one synchronous master,
@@ -205,12 +207,15 @@ def gym_config(project, world_id: str, out_dir: str, port: int, tm_port: int, *,
                target_speed_kmh: float = 30.0, start_speed_kmh: float = 0.0, reward: dict | None = None,
                thresholds: dict | None = None, terminate_on=None, log_actions: bool = True, no_rendering: bool = False,
                idle_timeout_s: float = 900.0, timeout: float = 20.0, workspace: str = '', host: str = '127.0.0.1',
-               name: str = '') -> dict:
+               name: str = '', tokens=None, brake_lights: str | None = 'auto') -> dict:
     """The environment worker's config (falcon.gym_config/1): the world as a drive's (core.drive.drive_config: its
     town or OpenDRIVE file, weather, handedness), the rig's vehicle as the ego, background traffic off by default
     (it makes episodes non-repeatable), and the default episode. scenario: a built-in key, a project scenario id or
     a scenario document; bev: True (drivefeatures.BEV_DEFAULT) or a spec dict; camera: True (128 × 72, 90°, on the
-    roof) or {width, height, fov, pose}; timeout: CARLA's client time-out per call (the watchdog allows twice it)."""
+    roof) or {width, height, fov, pose, depth: bool — an aligned depth image}; tokens: True or a core.tokenfeatures
+    block (the object tokens, their ids and the ego's speed history); brake_lights: 'auto' (scenario vehicles light
+    their brake lights as they decelerate, workers/gym.py) or None; timeout: CARLA's client time-out per call (the
+    watchdog allows twice it)."""
     from .drive import drive_config
     rig_id = rig_id or project.doc['rigs'][0]['id']
     d = drive_config(project, world_id, rig_id, out_dir, port, tm_port, seconds=1.0, fps=fps, seed=seed, host=host,
@@ -229,6 +234,10 @@ def gym_config(project, world_id: str, out_dir: str, port: int, tm_port: int, *,
         bev = dict(DF.BEV_DEFAULT)
     if camera is True:
         camera = {'width': 128, 'height': 72, 'fov': 90.0}
+    from . import tokenfeatures as TF
+    tokens = TF.spec(tokens)
+    if brake_lights not in (None, 'auto'):
+        raise ValueError(f'brake_lights must be auto or None, not {brake_lights!r}')
     cfg = {
         'schema': GYM_SCHEMA, 'name': d['name'], 'host': host, 'port': int(port), 'tm_port': int(tm_port),
         'town': d['town'], 'xodr': d['xodr'], 'opendrive': d['opendrive'], 'handedness': d['handedness'],
@@ -238,7 +247,7 @@ def gym_config(project, world_id: str, out_dir: str, port: int, tm_port: int, *,
         'scenario': scenario if scenario not in ('', 'free') else None, 'values': dict(values or {}),
         'motion': motion, 'route_m': route_m, 'max_episode_s': max_episode_s,
         'target_speed_kmh': float(target_speed_kmh), 'start_speed_kmh': float(start_speed_kmh), 'bev': bev or None,
-        'camera': camera or None,
+        'camera': camera or None, 'tokens': tokens, 'brake_lights': brake_lights,
         'action': action, 'reward': dict(reward or {}), 'thresholds': dict(thresholds or {}),
         'terminate_on': list(terminate_on) if terminate_on is not None else list(DF.DEFAULT_TERMINATE_ON),
         'log_actions': bool(log_actions), 'no_rendering': bool(no_rendering) and not camera,
@@ -355,6 +364,12 @@ class FalconDriveEnv(_EnvBase):
             sp['bev'] = make_box(0, 1, tuple(o['bev']['shape']), np.uint8)
         if 'camera' in o:
             sp['camera'] = make_box(0, 255, tuple(o['camera']['shape']), np.uint8)
+        if 'depth' in o:
+            sp['depth'] = make_box(0.0, 1000.0, tuple(o['depth']['shape']), np.float32)
+        if 'objects' in o:
+            sp['objects'] = make_box(-np.inf, np.inf, tuple(o['objects']['shape']), np.float32)
+            sp['object_ids'] = make_box(-1, 2 ** 53, tuple(o['object_ids']['shape']), np.int64)
+            sp['ego_history'] = make_box(0.0, np.inf, tuple(o['ego_history']['shape']), np.float32)
         self.observation_space = make_dict(sp)
         a = self.ready['action']
         self.action_kind = a['kind']

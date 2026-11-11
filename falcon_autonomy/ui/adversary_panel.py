@@ -1,7 +1,9 @@
 """The Rare cases page's section for learned adversarial traffic (core.adversary): train adversaries against an ego
 (the lane follower, constant speed, CARLA's autopilot or a driving policy of the workspace), evaluate them beside the
 baselines with the same budget, and list every realistic failure they found as a case — each replayable with a chase
-camera (a job; the replay checks that the same failure happens at the same step). docs/adversarial-traffic.md."""
+camera (a job; the replay checks that the same failure happens at the same step). The evaluation can add level-k
+adversaries (core.levelk: game-theoretic road users that best-respond to a level-0 prediction of the ego) beside the
+learned ones, judged by the same realism measures. docs/adversarial-traffic.md, docs/levelk.md."""
 from __future__ import annotations
 
 import glob
@@ -10,8 +12,8 @@ import os
 import sys
 import time
 
-from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QMessageBox, QSpinBox, QTreeWidget, QTreeWidgetItem,
-                             QWidget)
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QMessageBox, QSpinBox, QTreeWidget,
+                             QTreeWidgetItem, QWidget)
 
 from ..core import advfeatures as AF
 from ..core.jobs import FINAL, JobSpec
@@ -51,6 +53,10 @@ class AdversarySection(Section):
                         ('Trained adversaries', self.policy), ('Episodes per method', self.episodes)):
             f.row(text, w)
         self.add(f)
+        self.levelk = QCheckBox('Add level-k adversaries (game-theoretic) to the evaluation')
+        self.levelk.setToolTip('The same rosters driven by core.levelk in the worker: assertive, ego-targeting road '
+                               'users that best-respond to a level-0 prediction of the ego (docs/levelk.md)')
+        self.add(self.levelk)
         b = QHBoxLayout()
         b.addWidget(button('Train adversaries', self.train, role='primary', tip='falcon adversary train (a job)'))
         b.addWidget(button('Evaluate', self.evaluate, tip='falcon adversary eval: learned vs random, idle and the '
@@ -145,7 +151,14 @@ class AdversarySection(Section):
         self._submit(f'Evaluate adversaries ({os.path.basename(os.path.dirname(pol))}) against '
                      f'{self.ego.currentText()}',
                      ['eval', self.win.project.path, '--policy', pol, '--out', out, '--ego', self.ego.currentData(),
-                      '--episodes', str(self.episodes.value())])
+                      '--episodes', str(self.episodes.value())] + self.baselines())
+
+    def baselines(self) -> list:
+        """The evaluation's baselines: the defaults, and level-k when its box is ticked."""
+        from ..core.adversary import DEFAULT_METHODS
+        if not self.levelk.isChecked():
+            return []
+        return ['--baselines', ','.join(list(DEFAULT_METHODS[1:]) + ['levelk'])]
 
     def selected(self):
         it = self.cases.currentItem()

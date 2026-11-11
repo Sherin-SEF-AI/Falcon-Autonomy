@@ -416,7 +416,7 @@ def test_evaluation_baselines_cases_and_replay(project, svc, tmp_path):
                      episodes=2, seed=3, tm_reference=2, families=('lead_brake', 'cut_in'))
     assert set(doc['results']) == {'none', 'follower'} and not [f for f in doc['failed'] if 'ego' in f]
     for ego in ('none', 'follower'):
-        assert set(doc['results'][ego]) == set(A.METHODS)
+        assert set(doc['results'][ego]) == set(A.DEFAULT_METHODS)          # levelk is asked for by name
         for m, r in doc['results'][ego].items():
             assert r['episodes'] == 2 and 0.0 <= r['failure_rate'] <= 1.0
             lo, hi = r['failure_rate_ci95']
@@ -426,7 +426,7 @@ def test_evaluation_baselines_cases_and_replay(project, svc, tmp_path):
     assert 'vs_traffic_manager' in doc['results']['none']['learned']['realism']
     eps = _lines(os.path.join(out, 'episodes.jsonl'))
     assert len(eps) == 2 * 5 * 2 and all('eval' in e for e in eps)
-    assert {e['eval']['method'] for e in eps} == set(A.METHODS)
+    assert {e['eval']['method'] for e in eps} == set(A.DEFAULT_METHODS)
     assert json.load(open(os.path.join(out, 'adversary-eval.json')))['provenance']['seed'] == 3
     fails = _lines(os.path.join(out, 'failures.jsonl'))
     cases = A.list_cases(project.workspace)

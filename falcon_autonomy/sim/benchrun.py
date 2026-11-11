@@ -188,6 +188,7 @@ class Bench:
                 cfg = gym_config(self.project, world, env_dir, self.svc.port, self.svc.tm_port, rig_id=self.rig,
                                  seed=int(rs[0]['seed']), scenario=_scenario(self.project, key),
                                  action=pol.action['kind'], bev=bev, camera=cam, log_actions=True,
+                                 tokens=pol.doc.get('tokens') if getattr(pol, 'uses_tokens', False) else None,
                                  workspace=self.project.workspace, name=f'bench {planner} {key}')
                 cfg['write_lanes'] = True
                 env = FalconDriveEnv(cfg, self.svc)

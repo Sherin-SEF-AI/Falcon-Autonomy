@@ -165,6 +165,14 @@ class Director:
         self.added = []                   # actors added during the run (trigger rules): {id, kind, t, carla_id}
         self.extra_timeline = []          # timeline entries added during the run
         self.fired_added = []             # (index in extra_timeline, t) as fired
+        self.brake_lights = cfg.get('brake_lights')        # 'auto': vehicles light their brake lights (module doc)
+        self.perturb = {str(k): dict(v) for k, v in (cfg.get('perturb') or {}).items()}   # core.biasaudit's arms
+        self.light_on = {}                # carla id -> the brake light as set here
+        self.light_events = []            # [t, actor key, on] as switched
+        self._v_cur, self._v_base, self._light_t = {}, {}, None
+        self.levelk = None                # core.levelk.Controller of the actors with driver "levelk" (made on use)
+        self.levelk_acts = {}             # actor key -> its level-k action for the coming tick
+        self.levelk_seed = int(cfg.get('seed', 0))
 
     # ------------------------------------------------------------------ lanes relative to the handedness
     def overtaking(self, wp):
@@ -470,7 +478,9 @@ class Director:
                                 'walk_speed': 0.0, 'walker': a['kind'] in ('pedestrian', 'child'),
                                 'heading': a.get('heading', 'lane'), 'prop': prop, 's': 0.0,
                                 'top': (float(top) / 3.6) if top is not None else None,
-                                'max_accel': spec.get('accel_mps2'), 'class': cls, 'track': a.get('track')}
+                                'max_accel': spec.get('accel_mps2'), 'class': cls, 'track': a.get('track'),
+                                'levelk': (dict(a.get('levelk') or {}) if a.get('driver') == 'levelk' else None),
+                                'brake_t': None}
         self.actors[a['id']]['spawn_pose'] = (x, y, yaw)      # where it was placed (add_actor: before any tick)
         self.traj[a['id']] = []
         return self.actors[a['id']]
@@ -688,6 +698,8 @@ class Director:
         self.timeline(t)
         self.moves = []
         try:
+            if any(st.get('levelk') is not None for st in self.actors.values()):
+                self.levelk_step(t)
             for aid, st in self.actors.items():
                 if aid not in self.external:
                     self.drive_actor(st, t)
@@ -695,9 +707,154 @@ class Director:
                 self.drive_ego()
             elif self.driver == 'replay':
                 self.replay(self.ego, (self.scn.get('ego') or {}).get('track'), t)
+            self.update_lights(t)
         finally:
             moves, self.moves = self.moves, None
         place_now(self.w.client, self.carla, moves)
+
+    # ------------------------------------------------------------------ brake lights
+    BRAKE_LIGHT_DECEL = 0.5          # m/s²: core.levelk.BRAKE_LIGHT_DECEL (heuristic)
+    LIGHT_MODES = ('auto', 'off', 'on', 'always')
+
+    def speed_of(self, actor) -> float:
+        k = self.kin.get(actor.id)
+        if k is not None:
+            return float(k[4])
+        v = self.vel(actor)
+        return math.hypot(v.x, v.y)
+
+    def update_lights(self, t):
+        """Each scenario vehicle's brake light for the coming tick (module doc, "Brake lights"): 'auto' (the
+        config's brake_lights) on while it decelerates by more than BRAKE_LIGHT_DECEL, kept on while it stands after
+        braking; a perturbation's 'off' never, 'on' from the moment its brake action fired (whether or not it
+        slows), 'always'. Idempotent within a step (a worker that drives some actors itself calls it again)."""
+        if t != self._light_t:
+            self._v_base, self._light_t = dict(self._v_cur), t
+        default = 'auto' if self.brake_lights == 'auto' else None
+        for aid, st in self.actors.items():
+            if st['walker'] or st['prop']:
+                continue
+            mode = (self.perturb.get(aid) or {}).get('lights', default)
+            if mode is None:
+                continue
+            a = st['actor']
+            try:
+                v = self.speed_of(a)
+            except RuntimeError:
+                continue
+            self._v_cur[a.id] = v
+            prev = self._v_base.get(a.id, v)
+            if mode == 'auto':
+                on = (prev - v) / self.dt > self.BRAKE_LIGHT_DECEL or (v < 0.1 and self.light_on.get(a.id, False))
+            elif mode == 'off':
+                on = False
+            elif mode == 'on':
+                on = st.get('brake_t') is not None
+            else:
+                on = True
+            if on != self.light_on.get(a.id, False):
+                self.set_brake_light(a, on)
+                self.light_events.append([round(float(t), 4), aid, bool(on)])
+            self.light_on[a.id] = on
+
+    def set_brake_light(self, actor, on: bool):
+        """Set or clear the Brake bit of a vehicle's lights, keeping its other lights."""
+        from ..core.tokenfeatures import with_brake
+        try:
+            cur = actor.get_light_state()
+        except (AttributeError, RuntimeError):
+            cur = 0
+        bits = with_brake(cur, on)
+        try:
+            state = self.carla.VehicleLightState(bits)
+        except TypeError:
+            state = bits
+        try:
+            actor.set_light_state(state)
+        except (AttributeError, RuntimeError) as e:
+            self.w.note(f'brake light of {actor.type_id} not set: {e}')
+
+    # ------------------------------------------------------------------ level-k drivers
+    def lane_bounds(self, path) -> tuple:
+        return lane_bounds(self.map, self.carla, path)
+
+    def levelk_agent(self, aid, st):
+        """The core.levelk agent of a scenario actor: level-k driven ones along their path, the others (and the
+        ego, on its route) as uncontrolled road users predicted at level 0."""
+        from ..core import levelk as LK
+        a = st['actor']
+        tr = self.tf(a)
+        x, y = tr.location.x, tr.location.y
+        typ = LK.agent_type(st['kind'])
+        lk = st.get('levelk')
+        bb = a.bounding_box.extent
+        box = {'length': 2.0 * bb.x, 'width': 2.0 * bb.y}
+        if lk is not None:
+            rp = st.get('lk_path')
+            if rp is None:
+                rp = st['lk_path'] = LK.RefPath(st['path'].pts, self.lane_bounds(st['path']))
+                st['lk_dref'] = float(st['lateral'])
+            s, _d = rp.project(x, y, st.get('lk_s'))
+            st['lk_s'] = s
+            params = {k: v for k, v in lk.items() if k not in ('target', 'priority')}
+            if 'v_des' not in params and st.get('lk_vdes') is None:
+                st['lk_vdes'] = max(float(st['speed']), 0.5)        # the scenario's speed: its desired speed
+            params.setdefault('v_des', st.get('lk_vdes'))
+            return dict(box, id=aid, type=typ, path=rp, s=s, d=float(st['lateral']), v=float(st['speed']),
+                        d_ref=st['lk_dref'], params=params, controlled=True, priority=bool(lk.get('priority', False)),
+                        target=lk.get('target'))
+        v = self.speed_of(a)
+        return dict(box, id=aid, type=typ, path=LK.RefPath.line(x, y, tr.rotation.yaw, 120.0, 10.0), s=10.0, d=0.0,
+                    v=v, controlled=False, priority=False)
+
+    def levelk_step(self, t):
+        """Decide the level-k actors' actions for the coming tick (core.levelk.Controller.step)."""
+        from ..core import levelk as LK
+        if self.levelk is None:
+            self.levelk = LK.Controller(seed=self.levelk_seed, dt=self.dt, lht=self.lht)
+        agents = []
+        for aid, st in self.actors.items():
+            if st['prop']:
+                continue
+            try:
+                agents.append(self.levelk_agent(aid, st))
+            except RuntimeError:
+                continue
+        if getattr(self, 'ego', None) is not None:
+            tr = self.tf(self.ego)
+            rp = getattr(self, '_ego_lk_path', None)
+            if rp is None or getattr(self, '_ego_lk_src', None) is not self.ego_path:
+                rp = self._ego_lk_path = LK.RefPath(self.ego_path.pts)
+                self._ego_lk_src = self.ego_path
+            s, d = rp.project(tr.location.x, tr.location.y)
+            bb = self.ego.bounding_box.extent
+            agents.append({'id': 'ego', 'type': 'car', 'path': rp, 's': s, 'd': d, 'v': self.speed_of(self.ego),
+                           'controlled': False, 'priority': True, 'length': 2.0 * bb.x, 'width': 2.0 * bb.y})
+        self.levelk_acts = self.levelk.step(t, agents)
+
+    def drive_levelk(self, st):
+        """A level-k actor for the coming tick: its acceleration (jerk-limited by the controller) and lateral target
+        through pure pursuit along its path and the exact kinematic control (core.advfeatures.accel_to_control)."""
+        from ..core import levelk as LK
+        from ..core.advfeatures import accel_to_control
+        actor = st['actor']
+        aid = next(k for k, v in self.actors.items() if v is st)
+        act = self.levelk_acts.get(aid)
+        typ = LK.TYPES[LK.agent_type(st['kind'])]
+        v_now = self.speed_of(actor)
+        if act is not None:
+            top = typ['v_max'] if st.get('top') is None else min(typ['v_max'], st['top'])
+            st['speed'] = min(max(st['speed'] + act['accel'] * self.dt, 0.0), top)
+            step = typ['lat_mps'] * self.dt
+            st['lateral'] += max(min(act['lateral'] - st['lateral'], step), -step)
+        steer = follow(actor, st['path'], st['lateral'], max(st['speed'], 0.5), self.dt, st, self.tf(actor),
+                       self.vel(actor))['steer']
+        u = accel_to_control(v_now, st['speed'], self.dt, steer)
+        if self.kinematic:
+            self.kin_step(actor, u)
+        else:
+            actor.apply_control(self.carla.VehicleControl(throttle=float(u['throttle']), steer=float(u['steer']),
+                                                          brake=float(u['brake'])))
 
     def record(self, t):
         for aid, a in [('ego', self.ego)] + [(k, v['actor']) for k, v in self.actors.items()]:
@@ -741,14 +898,21 @@ class Director:
     def act(self, a, t):
         st = self.actors[a['actor']]
         do = a['do']
+        if st.get('levelk') is not None and do in ('speed', 'brake', 'stop', 'go', 'lane_change', 'walk'):
+            self.w.emit.log(f'scenario: {a["actor"]} {do} at {t:.2f} s ignored (a level-k driver chooses its motion)')
+            return
         if do == 'speed':
             st['target'] = float(a['kmh']) / 3.6
             st['accel'] = float(a.get('accel', 3.0))
-        elif do == 'brake':
-            st['target'] = 0.0
-            st['accel'] = float(a.get('decel', 6.0))
-        elif do == 'stop':
-            st['target'], st['accel'] = 0.0, 6.0
+        elif do in ('brake', 'stop'):
+            if st.get('brake_t') is None:
+                st['brake_t'] = t                  # the cue of a perturbation's lights 'on' (core.biasaudit)
+            if self.perturb.get(a['actor'], {}).get('decel', True):
+                st['target'] = 0.0
+                st['accel'] = float(a.get('decel', 6.0)) if do == 'brake' else 6.0
+            else:                                  # a perturbation: the brake fires, the speed is kept
+                self.w.emit.log(f'scenario: {a["actor"]} {do} at {t:.2f} s without deceleration (perturbation)')
+                return
         elif do == 'go':
             st['target'] = max(st['target'], 5.0)
         elif do == 'walk':
@@ -806,6 +970,9 @@ class Director:
                 yaw = math.radians(st['path'].yaw[0])
                 actor.apply_control(carla.WalkerControl(direction=carla.Vector3D(math.cos(yaw), math.sin(yaw), 0.0),
                                                         speed=st['walk_speed']))
+            return
+        if st.get('levelk') is not None and not st['prop']:
+            self.drive_levelk(st)
             return
         # the set speed ramps towards the target at the action's rate (a stand-in or proxy: within its class's
         # top speed and acceleration)
@@ -889,7 +1056,37 @@ class Director:
                 'blueprints': {k: v['actor'].type_id for k, v in self.actors.items()},
                 'subclasses': {k: self.w.subclass[v['actor'].id] for k, v in self.actors.items()
                                if v['actor'].id in (getattr(self.w, 'subclass', None) or {})},
-                **({'added': self.added, 'fired_added': self.fired_added} if self.added else {})}
+                **({'added': self.added, 'fired_added': self.fired_added} if self.added else {}),
+                **({'brake_lights': self.light_events} if self.light_events else {}),
+                **({'perturb': self.perturb} if self.perturb else {}),
+                **({'levelk': {'actors': sorted(k for k, v in self.actors.items() if v.get('levelk') is not None),
+                               'decisions': self.levelk.decisions}} if self.levelk is not None else {})}
+
+
+def lane_bounds(map_, carla, path):
+    """(lo, hi): the carriageway's same-direction lanes around a path's first point, as lateral offsets from it
+    (+ right): its lane's half width and the lanes beside it (Waypoint.get_left_lane / get_right_lane); None off
+    the road."""
+    x, y = float(path.pts[0][0]), float(path.pts[0][1])
+    wp = map_.get_waypoint(carla.Location(x=x, y=y, z=path.z))
+    if wp is None:
+        return None
+
+    def count(step):
+        n, w = 0, wp
+        for _ in range(8):
+            w = step(w)
+            if w is None or str(getattr(w, 'lane_type', 'Driving')) != 'Driving' or \
+                    (w.lane_id > 0) != (wp.lane_id > 0):
+                break
+            n += 1
+        return n
+    half = wp.lane_width / 2.0
+    r = math.radians(wp.transform.rotation.yaw)
+    # the path may start off the waypoint's centre (an adjacent lane by a lateral offset): measured from it
+    off = (x - wp.transform.location.x) * -math.sin(r) + (y - wp.transform.location.y) * math.cos(r)
+    return (-half - count(lambda w: w.get_left_lane()) * wp.lane_width - off,
+            half + count(lambda w: w.get_right_lane()) * wp.lane_width - off)
 
 
 def track_pose(track: dict, t: float):

@@ -10,11 +10,15 @@ traffic manager | "agent": the client sends the ego's action — a Falcon policy
 action (lateral | discrete | continuous: the adversaries' actions), roles (the default roster, core.advfeatures.ROLES),
 reward (weights over DEFAULT_ADV_REWARD), realism (limits over REALISM_LIMITS), ruleset (core.rules: a built-in id, a
 file or null for the world's handedness), log_samples (the adversaries' and the traffic manager's accelerations and
-jerks in each episode's line), log_adv_trace (each adversary's rule trace in it).
+jerks in each episode's line), log_adv_trace (each adversary's rule trace in it), controller ("policy": the client
+acts for the roster's adversaries | "levelk": the worker drives them by core.levelk — game-theoretic, assertive and
+ego-targeting by default, core.levelk.ADVERSARY — and they are tracked and judged, not agents), levelk (parameters
+over core.levelk.ADVERSARY: {"*" | kind: {k, lambda, alpha, v_des, t_gap}}).
 
 Commands on stdin, as the gym worker's (reset, step, close), with:
     {"cmd": "reset", "id": n, "seed": s, "options": {"roles": [...], "scenario": KEY | doc, "values": {...},
-                                                     "ego_speed_kmh": v, "max_episode_s": t, "motion": m}}
+                                                     "ego_speed_kmh": v, "max_episode_s": t, "motion": m,
+                                                     "controller": "policy" | "levelk", "perturb": {...}}}
         roles: the adversaries of this episode (learned agents); scenario instead: a scripted scenario of
         core.scenarios (its actors driven by the director — the baselines), judged by the same failure and realism
         measures
@@ -62,6 +66,7 @@ PATH_END_M = 3.0                           # an adversary this close to its lane
 HIST_S = 2.6                               # seconds of history kept for fault attribution (> CUT_IN_S + a step)
 HEAVY = ('adversary_actions', 'adversary_samples', 'adversary_traces', 'tm_samples')
 EGO_DRIVERS = ('follower', 'none', 'autopilot', 'agent')
+CONTROLLERS = ('policy', 'levelk')
 
 
 class HintedPath:
@@ -107,6 +112,8 @@ class Adversary(Gym):
             raise Failed(f'adversary.ego must be one of {EGO_DRIVERS}, not {self.ego_driver!r}')
         if self.adv_action not in AF.ACTION_KINDS:
             raise Failed(f'adversary.action must be one of {AF.ACTION_KINDS}, not {self.adv_action!r}')
+        if self.acfg.get('controller', 'policy') not in CONTROLLERS:
+            raise Failed(f'adversary.controller must be one of {CONTROLLERS}, not {self.acfg.get("controller")!r}')
         from ..core import rules as RU
         try:
             self.ruleset = RU.load_ruleset(self.acfg.get('ruleset'), self.cfg.get('handedness'))
@@ -133,13 +140,19 @@ class Adversary(Gym):
 
     # ------------------------------------------------------------------ episodes
     def episode_options(self, opts: dict) -> dict:
-        keys = ('roles', 'scenario', 'values', 'motion', 'max_episode_s', 'ego_speed_kmh', 'route_m')
+        keys = ('roles', 'scenario', 'values', 'motion', 'max_episode_s', 'ego_speed_kmh', 'route_m', 'controller',
+                'perturb')
         unknown = sorted(set(opts) - set(keys))
         if unknown:
             raise BadCommand(f'unknown reset options {unknown} (allowed: {list(keys)})')
         base = {'roles': list(self.acfg.get('roles') or []), 'motion': self.cfg.get('motion', 'kinematic'),
-                'max_episode_s': self.cfg.get('max_episode_s') or 15.0}
+                'max_episode_s': self.cfg.get('max_episode_s') or 15.0,
+                'controller': self.acfg.get('controller', 'policy')}
         out = dict(base, **opts)
+        if out['controller'] not in CONTROLLERS:
+            raise BadCommand(f'controller must be one of {CONTROLLERS}, not {out["controller"]!r}')
+        from .gym import check_perturb
+        check_perturb(out.get('perturb'))
         if out.get('motion', 'kinematic') not in ('kinematic', 'physics'):
             raise BadCommand(f'motion must be kinematic or physics, not {out.get("motion")!r}')
         if out.get('scenario') in ('', 'free'):
@@ -194,6 +207,7 @@ class Adversary(Gym):
         d = ep['director']
         conc = ep['scenario']
         mode = conc.get('mode', 'learned')
+        levelk = mode == 'learned' and ep['resolved'].get('controller', 'policy') == 'levelk'
         roles = {a['id']: a.get('role') for a in conc.get('actors', [])}
         adv = collections.OrderedDict()
         for aid, st in d.actors.items():
@@ -202,7 +216,8 @@ class Adversary(Gym):
             role = roles.get(aid) if mode == 'learned' else AF.SCRIPTED_ROLES.get((conc.get('id'), aid))
             spec = AF.ROLES.get(role) or {}
             w = st['path'].width(0.0)
-            adv[aid] = {'actor': st['actor'], 'st': st, 'kind': st['kind'], 'role': role, 'learned': mode == 'learned',
+            adv[aid] = {'actor': st['actor'], 'st': st, 'kind': st['kind'], 'role': role,
+                        'learned': mode == 'learned' and not levelk, 'levelk': levelk,
                         'allow': set(spec.get('allow') or ()), 'budget_ww_s': float(spec.get('budget_ww_s', 0.0)),
                         'act': AF.Actuator(self.dt, st['lateral'], AF.LAT_LIMIT_LANES * w),
                         'dyn': AF.Dynamics(self.dt, self.limits), 'prev': [0.0, 0.0], 'best_s': 0.0,
@@ -212,7 +227,12 @@ class Adversary(Gym):
                                                  'ego_caused_collisions': 0, 'off_road_s': 0.0, 'wrong_way_s': 0.0,
                                                  'wrong_way_over_s': 0.0, 'distance_m': 0.0, 'max_offroad_m': 0.0},
                         'terms': {t: 0.0 for t in AF.ADV_REWARD_TERMS}, 'ret': 0.0, 'accel': 0.0}
-        d.external = {aid for aid, a in adv.items() if a['learned']}
+        d.external = {aid for aid, a in adv.items() if a['learned'] or a['levelk']}
+        ep['lk'] = None
+        if levelk:
+            from ..core import levelk as LK
+            ep['lk'] = LK.Controller(seed=ep['seed'], dt=self.dt, lht=str(self.cfg.get('handedness')).upper() == 'LHT')
+            ep['lk_paths'] = {}
         from .director import lane_path
         for aid in d.external:                     # a learned adversary's lane path: PATH_M long where the map allows
             st = d.actors[aid]
@@ -243,7 +263,8 @@ class Adversary(Gym):
             a['lane'] = self.adv_lane(p)
             self.push_hist(a, p)
         obs = self.adv_observations(ego_p, 0.0)
-        info = dict(info, mode=mode, adversaries=[aid for aid, a in adv.items() if a['learned']],
+        info = dict(info, mode=mode, controller='levelk' if levelk else 'policy',
+                    adversaries=[aid for aid, a in adv.items() if a['learned']],
                     tracked=list(adv), roles={aid: a['role'] for aid, a in adv.items()},
                     kinds={aid: a['kind'] for aid, a in adv.items()}, ego_driver=self.ego_driver)
         return info, arrays + [('adversaries', obs)]
@@ -318,23 +339,80 @@ class Adversary(Gym):
         return np.asarray(rows, np.float32).reshape(-1, AF.N_ADV_FEATURES)
 
     # ------------------------------------------------------------------ a step
-    def drive_adversary(self, a, action):
-        """Apply one learned adversary's action for the coming tick (core.advfeatures: actuator and pure pursuit, or
-        the kinematic bicycle model)."""
+    def levelk_params(self, kind: str, actor=None) -> dict:
+        """A level-k adversary's parameters: core.levelk.ADVERSARY under the config's levelk block ('*' and its
+        kind); its desired speed, unless set, its type's within CARLA's speed limit for it."""
+        from ..core import levelk as LK
+        cfg = self.acfg.get('levelk') or {}
+        typ = LK.agent_type(kind)
+        raw = dict(LK.ADVERSARY, **(cfg.get('*') or {}), **(cfg.get(kind) or {}), **(cfg.get(typ) or {}))
+        out = {LK.ALIASES.get(k, k): v for k, v in raw.items()}
+        if out.get('v_des') is None:
+            lim = self.speed_limit(actor) if actor is not None else None
+            out['v_des'] = min(LK.TYPES[typ]['v_des'], lim / 3.6) if lim else LK.TYPES[typ]['v_des']
+        return out
+
+    def levelk_actions(self, t) -> dict:
+        """The level-k adversaries' actions for the coming tick (core.levelk.Controller.step): each along its lane
+        path with the carriageway's lanes as its bounds, targeting the ego; the ego (on its route, with the right of
+        way) and the other tracked road users predicted at level 0."""
+        from ..core import levelk as LK
+        ep = self.ep
+        d = ep['director']
+        paths = ep['lk_paths']
+        agents = []
+        for aid, a in ep['adv'].items():
+            p = a['pose']
+            if a['levelk']:
+                st = a['st']
+                if aid not in paths:
+                    paths[aid] = LK.RefPath(st['path'].pts, d.lane_bounds(st['path']))
+                s, _ = paths[aid].project(p['x'], p['y'], a.get('lk_s'))
+                a['lk_s'] = s
+                agents.append({'id': aid, 'type': LK.agent_type(a['kind']), 'path': paths[aid], 's': s,
+                               'd': a['act'].lat, 'v': p['speed'], 'd_ref': a['act'].lat0, 'controlled': True,
+                               'params': a.setdefault('lk_params', self.levelk_params(a['kind'], a['actor'])),
+                               'target': 'ego', 'length': p['length'],
+                               'width': p['width']})
+            else:
+                agents.append({'id': aid, 'type': LK.agent_type(a['kind']),
+                               'path': LK.RefPath.line(p['x'], p['y'], p['yaw'], 120.0, 10.0), 's': 10.0, 'd': 0.0,
+                               'v': p['speed'], 'controlled': False, 'length': p['length'], 'width': p['width']})
+        e = ep['ego_pose']
+        if 'ego' not in paths:
+            paths['ego'] = LK.RefPath(d.ego_path.pts)
+        s, dd = paths['ego'].project(e['x'], e['y'], ep.get('ego_lk_s'))
+        ep['ego_lk_s'] = s
+        agents.append({'id': 'ego', 'type': 'car', 'path': paths['ego'], 's': s, 'd': dd, 'v': e['speed'],
+                       'controlled': False, 'priority': True, 'length': e['length'], 'width': e['width']})
+        return ep['lk'].step(t, agents)
+
+    def drive_adversary(self, a, action, levelk=None):
+        """Apply one adversary's action for the coming tick (core.advfeatures: actuator and pure pursuit, or the
+        kinematic bicycle model). levelk: a level-k action {'accel', 'lateral'} instead — through the lateral
+        actuator whatever the learned action kind: a lateral velocity towards its target, its acceleration."""
         from .director import follow
         d = self.ep['director']
         actor, st = a['actor'], a['st']
-        try:
-            c0, c1, applied = AF.command(action, a['kind'], self.adv_action)
-        except ValueError as e:
-            raise BadCommand(f'adversary {a["role"]}: {e}') from None
+        kind = self.adv_action
+        if levelk is not None:
+            kind = 'lateral'
+            vlat = max(min((levelk['lateral'] - a['act'].lat) / 0.5, AF.LAT_RATE_MAX), -AF.LAT_RATE_MAX)
+            c0, c1 = vlat, float(levelk['accel'])
+            applied = [vlat / AF.LAT_RATE_MAX, c1 / (AF.KIND_TOP_ACCEL[AF.kind_of(a['kind'])] if c1 >= 0 else
+                                                       AF.BRAKE_MAX)]
+        else:
+            try:
+                c0, c1, applied = AF.command(action, a['kind'], self.adv_action)
+            except ValueError as e:
+                raise BadCommand(f'adversary {a["role"]}: {e}') from None
         a['prev'] = applied
-        a['actions'].append([round(float(v), 6) for v in applied] if self.adv_action != 'discrete' else
+        a['actions'].append([round(float(v), 6) for v in applied] if kind != 'discrete' else
                             int(self.np.asarray(action).reshape(-1)[0]))
         v = a['pose']['speed']
         if st['path'].project(a['pose']['x'], a['pose']['y']) >= st['path'].s[-1] - PATH_END_M:
             self.ep['path_end'] = self.ep.get('path_end') or a['role'] or 'adversary'
-        if self.adv_action == 'continuous':
+        if kind == 'continuous':
             amax = AF.KIND_TOP_ACCEL[AF.kind_of(a['kind'])]
             u = {'throttle': max(c1, 0.0) * amax / 3.0, 'steer': c0, 'brake': max(-c1, 0.0)}
         else:
@@ -386,6 +464,13 @@ class Adversary(Gym):
         d.step(ep['k'] * self.dt)
         for aid in learned:
             self.drive_adversary(ep['adv'][aid], acts[aid])
+        if ep.get('lk') is not None:
+            lk = self.levelk_actions(ep['k'] * self.dt)
+            for aid, a in ep['adv'].items():
+                if a['levelk']:
+                    self.drive_adversary(a, None, lk.get(aid) or {'accel': 0.0, 'lateral': a['act'].lat})
+        if learned or ep.get('lk') is not None:
+            d.update_lights(ep['k'] * self.dt)        # the adversaries this worker drove: their brake lights now
         if u_ego is not None:
             if d.kinematic:
                 d.kin_step(ego, u_ego)
@@ -670,7 +755,8 @@ class Adversary(Gym):
             n['rules_over'] = (a.get('rules') or {}).get('over', 0)
             n = {kk: (round(v, 4) if isinstance(v, float) else v) for kk, v in n.items()}
             n['realistic'] = AF.realism_ok(n)
-            adv[aid] = {'role': a['role'], 'kind': a['kind'], 'learned': a['learned'], 'realism': n,
+            adv[aid] = {'role': a['role'], 'kind': a['kind'], 'learned': a['learned'], 'levelk': a['levelk'],
+                        'realism': n,
                         'rules': a.get('rules'), 'return': round(a['ret'], 6),
                         'reward_terms': {t: round(v, 6) for t, v in a['terms'].items()},
                         'min_ttc_s': round(a['min_ttc'], 4) if math.isfinite(a['min_ttc']) else None,
@@ -679,6 +765,7 @@ class Adversary(Gym):
         realistic = all(v['realism']['realistic'] for v in adv.values())
         fails = [dict(f, realistic=realistic) for f in ep['failures']]
         summ['adversary'] = {'mode': ep['scenario'].get('mode', 'learned'), 'roles': ep['scenario'].get('roles'),
+                             'controller': 'levelk' if ep.get('lk') is not None else 'policy',
                              'ego_driver': self.ego_driver, 'action': self.adv_action, 'actors': adv,
                              'order': [aid for aid, a in ep['adv'].items() if a['learned']],
                              'failures': fails, 'failed': any(f['failure'] for f in fails),
@@ -687,7 +774,8 @@ class Adversary(Gym):
                              'ego_dynamics_over_s': round(sum(ep['ego_dyn'].over_s.values()), 4),
                              'scenario': ep['scenario'] if ep['scenario'].get('mode') == 'learned' else None}
         if self.cfg.get('log_actions', True):
-            summ['adversary_actions'] = {aid: a['actions'] for aid, a in ep['adv'].items() if a['learned']}
+            summ['adversary_actions'] = {aid: a['actions'] for aid, a in ep['adv'].items()
+                                         if a['learned'] or a['levelk']}
         if self.acfg.get('log_samples'):
             summ['adversary_samples'] = {aid: a['dyn'].samples for aid, a in ep['adv'].items()}
             summ['tm_samples'] = ep['tm_samples']

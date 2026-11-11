@@ -8,8 +8,9 @@ CONFIG.json (schema falcon.gym_config/1, core.gymenv.gym_config writes it): the 
 OpenDRIVE file, as a drive), weather, fps, seed, the ego's blueprint, background traffic (default none), socket (the
 client's Unix socket path), the default episode (scenario: a built-in key, a scenario document or null for free
 driving; values; motion kinematic | physics; route_m; max_episode_s; target_speed_kmh), observation extras (bev: a
-BEV spec or null; camera: {width, height, fov, pose} or null), action (continuous | discrete), reward weights,
-thresholds, terminate_on, log_actions, idle_timeout_s, no_rendering.
+BEV spec or null; camera: {width, height, fov, pose, depth?} or null; tokens: core.tokenfeatures' block or null),
+action (continuous | discrete), reward weights, thresholds, terminate_on, log_actions, idle_timeout_s, no_rendering,
+brake_lights ('auto' or null).
 
 Commands on stdin (core.protocol), besides cancel:
     {"cmd": "reset", "id": n, "seed": s, "options": {...}}    a new episode (options override the config's episode)
@@ -19,7 +20,8 @@ Replies go to the client's socket in the live link's framing (core.livelink.pack
     {"t": "ready", "observation": {...}, "action": {...}, "features": [...], ...}     once, after setup
     {"t": "obs", "id": n, "reward": r, "terminated": b, "truncated": b, "info": {...}, "arrays": [{"key", "dtype",
      "shape", "nbytes"}, ...]}     payload: the arrays' bytes in that order ("state" float32; "bev" packed bits (H, W)
-                                   uint8; "camera" (H, W, 3) uint8 RGB)
+                                   uint8; "camera" (H, W, 3) uint8 RGB; "depth" (H, W) float32 metres, the camera's
+                                   planar depth; "objects", "object_ids", "ego_history": core.tokenfeatures)
     {"t": "error", "id": n, "error": "..."}                   a command that could not be done (the worker goes on)
     {"t": "bye", "reason": "..."}
 
@@ -35,6 +37,13 @@ facts — on which driving lane the ego's centre is (CARLA's map, project_to_roa
 and walker (core.criticality), the collision sensor's new events, red-light crossings of the traffic lights' stop
 lines (TrafficLight.get_stop_waypoints, the state after the tick), stop-sign trigger volumes — go to the reward and the
 infraction monitor (core.drivefeatures).
+
+Brake lights and perturbations (core.biasaudit). With brake_lights 'auto' (gym_config's default) every scenario
+vehicle's Brake light follows its own deceleration (workers.director.update_lights), so a vehicle's token and its
+rendering carry the cue a driver reads. A reset's option "perturb" {actor id: {"decel": bool, "lights": "auto" |
+"off" | "on" | "always"}} changes one scenario actor for that episode: decel false keeps its speed when its brake
+action fires; lights 'off' never lights it, 'on' lights it from that moment whether or not it slows. The episode line
+records the perturbation and every brake-light switch ("brake_lights": [t, actor, on]).
 
 Determinism: with kinematic motion, no background traffic and the same seed, an episode is a function of the seed,
 the options and the actions (measured on the fake; tests/test_gym.py); CARLA's physics (motion "physics", or
@@ -60,6 +69,7 @@ import socket
 import time
 
 from ..core import drivefeatures as DF
+from ..core import tokenfeatures as TF
 from ..core.rules import TRACE_COLUMNS
 from ..core import protocol as P
 from ..core.livelink import pack
@@ -94,6 +104,7 @@ class Gym(Worker):
         self.rendering_changed = None
         self.lane_map = None
         self.ended_by = ''
+        self.tokens = None
 
     # ------------------------------------------------------------------ commands (stdin thread)
     def on_command(self, cmd: dict):
@@ -200,6 +211,10 @@ class Gym(Worker):
             self.lane_map = LaneMap(lanes, (pts[:, 0].min() - pad, pts[:, 1].min() - pad, pts[:, 0].max() + pad,
                                             pts[:, 1].max() + pad), self.bev.res / 2.0) if len(pts) else None
             self.phase('setup')
+        try:
+            self.tokens = TF.spec(cfg.get('tokens'))
+        except ValueError as e:
+            raise Failed(str(e)) from None
         self.action_kind = cfg.get('action', 'continuous')
         if self.action_kind not in ('continuous', 'discrete'):
             raise Failed(f'action must be continuous or discrete, not {self.action_kind!r}')
@@ -263,6 +278,15 @@ class Gym(Worker):
         cam = self.cfg.get('camera')
         if cam:
             obs['camera'] = {'shape': [int(cam['height']), int(cam['width']), 3], 'dtype': 'uint8'}
+            if cam.get('depth'):
+                obs['depth'] = {'shape': [int(cam['height']), int(cam['width'])], 'dtype': 'float32',
+                                'units': 'm, planar depth along the camera axis'}
+        if self.tokens is not None:
+            n = self.tokens['max_objects']
+            obs['objects'] = {'shape': [n, TF.N_OBJ_FEATURES], 'dtype': 'float32',
+                              'features': [list(f) for f in TF.OBJ_FEATURES]}
+            obs['object_ids'] = {'shape': [n], 'dtype': 'int64'}
+            obs['ego_history'] = {'shape': [self.tokens['history']], 'dtype': 'float32'}
         act = {'kind': self.action_kind, 'keys': list(DF.ACTION_KEYS)}
         if self.action_kind == 'discrete':
             act.update(n=len(DF.DISCRETE_ACTIONS), table=[list(a) for a in DF.DISCRETE_ACTIONS])
@@ -273,7 +297,8 @@ class Gym(Worker):
                 'reward_weights': dict(DF.DEFAULT_REWARD, **(self.cfg.get('reward') or {})),
                 'thresholds': dict(DF.DEFAULT_THRESHOLDS, **(self.cfg.get('thresholds') or {})),
                 'terminate_on': list(self.cfg.get('terminate_on') or DF.DEFAULT_TERMINATE_ON),
-                'traffic_lights': len(self.lights), 'stop_signs': len(self.stops), 'pid': os.getpid()}
+                'traffic_lights': len(self.lights), 'stop_signs': len(self.stops), 'pid': os.getpid(),
+                'tokens': self.tokens, 'tokenfeatures': TF.SCHEMA if self.tokens is not None else None}
 
     # ------------------------------------------------------------------ the map's lights and stop signs
     def read_lights(self, world) -> list:
@@ -309,7 +334,8 @@ class Gym(Worker):
     # ------------------------------------------------------------------ episodes
     def episode_options(self, opts: dict) -> dict:
         cfg = self.cfg
-        keys = ('scenario', 'values', 'motion', 'route_m', 'max_episode_s', 'target_speed_kmh', 'start_speed_kmh')
+        keys = ('scenario', 'values', 'motion', 'route_m', 'max_episode_s', 'target_speed_kmh', 'start_speed_kmh',
+                'perturb')
         base = {k: cfg.get(k) for k in keys if cfg.get(k) is not None}
         unknown = sorted(set(opts) - set(keys))
         if unknown:
@@ -318,6 +344,7 @@ class Gym(Worker):
         motion = out.get('motion', 'kinematic')
         if motion not in ('kinematic', 'physics'):
             raise BadCommand(f'motion must be kinematic or physics, not {motion!r}')
+        check_perturb(out.get('perturb'))
         return out
 
     def resolve_scenario(self, o: dict, seed: int):
@@ -395,7 +422,10 @@ class Gym(Worker):
                     'duration_s': float(o.get('max_episode_s', 60.0))}
         else:
             target = float(conc['ego'].get('speed_kmh', 30.0)) / 3.6
-        dcfg = dict(self.cfg, scenario=conc, fps=self.fps, motion=motion)
+        dcfg = dict(self.cfg, scenario=conc, fps=self.fps, motion=motion, perturb=o.get('perturb'))
+        unknown = sorted(set(o.get('perturb') or {}) - {a['id'] for a in conc.get('actors') or ()})
+        if unknown:
+            raise BadCommand(f'perturb names actors the scenario does not have: {unknown}')
         route_m = float(o.get('route_m') or (200.0 if free else 400.0))
         last_err = None
         for _attempt in range(RESET_ATTEMPTS):
@@ -442,6 +472,7 @@ class Gym(Worker):
         np, carla, world = self.np, self.carla, self.world
         from .director import Path
         motion = o.get('motion', 'kinematic')
+        depth_cam = None
         if path is not None:
             director.ego_path = path
         elif route_m < director.ego_path.s[-1]:
@@ -455,6 +486,10 @@ class Gym(Worker):
             pose = dict({'x': 1.5, 'y': 0.0, 'z': 1.6, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0}, **(c.get('pose') or {}))
             cam = self.cameras.spawn(world, self.lib, 'sensor.camera.rgb', int(c['width']), int(c['height']),
                                      float(c.get('fov', 90.0)), scene.camera_transform(carla, pose), ego)
+            if c.get('depth'):                      # the same pose and lens: an aligned planar depth image
+                depth_cam = self.cameras.spawn(world, self.lib, 'sensor.camera.depth', int(c['width']),
+                                               int(c['height']), float(c.get('fov', 90.0)),
+                                               scene.camera_transform(carla, pose), ego)
         for _ in range(WARMUP_TICKS):
             frame = world.tick()
             self.alive()
@@ -487,7 +522,8 @@ class Gym(Worker):
             'start': {k: round(v, 4) for k, v in zip(('x', 'y', 'yaw'), (ego_wp.transform.location.x,
                                                                        ego_wp.transform.location.y,
                                                                        ego_wp.transform.rotation.yaw))},
-            'stale_actors': stale, 'trace': [],
+            'stale_actors': stale, 'trace': [], 'depth_cam': depth_cam,
+            'hist': TF.SpeedHistory(self.tokens['history']) if self.tokens is not None else None,
         }
         self.n_episodes += 1
         state, facts, arrays, rows = self.observe(frame)
@@ -601,7 +637,36 @@ class Gym(Worker):
             img = self.cameras.get(ep['cam'].id, frame)
             bgra = np.frombuffer(img.raw_data, np.uint8).reshape(img.height, img.width, 4)
             arrays.append(('camera', np.ascontiguousarray(bgra[:, :, 2::-1])))
+        if ep.get('depth_cam') is not None:          # CARLA's depth encoding: (R + 256 G + 65536 B) / (2²⁴ − 1) km
+            img = self.cameras.get(ep['depth_cam'].id, frame)
+            bgra = np.frombuffer(img.raw_data, np.uint8).reshape(img.height, img.width, 4).astype(np.float64)
+            m = (bgra[:, :, 2] + 256.0 * bgra[:, :, 1] + 65536.0 * bgra[:, :, 0]) / 16777215.0 * 1000.0
+            arrays.append(('depth', m.astype(np.float32)))
+        if self.tokens is not None:
+            objs, ids = TF.object_tokens(pose, rows, self.tokens, ego.id, self.brake_states(rows, pose))
+            arrays += [('objects', objs), ('object_ids', ids), ('ego_history', ep['hist'].push(pose['speed_mps']))]
         return state, facts, arrays, rows
+
+    def brake_states(self, rows, pose) -> dict:
+        """{actor id: brake light on} for the token observation: the director's scenario vehicles and the level-k
+        traffic as they set them; CARLA's traffic-manager vehicles as they report it when the traffic manager switches
+        their lights (vehicle_lights 'tm'; else CARLA leaves them off) — read for the nearest max_objects only."""
+        out = dict(self.ep['director'].light_on)
+        lk = getattr(self, 'levelk_traffic', None)
+        if lk is not None:
+            out.update(lk.light_on)
+        if self.cfg.get('vehicle_lights') == 'tm':
+            near = sorted((math.hypot(r['x'] - pose['x'], r['y'] - pose['y']), r['id']) for r in rows
+                          if r['id'] not in out and str(r.get('type_id', '')).startswith('vehicle.'))
+            by_id = {a.id: a for a in self.spawned}
+            for _d, aid in near[:self.tokens['max_objects']]:
+                a = by_id.get(aid)
+                if a is not None:
+                    try:
+                        out[aid] = TF.brake_light_on(a.get_light_state())
+                    except RuntimeError:
+                        pass
+        return out
 
     def lane_facts(self, pose) -> dict:
         """Where the ego's centre is on the map: off road (and how far), wrong way, outside the route's lanes."""
@@ -825,6 +890,11 @@ class Gym(Worker):
             summ['trace'] = {'columns': list(TRACE_COLUMNS), 'rows': ep['trace'],
                              'ego': {'length': round(ep['len'], 3), 'width': round(ep['wid'], 3)},
                              'handedness': self.cfg.get('handedness'), 'town': self.cfg.get('town') or None}
+        d = ep['director']
+        if getattr(d, 'perturb', None):
+            summ['perturb'] = d.perturb
+        if getattr(d, 'light_events', None):
+            summ['brake_lights'] = d.light_events
         summ = self.summary_extras(summ)
         self.ep_log.write(json.dumps(summ, separators=(',', ':')) + '\n')
         self.ep_log.flush()
@@ -863,6 +933,21 @@ class Gym(Worker):
                     self.sock.close()
                 except OSError:
                     pass
+
+
+def check_perturb(p):
+    """A reset's perturbation {actor id: {"decel": bool, "lights": mode}} (module doc); BadCommand when malformed."""
+    if p is None:
+        return
+    if not isinstance(p, dict):
+        raise BadCommand('perturb must be an object {actor id: {"decel": bool, "lights": mode}}')
+    for aid, v in p.items():
+        if not isinstance(v, dict) or set(v) - {'decel', 'lights'}:
+            raise BadCommand(f'perturb {aid}: an object with "decel" (true/false) and "lights" only')
+        if 'decel' in v and not isinstance(v['decel'], bool):
+            raise BadCommand(f'perturb {aid}: decel must be true or false')
+        if 'lights' in v and v['lights'] not in ('auto', 'off', 'on', 'always'):
+            raise BadCommand(f'perturb {aid}: lights must be auto, off, on or always')
 
 
 def main(argv) -> int:

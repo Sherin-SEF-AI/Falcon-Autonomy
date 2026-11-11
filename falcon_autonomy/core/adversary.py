@@ -42,6 +42,9 @@ Evaluation (evaluate). For each ego, with the same episode budget per method:
   last-stage rosters, episode seeds seed, seed + 1, …;
 * random: the same rosters with uniformly random actions (a seeded generator) — learning against no learning;
 * idle: the same rosters holding their lane and speed — the placement alone;
+* levelk (asked for by name; not in the default baselines): the same rosters driven by core.levelk in the worker —
+  game-theoretic road users that best-respond to a level-0 prediction of the ego, assertive and ego-targeting
+  (core.levelk.ADVERSARY) — a model-based adversary beside the learned one, judged by the same realism measures;
 * scripted_random and scripted_adaptive: the built-in scenarios whose actors play the same roles (cut_in, lead_brake,
   two_wheeler_filtering, wrong_way_scooter, autorickshaw_cut_in; the budget split evenly), their parameters searched
   by core.search — a Halton sequence with a seeded shift ("random") and the cross-entropy method for rare events
@@ -110,7 +113,8 @@ DEFAULT_ADV_CURRICULUM = {
     ],
 }
 SCRIPTED_FAMILIES = ('cut_in', 'lead_brake', 'two_wheeler_filtering', 'wrong_way_scooter', 'autorickshaw_cut_in')
-METHODS = ('learned', 'random', 'idle', 'scripted_random', 'scripted_adaptive')
+DEFAULT_METHODS = ('learned', 'random', 'idle', 'scripted_random', 'scripted_adaptive')
+METHODS = DEFAULT_METHODS + ('levelk',)
 EGO_BUILTIN = ('follower', 'none', 'autopilot')
 RESET_TRIES = 5
 
@@ -120,16 +124,20 @@ def adversary_config(project, world_id: str, out_dir: str, port: int, tm_port: i
                      action: str = 'lateral', roles=None, reward: dict | None = None, realism: dict | None = None,
                      ruleset=None, max_episode_s: float = 15.0, log_samples: bool = False,
                      log_adv_trace: bool = False, log_actions: bool = True, log_trace: bool = False,
-                     ego_action: str = 'continuous', bev=None, camera=None, **kw) -> dict:
+                     ego_action: str = 'continuous', bev=None, camera=None, controller: str = 'policy',
+                     levelk: dict | None = None, **kw) -> dict:
     """The adversary worker's config: core.gymenv.gym_config (the world, the rig's vehicle as the ego, fps, seed,
     motion, traffic, timeouts) plus the "adversary" block (workers/adversary.py). ego: 'follower', 'none',
     'autopilot' or 'agent' (a policy acting in this process: AdversaryEnv(ego_policy=…)); ego_action: that policy's
-    action kind; bev: the BEV spec a CNN ego policy reads."""
+    action kind; bev: the BEV spec a CNN ego policy reads; controller: 'policy' (the client acts for the roster) or
+    'levelk' (the worker drives it by core.levelk); levelk: parameters over core.levelk.ADVERSARY by kind or '*'."""
     from .gymenv import gym_config
     if action not in AF.ACTION_KINDS:
         raise ValueError(f'action must be one of {AF.ACTION_KINDS}, not {action!r}')
     if ego not in EGO_BUILTIN + ('agent',):
         raise ValueError(f'ego must be one of {EGO_BUILTIN + ("agent",)}, not {ego!r}')
+    if controller not in ('policy', 'levelk'):
+        raise ValueError(f'controller must be policy or levelk, not {controller!r}')
     bad = [r for r in roles or () if r not in AF.ROLES]
     if bad:
         raise ValueError(f'unknown roles {bad} (roles: {sorted(AF.ROLES)})')
@@ -139,7 +147,8 @@ def adversary_config(project, world_id: str, out_dir: str, port: int, tm_port: i
     cfg['log_trace'] = bool(log_trace)
     cfg['adversary'] = {'ego': ego, 'action': action, 'roles': list(roles or []), 'reward': dict(reward or {}),
                         'realism': dict(realism or {}), 'ruleset': ruleset, 'log_samples': bool(log_samples),
-                        'log_adv_trace': bool(log_adv_trace)}
+                        'log_adv_trace': bool(log_adv_trace), 'controller': controller,
+                        'levelk': dict(levelk or {})}
     return cfg
 
 
@@ -233,7 +242,8 @@ class AdversaryEnv(FalconDriveEnv):
 
 def open_adversary_env(project, world, out_dir, svc, ego: str, *, action='lateral', rig=None, seed=0, fps=20.0,
                        motion='kinematic', traffic=0, log_samples=False, log_actions=True, camera=None,
-                       max_episode_s=15.0, reward=None, realism=None, ruleset=None, timeout=20.0):
+                       max_episode_s=15.0, reward=None, realism=None, ruleset=None, timeout=20.0,
+                       log_trace=False, levelk=None):
     """(env, ego policy or None) for an ego spec (ego_spec)."""
     from .policy import load_policy
     driver, pdir = ego_spec(ego)
@@ -246,7 +256,9 @@ def open_adversary_env(project, world, out_dir, svc, ego: str, *, action='latera
                            seed=seed, fps=fps, motion=motion, traffic_vehicles=traffic, log_samples=log_samples,
                            log_actions=log_actions, max_episode_s=max_episode_s, reward=reward,
                            realism=realism, ruleset=ruleset, workspace=project.workspace, timeout=timeout,
-                           ego_action=pol.action['kind'] if pol else 'continuous',
+                           ego_action=pol.action['kind'] if pol else 'continuous', log_trace=log_trace,
+                           tokens=(pol.doc.get('tokens') if pol is not None and getattr(pol, 'uses_tokens', False)
+                                   else None), levelk=levelk,
                            bev=(pol.doc.get('bev') if pol is not None and pol.uses_bev else None), **camera)
     return AdversaryEnv(cfg, svc, ego_policy=pol), pol
 
@@ -829,7 +841,7 @@ def summarise_method(episodes: list, tm=None, limits=None) -> dict:
 
 # ============================================================================================ evaluation
 def evaluate(project, svc, world: str, policy_dir: str, egos: list, out_dir: str, episodes: int = 20,
-             methods=METHODS, seed: int = 0, tm_reference: int = 0, rig=None, fps: float = 20.0,
+             methods=DEFAULT_METHODS, seed: int = 0, tm_reference: int = 0, rig=None, fps: float = 20.0,
              families=SCRIPTED_FAMILIES, rosters=None, progress=None, timeout: float = 20.0) -> dict:
     """Evaluate the learned adversaries against each ego beside the baselines (module doc); writes
     adversary-eval.json, episodes.jsonl (every episode, replayable), failures.jsonl and cases.jsonl in out_dir."""
@@ -896,7 +908,7 @@ def evaluate(project, svc, world: str, policy_dir: str, egos: list, out_dir: str
                         'traffic_vehicles': 0, 'world': world, 'rig': rig}
             for method in methods:
                 eps = []
-                if method in ('learned', 'random', 'idle'):
+                if method in ('learned', 'random', 'idle', 'levelk'):
                     rr = np.random.default_rng([int(seed), METHODS.index(method)])
                     for k in range(episodes):
                         roster = rosters[k % len(rosters)]
@@ -910,8 +922,11 @@ def evaluate(project, svc, world: str, policy_dir: str, egos: list, out_dir: str
                         else:
                             def ch(aid, o):
                                 return idle_action(kind)
+                        opts = {'roles': roster}
+                        if method == 'levelk':
+                            opts['controller'] = 'levelk'          # the worker drives them: no agents to act for
                         try:
-                            e = run_episode(env, ch, seed + k, {'roles': roster})    # the same seeds for each
+                            e = run_episode(env, ch, seed + k, opts)    # the same seeds for each method
                         except EnvError as ex:
                             failed_runs.append({'ego': ego, 'method': method, 'episode': k, 'error': str(ex)})
                             continue
@@ -1097,7 +1112,8 @@ def main_adversary(argv) -> int:
         ap.add_argument('--policy', required=True, help='an adversary policy folder (falcon adversary train)')
         ap.add_argument('--ego', action='append', default=None, help='follower, none, autopilot or a policy folder')
         ap.add_argument('--episodes', type=int, default=20, help='episodes per method and ego (the budget)')
-        ap.add_argument('--baselines', default=','.join(METHODS[1:]), help=f'any of {",".join(METHODS[1:])}')
+        ap.add_argument('--baselines', default=','.join(DEFAULT_METHODS[1:]),
+                        help=f'any of {",".join(METHODS[1:])} (levelk: game-theoretic adversaries, core.levelk)')
         ap.add_argument('--tm-reference', type=int, default=0, help='background vehicles for the traffic-manager '
                                                                     'dynamics reference (0: none)')
         ap.add_argument('--roster', action='append', default=None, help='comma-separated roles (default: the '

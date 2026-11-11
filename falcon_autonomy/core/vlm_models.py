@@ -457,13 +457,15 @@ def load_images(images, max_side: int = 0):
 
 class HFRunner(Runner):
     """A local Hugging Face VLM (module doc). Loaded with local_files_only=True and HF_HUB_OFFLINE set: it never
-    downloads. A candidate folder is checked against pins.json (and the publisher's checksums) first."""
+    downloads. A candidate folder is checked against pins.json (and the publisher's checksums) first.
+    attn_implementation: transformers' attention ('eager' materialises the attention weights core.introspect hooks;
+    empty: the library's default)."""
     kind = 'hf'
     needs_gpu = True
 
     def __init__(self, source: str, workspace: str = '', adapter: str = '', device: str = 'auto',
                  max_new_tokens: int = 64, max_side: int = 768, dtype: str = 'auto', seed: int = 0,
-                 verify_files: bool = True, gpu_memory_fraction: float = 0.6):
+                 verify_files: bool = True, gpu_memory_fraction: float = 0.6, attn_implementation: str = ''):
         os.environ['HF_HUB_OFFLINE'] = '1'                 # no network from transformers or huggingface_hub
         os.environ['TRANSFORMERS_OFFLINE'] = '1'
         import torch
@@ -500,8 +502,10 @@ class HFRunner(Runner):
         else:
             dt = getattr(torch, dtype)
         self.processor = AutoProcessor.from_pretrained(folder, local_files_only=True)
-        self.model = AutoModelForImageTextToText.from_pretrained(folder, local_files_only=True, dtype=dt).to(
-            self.device).eval()
+        extra = {'attn_implementation': attn_implementation} if attn_implementation else {}
+        self.attn_implementation = attn_implementation or None
+        self.model = AutoModelForImageTextToText.from_pretrained(folder, local_files_only=True, dtype=dt,
+                                                                 **extra).to(self.device).eval()
         self.adapter = ''
         if adapter:
             from .vlm_lora import load_adapter

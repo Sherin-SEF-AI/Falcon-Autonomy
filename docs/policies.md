@@ -117,6 +117,13 @@ ego-centred with the heading up, and by default 0.5 m pixels, 32 m ahead, 8 m be
 (80 × 64). The worker writes `lanes.json` for it.
 
 `camera` (optional): an RGB image, 128 × 72 at 90° by default, 1.5 m ahead of the ego's origin and 1.6 m up.
+With `depth: true` in the camera spec, `depth` is the aligned planar depth image in metres.
+
+`objects`, `object_ids`, `ego_history` (optional, `tokens`): the nearest road users as object tokens (class,
+position and heading in the ego's frame, velocity, box, brake-light bit), their CARLA ids and the ego's speed over
+the last steps — what the token transformer policy reads ([introspection](introspection.md), core.tokenfeatures).
+Scenario vehicles light their brake lights as they decelerate (`brake_lights: auto`), and a reset's `perturb` option
+changes one actor's deceleration or brake light for an episode ([bias audits](bias-audit.md)).
 
 ## Actions
 

@@ -272,6 +272,11 @@ heuristic.
 
 The first three methods use the same seeds, so the same placements where their rosters agree.
 
+`levelk` (asked for by name, `--baselines …,levelk`; Rare cases ▸ the level-k box): the same rosters, the same seeds,
+driven in the worker by game-theoretic road users (core.levelk: level 1, assertive and ego-targeting, best-responding
+to a level-0 prediction of the ego) instead of a learned policy — a model-based adversary judged by the same realism
+measures ([level-k traffic](levelk.md)). The reset option `controller: "levelk"` does the same for any episode.
+
 **The failure rate** is the share of episodes with a realistic ego failure, with Wilson's 95 % interval. The scripted
 searches' episodes are adaptive, not independent draws, so their interval is descriptive. Also reported:
 

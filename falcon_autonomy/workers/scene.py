@@ -259,7 +259,9 @@ def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
     """prof['vehicles'] vehicles drawn by prof['fleet'] weights per CARLA base type (seeded), on the autopilot with
     prof['behaviour']. A fleet entry may name blueprints directly ('blueprint:vehicle.micro.microlino'). With
     prof['lateral_filtering'] on, the two-wheelers (and stand-ins) it names filter laterally (workers.lateral,
-    w.lateral); it draws nothing from rng, so the same seed places the same traffic with it on or off."""
+    w.lateral); it draws nothing from rng, so the same seed places the same traffic with it on or off. A profile whose
+    behaviour model is 'levelk' (core.project.traffic_model) puts its vehicles on workers.levelk_traffic instead of
+    the traffic manager (w.levelk_traffic; the same placement and draws)."""
     import numpy as np
     n = int(prof.get('vehicles', 0))
     if n <= 0:
@@ -285,7 +287,17 @@ def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
     placed = []
     from ..core import assets as AS
     classes = AS.fleet_classes(prof)
-    lateral = lateral_for(w, world, prof)
+    from ..core.project import traffic_model
+    lk = None
+    if traffic_model(prof) == 'levelk':
+        from .levelk_traffic import LevelKTraffic
+        try:
+            lk = w.levelk_traffic = LevelKTraffic(w, world, prof)
+        except ValueError as e:
+            raise Failed(f'traffic profile: {e}') from None
+        if (prof.get('lateral_filtering') or {}).get('enabled'):
+            w.note('level-k traffic chooses its own lateral positions: lateral_filtering is not used')
+    lateral = lateral_for(w, world, prof) if lk is None else None
     labels = prof.get('fleet_labels') or {}
     for k in list(order):
         if len(placed) >= n:
@@ -299,6 +311,10 @@ def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
             continue
         order.remove(k)
         w.own(a)
+        if lk is not None:                                # level-k traffic: not on the traffic manager
+            lk.add(a, kind, classes.get(kind), labels.get(kind))
+            placed.append((a, kind))
+            continue
         a.set_autopilot(True, w.tm.get_port())
         apply_behaviour(w.tm, a, beh)
         diff = float(beh.get('speed_difference_pct', 0.0))
@@ -513,7 +529,8 @@ def speeds_step(w, sim_t: float) -> list:
     """Re-read the vehicles' desired speeds (the stand-ins' class limits, an imported world's road limits), move the
     vehicles that filter laterally (workers.lateral), and keep an imported world's traffic in it (workers.trafficguard).
     Returns the traffic moved this step, as events."""
-    for c in (getattr(w, 'class_limits', None), getattr(w, 'speed_control', None), getattr(w, 'lateral', None)):
+    for c in (getattr(w, 'class_limits', None), getattr(w, 'speed_control', None), getattr(w, 'lateral', None),
+              getattr(w, 'levelk_traffic', None)):
         if c is not None:
             c.step(sim_t)
     k = getattr(w, 'traffic_keeper', None)
@@ -532,6 +549,8 @@ def speeds_report(w):
         t['keeper'] = w.traffic_keeper.report()
     if getattr(w, 'lateral', None) is not None:
         t['lateral_filtering'] = w.lateral.report()
+    if getattr(w, 'levelk_traffic', None) is not None:
+        t['levelk'] = w.levelk_traffic.report()
 
 
 def light_vehicles(w, cfg: dict, weather: dict | None = None, actors: list | None = None) -> dict:
@@ -1027,6 +1046,9 @@ class ActorLog:
             t, v = (exact(a) if exact is not None else None) or sa.get_transform(), None
             if director is not None and director.kinematic:
                 v = director.k_vel(a)
+            lk = getattr(self.w, 'levelk_traffic', None)
+            if v is None and lk is not None:              # level-k traffic moves with physics off: its own velocity
+                v = lk.k_vel(a)
             v = v if v is not None else sa.get_velocity()
             rows.append(dict({'id': a.id, 'x': round(t.location.x, 4), 'y': round(t.location.y, 4),
                               'z': round(t.location.z, 4), 'roll': round(t.rotation.roll, 4),
