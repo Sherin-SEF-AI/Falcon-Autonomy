@@ -26,9 +26,21 @@ frames (the stream keeps its rate), the lidar's sector_loss, packet_drop and dro
 empty sweeps); latency.jsonl marks the frames ("faults"). With "mrm" the session is judged from the first onset by
 core.mrm.verify over the recorded speeds (no lane offsets: a free drive has no route) — run.json "mrm".
 
-At the end: the gateway's and the device's files (clock.jsonl, device.json, gateway.json), latency.jsonl (one record
-per frame with every stamp, core.hil's field names), the summary in run.json ("hil") and the report (report.html,
-waterfall.png). A cancelled session keeps what it measured: a latency record is never half a dataset.
+The CAN loop (cfg "can", hil.canbridge.SessionCan): the chassis model (core.chassis, CARLA as the plant) sits on the
+configured bus — allowed by the user's settings (hil_can), checked again here — from before the device is ready. Each
+step the ego's speed, yaw rate (ISO 8855: left positive; CARLA's is clockwise) and accelerations drive its wheels,
+whose ticks and speeds go out with the steering and the brake every 10 ms. With control "can" the ego is driven by the
+chassis's actuators — the steering's road wheel angle over the vehicle's maximum, the brake pressure over
+brake_full_bar, the throttle — which follow the device's CAN commands, or hold the vehicle when the watchdog trips;
+the session's own controls are recorded, not applied. The stamps of the first CAN frame carrying a step's command
+(the kernel's receive time, the bridge's read) go into that step's record (can_rx, ctrl_worker): the CAN stages of
+the waterfall. A bus error aborts the session with the ego held; the bus is left silent. The ego's tyre friction is
+scaled to the surface's μ (when CARLA exposes it), so that CARLA's deceleration and the wheels' slip agree better.
+
+At the end: the gateway's and the device's files (clock.jsonl, ptp.jsonl, device.json, gateway.json), can.json,
+latency.jsonl (one record per frame with every stamp, core.hil's field names), the summary in run.json ("hil") and the
+report (report.html, waterfall.png). A cancelled session keeps what it measured: a latency record is never half a
+dataset.
 """
 from __future__ import annotations
 
@@ -82,6 +94,8 @@ class Hil(Worker):
         self.saved = False
         self.load0 = None
         self.watch = None                  # oddwatch.OddWatch when the config has an ODD
+        self.can = None                    # hil.canbridge.SessionCan when the config has a CAN loop
+        self.can_summary = None
 
     def on_command(self, cmd: dict):
         if cmd.get('cmd') == 'stop':
@@ -193,6 +207,8 @@ class Hil(Worker):
             raise Failed(why, P.REFUSED)
         for n in cfg.get('notes') or []:
             self.note(n)
+        if cfg.get('can'):
+            self.open_can(cfg['can'])
         self.emit.progress(0.0, 'starting the gateway and the device', force=True)
         self.start_gateway()
         dev = self.ready.get('device') or {}
@@ -231,6 +247,9 @@ class Hil(Worker):
         lclk = EmulatedClock(**(clocks.get('lidar') or {}), seed=seed * 2 + 2)
         hold = carla.VehicleControl(throttle=0.0, brake=1.0, hand_brake=False)
         ego.apply_control(hold)
+        can_ctl = self.can is not None and cfg['can'].get('control') == 'can'
+        if self.can is not None:
+            self.can_setup_ego(ego)
         from ..core import faults as F
         from ..core.mrm import as_fault_lists
         import zlib
@@ -262,31 +281,24 @@ class Hil(Worker):
             with self.rlock:
                 box, self.inbox = self.inbox, []
             t_apply = now()
-            fresh = [c for c in box if int(c['frame']) > last_applied]
-            newest = max(fresh, key=lambda c: int(c['frame'])) if fresh else None
-            with self.rlock:
-                for c in box:
-                    r = self.records.get(int(c['frame']))
-                    if r is None:
-                        continue
-                    self.merge_control(r, c)
-                    if c is not newest:
-                        r['status'] = 'superseded'
-            if newest is not None:
-                ego.apply_control(carla.VehicleControl(throttle=min(max(newest['throttle'], 0.0), 1.0),
-                                                       steer=min(max(newest['steer'], -1.0), 1.0),
-                                                       brake=min(max(newest['brake'], 0.0), 1.0)))
-                last_applied = int(newest['frame'])
-                last_ctrl_t = time.monotonic()
-                applied_rec = self.records.get(last_applied)
+            if self.can is not None:
+                try:
+                    self.can.check()
+                except Exception as e:                  # noqa: BLE001 (canbridge.BusError: the session ends, held)
+                    ego.apply_control(hold)
+                    raise Failed(f'the CAN bus: {e}') from e
+            if can_ctl:                                 # the CAN commands drive the ego, through the chassis
+                with self.rlock:
+                    for c in box:
+                        r = self.records.get(int(c['frame']))
+                        if r is not None:
+                            self.merge_control(r, c, tcp_only=True)
+                applied_rec = self.apply_can(ego, carla, t_apply)
             else:
-                applied_rec = None
-                if last_ctrl_t is None:
-                    self.counts['held_before_first_control'] += 1
-                    ego.apply_control(hold)
-                elif time.monotonic() - last_ctrl_t > float(cfg.get('control_timeout_s', 0.5)):
-                    self.counts['control_timeouts'] += 1
-                    ego.apply_control(hold)
+                applied_rec, last_applied, last_ctrl_t = self.apply_session_control(ego, carla, hold, box, t_apply,
+                                                                                    last_applied, last_ctrl_t)
+                if self.can is not None:                 # CAN beside the session's control: its stamps recorded
+                    self.can_stamps(control=False)
             # 2. the step
             t0 = now()
             frame = world.tick()
@@ -304,6 +316,8 @@ class Hil(Worker):
             t_ready = now()
             v = ego.get_velocity()
             speed = float((v.x * v.x + v.y * v.y + v.z * v.z) ** 0.5)
+            if self.can is not None:
+                self.can_motion(ego, speed)
             cam_hw, lid_hw = cclk.stamp(sim_t), lclk.stamp(sim_t)
             cb, lb = img.raw_data, lm.raw_data
             sim_t0 = sim_t if sim_t0 is None else sim_t0
@@ -337,9 +351,11 @@ class Hil(Worker):
                 with self.rlock:
                     recent = [dict(r) for f, r in self.records.items() if f >= int(frame) - 2 * int(fps)
                               and f <= int(frame) - 3]
-                st = live_stats(recent, self.est, period)
+                st = live_stats(recent, self.est, period, cfg)
                 st['steps'] = n
                 st['realtime_factor'] = round(n * self.dt / max(time.monotonic() - t_start, 1e-6), 3)
+                if self.can is not None:
+                    st['can'] = self.can.bridge.snapshot()
                 self.emit.send(dict(st, t='hil'))
                 self.emit.progress(0.05 + 0.9 * (n / steps if steps > 0 else 0.0),
                                    f'step {n}{f" of {steps}" if steps > 0 else ""}; e2e median '
@@ -355,14 +371,23 @@ class Hil(Worker):
         wall = time.monotonic() - t_start
         # the last controls: give the device a moment, then hold the ego
         time.sleep(min(0.5, 10 * self.dt))
+        if self.can is not None:
+            self.can_stamps(control=can_ctl)
         with self.rlock:
             for c in self.inbox:
                 r = self.records.get(int(c['frame']))
                 if r is not None:
-                    self.merge_control(r, c)
-                    r['status'] = 'after_end'                 # it came back after the session's last step
+                    self.merge_control(r, c, tcp_only=can_ctl)
+                    if not can_ctl:
+                        r['status'] = 'after_end'             # it came back after the session's last step
+            if can_ctl:
+                for r in self.records.values():
+                    if r.get('ctrl_worker') is not None and r.get('applied') is None and r['status'] == 'missing':
+                        r['status'] = 'after_end'
             self.inbox = []
         ego.apply_control(hold)
+        if self.can is not None:
+            self.close_can()
         self.emit.progress(0.96, 'collecting the device\'s numbers', force=True)
         self.stop_gateway()
         if cfg.get('mrm') is not None:                   # the minimal-risk manoeuvre after the first fault
@@ -370,6 +395,123 @@ class Hil(Worker):
             self.run['mrm'] = M.verify(self.mrm_rows, M.first_onset(cfg.get('faults')), cfg['mrm'],
                                        self.col_times)
         return self.finish_session(n, wall, period)
+
+    def apply_session_control(self, ego, carla, hold, box, t_apply, last_applied, last_ctrl_t):
+        """The newest control that came back over the session, applied; with none yet the ego is held, with none for
+        control_timeout_s it brakes. (applied record or None, last applied frame, last control time)."""
+        cfg = self.cfg
+        fresh = [c for c in box if int(c['frame']) > last_applied]
+        newest = max(fresh, key=lambda c: int(c['frame'])) if fresh else None
+        with self.rlock:
+            for c in box:
+                r = self.records.get(int(c['frame']))
+                if r is None:
+                    continue
+                self.merge_control(r, c)
+                if c is not newest:
+                    r['status'] = 'superseded'
+        if newest is not None:
+            ego.apply_control(carla.VehicleControl(throttle=min(max(newest['throttle'], 0.0), 1.0),
+                                                   steer=min(max(newest['steer'], -1.0), 1.0),
+                                                   brake=min(max(newest['brake'], 0.0), 1.0)))
+            last_applied = int(newest['frame'])
+            return self.records.get(last_applied), last_applied, time.monotonic()
+        if last_ctrl_t is None:
+            self.counts['held_before_first_control'] += 1
+            ego.apply_control(hold)
+        elif time.monotonic() - last_ctrl_t > float(cfg.get('control_timeout_s', 0.5)):
+            self.counts['control_timeouts'] += 1
+            ego.apply_control(hold)
+        return None, last_applied, last_ctrl_t
+
+    # ------------------------------------------------------------------ the CAN loop
+    def open_can(self, can: dict):
+        """The chassis on the bus, from before the device is ready (hil.canbridge.SessionCan); the allow-list is the
+        user's settings, read here again."""
+        from ..core.settings import Settings
+        from ..hil.canbridge import SessionCan
+        try:
+            self.can = SessionCan(can, Settings())
+        except PermissionError as e:
+            raise Failed(f'the CAN interface is not allowed: {e}', P.REFUSED) from e
+        except (OSError, RuntimeError, ValueError) as e:
+            raise Failed(f'the CAN bus could not be opened: {e}') from e
+        self.can_last = (None, None)                # (time, speed) of the previous step, for the acceleration
+        self.max_steer_deg = 70.0
+        self.emit.log(f'CAN: {can["interface"]} ({"CAN FD" if self.can.bus.fd else "classical"}), control '
+                      f'{can.get("control", "can")}')
+
+    def can_setup_ego(self, ego):
+        """The ego's maximum road wheel angle (CARLA's steer 1.0) and its tyre friction scaled to the surface's μ."""
+        ch = self.can.chassis
+        try:
+            pc = ego.get_physics_control()
+        except Exception:                                # noqa: BLE001 (an old or fake CARLA: the defaults stand)
+            self.run['can_vehicle'] = {'max_steer_deg': self.max_steer_deg, 'note': 'no physics control'}
+            return
+        front = [w.max_steer_angle for w in pc.wheels if getattr(w, 'max_steer_angle', 0.0)]
+        if front:
+            self.max_steer_deg = float(max(front))
+        out = {'max_steer_deg': self.max_steer_deg}
+        if all(hasattr(w, 'tire_friction') for w in pc.wheels):
+            before = [float(w.tire_friction) for w in pc.wheels]
+            scale = ch.mu / 0.9                              # CARLA's defaults stand for a dry road
+            for w in pc.wheels:
+                w.tire_friction = float(w.tire_friction) * scale
+            ego.apply_physics_control(pc)
+            out.update(tire_friction_before=before, tire_friction_scale=round(scale, 4),
+                       note='CARLA\'s tyre friction scaled by the surface\'s μ over 0.9 (dry); the hydroplaning '
+                            'ramp acts on the wheel signals only')
+        else:
+            out['note'] = 'this CARLA exposes no tyre friction: its deceleration is a dry road\'s'
+        self.run['can_vehicle'] = out
+
+    def can_motion(self, ego, speed: float):
+        """The ego's motion into the chassis: speed, yaw rate (ISO: left positive), longitudinal and lateral
+        acceleration (from the speed's change and v × yaw rate)."""
+        import math
+        w = ego.get_angular_velocity()
+        yaw = -float(w.z)                                # CARLA's z rate is clockwise seen from above
+        _, v0 = self.can_last
+        ax = (speed - v0) / self.dt if v0 is not None else 0.0          # per simulation step, not wall time
+        self.can_last = (None, speed)
+        self.can.set_motion(speed, yaw, ax, speed * math.radians(yaw))
+
+    def can_stamps(self, control: bool = True):
+        """The CAN arrivals of the steps' commands into their records: the kernel's receive time (can_rx) and the
+        bridge's read in this process (can_read; with CAN control also the record's ctrl_worker)."""
+        with self.rlock:
+            for r in [r for r in self.records.values() if r.get('can_read') is None]:
+                got = self.can.take_arrival(r['frame'])
+                if got is not None:
+                    r['can_rx'], r['can_read'] = got
+                    if control:
+                        r['ctrl_worker'] = got[1]
+
+    def apply_can(self, ego, carla, t_apply):
+        """The chassis's actuators onto the ego; the newest step whose CAN command arrived is applied at this step
+        (older ones superseded). Returns the record applied, or None."""
+        self.can_stamps()
+        a = self.can.actuation()
+        steer = -a['road_wheel_deg'] / max(self.max_steer_deg, 1e-3)    # left positive → CARLA's right positive
+        ego.apply_control(carla.VehicleControl(throttle=min(max(a['throttle'], 0.0), 1.0),
+                                               steer=min(max(steer, -1.0), 1.0), brake=min(max(a['brake'], 0.0), 1.0)))
+        if a['safe']:
+            self.counts['can_safe_hold_steps'] = self.counts.get('can_safe_hold_steps', 0) + 1
+        with self.rlock:
+            due = sorted((r for r in self.records.values() if r.get('ctrl_worker') is not None and
+                          r.get('applied') is None and r['status'] == 'missing' and r['ctrl_worker'] <= t_apply),
+                         key=lambda r: r['frame'])
+            for r in due[:-1]:
+                r['status'] = 'superseded'
+        return due[-1] if due else None
+
+    def close_can(self):
+        if self.can is None or self.can_summary is not None:
+            return
+        self.can_summary = self.can.finish()
+        write_json(os.path.join(self.out_dir, 'can.json'), self.can_summary)
+        self.run['can'] = self.can_summary
 
     def fault_streams(self, F, flt, frng, cid, lid, img, cb, lb, t):
         """(camera bytes, lidar bytes, {sensor: [kinds acting]}) with the timed faults acting at t."""
@@ -394,8 +536,12 @@ class Hil(Worker):
             lb = np.ascontiguousarray(pts, np.float32).tobytes()
         return cb, lb, acting
 
-    def merge_control(self, r: dict, c: dict):
-        r.update(ctrl_rx=c.get('ctrl_rx'), ctrl_worker=c.get('ctrl_worker'), missing_inputs=c.get('missing') or [],
+    def merge_control(self, r: dict, c: dict, tcp_only: bool = False):
+        """A control from the session into its record; tcp_only (CAN control): its arrival is kept as tcp_ctrl_rx
+        and tcp_ctrl_worker, the CAN frame's being the record's ctrl_worker."""
+        pre = 'tcp_' if tcp_only else ''
+        r.update({pre + 'ctrl_rx': c.get('ctrl_rx'), pre + 'ctrl_worker': c.get('ctrl_worker')})
+        r.update(missing_inputs=c.get('missing') or [],
                  control={k: round(float(c.get(k, 0.0)), 4) for k in ('throttle', 'steer', 'brake')},
                  stack_info=c.get('info') or {})
         for k, v in (c.get('dev') or {}).items():
@@ -500,6 +646,10 @@ class Hil(Worker):
 
     def tidy(self):
         try:
+            try:
+                self.close_can()                             # the bus silent first, whatever happened
+            except Exception as e:                           # noqa: BLE001 (tidying: said, not raised)
+                self.note(f'closing the CAN bus: {type(e).__name__}: {e}')
             if self.gs is not None:
                 self.stop_gateway()
             if self.records and not self.saved:              # cancelled or failed mid-session: keep what was measured

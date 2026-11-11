@@ -77,3 +77,85 @@ def test_session_with_a_simulated_device_in_the_page(page, window, qapp):
     run = json.load(open(os.path.join(page.job.spec.run_dir, 'run.json')))
     assert run['hil']['clock_offset_check']['within_uncertainty']
     assert run['hil']['sensor_clocks']['camera']['configured']['drift_ppm'] == 30.0
+
+
+def test_can_clock_and_v4l2_sections(page, window, monkeypatch):
+    """The 4.0 sections: a V4L2 camera's and the CAN loop's config, the allow-list said beside the interface and
+    enforced, a real adapter confirmed only with the statement, the clock source passed on."""
+    from PyQt6.QtWidgets import QInputDialog
+    from falcon_autonomy.hil import canbridge as B
+    assert page.can_config() is None and page.v4l2_config() is None
+    assert not page.can_if.isEnabled() and not page.v4l2_dev.isEnabled()
+    page.camera.setCurrentIndex(page.camera.findData('v4l2'))
+    assert page.v4l2_dev.isEnabled() and not page.encoder.isEnabled()
+    page.v4l2_fmt.setCurrentText('NV12')
+    assert page.v4l2_config()['format'] == 'NV12' and page.v4l2_config()['barcode']
+    page.can_on.setChecked(True)
+    assert page.can_if.isEnabled()
+    page.can_if.setCurrentText('sim:gui')
+    page.surface.setCurrentIndex(page.surface.findData('waterlogged'))
+    page.mu.setValue(0.35)
+    page.clock_src.setCurrentIndex(page.clock_src.findData('ntp-style'))
+    cfg = page.build_config(False)
+    assert cfg['can']['interface'] == 'sim:gui' and cfg['can']['chassis'] == {'surface': 'waterlogged', 'mu': 0.35}
+    assert cfg['camera']['transport'] == 'v4l2' and cfg['camera']['v4l2']['format'] == 'NV12'
+    assert cfg['clock_source'] == 'ntp-style'
+    assert 'allowed' in page.can_status.text()
+    monkeypatch.setattr(B, 'is_virtual', lambda name: False)
+    window.settings.set('hil_can', {'interfaces_allowed': ['vcan*', 'can*']})
+    page.can_if.setCurrentText('can0')
+    assert 'refused' in page.can_status.text() and page.confirm_btn.isEnabled()
+    with pytest.raises(ValueError, match='bench network, not a vehicle'):
+        page.build_config(False)
+    monkeypatch.setattr(QInputDialog, 'getText', staticmethod(lambda *a, **k: ('bench network, not a vehicle', True)))
+    page.confirm_adapter()
+    assert 'allowed' in page.can_status.text() and window.settings.get('hil_can')['confirmed']['can0']
+    assert page.build_config(False)['can']['interface'] == 'can0'
+
+
+def test_a_can_session_in_the_page(page, window, qapp):
+    page.fps.setValue(10)
+    page.seconds.setValue(3)
+    page.camera.setCurrentIndex(page.camera.findData('raw-tcp'))
+    page.can_on.setChecked(True)
+    page.can_if.setCurrentText(f'sim:gui-{os.getpid()}')
+    page.can_fd.setCurrentIndex(page.can_fd.findData('on'))
+    page.start(lidar_overrides={'points_per_second': 20000, 'channels': 16})
+    assert page.job is not None
+    assert pump(qapp, lambda: page.job.state in ('done', 'failed', 'cancelled'), 120), page.job.log[-10:]
+    assert page.job.state == 'done', page.job.log[-10:]
+    pump(qapp, timeout=0.3)
+    assert 'CAN frame to the simulation' in [r['label'] for r in page.fall.rows]
+    can = page.stats.vals['CAN'].text()
+    assert 'commands' in can and '(FD)' in can and 'ABORTED' not in can
+    assert 'from ptp' in page.stats.vals['Clock offset'].text()          # auto: a simulated device's shared realtime
+    page.fall.grab()
+
+
+def test_settings_hardware_section(window, qapp, monkeypatch):
+    from PyQt6.QtWidgets import QInputDialog
+    from falcon_autonomy.ui.settings_hardware import section
+
+    class Page:
+        win = window
+    sec = section(Page())
+    st = window.settings
+    sec.patterns.setText('vcan*, can1')
+    sec.ptp_if.setText('enp1s0')
+    sec.source.setCurrentIndex(sec.source.findData('ptp'))
+    assert sec.apply(st) == ''
+    assert st.get('hil_can')['interfaces_allowed'] == ['vcan*', 'can1']
+    assert st.get('hil_ptp') == {'interface': 'enp1s0', 'clock_source': 'ptp'}
+    sec.patterns.setText('vcan*; rm -rf /')
+    assert 'Not an interface pattern' in sec.apply(st)
+    sec.patterns.setText('vcan*')
+    sec.ptp_if.setText('bad name')
+    assert 'not an interface name' in sec.apply(st)
+    answers = iter([('can2', True), ('bench network, not a vehicle', True)])
+    monkeypatch.setattr(QInputDialog, 'getText', staticmethod(lambda *a, **k: next(answers)))
+    sec.confirm()
+    assert 'can2' in sec.confirmed.text() and 'can2' in sec.patterns.text()
+    monkeypatch.setattr(QInputDialog, 'getItem', staticmethod(lambda *a, **k: ('can2', True)))
+    sec.revoke()
+    assert 'none' in sec.confirmed.text()
+    sec.deleteLater()

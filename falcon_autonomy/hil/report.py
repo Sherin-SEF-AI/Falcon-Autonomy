@@ -170,6 +170,53 @@ def load_note(ses: dict) -> str:
             f'{ld.get("cpus")} CPUs: every number here shares the machine with whatever else ran.')
 
 
+def clock_sources_html(cs: dict) -> str:
+    """Both clock-offset estimates (core.ptp.choose): the one used and why, their disagreement."""
+    if not cs:
+        return ''
+    rows = []
+    for k, label in (('ptp', 'PTP / realtime pairs'), ('ntp_style', 'NTP-style pings')):
+        e = cs.get(k) or {}
+        chk = (cs.get('checks') or {}).get(k)
+        truth = '' if not chk else (f' · against the known truth {chk["error_ns"] / 1e3:.2f} µs, '
+                                    f'{"within" if chk["within_uncertainty"] else "OUTSIDE"} its uncertainty')
+        ms = lambda key: None if e.get(key) is None else e[key] / 1e6          # noqa: E731
+        rows.append(f'<tr><td>{label}{" (used)" if cs.get("used") == ("ptp" if k == "ptp" else "ntp-style") else ""}'
+                    f'</td><td class="n">{_f(ms("offset_ns"), 4, "")}</td>'
+                    f'<td class="n">{_f(ms("uncertainty_ns"), 4, "")}</td>'
+                    f'<td>{html.escape(str(e.get("basis") or ("pings" if e else "not available")))}{truth}</td></tr>')
+    dis = cs.get('disagreement_ns')
+    tail = '' if dis is None else (f'<p>They disagree by {dis / 1e3:.2f} µs — '
+                                   f'{"within" if cs.get("consistent") else "BEYOND"} the sum of their uncertainties.'
+                                   '</p>')
+    return (f'<h3>Clock sources</h3><p>Asked for: {html.escape(str(cs.get("preference")))}; used: '
+            f'<b>{html.escape(str(cs.get("used")))}</b> — {html.escape(str(cs.get("why") or ""))}.</p>'
+            '<table><tr><th>source</th><th class="n">offset, ms</th><th class="n">±, ms</th><th>basis</th></tr>'
+            f'{"".join(rows)}</table>{tail}')
+
+
+def can_html(c: dict) -> str:
+    """The CAN loop: the bus, the chassis model, the interlocks' counters."""
+    if not c or not c.get('stats'):
+        return ''
+    st = c['stats']
+    ch = c.get('chassis') or {}
+    load = c.get('bus_load')
+    vp = ch.get('hydroplaning_speed_kmh')
+    hp = '' if vp is None else f', hydroplaning from {vp} km/h (Horne)'
+    return (f'<h2>CAN</h2><p>{html.escape(str(c.get("interface")))} ({html.escape(str(c.get("kind")))}, '
+            f'{"CAN FD" if c.get("fd") else "classical CAN"}), control <code>{html.escape(str(c.get("control")))}'
+            f'</code>; timestamps: {html.escape(str(c.get("timestamps")))}. Chassis: '
+            f'{html.escape(str(ch.get("surface")))} (μ {ch.get("mu")}{hp}), plant '
+            f'{html.escape(str(ch.get("plant")))}.</p>'
+            '<table><tr><th>counter</th><th class="n">value</th></tr>'
+            + ''.join(f'<tr><td>{html.escape(k.replace("_", " "))}</td><td class="n">{html.escape(str(v))}</td></tr>'
+                      for k, v in st.items() if k not in ('fd',))
+            + f'<tr><td>bus load (nominal bits, classical)</td><td class="n">{_f(load and 100 * load, 1, " %")}'
+              '</td></tr></table>'
+            + (f'<p><b>Aborted:</b> {html.escape(str(c["aborted"]))}</p>' if c.get('aborted') else ''))
+
+
 def report_html(s: dict, run: dict, records: list) -> str:
     ses = s.get('session') or {}
     dev = ses.get('device') or {}
@@ -205,12 +252,15 @@ def report_html(s: dict, run: dict, records: list) -> str:
     trust = s.get('one_way_trusted')
     off = ''
     if est:
+        via = (f'from {est["samples"]} pings (least round trip {est["min_rtt_ns"] / 1e6:.3f} ms, median '
+               f'{est["median_rtt_ns"] / 1e6:.3f} ms)' if 'min_rtt_ns' in est else
+               f'from {est["samples"]} realtime pairs ({html.escape(str(est.get("basis")))})')
         off = (f'<p>Offset of the device\'s clock: <b>{est["offset_ns"] / 1e6:.4f} ms</b> ± '
                f'{est["uncertainty_ns"] / 1e6:.4f}'
-               f' ms, drift {est["drift_ppm"]:.2f} ppm, from {est["samples"]} pings (least round trip '
-               f'{est["min_rtt_ns"] / 1e6:.3f} ms, median {est["median_rtt_ns"] / 1e6:.3f} ms). One-way stages are '
+               f' ms, drift {est["drift_ppm"]:.2f} ppm, {via}. One-way stages are '
                f'<b>{"trusted" if trust else "not trusted"}</b> (the uncertainty must be below 1 ms). '
                f'{html.escape(est.get("method", ""))}.</p>')
+        off += clock_sources_html(s.get('clock_sources') or {})
         chk = s.get('clock_offset_check')
         if chk:
             off += (f'<p>Simulated device, known truth: {chk["truth_ns"] / 1e6:.4f} ms; the estimate is off by '
@@ -273,6 +323,7 @@ quantised to whole steps (dashed lines).</p>
 <h2>Jitter</h2><p>Step interval: median {_f((jit.get('step_interval_ms') or {}).get('median'), 3)}, std
 {_f((jit.get('step_interval_ms') or {}).get('std'), 3)}. Camera interarrival at the device (RFC 3550):
 {_f(ia.get('rfc3550_ms'), 4)} (mean |D| {_f(ia.get('mean_abs_d_ms'), 4)} over {ia.get('pairs', 0)} pairs).</p>
+{can_html(s.get('can') or {})}
 <h2>Clocks</h2>{off}
 <table><tr><th>sensor</th><th>emulated clock (configured)</th><th>recovered from its stamps</th></tr>{clk_rows}</table>
 <h2>Provenance</h2><pre><code>{html.escape(json.dumps({'run': run.get('name'), 'status': run.get('status'),
