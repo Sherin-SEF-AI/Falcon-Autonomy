@@ -746,13 +746,14 @@ def run_policy(ctx) -> dict:
     motion, traffic = sub.get('motion', 'kinematic'), int(sub.get('traffic_vehicles', 0))
     bev = pol.doc.get('bev') if pol.uses_bev else None
     cam = pol.doc.get('camera') if getattr(pol, 'uses_camera', False) else None
+    tok = pol.doc.get('tokens') if getattr(pol, 'uses_tokens', False) else None   # a token policy's object tokens
 
     def factory(base):
         def make(scn):
             kw = {'max_episode_s': float(sub['max_episode_s'])} if sub.get('max_episode_s') else {}
             c = gym_config(proj, world, os.path.join(base, 'env', scn or 'free'), svc.port, svc.tm_port,
                            rig_id=sub.get('rig') or None, seed=int(cfg['seed']), scenario=scn, motion=motion,
-                           action=pol.action['kind'], bev=bev, camera=cam, fps=float(sub.get('fps', 20.0)),
+                           action=pol.action['kind'], bev=bev, camera=cam, tokens=tok, fps=float(sub.get('fps', 20.0)),
                            traffic_vehicles=traffic, log_actions=True, workspace=proj.workspace, **kw)
             return FalconDriveEnv(c, svc)
         return make
