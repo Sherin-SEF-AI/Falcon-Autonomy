@@ -60,7 +60,7 @@
     falcon rigs vantage|import|compare|report|note ...   Vantage rig variants compared by perception (docs/rig-compare.md)
     falcon schema                              print the project schema's path
 
-4.0, in progress (each command's module is added by its workstream; until then it exits 2 "not in this build"):
+4.0 (each loaded when used; a build without one of them exits 2 "not in this build"):
     falcon cluster …    compute nodes, placement, quotas        falcon cloud …       priced, approved cloud bursts
     falcon worker-daemon …   a node's job daemon (also falcon-worker-daemon)
     falcon backend list|check|probe   CARLA backends            falcon profile …     the low-VRAM profile
@@ -409,8 +409,8 @@ def parser() -> argparse.ArgumentParser:
                                  'rerender|info (see '
                                  'docs/reconstruction.md)')
     sub.add_parser('dashcam', help='a dashcam\'s clips, GPS track and frames: falcon dashcam list|gps|extract|match|'
-                                   'route|incident (see docs/dashcam.md); ingest|nearmiss: near-miss mining (4.0, '
-                                   'in progress)')
+                                   'route|incident (see docs/dashcam.md); ingest|nearmiss: near-miss mining (see '
+                                   'docs/nearmiss.md)')
     sub.add_parser('vlm', help='vision-language explanations scored against ground truth: falcon vlm '
                                'list|verify|fetch|eval|finetune (see docs/vlm.md)')
     sub.add_parser('triggers', help='live trigger rules: falcon triggers list|check|add|remove|signals (see '
@@ -438,12 +438,12 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser('scenario', help='a scenario from a description, a run checked against it: falcon scenario '
                                     'from-text|check (see docs/scenario-text.md)')
     for name, (_module, _fn, text) in LAZY.items():
-        sub.add_parser(name, help=f'{text} (4.0, in progress; see docs/cli.md)')
+        sub.add_parser(name, help=f'{text} (4.0; see docs/cli.md)')
     return ap
 
 
-# 4.0 (in progress): top-level commands whose module a workstream adds; until then `falcon NAME` exits 2 with
-# "failed: NAME is not in this build". name -> (module under falcon_autonomy, its main function, help text)
+# 4.0: top-level commands loaded lazily (their modules import heavy optional packages); a build without the module
+# makes `falcon NAME` exit 2 with "failed: NAME is not in this build". name -> (module under falcon_autonomy, its main function, help text)
 LAZY = {
     'cluster': ('cluster.cli', 'main_cluster', 'compute nodes, job placement and quotas: falcon cluster …'),
     'cloud': ('cluster.cloudcli', 'main_cloud', 'cloud bursts on RunPod or Lambda, priced and approved first: '
@@ -462,7 +462,7 @@ LAZY = {
                                                          'policies: falcon introspect attention|intervene|audit'),
     'levelk': ('core.levelk', 'main_levelk', 'level-k game-theoretic traffic: falcon levelk calibrate|simulate|check'),
 }
-# `falcon dashcam ingest|nearmiss …` (4.0, in progress): core.dashcam_ingest.main_ingest gets ['ingest'|'nearmiss', …]
+# `falcon dashcam ingest|nearmiss …` (4.0): core.dashcam_ingest.main_ingest gets ['ingest'|'nearmiss', …]
 DASHCAM_LAZY = ('ingest', 'nearmiss')
 
 
