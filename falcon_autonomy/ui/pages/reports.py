@@ -20,7 +20,7 @@ from ..widgets import KeyValues, Page, PlaceholderTree, Section, button, label, 
 KIND_TITLES = {'iteration': 'Loop iteration', 'evaluation': 'Model evaluation', 'dataset': 'Dataset coverage',
                'study': 'Rare-case study', 'leaderboard': 'Leaderboard result', 'rules': 'Traffic-rule check',
                'rootcause': 'Root cause', 'vlm': 'VLM explanations', 'deploy': 'Deployment (TensorRT)',
-               'ci': 'CI run'}
+               'ci': 'CI run', 'gsn': 'Safety case (GSN)'}
 PAPER_TITLES = {'experiment': 'Experiment (ablation or sim + real)', 'evaluation': 'Model evaluation',
                 'comparison': 'Comparison of two evaluations', 'datacard': 'Data card of an export'}
 

@@ -31,6 +31,7 @@ reloaded before each run, so a run is a deterministic function of its parameters
 | `objective` (default) | the study's objective ≥ the threshold — the search's own failure; for the criticality objective it counts by default only failures the ego could have avoided under RSS | `core.milsearch.objective_value`, `core.rss.rss_objective` |
 | `checks` | the scenario's pass criteria failed (no collision, minimum time to collision), as a stack suite judges a run | `run.json`, `core.stack` |
 | `rules` | a traffic rule was violated: a signal-temporal-logic formula with negative robustness, the rule set for the run's handedness | `core.rules.check_run`, `core.stl` |
+| `stl` | the study's own requirement was falsified: `--stl FORMULA` or `--rule SET:ID` has robustness ρ < 0 on the run (a run whose ρ is unknown is not judged and is replaced); one estimate per requirement (`rate-…-stl-<key>`) | `core.stlobjective` ([falsification](falsification.md)) |
 
 The sampling is always adapted on the objective's score; importance sampling stays unbiased for any judge (the
 proposal's defensive part covers every parameter set the nominal can produce), it is only less efficient when the
@@ -148,7 +149,7 @@ model), weather searched, rate and judge has its own study, `studies/rate-<scena
 
 ```sh
 falcon failrate run PROJECT --scenario lead_brake [--name N] [--stage-size 100] [--final 200] [--max-stages 6] \
-    [--rho 0.1] [--defensive 0.1] [--batch 4] [--threshold 0.5] [--judge objective|checks|rules] \
+    [--rho 0.1] [--defensive 0.1] [--batch 4] [--threshold 0.5] [--judge objective|checks|rules|stl] \
     [--exposure-per km|hour --encounters X --exposure-source TEXT] [--world W] [--rig R] [--seed N] \
     [--search-seed N] [--objective criticality|perception|both --model ID] [--weather FIELD[:LO:HI]] [--fps F]
 falcon failrate show STUDY_DIR | PROJECT --name N [--json] [--exposure-per km --encounters X]

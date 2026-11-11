@@ -541,3 +541,109 @@ def intervals(rho, t, end_dt: float | None = None) -> list:
                     'min_robustness': float(rho[k]), 'at': float(t[k])})
         i = j + 1
     return out
+
+
+def witness(node: Node, signals: dict, t, i: int = 0) -> int | None:
+    """The sample that decides a formula's robustness at sample i: through not, and/or/-> (the side whose robustness
+    is the result's) and G/H (the window's minimum) / F/O (its maximum) down to a predicate's sample; i itself for a
+    predicate, until/since and constants. None when the robustness at i is unknown. A falsifier reports this time as
+    where the formula is closest to (or furthest past) its violation."""
+    t = np.asarray(t, float)
+
+    def rho(x, k):
+        return float(evaluate(x, signals, t)[k])
+
+    def w(x, k):
+        o = x.op
+        if o == 'not':
+            return w(x.args[0], k)
+        if o in ('and', 'or', '->'):
+            a, b = rho(x.args[0], k), rho(x.args[1], k)
+            if o == '->':
+                a = -a
+            if math.isnan(a) and math.isnan(b):
+                return None
+            if math.isnan(a) or math.isnan(b):
+                return w(x.args[1] if math.isnan(a) else x.args[0], k)
+            first = a <= b if o == 'and' else a >= b
+            return w(x.args[0] if first else x.args[1], k)
+        if o in ('G', 'F', 'H', 'O'):
+            v = evaluate(x.args[0], signals, t)
+            f, la = _windows(t, x.lo, x.hi, past=o in ('H', 'O'))
+            if la[k] < f[k]:
+                return k
+            seg = v[f[k]:la[k] + 1]
+            known = ~np.isnan(seg)
+            if not known.any():
+                return None
+            s = np.where(known, seg, np.inf if o in ('G', 'H') else -np.inf)
+            j = f[k] + int(np.argmin(s) if o in ('G', 'H') else np.argmax(s))
+            return w(x.args[0], j)
+        return k
+    if not len(t) or math.isnan(float(evaluate(node, signals, t)[i])):
+        return None
+    return w(node, i)
+
+
+def _softmin2(a, b, beta):
+    with np.errstate(invalid='ignore', over='ignore'):
+        r = -np.logaddexp(-beta * a, -beta * b) / beta
+    return np.where(np.isnan(a), b, np.where(np.isnan(b), a, r))
+
+
+def _soft_window(v: np.ndarray, first: np.ndarray, last: np.ndarray, beta: float, sign: float, empty: float):
+    """−sign/β · log Σ exp(−sign·β·v) over each window's known samples (sign +1: a soft minimum, −1: a soft
+    maximum); `empty` for an empty window, NaN when it has no known sample."""
+    out = np.full(len(first), empty)
+    for k in range(len(first)):
+        if last[k] < first[k]:
+            continue
+        seg = v[first[k]:last[k] + 1]
+        seg = seg[~np.isnan(seg)]
+        if not len(seg):
+            out[k] = np.nan
+            continue
+        z = -sign * beta * seg
+        m = np.max(z)
+        if not math.isfinite(m):                 # an infinite operand decides it (−inf in a minimum, …)
+            out[k] = -sign * m / beta
+            continue
+        out[k] = -sign * (m + math.log(float(np.sum(np.exp(z - m))))) / beta
+    return out
+
+
+def softmin(v, beta: float) -> float:
+    """The soft minimum −1/β·log Σ exp(−β·v) of the known values (NaN when none, +inf for none at all)."""
+    v = np.asarray(v, float)
+    return float(_soft_window(v, np.array([0]), np.array([len(v) - 1]), float(beta), 1.0, np.inf)[0])
+
+
+def evaluate_smooth(node: Node, signals: dict, t, beta: float) -> np.ndarray:
+    """An APPROXIMATION of the robustness for searching: evaluate() with every minimum (and, G, H) replaced by the
+    soft minimum −1/β·log Σ exp(−β·x) and every maximum (or, ->, F, O) by the soft maximum, so the landscape a
+    searcher sees is smooth where exact ρ has kinks (larger β: closer to exact; the soft minimum is at most the
+    minimum, by up to log(k)/β over k terms, the soft maximum at least the maximum). Unknown samples are left out of
+    a soft operation (it is unknown only when every operand is): not the Kleene semantics of evaluate(). until and
+    since stay exact. The exact robustness (evaluate) is what a verdict is made from."""
+    if not beta > 0:
+        raise STLError('the smoothing β must be positive')
+    t = np.asarray(t, float)
+    beta = float(beta)
+
+    def ev(x: Node) -> np.ndarray:
+        o = x.op
+        if o == 'not':
+            return -ev(x.args[0])
+        if o in ('and', 'or', '->'):
+            a, b = ev(x.args[0]), ev(x.args[1])
+            if o == '->':
+                a = -a
+            return _softmin2(a, b, beta) if o == 'and' else -_softmin2(-a, -b, beta)
+        if o in ('G', 'F', 'H', 'O'):
+            v = ev(x.args[0])
+            first, last = _windows(t, x.lo, x.hi, past=o in ('H', 'O'))
+            if o in ('G', 'H'):
+                return _soft_window(v, first, last, beta, 1.0, np.inf)
+            return _soft_window(v, first, last, beta, -1.0, -np.inf)
+        return evaluate(x, signals, t)
+    return ev(node)

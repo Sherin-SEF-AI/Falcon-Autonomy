@@ -245,6 +245,8 @@ def _base(ctx, scenario):
 def _search(ctx, scenario, method='bayes', budget=60, batch=4, threshold=0.5, seed=0, world='', rig='',
             objective='criticality', count='avoidable', feasibility=True, model='', weather=(), fps=20, dry=False):
     from ...sim.studio import search_argv, search_name
+    if objective == 'robustness':                 # a requirement to falsify: its tool takes the formula
+        raise ToolError('the robustness objective falsifies an STL requirement: use formal_falsify_stl')
     if method == 'estimate' or str(scenario).startswith('cell:'):       # the failure rate, an ODD cell (_failrate)
         from ._failrate import search_or_estimate
         return search_or_estimate(ctx, scenario, method, budget, batch, threshold, seed, world, rig, objective, count,
@@ -273,12 +275,13 @@ def _search(ctx, scenario, method='bayes', budget=60, batch=4, threshold=0.5, se
       'sampling, budget the runs at most; read with analysis_outputs kind failure_rate). Scenario cell:<cell>: the '
       'scenario generated for an ODD cell (analysis_outputs kind coverage), added to the project.',
       C.obj({'scenario': C.s('scenario key or id, or cell:<ODD cell> (analysis_outputs kind coverage)'),
-             'method': C.s('search method', enum=['bayes', 'bayes-pof', 'cmaes', 'adaptive', 'random', 'estimate']),
+             'method': C.s('search method', enum=['bayes', 'bayes-pof', 'cmaes', 'cem', 'adaptive', 'random',
+                                                  'estimate']),
              'budget': C.i('runs (default 60)', minimum=4, maximum=5000), 'batch': C.i('runs per batch (default 4)',
                                                                                      minimum=1, maximum=64),
              'threshold': C.n('failure threshold of the objective (default 0.5)', minimum=0, maximum=1),
              'seed': C.i('seed'), 'world': C.s('world id'), 'rig': C.s('rig id'),
-             'objective': C.s('what to search for', enum=['criticality', 'perception', 'both']),
+             'objective': C.s('what to search for', enum=['criticality', 'perception', 'both', 'robustness']),
              'count': C.s('criticality: count avoidable failures only (RSS) or all', enum=['avoidable', 'all']),
              'feasibility': C.b('restrict to kinematically feasible parameters (default true)'),
              'model': C.s('a registered model id (perception, both)'),

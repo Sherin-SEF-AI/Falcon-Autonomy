@@ -267,6 +267,9 @@ and `run.json` (the suite's hash, every run's key, provenance) are written at th
 - **Residual risks with their evidence**: each failing scenario (failure rate, interval, runs); each scenario with no
   failure whose interval still allows more than `--max-failure-rate` (5 %: a reporting threshold, not a validated
   acceptance criterion); each ODD gap; missed deadlines; the studies' critical cases; the simulation's limits.
+- **A structured argument** over these results is the [living GSN safety case](gsn.md) (Reports ▸ *Safety case
+  (GSN)*, `falcon gsn`): suites, CI runs, failure rates and falsification studies bound by hash and claim to its
+  Solutions, re-verified as they change, from an ISO 26262 or ISO 21448 SOTIF template.
 - **Its limits**, stated in the report: it is **not a certification claim** and not a safety case in the sense of a
   complete argument; it does not cover hazard analysis and acceptance criteria, the specification's insufficiencies
   beyond the scenarios, foreseeable misuse, the unknown unsafe area outside the searched parameter ranges, real-world

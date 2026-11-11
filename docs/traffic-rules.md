@@ -23,6 +23,7 @@ in an HTML report of its own. No dependency was added: the evaluator is Falcon's
 | stack suites (`results.json`) | `rules`: the aggregate and per scenario; each run's check in its folder as `rules.json`; a suite may name its set (`"rules": "india"`, `"generic"` or a file) |
 | safety-case report | a *Traffic rules* section (per rule: runs evaluated, violations, per km with its interval, runs violating with Wilson's interval, the lowest robustness) and a residual risk per rule violated |
 | `falcon report rules DIR --out FILE` (Reports ▸ *Traffic-rule check*) | the set and its formulas, each run's timeline and table, the aggregate with intervals; the Leaderboard report gains the rules section too |
+| `falcon stl robustness RUN… --stl TEXT \| --rule SET:ID` · Rare cases ▸ *Falsify* | a formula's (or rules') robustness with its per-sample series and the time that decides it; a search for runs that violate it ([falsification](falsification.md)) |
 
 Violations are results, not failures: `falcon rules check` exits 0 when it could check, 2 when it could not (no
 `frames.jsonl`, a rule file that does not parse).
@@ -113,7 +114,25 @@ every result.
 | `speed_limit_kmh` | km/h | CARLA's `Vehicle.get_speed_limit()` where a trace records it; else the map's OpenDRIVE record for the ego's road (a lane `<speed>`, else the road type's); in a junction road the last limit before it |
 | `on_breaker`, `breaker_kmh` | 0/1, km/h | the ego's body is over a speed breaker or table the world's OpenDRIVE file carries (Falcon's road features: its length along the road ± half the ego's length, across the carriageway), and that breaker's advisory crossing speed; unknown without the OpenDRIVE file ([Indian road assets](indian-assets.md#road-features-in-opendrive-real-geometry)) |
 
-The corridors are straight lines in the ego's frame: on a curve they are a heuristic.
+| `ttc_lead_s` | s | time to collision with the vehicle that gives `lead_gap_m`: both boxes at constant velocity and yaw, the exact moving separating-axis test, a 10 s horizon (core.criticality `ttc`); +∞ when there is no lead or it is not on a collision course within 10 s |
+| `ttc_min_s` | s | the smallest such TTC over every other recorded actor (vehicles and pedestrians); +∞ when none |
+| `drac_mps2` | m/s² | the largest deceleration rate to avoid a crash over the actors in the ego's path: v_rel² / (2 · gap) along the ego's heading (core.criticality `required_deceleration`; Archer 2005); 0 when nothing is in the path or closing; +∞ while the boxes overlap |
+| `pet_s` | s | the post-encroachment time of the point the ego occupies: the smallest \|t − t′\| over the samples t′ at which another actor's box overlapped the ego's box at t (core.criticality `pet` in its pointwise form — its minimum over the run is the run's PET at the recorded rate); +∞ when no actor ever occupies where the ego is; non-causal (it reads the whole run) |
+| `lat_clear_m` | m | lateral clearance: the gap across the ego's heading to the nearest actor beside it (their extents along the heading overlap; the boxes' projections, exact), up to 10 m; +∞ when none |
+| `lon_gap_m` | m | the gap along the ego's heading to the nearest actor ahead **or behind** within the ego's own width (their extents across the heading overlap), up to 80 m; +∞ when none — `lead_gap_m` is the ahead-only, heading-filtered corridor with its 0.3 m margin |
+
+The corridors are straight lines in the ego's frame: on a curve they are a heuristic. The six surrogate-safety signals
+(`ttc_lead_s` … `lon_gap_m`) need the other actors' poses (actors.jsonl or the scenario's trajectories.json): they are
+unknown in gym traces. The ego's velocity is its speed along its heading.
+
+### The robustness of a formula over a run
+
+`core.rules.robustness(trace, formula | rule ids)` keeps what `check()` reduces to a number: the per-sample series
+`series`, `rho_t0` (a formula's robustness at the first sample — write `G …` for "at every sample" — or for rules the
+lowest over the known samples, `check()`'s robustness), `t`, and `worst_t`, the sample that decides it (core.stl's
+`witness`: through `not`, the side of `and`/`or` whose robustness is the result's and the sample of a `G`/`F` window
+that sets it, down to a predicate). With β > 0 it adds core.stl's soft-min robustness — an approximation for
+searching, labelled so. This is what the falsifier searches on ([falsification](falsification.md)).
 
 ### The map
 

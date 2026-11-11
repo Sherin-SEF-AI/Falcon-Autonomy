@@ -32,6 +32,9 @@ Kinds (KINDS) and their source:
 - ci           a CI run's output folder (ci-results.json; core.ci, `falcon ci run`): the verdict, each gate with what
                it measured and the rule that judged it, pass rates with Wilson intervals, the paired comparison with
                the baseline, the runs, the latency, the commit under test
+- gsn          a workspace's living safety case (safety/gsn.json; core.gsn, `falcon gsn export`): the argument drawn
+               in GSN with each node's status as verified now, the evidence with its pinned hashes and claims, the
+               recent events
 
 Colours: before / first series blue (#2a78d6 light, #3987e5 dark), after / second orange (#eb6834, #d95926) — checked
 for colour-vision deficiency (ΔE ≥ 24 protan) — and the two also differ by mark shape (circle, square) and are named
@@ -48,7 +51,8 @@ from . import provenance as PV
 from .paths import tilde
 
 REPORT_SCHEMA = 'falcon.report/1'
-KINDS = ('iteration', 'evaluation', 'dataset', 'study', 'leaderboard', 'rules', 'rootcause', 'vlm', 'deploy', 'ci')
+KINDS = ('iteration', 'evaluation', 'dataset', 'study', 'leaderboard', 'rules', 'rootcause', 'vlm', 'deploy', 'ci',
+         'gsn')
 
 CSS = """
 :root{--bg:#fcfcfb;--panel:#f3f2ef;--ink:#0b0b0b;--ink2:#52514e;--muted:#6f6e69;--hair:#e1e0d9;--grid:#dcdad3;
@@ -702,7 +706,7 @@ def report_rules(src: str) -> Page:
 BUILDERS = {'iteration': report_iteration, 'evaluation': report_evaluation, 'dataset': report_dataset,
             'study': report_study, 'leaderboard': report_leaderboard, 'rules': report_rules,
             'rootcause': lambda src: _rootcause(src), 'vlm': lambda src: _vlm(src),
-            'deploy': lambda src: _deploy(src), 'ci': lambda src: _ci(src)}
+            'deploy': lambda src: _deploy(src), 'ci': lambda src: _ci(src), 'gsn': lambda src: _gsn(src)}
 
 
 def _rootcause(src: str) -> Page:
@@ -722,6 +726,11 @@ def _deploy(src: str) -> Page:
 
 def _ci(src: str) -> Page:
     from .ci import report
+    return report(src)
+
+
+def _gsn(src: str) -> Page:
+    from .gsn import report
     return report(src)
 
 
@@ -826,6 +835,8 @@ def sources(ws: str) -> dict:
     for d in sorted(_listdir(os.path.join(ws, 'ci')), reverse=True):               # `falcon ci run --out <ws>/ci/…`
         if os.path.isfile(os.path.join(ws, 'ci', d, 'ci-results.json')):
             out['ci'].append((d, os.path.join(ws, 'ci', d)))
+    if os.path.isfile(os.path.join(ws, 'safety', 'gsn.json')):                       # the living safety case
+        out['gsn'].append(('safety case', os.path.join(ws, 'safety', 'gsn.json')))
     return out
 
 
@@ -857,7 +868,7 @@ def default_name(kind: str, src: str) -> str:
 
 def main_report(argv) -> int:
     """`falcon report KIND SRC --out FILE` (KIND: iteration, evaluation, dataset, study, leaderboard, rules,
-    rootcause, vlm, deploy, ci): 0 ok, 2 failed."""
+    rootcause, vlm, deploy, ci, gsn): 0 ok, 2 failed."""
     import argparse
     from . import protocol as P
     ap = argparse.ArgumentParser(prog='falcon report', description='a self-contained HTML report (docs/reports.md)')

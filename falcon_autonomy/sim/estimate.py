@@ -25,7 +25,9 @@ JUDGE_ABOUT = {
     'checks': 'the scenario\'s pass criteria failed (no collision, minimum time to collision: run.json, as a stack '
               'suite judges a run, core.stack)',
     'rules': 'a traffic rule was violated (core.rules: a signal-temporal-logic formula with negative robustness, '
-             'core.stl; the rule set for the run\'s handedness)'}
+             'core.stl; the rule set for the run\'s handedness)',
+    'stl': 'the study\'s requirement was falsified (--stl formula or --rule SET:ID: its robustness ρ < 0, '
+           'core.stlobjective; a run whose ρ is unknown is not judged and is replaced)'}
 
 
 def estimate_name(scenario: str, objective: str = 'criticality', model: str = '', weather=(), fps: float = 20,
@@ -33,7 +35,8 @@ def estimate_name(scenario: str, objective: str = 'criticality', model: str = ''
     """An estimate's study name (Rare cases ▸ Failure rate): one per scenario, objective (and model), weather searched,
     rate and judge."""
     from .studio import WEATHER_TAGS
-    parts = ['rate', scenario] + ([] if objective == 'criticality' else [model or 'none', objective])
+    parts = ['rate', scenario] + ([] if objective == 'criticality' else [objective] if objective == 'robustness'
+                                  else [model or 'none', objective])
     parts += [WEATHER_TAGS.get(k, k) for k in weather]
     if fps != 20:
         parts.append(f'{fps:g}hz')
@@ -45,17 +48,19 @@ def estimate_argv(project_path: str, scenario: str, name: str, world: str, rig: 
                   batch: int = 4, threshold: float = 0.5, seed: int = 0, judge: str = 'objective',
                   objective: str = 'criticality', count: str = 'avoidable', feasibility: bool = True, model: str = '',
                   weather=(), fps: float = 20, exposure_per: str = 'encounter', encounters: float = 0.0,
-                  exposure_source: str = '', fake_carla: str = '') -> list:
+                  exposure_source: str = '', fake_carla: str = '', requirement: dict | None = None) -> list:
     """`falcon failrate run …` as Rare cases ▸ Failure rate queues it (the arguments after `python -m
     falcon_autonomy`)."""
+    from .studio import requirement_argv
     argv = ['failrate', 'run', project_path, '--scenario', scenario, '--name', name, '--world', world, '--rig', rig,
             '--stage-size', str(stage_size), '--final', str(final_size), '--rho', str(rho), '--defensive',
             str(defensive), '--max-stages', str(max_stages), '--batch', str(batch), '--threshold', str(threshold),
             '--seed', str(seed), '--judge', judge, '--objective', objective, '--count', count]
     if not feasibility:
         argv.append('--no-feasibility')
-    if objective != 'criticality':
+    if objective in ('perception', 'both'):
         argv += ['--model', model]
+    argv += requirement_argv(requirement)
     for k in weather:
         argv += ['--weather', k]
     if fps != 20:
@@ -67,7 +72,19 @@ def estimate_argv(project_path: str, scenario: str, name: str, world: str, rig: 
     return argv + (['--fake-carla', fake_carla] if fake_carla else [])
 
 
-def _judge(kind: str, row: dict) -> bool | None:
+def _judge(kind: str, row: dict, spec: dict | None = None) -> bool | None:
+    """Whether a finished run failed by the judge (None: it cannot say). stl: the requirement in spec (the study's
+    objective spec); a robustness study's rows already carry ρ."""
+    if kind == 'stl':
+        from ..core import stlobjective as SO
+        st = row.get('stl')
+        if st is None:
+            if not (spec or {}).get('stl') and not (spec or {}).get('rule'):
+                return None
+            st = SO.score_run(row['run'], spec)
+        if st.get('state') == 'not evaluable':
+            return None
+        return SO.falsified(st.get('rho'))
     if kind == 'checks':
         p = (row.get('scenario') or {}).get('passed')
         return None if p is None else p is False
@@ -85,14 +102,20 @@ def run_estimate(study, judge: str = 'objective', threshold: float = 0.5, opts: 
                  batch: int = 4, exposure: dict | None = None, progress=None, log=None) -> dict:
     """Drive a core.failrate.Sampler over the study's scenario (module doc); returns and writes failure-rate.json."""
     from ..core.oddcoverage import run_cells
+    from .studio import Study
     if judge not in FR.JUDGES:
         raise ValueError(f'judge: one of {", ".join(FR.JUDGES)}')
+    if judge == 'stl' and not (study.spec.get('stl') or study.spec.get('rule')):
+        raise ValueError('the stl judge needs a requirement: --stl FORMULA or --rule SET:ID')
     opts = dict(FR.DEFAULTS, **(opts or {}))
     space = study.space()
     nom = FR.Nominal.from_scenario(study.scn, space)
     sp = os.path.join(study.dir, STATE_FILE)
     key = {'objective_key': study.okey, 'judge': judge, 'threshold': float(threshold), 'nominal': nom.doc(),
            'options': {k: opts[k] for k in sorted(opts)}, 'search_seed': study.search_seed}
+    if judge == 'stl':                           # another requirement is another estimate
+        from ..core import stlobjective as SO
+        key['requirement'] = SO.spec_key(study.spec)
     sampler, runs = None, {}
     try:
         d = read_json(sp)
@@ -114,8 +137,8 @@ def run_estimate(study, judge: str = 'objective', threshold: float = 0.5, opts: 
         vals, fails = [], []
         for a, r in zip(asked, res):
             ok = bool(r) and r.get('status') == 'ok'
-            vals.append(float(r['objective']) if ok else None)
-            f = _judge(judge, r) if ok and judge != 'objective' else None
+            vals.append(Study.told(r) if ok else None)          # None: an unknown robustness, replaced
+            f = _judge(judge, r, study.spec) if ok and judge != 'objective' else None
             if ok and judge != 'objective' and f is None:
                 vals[-1] = None                     # the judge cannot read it: a lost run, replaced
             fails.append(f)
@@ -320,6 +343,10 @@ def _run(a) -> int:
     em.hello('failrate')
     name = a.name or estimate_name(scn['id'], spec['objective'], a.model, [w.split(':')[0] for w in a.weather],
                                    a.fps or 20, a.judge)
+    if not a.name and (spec.get('stl') or spec.get('rule')) and (a.judge == 'stl' or spec['objective'] ==
+                                                                 'robustness'):
+        from ..core.stlobjective import spec_key               # one estimate per requirement
+        name += '-' + spec_key(spec)[4:12]
     try:
         st = Study(svc, proj, scn, name, a.world or proj.doc['worlds'][0]['id'], a.rig or proj.doc['rigs'][0]['id'],
                    a.seed, objective=spec, extra_space=extra, fps=a.fps or None, search_seed=a.search_seed)

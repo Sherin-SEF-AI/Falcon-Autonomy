@@ -4,6 +4,8 @@ state of a run, checked with robustness values, violation intervals and counts p
     check_run(run_dir, ruleset) -> result        a recorded drive, a stack run, a live recording or a replay
     check_episode(episode, ruleset) -> result    a gym / Leaderboard episode that carries its per-step trace
     aggregate(results) -> summary                over runs or routes: counts, per km with intervals, runs violating
+    robustness(trace, formula | rule ids)        a formula's (or rules') robustness with its per-sample series and
+                                                 the time that decides it (what the falsifier, core.stlobjective, uses)
     falcon rules check RUN... [--set india|generic|FILE] [--out DIR] ;  falcon rules list ;  falcon rules show SET
 
 Rule files (falcon.rules/1), a small line-oriented language parsed here (nothing is evaluated as Python):
@@ -61,6 +63,26 @@ Signals (SIGNALS; all per sample, NaN where unknown):
                            for the ego's road (a lane <speed> or the road type's <speed>); in a junction road the last
                            limit before it (a limit holds until the next); unknown where neither exists
 
+Surrogate-safety signals (core.criticality, box-based; per sample over the other recorded actors — vehicles and
+pedestrians — with the ego's velocity its speed along its heading; unknown when no other actors are recorded, as in
+gym traces):
+    ttc_lead_s             time to collision with the vehicle that gives lead_gap_m (constant velocity and yaw, exact
+                           moving separating-axis test, 10 s horizon: core.criticality.ttc); +inf when there is none or
+                           it is not on a collision course within 10 s
+    ttc_min_s              the smallest such TTC over every actor; +inf when none
+    drac_mps2              the largest deceleration rate to avoid a crash over the actors in the ego's path
+                           (core.criticality.required_deceleration: v_rel² / (2 · gap) along the ego's heading); 0
+                           when nothing is in the path or closing; +inf while the boxes overlap (a collision)
+    pet_s                  the post-encroachment time of the point the ego occupies: the smallest |t − t'| over the
+                           samples t' at which an actor's box overlapped the ego's box at t (core.criticality.pet in its
+                           pointwise form; its minimum over the run is the run's PET); +inf when no actor ever occupies
+                           where the ego is. Non-causal: it reads the whole run (an actor passing there later counts)
+    lat_clear_m            lateral clearance: the gap across the ego's heading to the nearest actor beside it (their
+                           extents along the heading overlap), up to LAT_RANGE_M; +inf when none
+    lon_gap_m              longitudinal gap: the gap along the ego's heading to the nearest actor ahead or behind in
+                           the ego's own width (their extents across the heading overlap), up to LEAD_RANGE_M; +inf
+                           when none (lead_gap_m is the ahead-only, heading-filtered corridor with a 0.3 m margin)
+
 Map. lanes.json (driving-lane points with width, ids and markings: drives that record labels) and the map's OpenDRIVE
 file — the drive's own (an imported world) or, for a CARLA town, CarlaUE4/Content/Carla/Maps/OpenDrive/<town>.xodr
 under the CARLA folder in Settings — for junction roads, speed records and crosswalks; without lanes.json, the lane
@@ -109,9 +131,18 @@ SIGNALS = {
     'speed_limit_kmh': ('km/h', 'the speed limit'),
     'on_breaker': ('0/1', 'the ego is over a speed breaker of the map'),
     'breaker_kmh': ('km/h', 'that breaker\'s advisory crossing speed'),
+    'ttc_lead_s': ('s', 'time to collision with the lead vehicle (+inf none)'),
+    'ttc_min_s': ('s', 'the smallest time to collision over the actors (+inf none)'),
+    'drac_mps2': ('m/s²', 'the largest deceleration needed to avoid a crash (0 none; +inf overlapping)'),
+    'pet_s': ('s', 'post-encroachment time of the point the ego occupies (+inf none)'),
+    'lat_clear_m': ('m', 'lateral clearance to the nearest actor beside the ego (+inf none)'),
+    'lon_gap_m': ('m', 'gap along the heading to the nearest actor ahead or behind in the ego\'s width (+inf none)'),
 }
+SURROGATE = ('ttc_lead_s', 'ttc_min_s', 'drac_mps2', 'pet_s', 'lat_clear_m', 'lon_gap_m')
+SIGNALS_VERSION = 2                               # bumped when a signal's definition changes (scores keyed on it)
 EGO_DEFAULT = (4.9, 1.84)                         # length, width: CARLA's mkz_2020 (actors.jsonl extents × 2)
-LEAD_RANGE_M, PED_RANGE_M = 80.0, 50.0
+LEAD_RANGE_M, PED_RANGE_M, LAT_RANGE_M = 80.0, 50.0, 10.0
+TTC_HORIZON_S = 10.0
 LEAD_MARGIN_M, PED_MARGIN_M = 0.3, 1.0
 LEAD_HEADING_DEG, PASS_HEADING_DEG, PASS_BESIDE_M = 60.0, 45.0, 8.0
 SAME_DIR_DEG = 30.0
@@ -1035,6 +1066,7 @@ def signals(tr: Trace) -> dict:
         cws = m.crosswalks
         lead, ped, onx = np.full(n, np.inf), np.full(n, np.inf), np.zeros(n) if cws is not None else nan()
         pl, pr = np.zeros(n), np.zeros(n)
+        lead_id = [None] * n
         prev = {}
         for i in range(n):
             r = math.radians(tr.yaw[i])
@@ -1053,8 +1085,8 @@ def signals(tr: Trace) -> dict:
                 if a['kind'] == 'vehicle':
                     if xr > 0 and abs(yr) < hw + across + LEAD_MARGIN_M and hdiff <= LEAD_HEADING_DEG:
                         gap = max(xr - hl - along, 0.0)
-                        if gap <= LEAD_RANGE_M:
-                            lead[i] = min(lead[i], gap)
+                        if gap <= LEAD_RANGE_M and gap < lead[i]:
+                            lead[i], lead_id[i] = gap, a['id']
                     if hdiff <= PASS_HEADING_DEG:
                         seen[a['id']] = (xr, yr, a['vx'] * fx + a['vy'] * fy, across)
                 else:
@@ -1077,6 +1109,10 @@ def signals(tr: Trace) -> dict:
         sig['pass_on_left'], sig['pass_on_right'] = pl, pr
         if cws is None:
             tr.sources['crosswalks'] = 'unknown (no OpenDRIVE file)'
+        sig.update(surrogate_signals(tr, lead_id))
+    else:
+        for k in SURROGATE:
+            sig[k] = nan()
     for k in ('lead_gap_m', 'ped_path_gap_m'):
         if k in tr.given:
             sig[k] = np.asarray(tr.given[k], float)
@@ -1097,6 +1133,44 @@ def signals(tr: Trace) -> dict:
     sig['passing'] = np.where(np.isnan(sig['pass_on_left']) | np.isnan(sig['pass_on_right']), np.nan,
                               np.maximum(sig['pass_on_left'], sig['pass_on_right']))
     return sig
+
+
+def surrogate_signals(tr: Trace, lead_id: list | None = None) -> dict:
+    """The surrogate-safety signals (SURROGATE; module doc) of a trace with other actors: core.criticality's TTC, DRAC,
+    pointwise PET and the box gaps in the ego's frame, per sample. lead_id: per sample the id of the vehicle that gives
+    lead_gap_m (None: none)."""
+    from . import criticality as CR
+    n = len(tr.t)
+    out = {'ttc_lead_s': np.full(n, np.inf), 'ttc_min_s': np.full(n, np.inf), 'drac_mps2': np.zeros(n),
+           'pet_s': np.full(n, np.inf), 'lat_clear_m': np.full(n, np.inf), 'lon_gap_m': np.full(n, np.inf)}
+    if tr.actors is None:
+        return {k: np.full(n, np.nan) for k in out}
+    yaw = np.radians(tr.yaw)
+    v = np.nan_to_num(tr.speed)
+    E = np.column_stack([tr.t, tr.x, tr.y, tr.yaw, v * np.cos(yaw), v * np.sin(yaw), np.full(n, tr.ego_size[0]),
+                         np.full(n, tr.ego_size[1])])
+    rows = {}
+    for i, acts in enumerate(tr.actors):
+        for a in acts:
+            rows.setdefault(a['id'], []).append((i, [tr.t[i], a['x'], a['y'], a['yaw'], a['vx'], a['vy'], a['l'],
+                                                     a['w']]))
+    lead_id = lead_id or [None] * n
+    for aid, rs in rows.items():
+        idx = np.array([i for i, _ in rs], int)
+        A = np.array([r for _, r in rs], float)
+        Ei = E[idx]
+        ttc = CR.ttc_rows(Ei, A, TTC_HORIZON_S)
+        np.minimum.at(out['ttc_min_s'], idx, ttc)
+        lead = np.array([lead_id[i] == aid for i in idx], bool)
+        out['ttc_lead_s'][idx[lead]] = ttc[lead]
+        np.maximum.at(out['drac_mps2'], idx, CR.drac_rows(Ei, A))
+        out['pet_s'] = np.minimum(out['pet_s'], CR.pet_rows(E, A))
+        g_lon, g_lat, _ = CR.axis_gaps(Ei, A)
+        beside = (g_lon <= 0.0) & (g_lat <= LAT_RANGE_M)
+        np.minimum.at(out['lat_clear_m'], idx[beside], g_lat[beside])
+        inline = (g_lat <= 0.0) & (g_lon <= LEAD_RANGE_M)
+        np.minimum.at(out['lon_gap_m'], idx[inline], g_lon[inline])
+    return out
 
 
 # ================================================================================================ checking
@@ -1182,6 +1256,80 @@ def check_episode(e: dict, ruleset=None) -> dict:
     return out
 
 
+def parse_formula(text: str, consts: dict | None = None) -> S.Node:
+    """A free formula over the signals (SIGNALS), with constants; RulesError names an unknown signal, S.STLError a
+    syntax error (with its column)."""
+    node = S.parse(text, consts)
+    unknown = sorted(S.names(node) - set(SIGNALS))
+    if unknown:
+        raise RulesError(f'unknown signal(s) {", ".join(unknown)} (the signals are: {", ".join(SIGNALS)})')
+    return node
+
+
+def robustness(tr: Trace, spec, ruleset=None, consts: dict | None = None, sig: dict | None = None,
+               smooth: float = 0.0) -> dict:
+    """The robustness of a trace with its per-sample series (what check() reduces to a number and intervals):
+
+    spec a formula (text or a parsed node): standard STL at the trace's first sample — write G (always) for "at every
+         sample" — so rho_t0 = series[0];
+    spec a list of rule ids of `ruleset` (a parsed set, or anything load_ruleset takes): each must hold at every
+         sample, as check() judges them: series = per sample the lowest robustness over the rules (unknown only
+         where every rule is), rho_t0 = its minimum over the known samples (= the lowest of check()'s robustness).
+
+    Returns {'kind', 'rho_t0' (float; NaN unknown, ±inf possible), 'series' (float array, NaN unknown), 't',
+    'worst_t' (where the robustness is decided: stl.witness for a formula, the minimum's time for rules; None when
+    unknown), 'state' (violated | satisfied | not evaluable), 'evaluated_share', 'missing_signals', 'formula',
+    'per_rule' (rules)}. smooth β > 0 adds 'rho_smooth' and 'series_smooth' (stl.evaluate_smooth: an approximation
+    for searching; the verdict is always the exact one)."""
+    sig = signals(tr) if sig is None else sig
+    t = tr.t
+    n = len(t)
+    out = {'t': t, 'per_rule': None}
+    if isinstance(spec, (list, tuple)):
+        rs = load_ruleset(ruleset, tr.handedness)
+        by = {r['id']: r for r in rs['rules']}
+        bad = [i for i in spec if i not in by]
+        if bad or not spec:
+            raise RulesError(f'no rule {", ".join(bad) or "given"} in the set {rs["id"]} ({", ".join(by)})')
+        series = np.full(n, np.nan)
+        soft = np.full(n, np.nan)
+        per = {}
+        names = set()
+        for rid in spec:
+            r = by[rid]
+            names |= set(r['signals'])
+            v = S.evaluate(r['node'], sig, t)
+            per[rid] = float(np.min(v[~np.isnan(v)])) if (~np.isnan(v)).any() else float('nan')
+            series = np.fmin(series, v)
+            if smooth > 0:
+                soft = np.fmin(soft, S.evaluate_smooth(r['node'], sig, t, smooth))
+        known = ~np.isnan(series)
+        rho = float(series[known].min()) if known.any() else float('nan')
+        worst = float(t[np.flatnonzero(known)[int(np.argmin(series[known]))]]) if known.any() else None
+        out.update(kind='rules', formula=' and '.join(f'G ({by[i]["formula"]})' for i in spec), per_rule=per,
+                   ruleset={k: rs.get(k) for k in ('id', 'name', 'source', 'sha256')})
+        if smooth > 0:                       # "at every sample", softened the same way
+            out['rho_smooth'] = S.softmin(soft, smooth) if (~np.isnan(soft)).any() else float('nan')
+            out['series_smooth'] = soft
+    else:
+        node = spec if isinstance(spec, S.Node) else parse_formula(str(spec), consts)
+        names = S.names(node)
+        series = S.evaluate(node, sig, t) if n else np.zeros(0)
+        rho = float(series[0]) if n else float('nan')
+        wi = S.witness(node, sig, t, 0) if n and not math.isnan(rho) else None
+        worst = float(t[wi]) if wi is not None else None
+        out.update(kind='formula', formula=node.text())
+        if smooth > 0:
+            soft = S.evaluate_smooth(node, sig, t, smooth) if n else np.zeros(0)
+            out['rho_smooth'] = float(soft[0]) if n else float('nan')
+            out['series_smooth'] = soft
+    missing = sorted(k for k in names if np.isnan(np.asarray(sig[k], float)).all())
+    out.update(rho_t0=rho, series=series, worst_t=worst, missing_signals=missing,
+               evaluated_share=float((~np.isnan(series)).mean()) if n else 0.0,
+               state='not evaluable' if math.isnan(rho) else 'violated' if rho < 0 else 'satisfied')
+    return out
+
+
 def timeline(result: dict) -> list:
     """[(rule id, title, state, [(start, end, kind)])] with kind 'violation' or 'unknown', for a timeline chart."""
     out = []
@@ -1242,13 +1390,14 @@ def table(result: dict) -> str:
              f'{result["samples"]} samples, {result["duration_s"]} s, {result["distance_km"]} km',
              f'{"rule":22s} {"state":14s} {"robustness":>11s} {"count":>6s} {"per km":>8s} {"evaluated":>9s}']
     for r in result['rules']:
-        rob = '∞' if r['vacuous'] else ('—' if r['robustness'] is None else f'{r["robustness"]:.3f}')
+        rob = '∞' if r['vacuous'] else (('−∞' if r['state'] == 'violated' else '—') if r['robustness'] is None
+                                        else f'{r["robustness"]:.3f}')
         pk = '—' if r['per_km'] is None else f'{r["per_km"]:.2f}'
         lines.append(f'{r["id"][:22]:22s} {r["state"]:14s} {rob:>11s} {r["count"]:6d} {pk:>8s} '
                      f'{100 * (r["evaluated_share"] or 0):8.0f}%')
         for v in r['violations'][:5]:
-            lines.append(f'{"":24s}{v["start"]:.2f}–{v["end"]:.2f} s, worst {v["min_robustness"]:.3f} at '
-                         f'{v["at"]:.2f} s')
+            worst = '−∞' if v['min_robustness'] is None else f'{v["min_robustness"]:.3f}'
+            lines.append(f'{"":24s}{v["start"]:.2f}–{v["end"]:.2f} s, worst {worst} at {v["at"]:.2f} s')
         if r['missing_signals']:
             lines.append(f'{"":24s}unknown signals: {", ".join(r["missing_signals"])}')
     lines += [f'warning: {w}' for w in result.get('warnings') or ()]

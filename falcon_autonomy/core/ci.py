@@ -16,7 +16,8 @@ A CI config (CONFIG_SCHEMA, falcon.ci/1; YAML or JSON; CONFIG_JSON_SCHEMA is its
   gates     pass_rate (a minimum judged with Wilson's 95 % interval), metrics (a minimum or maximum of any reported
             number, judged with its interval), regressions (none against the baseline by a paired bootstrap),
             rule_violations (a budget per km, core.rules), latency (percentile budgets: a ROS 2 stack's control wait,
-            a policy's decision time, a model's inference time), max_missed_deadlines (ROS 2 stacks)
+            a policy's decision time, a model's inference time), max_missed_deadlines (ROS 2 stacks), gsn (the
+            workspace's living safety case, core.gsn: no top goal red once this run is bound in)
   flaky     retries, allowed only when the mode is not deterministic, and recorded
 
 How an interval judges a limit (`rule`): "demonstrate" passes only when the whole 95 % interval is on the good side
@@ -33,6 +34,11 @@ ci-config.json (the resolved config) and run.json.
 Exit codes (a test runner's convention; docs/ci.md): 0 every gate passed, 1 a gate failed, 2 an error (a config that
 does not validate, no server, a run that did not finish, a gate that could not be judged), 3 cancelled (SIGINT or
 SIGTERM).
+
+The living safety case (core.gsn): at the end of every run whose workspace holds safety/gsn.json (or gates.gsn.path),
+every Solution bound to "ci:<this config's name>@latest" is re-verified against this run's results, and the
+verification is appended to safety/gsn-events.jsonl (res['gsn']); gates.gsn fails the run when a top goal is then red
+(or amber too, fail_on: amber).
 
 Determinism: kinematic motion with no background traffic repeats bit for bit (docs/stack-testing.md); physics motion,
 traffic and CARLA's autopilot do not. The config defaults to kinematic with no traffic, and a retry is refused in a
@@ -144,7 +150,10 @@ CONFIG_JSON_SCHEMA = {
                 'rules': {'type': 'object', 'additionalProperties': {'type': 'number', 'minimum': 0}}}},
             'latency': {'type': 'object', 'additionalProperties': False, 'minProperties': 1,
                         'properties': {k: {'type': 'number', 'exclusiveMinimum': 0} for k in LATENCY_KEYS}},
-            'max_missed_deadlines': {'type': 'integer', 'minimum': 0}}},
+            'max_missed_deadlines': {'type': 'integer', 'minimum': 0},
+            'gsn': {'type': 'object', 'additionalProperties': False, 'properties': {
+                'path': _PATHS, 'goals': {'type': 'array', 'items': {'type': 'string'}},
+                'fail_on': {'enum': ['red', 'amber']}}}}},
         'flaky': {'type': 'object', 'additionalProperties': False, 'properties': {
             'retries': {'type': 'integer', 'minimum': 0, 'maximum': 5}, 'count_as': {'enum': ['pass', 'fail']}}},
         'outputs': {'type': 'object', 'additionalProperties': False, 'properties': {
@@ -1671,6 +1680,7 @@ def run_ci(config_path: str, overrides: dict | None = None, log=None, env=None) 
         res['baseline'] = {'label': (baseline or {}).get('source'), 'kind': (baseline or {}).get('kind'),
                            'commit': (baseline or {}).get('commit'), 'why': why_none if why_none else None}
         res['gates'] = evaluate_gates(cfg, subj, res['summary'], comparison, why_none)
+        res['gates'] += gsn_reverify(cfg, out, res, proj, log)
         unfinished = [r['name'] for r in records if r['status'] != 'ok']
         if unfinished:
             res['error'] = (f'{len(unfinished)} of {len(records)} runs did not finish ({", ".join(unfinished[:5])}'
@@ -1705,6 +1715,63 @@ def run_ci(config_path: str, overrides: dict | None = None, log=None, env=None) 
         if old is not None:
             for n, h in old.items():
                 signal.signal(n, h)
+
+
+def gsn_workspace(cfg: dict, proj) -> tuple:
+    """(the workspace, the gsn.json) of the run's living safety case: gates.gsn.path's, else the project's; (None,
+    None) when there is none."""
+    from . import gsn as G
+    p = ((cfg.get('gates') or {}).get('gsn') or {}).get('path')
+    if p:
+        p = _path(cfg.get('config_dir') or '.', p)
+        return os.path.dirname(os.path.dirname(p)), p
+    if cfg.get('project') and proj is not None:
+        return proj.workspace, G.gsn_path(proj.workspace)
+    return None, None
+
+
+def gsn_reverify(cfg: dict, out: str, res: dict, proj, log=None) -> list:
+    """Re-verify the safety case's ci:<name>@latest evidence against this run (module doc) — res['gsn'] — and the
+    gsn gate when configured (a list of zero or one gate)."""
+    from . import gsn as G
+    g = (cfg.get('gates') or {}).get('gsn')
+    name = 'safety case: no top goal ' + ('red or amber' if (g or {}).get('fail_on') == 'amber' else 'red')
+    ws, p = gsn_workspace(cfg, proj)
+    if not p or not os.path.isfile(p):
+        if g is not None:
+            return [_gate('gsn', name, 'error', '', '', 'core.gsn',
+                          f'no safety case at {p}' if p else 'no safety case: give gates.gsn.path or a project '
+                                                             'whose workspace holds safety/gsn.json')]
+        return []
+    alias = f'ci:{cfg["name"]}@latest'
+    try:
+        doc = G.load(ws)
+        bound = [n['id'] for n in doc['nodes'] if (n.get('evidence') or {}).get('ref') == alias]
+        st = [x['status'] for x in res.get('gates') or ()]          # the verdict of the other gates, for a claim on it
+        now = dict(res, verdict='error' if 'error' in st else 'failed' if 'failed' in st else 'passed')
+        v = G.verify_and_log(ws, 'ci', {alias: (os.path.join(out, 'ci-results.json'), now)}, doc)
+    except (G.GSNError, OSError, ValueError) as e:
+        res['gsn'] = {'path': p, 'error': str(e)}
+        if g is not None:
+            return [_gate('gsn', name, 'error', '', '', 'core.gsn', f'the safety case cannot be verified: {e}')]
+        return []
+    res['gsn'] = {'path': p, 'alias': alias, 'bound': bound, 'top': v['top'], 'counts': v['counts'],
+                  'nodes': {n: v['nodes'][n] for n in bound}}
+    if log:
+        log(f'safety case {p}: ' + ', '.join(f'{k} {s}' for k, s in v['top'].items())
+            + (f' ({len(bound)} solutions bound to {alias})' if bound else f' (nothing bound to {alias})'))
+    if g is None:
+        return []
+    fail_on = g.get('fail_on', 'red')
+    missing = [x for x in g.get('goals') or () if x not in v['top']]
+    if missing:
+        return [_gate('gsn', name, 'error', '', '', 'core.gsn',
+                      f'not top goals of the safety case: {", ".join(missing)}')]
+    ok, tops = G.gate(v, g.get('goals'), fail_on)
+    worse = ('red',) if fail_on == 'red' else ('red', 'amber')
+    bad = [f'{k} is {tops[k]}: {v["nodes"][k]["why"]}' for k in tops if tops[k] in worse]
+    return [_gate('gsn', name, 'passed' if ok else 'failed', ', '.join(f'{k} {x}' for k, x in tops.items()),
+                  f'no top goal {" or ".join(worse)}', 'core.gsn (AND propagation)', '; '.join(bad))]
 
 
 def failure_modes(cfg: dict, out: str, res: dict, records: list):

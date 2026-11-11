@@ -144,6 +144,7 @@ only where documented (a regression gate with no baseline, unless `on_missing_ba
 | `rule_violations` | traffic-rule violations per km over the runs (core.rules; the suite's `rules`, by default by handedness), and per rule for a stack | stack, policy |
 | `latency` | percentile budgets (`p50_ms`, `p90_ms`, `p95_ms`, `p99_ms`, `max_ms`, `mean_ms`): a ROS 2 stack's control wait through the bridge (every step of every run, from `frames.jsonl`), a policy's decision time (`act()`), a model's inference per frame (`p50`, `p90`, `p99`, `mean`) — this machine's, under its load | all |
 | `max_missed_deadlines` | missed control deadlines summed over the runs | stack |
+| `gsn` | the workspace's living safety case once this run is bound in: no top goal red (`fail_on: amber`: nor amber); `goals: [G1, …]` judges only those; `path` names a `safety/gsn.json` other than the project's (below) | all |
 
 **How an interval judges a limit** (`rule`):
 
@@ -156,6 +157,22 @@ only where documented (a regression gate with no baseline, unless `on_missing_ba
 - `estimate` — compares the point estimate. The default for `metrics` and `rule_violations`.
 
 A `demonstrate` or `refute` rule on a number without an interval (one run) is an error, not a pass.
+
+### The living safety case
+
+When the run's project workspace holds a [GSN safety case](gsn.md) (`safety/gsn.json`, or `gates.gsn.path`), every
+Solution whose evidence is `ci:<this config's name>@latest` is re-verified **against this run's own results** at the
+end of the run — before its outputs are written, with the verdict the other gates give — and the verification is
+appended to `safety/gsn-events.jsonl` (by `ci`). `ci-results.json` records it under `gsn` (the top goals, the counts,
+the bound Solutions with their status and why). With the gate:
+
+```yaml
+gates:
+  gsn: {fail_on: red}            # or amber; goals: [G1] to judge only some top goals; path: safety/gsn.json
+```
+
+the run fails (exit 1) when a top goal is red — for instance when this run's failures lift a Clopper–Pearson upper
+bound above its claim's limit — and is an error (exit 2) when there is no safety case or it cannot be read.
 
 ### Regressions against a baseline
 
