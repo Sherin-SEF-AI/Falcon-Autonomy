@@ -23,7 +23,7 @@ folder beside it (`name.falcon/`). Machine settings (CARLA's folder, ports) and 
 | `trigger_rules` | [trigger rule] | optional: live trigger rules ([below](#trigger-rule), [scenarios](scenarios.md#trigger-rules)) |
 | `run_tags` | {run folder: [tag]} | optional: your tags on runs, keyed by the run's folder relative to the workspace (an absolute path outside it); the runs themselves are never changed |
 | `infrastructure` | {`rsus`: [roadside unit]} | optional: V2X roadside units standing in the worlds ([V2X](v2x.md)); an older build refuses a file that has it |
-| `simulator` | {`backend`} | optional (4.0, in progress): the CARLA backend the project's runs use, `carla-0.9.16` or `carla-ue5`; absent means `carla-0.9.16`, and it is written only when another backend is chosen, so a project that never chose one stays readable by older builds (an older build refuses a file that has it). No version change |
+| `simulator` | {`backend`} | optional (4.0): the CARLA backend the project's runs use, `carla-0.9.16` or `carla-ue5`; absent means `carla-0.9.16`, and it is written only when another backend is chosen, so a project that never chose one stays readable by older builds (an older build refuses a file that has it; [backends](backends.md)). No version change |
 
 Ids match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` and are unique within their list.
 
@@ -49,7 +49,7 @@ Ids match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` and are unique within their list.
 | `handedness` | `map` (what the map's lanes say), `left` or `right` (an assertion checked against the map) |
 | `vehicles`, `walkers` | how many |
 | `fleet` | weights per CARLA base type (`car`, `truck`, `van`, `bus`, `motorcycle`, `bicycle`), normalised at run time |
-| `behaviour` | traffic-manager settings: `distance_to_leading_m`, `speed_difference_pct`, `ignore_lights_pct`, `ignore_signs_pct`, `auto_lane_change`, `walker_crossing_factor`; optionally (4.0, in progress) `model`: `tm` (absent: the default, CARLA's traffic manager) or `levelk` (level-k game-theoretic traffic), and `levelk`: parameters per agent kind, `{kind: {k, lambda, alpha}}`. No version change: a profile without them is unchanged |
+| `behaviour` | traffic-manager settings: `distance_to_leading_m`, `speed_difference_pct`, `ignore_lights_pct`, `ignore_signs_pct`, `auto_lane_change`, `walker_crossing_factor`; optionally (4.0) `model`: `tm` (absent: the default, CARLA's traffic manager) or `levelk` (level-k game-theoretic traffic), and `levelk`: parameters per agent kind, `{kind: {k, lambda, alpha}}` ([level-k traffic](levelk.md)). No version change: a profile without them is unchanged |
 | `lateral_filtering` | optional: `enabled`, `vehicles` (`motorcycle`, `bicycle`, `autorickshaw`; default the first two), `controller` (`tm`, the default, or `own`) — two-wheelers that filter laterally ([Indian road assets](indian-assets.md#lateral-filtering)); absent: off. No migration: older projects simply do not have it |
 
 ## rig and sensor

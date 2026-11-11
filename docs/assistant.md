@@ -136,14 +136,16 @@ mode the model can ask to be resumed when a job it queued finishes (`plan_wait_j
 
 ## Tools on demand, and the per-minute token limit
 
-Falcon's 117 tools ([the list](assistant-tools.md)) are in eleven groups whose compact schemas weigh, in tokens
+Falcon's 129 tools ([the list](assistant-tools.md)) are in eleven groups whose compact schemas weigh, in tokens
 (characters / 4), about: project 3,000 (25 tools), jobs 3,200 (29), analysis 950 (11), lab 860 (7: hardware in the
 loop, deployment, CI mode, log replay, adversarial traffic, experiments, VLM evaluation), research 1,850 (16: the
 planner benchmark and its results, a dashcam incident made a scenario, ablations, the experiment registry, outputs for
 papers, failure modes, the triage queue and its edits, regression bisect, rig variants compared by perception, a scenario from a
 description and its check, generation rounds, the research autopilot and its studies; [experiments](experiments.md),
-[research autopilot](research-autopilot.md)), runs 850 (11), ui 670 (8), knowledge 320 (4), system 180 (4), and
-two groups of 4.0 in progress: cluster 50 (1: the compute nodes) and formal 120 (1: an STL formula checked) — 12,040
+[research autopilot](research-autopilot.md)), runs 850 (11), ui 670 (8), knowledge 320 (4), system 180 (4), cluster
+750 (6: the compute nodes, quotas, dispatch, a cloud burst's estimate and launch, the cache gc; [cluster](cluster.md),
+[cloud](cloud.md)) and formal 1,180 (8: STL formulas and falsification, the GSN safety case, causal probes of a
+policy; [falsification](falsification.md), [safety case](gsn.md), [introspection](introspection.md)) — 13,800
 in all,
 more than Groq's base per-minute limit. So each step sends:
 

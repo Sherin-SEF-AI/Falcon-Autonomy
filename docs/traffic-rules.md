@@ -113,7 +113,6 @@ every result.
 | `tl_red`, `tl_distance_m` | 0/1, m | the light on the route ahead is red; front to its stop line (gym traces; drives do not record light states) |
 | `speed_limit_kmh` | km/h | CARLA's `Vehicle.get_speed_limit()` where a trace records it; else the map's OpenDRIVE record for the ego's road (a lane `<speed>`, else the road type's); in a junction road the last limit before it |
 | `on_breaker`, `breaker_kmh` | 0/1, km/h | the ego's body is over a speed breaker or table the world's OpenDRIVE file carries (Falcon's road features: its length along the road ± half the ego's length, across the carriageway), and that breaker's advisory crossing speed; unknown without the OpenDRIVE file ([Indian road assets](indian-assets.md#road-features-in-opendrive-real-geometry)) |
-
 | `ttc_lead_s` | s | time to collision with the vehicle that gives `lead_gap_m`: both boxes at constant velocity and yaw, the exact moving separating-axis test, a 10 s horizon (core.criticality `ttc`); +∞ when there is no lead or it is not on a collision course within 10 s |
 | `ttc_min_s` | s | the smallest such TTC over every other recorded actor (vehicles and pedestrians); +∞ when none |
 | `drac_mps2` | m/s² | the largest deceleration rate to avoid a crash over the actors in the ego's path: v_rel² / (2 · gap) along the ego's heading (core.criticality `required_deceleration`; Archer 2005); 0 when nothing is in the path or closing; +∞ while the boxes overlap |

@@ -49,8 +49,11 @@ the cluster's caches ([cluster.md](cluster.md#cleaning-up)).
 of the camera's rgb image, the lidar sweep or the radar return), `label` (the address of the frame's label set: the
 canonical JSON `{kind: address}` of its semantic, instance, range, objects, flow, lidar labels and radar flags), each
 file's path, size and modification time. run.json is never modified; the summary (algorithm, root, counts) is in the
-parquet file's metadata. A second index reads only the files whose size or time changed. After a run finishes, the
-index is a cheap CPU job of its own (`lineage.after_job`, queued by the service).
+parquet file's metadata. A second index reads only the files whose size or time changed. Indexing after every
+finished run (a cheap CPU job of its own, `lineage.after_job`, queued by the service) is **opt-in**: the setting
+`lineage_auto_index` (off by default), because on a file system without reflinks the store hard-links the run's frames
+and so makes them read-only; otherwise a run is indexed by `falcon lineage index`, *Index runs* or a new dataset
+version.
 
 ## Merkle roots
 
