@@ -2,7 +2,8 @@
 
 Falcon Autonomy is one application for the loop of building a self-driving AI on CARLA 0.9.16:
 **generate → train → test → find failures → generate more exactly there.** This manual covers what the current build
-does; the [roadmap](roadmap.md) lists what is planned.
+does; the [roadmap](roadmap.md) lists what is planned. Since 4.0 a project can also name CARLA's UE5 line (0.10.x) as
+its simulator — an adapter tested on a fake, not yet on a real 0.10 server ([backends](backends.md)).
 
 ## Getting started
 
@@ -44,7 +45,13 @@ does; the [roadmap](roadmap.md) lists what is planned.
   result — a recorded drive in Data ▸ Browse, anything else on the page it was started from. **History** lists every
   finished job of the workspace, kept across restarts (`WORKSPACE/jobs/jobs.jsonl`: kind, title, start and end in
   UTC, status and what its exit code means, its result, its last error line), with **Open** and **Show the log**
-  (each job's whole log is kept in `WORKSPACE/jobs/logs/`; the newest 2000 jobs are kept).
+  (each job's whole log is kept in `WORKSPACE/jobs/logs/`; the newest 2000 jobs are kept). As soon as a job runs
+  on another machine the Jobs list gains a **Node** column: the cluster node and slot it runs on, or the pool it waits
+  for; its tooltip gives the job's global id and how often it was queued again after a lost node
+  ([cluster](cluster.md)).
+- **The cloud banner**: while a rented cloud machine could not be terminated, a red banner stays under the page header
+  (with *Retry now*) until it is — by the watchdog's timer, by the banner or by `falcon cloud terminate`; a desktop
+  notification is sent too ([cloud](cloud.md#a-bursts-life)).
 - **Notifications**: a job of 20 s or more that ends while Falcon's window is in the background raises a desktop
   notification (through the desktop's notification service, else the system tray) — off in Settings ▸ Job
   notifications. Nothing leaves the machine.
@@ -63,7 +70,11 @@ does; the [roadmap](roadmap.md) lists what is planned.
 - **Assistant** (Ctrl+Shift+A, Ctrl+K ▸ Ask Falcon…, or its status-bar badge): an agent that uses Falcon through its
   own tools, on a model server with your own API key (Groq by default), text only — off until you turn it on in
   Settings ▸ Assistant and accept what it sends. It asks before it changes anything (Ask mode), cites only numbers a
-  tool returned and marks any other, and lists every change with Undo ([assistant](assistant.md)).
+  tool returned and marks any other, and lists every change with Undo ([assistant](assistant.md)). The provider can
+  also be a local vLLM, Ollama, SGLang or other OpenAI-compatible server (no key on this machine or your network) or
+  Anthropic's Claude (Opus 5.5 and Sonnet 5.5) ([providers](assistant.md#providers)). **Claude Code** can use the same
+  tools in this window through Falcon's MCP server (`falcon --mcp`): each call one undo step "Claude · <tool>", trash
+  and the never-list refused ([MCP](mcp.md)).
 - **Themes**: View ▸ Dark theme / Light theme.
 
 ## Pages
@@ -112,6 +123,13 @@ behaviour (gaps, speed spread, ignoring lights and signs, random lane changes, w
 asserted handedness. *Add the Indian mixed-traffic profile* adds a left-hand profile with a high share of
 two-wheelers, buses, trucks and small cars; see [worlds](worlds.md) for its limits (the autorickshaw substitute).
 A run whose profile's handedness differs from the map's lanes is refused before it starts.
+
+**Level-k traffic** (4.0): a profile's vehicles can be driven by game-theoretic road users instead of CARLA's traffic
+manager — each best-responds to what it predicts the others will do a level below its own, so a two-wheeler inches
+into a stream that leaves it no gap until a driver yields, without a script. It is set in the project file
+(`behaviour: {"model": "levelk", "levelk": {kind: {k, lambda, alpha}}}` in a traffic profile); the Worlds page has no
+control for it yet. The same model can drive a scenario actor (`"driver": "levelk"`) and adversaries; `falcon levelk`
+simulates, checks and calibrates it without CARLA ([level-k traffic](levelk.md)).
 
 Limits, stated where weather is chosen: **CARLA's lidar and radar ignore weather** (no loss of range in rain or
 fog); rain on a camera is water on the lens and wet surfaces, not loss of range; **fog visibility ≈ 7000 m / fog
@@ -176,6 +194,13 @@ only: the file is never written), every rig records the same surround-view scena
 runs on every camera, and each rig is compared with the first — recall by sector, by clearance and near each stitch
 seam, paired, with intervals — and a note can be written for Vantage's design log ([rig comparison](rig-compare.md)).
 
+**Surround view** (4.0): the bird's-eye view of the selected rig's cameras (two or more, fisheye or pinhole) stitched
+over the ground from their own poses and lens models — on any recorded run, with a frame slider, the seams drawn
+(Vantage's own, or estimated by its rule), exposure balancing, OpenCV or CUDA, the tables' size and coverage and the
+frame time. *Export tables…* writes them with the Apache-2.0 reference stitcher for the vehicle; four 1080p fisheyes
+stitch at 122–137 frames/s on the reference machine's GPU. A ground-plane view: anything above the road is smeared
+([surround view](bev.md)).
+
 ### Scenarios
 The scenario studio: the library (eleven built-ins, four of them for Indian roads) and the project's own scenarios; a
 sketch of the scene with the actors where the seed's sample puts them and each parameter's range as a band; the
@@ -192,7 +217,9 @@ searched around ([dashcam](dashcam.md#a-real-incident-as-a-scenario)). **Describ
 autorickshaw cuts in from the left at a speed breaker at dusk* — by the assistant's model (validated against the
 scenario schema, repaired from its errors) or from Falcon's own phrase set offline, runs it, and checks the run claim
 by claim against the description: met, not met or not checkable, with the measured value
-([a scenario from a description](scenario-text.md)).
+([a scenario from a description](scenario-text.md)). A scenario actor can be a **level-k** road user (`"driver":
+"levelk"` with its level, assertiveness and target in the scenario's JSON): it then ignores its timeline's motion
+actions and plays the game ([level-k traffic](levelk.md#where-it-drives)).
 
 ### Rare cases
 Search a scenario's parameters for where it becomes critical (Bayesian optimisation, CMA-ES, adaptive sampling or
@@ -210,6 +237,21 @@ interval, by adaptive importance sampling over the scenario's declared parameter
 with an encounter rate you give ([failure rate](failure-rate.md)). **Operating-domain coverage** shows which cells of
 weather × road × actor × speed × light have been tested and how often, and fills the gaps with a scenario and a search
 per cell ([ODD coverage](odd-coverage.md)).
+
+**Falsify** (4.0): a requirement written in signal temporal logic — `G (ttc_min_s >= 1.5)`, a traffic rule, or one
+saved earlier — checked as you type (the parse error with its column), and a search for runs that violate it on its
+**robustness** ρ, how far a run was from violating it: CMA-ES, the cross-entropy method, Bayesian optimisation and the
+others climb towards ρ < 0 instead of guessing. The tab shows the best ρ, the falsified runs, the near misses, the runs
+whose ρ was unknown and a chosen run's ρ(t) with the time that decides it. On a planted landscape with 100
+evaluations, CMA-ES and Bayesian optimisation found the violation in 10 of 10 seeds on the robustness and in at most 2
+of 10 on the pass/fail verdict alone. The same objective drives an ordinary search (`--objective robustness`) and a
+failure rate whose failure is the violation (`--judge stl`) ([falsification](falsification.md)).
+
+**Runs on**: the Falsify tab and the failure-rate panel choose where their drives run — this machine, the cluster, or
+one of its pools; the study itself runs here. A scenario or world made from your dashcam footage stays on this
+machine: the reason shows and nothing is queued ([cluster](cluster.md)). The adversarial-traffic evaluation can add
+**level-k adversaries** beside the learned ones (*Add level-k adversaries*), judged by the same realism measures
+([adversarial traffic](adversarial-traffic.md), [level-k traffic](levelk.md)).
 
 ### Triage
 The team's queue of failures ([team workspace](team.md)): items assigned, investigated, fixed and verified, with
@@ -231,6 +273,23 @@ dataset (KITTI, nuScenes, BDD100K, COCO or a folder), statistic by statistic and
 distance next to its real-vs-real floor; optional appearance matching with its effect measured. See
 [models](models.md) and [sim-to-real](sim-to-real.md). World-model and language data are derived from drives by
 `falcon derive` ([world model](world-model.md)).
+
+**Introspection** (4.0): the workspace's token transformer policies — a driving policy whose inputs are named tokens
+(image patches, road users with their brake-light bit, the route, the ego's speed history) — trained here by
+behaviour cloning in the environment; an episode recorded with its attention, the most relevant tokens in a table and
+the patches and road users they point at in a 3D view; an intervention on the recording (mask the autorickshaws, turn
+the brake lights off, shift the speed history, hide the image, zero a head) with the change in steering and
+acceleration; and a **bias audit** of any ego in closed loop: the cue a shortcut would read and the true cause changed
+separately on the same seeds, with bootstrap reliance ratios. On the fake, a planted brake-light shortcut is flagged
+(reliance 1.00 on the minimum TTC) and an honest policy is not (0.00) ([introspection](introspection.md),
+[bias audits](bias-audit.md)).
+
+**Lineage** (4.0): every model and dataset version with the Merkle root of the exact frames and labels it was made
+from — *Verify* re-checks a model or version against its files, *Prove a frame…* shows with a handful of hashes that a
+frame was among a model's training samples, *Index runs* hashes runs' frames into the workspace's content store, and
+*Store* shows it. A trained model's ONNX file names its data's root; Data ▸ Datasets shows each version's root beside
+its SHA-256 ([lineage](lineage.md)). Indexing puts a run's frames into the store by hard link on ext4, which makes them
+read-only; so finished runs are indexed only on demand unless the setting `lineage_auto_index` is turned on.
 
 ### Training
 - **Detectors** fine-tunes a torchvision detector (BSD-3-Clause) on checked drives and optional real data. A held-out
@@ -323,10 +382,40 @@ Import a real or recorded log (nuScenes, Waymo v2, ROS 2 bags, KITTI raw, Falcon
 how well its path matches the lanes, replay it in CARLA, change it (timing, speeds, remove an actor, add a pedestrian,
 weather) and compare the original with the changed run ([log replay](log-replay.md)).
 
+**Reconstruction in 4D** (4.0): *Moving road users* trains a dynamic reconstruction — the source's tracked road users
+learned as actors in their box frames (turning wheels, deforming pedestrians) instead of masked, with a neural lidar
+when the source has one; fisheye views render by cube faces or through the lens model. *Drive a policy here* runs a
+policy in closed loop through the reconstruction: each episode is an ordinary run folder that the rules, STL and
+criticality read, and it ends where the ego leaves the trust envelope measured for the reconstruction (3 m by
+default). A first cut, tested on synthetic scenes only ([reconstruction](reconstruction.md#moving-actors-a-neural-lidar-fisheyes-and-closed-loop-4d)).
+
+**Near-misses** (4.0): *Ingest* reads a folder of your own dashcam clips — RT-DETRv2 with Falcon's ByteTrack,
+ranges from the flat ground fused with Depth Anything V2, your car's motion from its GPS and visual odometry — and
+ranks the moments another road user came critically close by time to collision, post-encroachment time and the
+deceleration that would have been needed; the clip plays at each event. *Make scenario* turns an event into a Falcon
+scenario with variations and OpenSCENARIO on an imported world, *Queue variations* searches around it, and
+*Reconstruct with moving road users* reconstructs the event's stretch of the clip in 4D with every tracked road user
+moving; it opens in Reconstruction, where *Drive a policy here* drives a policy through the real incident. Models are
+fetched only with their licence accepted (Ultralytics YOLO is refused), and everything stays on this machine: the
+ingest, the events, the reconstructions and every run made from them are private ([near-misses](nearmiss.md)). Tested
+on synthetic clips; not yet measured on real footage.
+
 ### Hardware
 Stream a camera (H.264 over RTP, or raw) and a lidar to a device — the Jetson AGX Orin, or a simulated device on this
 machine — take its control back, and measure latency stage by stage with a waterfall; the device's address and key
 live only in your settings ([hardware](hardware.md)).
+
+Since 4.0: **CAN** puts a chassis model (steering lag and delay, brake hysteresis, friction per surface with
+hydroplaning, wheel ticks that show slip) on a CAN or CAN FD bus — a SocketCAN interface, or a simulated link between
+the processes here — so the device's stack drives through CAN command frames, with a 100 ms command watchdog, an abort
+on bus errors and a kernel-timestamped "can" stage in the waterfall; Falcon opens only `vcan*` unless an adapter is
+confirmed as wired to a bench network, not a vehicle ([CAN](hardware.md#can)). **Clock source**: the device's clock
+offset by PTP or by the NTP-style pings, both recorded with their disagreement
+([clocks](hardware.md#clocks-ptp-and-the-ntp-style-fallback)). **V4L2 output**: the camera written into a V4L2 device
+(v4l2loopback) that any program opens as a camera, each frame barcoded so its latency can be measured
+([V4L2](hardware.md#the-camera-as-a-v4l2-device)). `falcon hil setup` prints the privileged commands these need; Falcon
+never runs them. Measured with the simulated link and the fake carla only: the "can" stage 0.079 ms median on
+classical CAN; a real bus, adapter, vcan, v4l2loopback and PTP between two machines are still to be run.
 
 ### Deployment
 The Models page's *Deploy* tab builds TensorRT engines for a model on the Jetson AGX Orin, profiles latency, power and
@@ -344,10 +433,37 @@ selection to a folder. **Outputs for a paper** write an experiment, an evaluatio
 and CSV tables and PDF, PNG and SVG figures with their intervals — byte-identical for the same source — and every
 dataset export carries a data card ([experiments](experiments.md#outputs-for-papers)).
 
+**Safety case (GSN)** (4.0): a safety argument in Goal Structuring Notation, started from an ISO 21448 SOTIF or ISO
+26262 template, whose Solutions are Falcon's own results — suites, CI runs, failure rates, falsification studies, rule
+checks, a trained model's data — bound by hash and by a claim (a Clopper–Pearson bound under a limit, ρ ≥ 0, a
+Merkle root that matches). Each node is drawn coloured as verified now: green, amber (the evidence changed or is
+missing), red (a claim broken) or grey (undeveloped), red propagating to the top goal. *Verify now*, *Re-bind*
+(undoable), *Export HTML…* and *Export SVG…*; a CI run re-verifies the `ci:<name>@latest` evidence and its `gsn` gate can
+fail the build. A failure rate or falsification run on the cluster or a cloud burst says where it ran. Falcon is not a
+qualified tool in the sense of ISO 26262-8: the case is evidence for a safety team, not a certification argument
+([safety case](gsn.md)).
+
 ### Settings
 Where CARLA and its Python are; Falcon's ports, the server's memory cap and quality; the render budget; the theme;
 whether place-name search may use the network; your name in a team workspace (Team). Stored in
 `$XDG_CONFIG_HOME/FalconAutonomy/settings.json`, never in a project.
+
+Sections added in 4.0:
+
+- **Simulator**: the default CARLA backend (0.9.16, or the UE5 line's 0.10.x) and each backend's folder and Python
+  ([backends](backends.md)).
+- **Performance**: the profile — *standard*, or *low_vram* for a GPU of about 8 GB (Low quality, a 512 MB texture
+  pool, a 96 Mpx render budget, FP16 inference kept only when the AP drops by at most 0.5 points, caps for
+  reconstruction and for the near-miss perception) — and the inference precision ([profiles](profiles.md)). None of
+  it has been measured on an 8 GB card yet.
+- **Assistant ▸ Provider**: Groq, a local vLLM, Ollama, SGLang or other OpenAI-compatible server, or Claude, with the
+  Claude key, effort and refusal fallback; *Let MCP clients work in this window* ([providers](assistant.md#providers),
+  [MCP](mcp.md)).
+- **Compute**: the cluster's nodes and pools (an SSH key is a path to your key file, never the key) and cloud bursts —
+  the provider, the worker image, the caps per burst ($10) and per month ($50), the TTL factor and the providers' API
+  keys, kept in the keyring ([cluster](cluster.md), [cloud](cloud.md)).
+- **Hardware**: the CAN interfaces Falcon may open (`vcan*` by default), the adapters confirmed as a bench network,
+  and the PTP interface and clock source ([hardware](hardware.md#can)).
 
 **Ports.** Falcon starts its own server on its own RPC port (default 2310; CARLA also listens on the next two) and
 traffic-manager port (8310). It never touches a server it did not start, nor ports 2000–2010 and 8100 (CARLA's
@@ -363,6 +479,8 @@ project and the runs, edit the project (one undoable edit per call), queue the j
 search this manual, point at a control on a page ("show me") — listed with their tiers in the
 [tool reference](assistant-tools.md). Runs are never deleted: the trash tool moves them into the workspace's `trash/`
 folder with a manifest, and they can be restored. Anything derived from your own dashcam footage is never read.
+
+<!-- 4.0 wave 2: the features of the branches still building are added to their pages above when they merge. -->
 
 ## The CARLA server
 
@@ -380,6 +498,29 @@ heavy job needs about 22 GB); otherwise the job waits, saying why, and starts wh
 **After a crash.** A worker whose server stops answering is ended by its watchdog (exit code 4) with `run.json`
 saying why. A worker killed outright cannot tidy up; Falcon then tidies the server (Tools ▸ Tidy the CARLA server
 does it by hand): it removes exactly what Falcon workers spawned and restores asynchronous mode.
+
+## Other machines: the cluster and cloud bursts
+
+A sweep, a rare-case search, a falsification, a failure rate or a regression bisect can send its drives to other
+machines — workstations on your network running Falcon's worker daemon, a Slurm cluster, a Kubernetes cluster — with
+`--on cluster[:POOL]` or a panel's *Runs on*, while the study runs here and decides what to drive next. A drive goes as
+a bundle of its config and the content of its inputs, never a path; each node is reached on 127.0.0.1 through a
+key-only SSH tunnel with a per-slot token; a job goes only to a node that has its CARLA backend and map; a node lost
+for 60 s has its jobs queued again; runs come back into the study's own folders with a `node` block in run.json.
+Nothing derived from your dashcam footage ever leaves this machine ([cluster](cluster.md)).
+
+A **cloud burst** runs one study on a GPU rented from RunPod or Lambda: an estimate first (its cost range and worst
+case under an id), a burst only with that id and under the caps, an independent watchdog that terminates the machine
+past its TTL or when it falls silent, and a red banner if a termination fails ([cloud](cloud.md)). RunPod's REST API
+v1 retires on 2026-11-15, so Falcon speaks v2, which has no spot pods: both providers are on demand.
+
+**Cleaning up**: `falcon cluster gc` (with `--dry-run` first, listing sizes) removes what nothing refers to — the
+content store's unreferenced objects, a node's orphaned scratch runs and CARLA logs, Slurm array folders of no queued
+array — and never a run, the trash, private data, the cloud's ledger or a held job; the assistant's `cluster_cache_gc`
+removes only an approved plan, asking in every mode ([cluster](cluster.md#cleaning-up)).
+
+All of this is tested with fakes only (daemons on 127.0.0.1, fake Slurm, Kubernetes and provider servers); real
+workstations, a real Slurm array, real pods and a paid burst are still to be run.
 
 ## Render budget and cost
 

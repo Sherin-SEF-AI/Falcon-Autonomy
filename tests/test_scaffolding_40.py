@@ -56,7 +56,10 @@ def test_settings_new_keys_and_an_older_file(tmp_path):
         assert k in DEFAULTS and k in EXPLAIN, k
     assert set(DEFAULTS) == set(EXPLAIN) and 'cluster' in PRIVATE_SETTINGS
     assert DEFAULTS['cloud'] == {'provider': '', 'max_usd_per_burst': 10.0, 'max_usd_month': 50.0, 'ttl_factor': 1.5}
-    assert DEFAULTS['hil_can'] == {'interfaces_allowed': ['vcan*']} and DEFAULTS['assistant']['provider'] == 'groq'
+    assert DEFAULTS['hil_can'] == {'interfaces_allowed': ['vcan*'], 'confirmed': {}}
+    assert DEFAULTS['assistant']['provider'] == 'groq'
+    from falcon_autonomy.assistant.service import EXTRA_DEFAULTS     # the provider's keys agree in both places
+    assert all(DEFAULTS['assistant'][k] == v for k, v in EXTRA_DEFAULTS.items())
     p = tmp_path / 'settings.json'                # a 2.x file: no new keys, an assistant group without provider
     p.write_text(json.dumps({'rpc_port': 2320, 'assistant': {'enabled': True}, 'cloud': {'max_usd_month': 20}}))
     st = Settings(str(p))

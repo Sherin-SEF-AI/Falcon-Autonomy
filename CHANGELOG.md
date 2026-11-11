@@ -2,6 +2,281 @@
 
 ## Unreleased
 
+### 4.0
+
+- **Two CARLA backends** (`sim/backends.py`, `sim/server.py`, `sim/service.py`, `workers/compat.py`,
+  `resources/carla/blueprints-carla-ue5.json`, `ui/settings_backend.py`, Settings ▸ Simulator, `falcon backend
+  list|check|probe`; docs/backends.md): CARLA 0.9.16 (UE 4.26) stays the default and changes nothing — its server
+  command is what Falcon always started, and run.json only gains `provenance.backend`. CARLA's UE5 line (0.10.x, on
+  UE 5.5) is a second backend: its own folder and Python, found in the usual places; a project may name it
+  (`simulator.backend`) and a drive carries it in its config and its cache key, so a 0.10 drive never stands in for a
+  0.9.16 one and every 0.9.16 key is unchanged. A worker runs in its backend's Python with `FALCON_BACKEND` set and
+  refuses the other backend's client (exit 7); on 0.10 it maps renamed blueprints (then a blueprint of the same base
+  type), reads `CityObjectLabel` at run time and maps tags by name, refuses a map the server lacks, imported and OSM
+  worlds (exit 6), turns lateral filtering off without a lane offset, and records every adaptation in run.json
+  (`compat`). `falcon backend probe` reads a real server's maps, blueprints, tags, weather fields and API into
+  `backends/<id>.json`. Tested on a fake UE5 `carla` (renamed and missing blueprints, shuffled tag values, no
+  `Osm2Odr`) through the unchanged service, study and benchmark paths: a smoke drive, a sweep and a benchmark route on
+  Town10HD_Opt on both fakes, labels pixel for pixel as on 0.9.16. **Nothing on 0.10 is measured**: the `ue5` tests
+  (`FALCON_REAL_UE5=1`) have not been run against a real installation.
+
+- **A low-VRAM profile** (`core/profiles.py`, `core/models.py`, `core/sysinfo.py`, `ui/settings_profile.py`, Settings ▸
+  Performance, `falcon profile show|set|measure`, `falcon evaluate --precision`; docs/profiles.md): *low_vram* sets
+  Low quality, a 512 MB texture pool (passed both ways Unreal accepts it), a 96 Mpx render budget, a 10 GB server cap
+  and *auto* inference precision, caps reconstruction (300 000 Gaussians, 480 px, half the GPU) and the near-miss
+  perception (batches of 2, `rtdetr-v2-r18` unless `--keep-detector`, Depth Anything V2 at 364 px instead of 518, 0.35
+  of the GPU, FP16 unless `inference_precision` is fp32; recorded in `ingest.json` and every `perception.json`), and
+  keeps the values it replaced to restore (`profile-saved.json`). FP16 evaluation converts an ONNX model once per
+  weights file (inputs and outputs stay FP32); *auto* keeps FP16 only when its AP is at most 0.5 points below FP32's
+  on the same frames, both recorded in `evaluation.json`. `falcon profile measure` samples the GPU's peak video memory
+  while a command runs; `falcon doctor` suggests the profile on a GPU of 9 GB or less. On the fake: FP16 kept at a
+  0.00-point drop, refused at 100.00 points for a model whose constants FP16 clamps. **Not measured on an 8 GB card**:
+  the acceptance target (a peak of at most 7.5 GB over an 8-step loop on the 16 GB card) is still to be run, and the
+  texture pool and the perception caps are chosen, not measured.
+
+- **Local model servers for the assistant** (`assistant/provider.py` `PROFILES`, `assistant/groq.py`,
+  `ui/settings_provider.py`, Settings ▸ Assistant ▸ Provider; docs/assistant.md#providers): vLLM, Ollama, SGLang and
+  any other OpenAI-compatible server, used with **no key** when the address is on this machine or a private, link-local
+  or CGNAT network (judged from the address alone; no `Authorization` header is sent then). What is Groq's alone — its
+  rate-limit headers, `x_groq` usage, reasoning parameters, `parallel_tool_calls` — goes to Groq only; a local server's
+  error shape, `max_model_len` and tool arguments sent as an object are read; Ollama's context is taken as 8,192 tokens
+  until set; a token limit of 0 turns pacing off. Tested against the fake server; not yet against a running vLLM,
+  Ollama or SGLang.
+
+- **Claude as the assistant's provider** (`assistant/anthropic_client.py`, `assistant/agent.py`, `assistant/service.py`,
+  `assistant/keystore.py`, the `claude` extra, Settings ▸ Assistant ▸ Provider; docs/assistant.md#claude): Anthropic's
+  official SDK (`anthropic>=2`), only `claude-opus-5-5` (the agent) and `claude-sonnet-5-5` (the fast lane), any other
+  id refused before anything is sent; the key kept like Groq's under its own name (`anthropic_api_key`). Adaptive
+  thinking with an explicit effort (Falcon's reasoning effort, or *Claude effort* up to max); every tool sent at every
+  step in a fixed order with a fixed system prompt, so the conversation's prefix is read from Anthropic's prompt cache;
+  strict, eagerly streamed tool inputs parsed and validated by Falcon before anything runs (15 of 119 tools with
+  free-form objects go without `strict`); the stop reason read before the content (a cut response runs none of its
+  tool calls); the server-side refusal fallback on by default, the answering model named; an append-only conversation
+  that sends Claude's thinking back unchanged. Prices: Opus 5.5 $4 / $20 per million tokens (cache reads $0.20),
+  Sonnet 5.5 $2 / $10 ($0.10). Tested against a fake Messages API speaking server-sent events
+  (`tests/fake_anthropic.py`); nothing was sent to Anthropic.
+
+- **Falcon as an MCP server** (`falcon_autonomy/mcp/`, `ui/mcp_bridge.py`, `falcon --mcp [--mcp-project FILE]
+  [--mcp-mode auto|window|file]`, Settings ▸ Assistant ▸ Provider ▸ *Let MCP clients work in this window*;
+  docs/mcp.md): Claude Code (or any MCP client) uses the assistant's read and act tools, ported from Vantage's MCP
+  server. With a window open, calls go through the window's bridge (127.0.0.1 only, a random token in
+  `<config>/mcp/<pid>.json`, 0600) and each act call is **one undo step "Claude · <tool>"**; without one, on a project
+  file, each act call is saved and the file is backed up once first, and a file changed on disk is never overwritten.
+  Resources `falcon://status|overview|runs|queue|run/{run}`; edits wait for every earlier call; protocol versions
+  2024-11-05 to 2025-11-25. Trash and the never-list are refused, as are steps that need a card in the window.
+  Tested through the stdio protocol (in process and as a subprocess) on a project file and on an offscreen window
+  through its bridge.
+
+- **A distributed worker mesh** (`falcon_autonomy/cluster/`, `core/jobs.py`, `sim/service.py`, `ui/qtjobs.py`,
+  `ui/settings_compute.py`, `ui/placement.py`, `packaging/cluster/`, Settings ▸ Compute, the Jobs dock's **Node**
+  column, `falcon cluster nodes|pools|dispatch|status`, `falcon worker-daemon serve|oneshot`, `--on
+  local|cluster|cluster:POOL` on sweep, search, failrate run, falsify run and bisect run; docs/cluster.md): a study's
+  drives run on LAN workstations (one worker daemon per slot on 127.0.0.1:2350+N only, reached through key-only SSH
+  tunnels with a per-slot token, a systemd user unit), local daemons, Slurm arrays or Kubernetes Jobs, while the study
+  runs here. A remote job is a **bundle** of its config and the content of its inputs, each checked by SHA-256 —
+  never a path; anything derived from the dashcam footage, interactive jobs and workers off the allow-list are refused
+  before anything leaves. Daemons advertise the CARLA backends they have with their maps and capabilities, and a job
+  goes only to a node that can run it ("no node has carla-ue5 (ws1/0 has carla-0.9.16)…"). Pools with quotas (at
+  once, per day), 15 s heartbeats, a slot lost after 60 s and its resumable jobs queued again at most twice, cancel
+  reaching the node; a finished run comes back zstd- or zlib-compressed into the job's own folder with a `node` block
+  in run.json — otherwise the run.json a local run writes, as the tests check on a 12-run sweep across two daemons.
+  The assistant: `cluster_nodes`, `cluster_quotas`, `cluster_dispatch`. Tested with daemons on 127.0.0.1 and the fake
+  CARLA (one killed mid-run and its job finished on the other), fake `sbatch`/`squeue`/`sacct`/`scancel` and
+  `kubectl`, and SSH through an in-process server. **Not yet run on real machines**: LAN workstations, a Slurm
+  array, Kubernetes pods (the worker image's Dockerfile has not been built), multi-GPU slots. The placement combo
+  (`ui/placement.py`) is in the Falsify tab and the failure-rate panel only.
+
+- **Cloud bursts** (`cluster/cloud.py`, `cluster/runpod.py`, `cluster/lambda_.py`, `cluster/cloudcli.py`,
+  `ui/cloud_banner.py`, Settings ▸ Compute, `falcon cloud estimate|burst|status|terminate|watchdog|ledger|orphans`;
+  docs/cloud.md): one failure-rate estimate, sweep or search of a CARLA town on a GPU rented from RunPod or Lambda. An
+  estimate gives low, expected and high costs, the TTL and the worst case under an id that hashes everything it
+  depends on; `burst --approve ID` prices it again and launches nothing if the id moved, an id runs once and is stale
+  after a day, and the caps ($10 a burst, $50 a month by default) refuse even an approved burst. Each burst has its own
+  Ed25519 key, an fsynced append-only ledger, termination confirmed with the provider (retried, else a red banner
+  under the page header and a desktop notification), and an independent `systemd-run --user` timer that terminates a
+  burst past its TTL, silent for 10 minutes, done or over its cost; Falcon-named machines left behind are swept at
+  start. API keys in the keyring, scrubbed from everything Falcon writes (checked by searching every file after a
+  burst with fake keys). The assistant: `cluster_spot_estimate`, `cluster_spot_burst` (a card in every mode). **RunPod's
+  REST API v1 retires on 2026-11-15**, so Falcon speaks v2, which has **no spot pods**: both providers are on demand.
+  Tested against fake RunPod and Lambda servers only; a real burst on each (capped at $5), the worker image pulled by
+  the providers, CARLA under `-nullrhi` there and the field names docs/cloud.md lists as unconfirmed are still to be
+  checked.
+
+- **Cleaning up the caches** (`cluster/gc.py`, `cluster/daemon.py`, `cluster/slurm.py`, `falcon cluster gc [--dry-run]
+  [--node N] [--older-than H] [--workspace W] [--json]`; docs/cluster.md#cleaning-up): removes what nothing refers to
+  and has not changed for H hours (24) — the workspace's content-store objects no version, run index (runs in the
+  trash included) or training names, a daemon slot's scratch runs of jobs it no longer holds and its CARLA logs, Slurm
+  array folders of no queued array — after a dry run with sizes; never a run, the trash, a project, private data, the
+  cloud's ledger or a held job. The assistant's `cluster_cache_gc` dry-runs first and removes only that plan's items
+  still removable, asking on a card in every mode. Tested on a daemon's scratch, a fake Slurm workdir and a content
+  store (`tests/test_cluster_gc.py`).
+
+- **Content-addressed lineage** (`core/cas.py`, `core/lineage.py`, `core/datasets.py`, `core/training.py`,
+  `ui/lineage_tab.py`, Models ▸ Lineage, Data ▸ Datasets, `falcon lineage index|verify|prove|diff|materialise|gc`;
+  docs/lineage.md): a store under each file's address (`s256:` SHA-256, or `b3:` BLAKE3 with the `lineage` extra) in
+  `<workspace>/cas/`, put by reflink, else hard link, else copy, with mark-and-sweep collection; a run's frames indexed
+  in `frames.parquet` (run.json untouched); a dataset version's samples in `splits/vNNN.parquet` with RFC 6962 Merkle
+  roots per split; every training hashes its samples and writes the training split's root into the ONNX file's
+  metadata before the registration's SHA-256 is computed. `verify` checks a model or version against its files,
+  `prove` gives an audit path (⌈log₂ n⌉ hashes), `materialise` rebuilds a version after its runs are gone. Tested
+  against RFC 6962's published roots and audit paths for one to eight leaves. On ext4 (this machine) there are no
+  reflinks: every put is a hard link, which makes the run's own file read-only.
+
+- **Near-misses mined from your dashcam footage** (`core/dashcam_ingest.py`, `core/nearmiss.py`,
+  `core/dashcam_detect.py`, `core/bytetrack.py`, `core/dashcam_depth.py`, `core/perception_models.py`,
+  `ui/dashcam_ingest.py`, Replay ▸ Near-misses, `falcon dashcam ingest`, `falcon dashcam nearmiss
+  models|fetch|list|scenario|variations`; docs/nearmiss.md): RT-DETRv2 (Apache-2.0) with Falcon's own ByteTrack, ranges
+  from the flat ground fused by inverse variance with Depth Anything V2 Small (Apache-2.0; Metric3D opt-in, its
+  weights' terms unstated), an autorickshaw size heuristic, GPS ego motion through a Kalman/RTS smoother with visual
+  odometry on candidate windows only, TTC, PET and DRAC, and events ranked by the median of a 50-draw depth-scale
+  bootstrap; the top 20 exported as stream-copied clips with posed frames and a detections file that the incident path
+  turns into a scenario and OpenSCENARIO. Ultralytics YOLO (AGPL-3.0), Depth Anything V2 Base and Large (CC-BY-NC-4.0)
+  and SMPL-based models are refused; models download only through `fetch NAME --accept-licence`, pinned by the
+  publisher's checksum and Falcon's SHA-256, and load offline. Everything is written under `DIR/falcon-ingest/`,
+  private. Measured on a synthetic clip: the lead car's fused ranges within 3 % (median), its minimum TTC within 0.5 s
+  of the truth and ranked first, the horizon within 6 px; odometry within 0.3° per pair on a synthetic yaw. **Not yet
+  measured on real footage**: the models are fetched only at acceptance.
+
+- **A near-miss in 4D** (`core/recon/dashcam_tracks.py`, `core/recon/fromdashcam.py`, `core/recon/data.py`,
+  `core/dashcam_ingest.py`, Replay ▸ Near-misses ▸ *Reconstruct with moving road users*, then Replay ▸ Reconstruction ▸
+  *Drive a policy here*, `falcon dashcam nearmiss reconstruct DIR EVENT`, `falcon recon from-dashcam … --dynamic
+  [--tracks PATH]`; docs/nearmiss.md, docs/reconstruction.md#moving-road-users-from-a-dashcam): the event's stretch of
+  the clip (± 2 s) is reconstructed with every road user the ingest tracked carried frame by frame into the
+  reconstruction's world (A_recon = C_recon · E_nearmiss⁻¹ · A_nearmiss) as a moving actor of its kind's typical size,
+  so `falcon recon closedloop` drives a policy through the real incident with its road users replaying what they did.
+  On a synthetic clip: the car's and the truck's boxes a median 0.73 m and 0.45 m from the truth (the reconstruction's
+  own poses a median 0.54 m from the GPS fixes), headings within 1.5° and 1.9°; on a rotated and shifted copy of the
+  ingest's world the chain is exact to 5 cm and 0.5°. Tested on synthetic clips only.
+
+- **Dashcam reconstructions stay private** (`assistant/privacy.py`, `cluster/bundle.py`, `core/recon/scene.py`,
+  `closedloop.py`, `rerender.py`, `hybrid.py`): a reconstruction made from the footage is private from its first file
+  (`dashcam.json`), its tracks with it, and every run made from it — closed-loop drives, re-rendered and hybrid runs —
+  carries the dashcam marker in its records; a record that names a private reconstruction is private while that
+  exists. The assistant reads none of it, and cluster and cloud bundles refuse it.
+
+- **STL falsification** (`core/stlobjective.py`, `core/stl.py`, `core/rules.py`, `core/search.py`, `ui/falsify_tab.py`,
+  Rare cases ▸ Falsify, `falcon falsify run|show|check`, `falcon stl compile|robustness`, `--objective robustness
+  --stl|--rule --scale --smooth` on search and sweep, `--judge stl` on failrate, `--method cem`; docs/falsification.md):
+  a requirement in signal temporal logic over the rule signals and six new surrogate-safety signals (`ttc_lead_s`,
+  `ttc_min_s`, `drac_mps2`, `pet_s`, `lat_clear_m`, `lon_gap_m`) is searched for a violation by its robustness ρ, with
+  the objective σ(−ρ/scale) clamped so that ρ < 0 exactly when the value is above the 0.5 failure threshold every
+  other part of Falcon reads; optional labelled soft-min smoothing for the searcher, the exact ρ in every result; the
+  deciding time of each run; unknown ρ (a signal not recorded) never counted as a failure; a cross-entropy optimiser.
+  The loop's ODD can ask for it per weak cell. On a planted landscape (0.115 % of the cube, 100 evaluations, seeds
+  0–9): CMA-ES 10 of 10 seeds, CEM 9, Bayesian optimisation 10 on the robustness against 0, 1 and 2 on the binary
+  verdict; random sampling 1. A landscape, not a stack; a real-server falsification is still to be run. The assistant:
+  `formal_stl_compile`, `formal_stl_robustness`, `formal_falsify_stl`.
+
+- **A living GSN safety case** (`core/gsn.py`, `core/ci.py`, `ui/gsn_tab.py`, Reports ▸ Safety case (GSN), `falcon gsn
+  new|show|bind|verify|export`, `falcon report gsn`, the CI gate `gates.gsn`; docs/gsn.md): an argument in Goal
+  Structuring Notation (`safety/gsn.json`, checked on every load and save) from an ISO 21448 SOTIF, ISO 26262 or blank
+  template, whose Solutions bind failure rates, suites, CI runs (`ci:<name>@latest` follows the newest), falsification
+  studies, rule checks and lineage files by SHA-256 and a claim (a one-sided Clopper–Pearson bound, a pass rate, ρ ≥ 0,
+  falsified runs, violations per km, a verdict, a field, a model's data root); verified green, amber, red or grey
+  with AND propagation to the top goals, every change in an append-only event log, re-binds undoable. A failure rate or
+  falsification bound as evidence records where it ran (this machine, the cluster's nodes and job ids, or a cloud
+  burst) and turns amber when that changes; `--measure data_root [--data REF]` binds a trained model's data by its
+  Merkle root — amber when the model or the data changes, red when they disagree (against a dataset version it checks
+  membership and naming, since the two roots cannot be equal by construction); the SOTIF template gains goal G7 for the
+  models' data. Measured in the tests: 0 failures in 60 runs bound the failure rate at 0.049 (green); a newer CI result
+  with 4 in 60 lifts it to 0.146 and turns the Solution, its goal and the top goal red; `falcon ci run` with the gate
+  exits 1. Every template states that Falcon is not a qualified tool in the sense of ISO 26262-8. The assistant:
+  `formal_gsn_tree`, `formal_gsn_verify`.
+
+- **Where a study's runs go, chosen in the panels** (`ui/placement.py`, `ui/falsify_tab.py`, `ui/failrate_panel.py`,
+  `sim/studio.py`, `sim/estimate.py`): Rare cases ▸ Falsify and the failure-rate panel have *Runs on* — this machine,
+  the cluster or one of its pools (passed as `--on`); a scenario or world made from the dashcam footage stays on this
+  machine, with the reason shown and nothing queued (`tests/test_gui_placement.py`).
+
+- **The bird's-eye surround view** (`core/bevstitch.py`, `runtime/bev_stitch.py`, `ui/bev_tab.py`, Rigs ▸ Surround
+  view, `falcon bev stitch|export|bench`; docs/bev.md): ported from Vantage — lens-model remap tables over the ground
+  from the rig's own poses, Vantage's seams or seams estimated by its rule, feathered weights, a body mask, Brown and
+  Lowe's gain compensation, a batched half-precision `grid_sample` on CUDA and OpenCV's remap on the CPU; the tables
+  export in Vantage's layout with its reference stitcher, which is **Apache-2.0** (copied unchanged into
+  `falcon_autonomy/runtime/`, unlike the rest of Falcon). Measured (RTX 5080, 2026-11-12): positions under 1 px (max)
+  after stitching four 190° fisheyes, 0.05 px median; torch against OpenCV 0.35 of 255 mean; four 1920 × 1080 fisheyes
+  at 122–137 frames/s from host memory, about 1900 with the frames on the GPU, 0.35 GiB; the runtime within 2 levels of
+  Falcon's stitcher. A ground-plane view (anything above the road is smeared); the Orin's speed is not measured.
+
+- **Dynamic 4D reconstruction and a neural lidar** (`core/recon/actors.py`, `core/recon/lidar.py`,
+  `core/recon/lens_raster.py`, Replay ▸ Reconstruction ▸ *Moving road users*, `falcon recon train --dynamic [--lidar]
+  [--camera all]`, `render --camera fisheye|--lidar|--radar`, `eval --lidar`; docs/reconstruction.md): tracked road
+  users (a Falcon run's actors, nuScenes annotations) learned as Gaussians in their box frames under learned rigid
+  corrections, wheels that turn and steer by the bicycle model, pedestrians with a small deformation network (no SMPL),
+  all in one rasterisation with the static scene; several cameras together; a lidar rendered beam by beam with
+  intensity and ray drop; fisheye rendering by cube faces or the lens fast path (they agree to 32 dB PSNR within 60°
+  of the axis, 24 dB at the rim); geometric radar, not learned. Tested on scenes rendered by Falcon's rasteriser: a
+  plane's lidar ranges within 3 mm, ray drop above 90 % accuracy on a planted window. **Not yet measured on real
+  data** (nuScenes mini, a real CARLA drive).
+
+- **A closed-loop neural simulator** (`core/recon/closedloop.py`, Replay ▸ Reconstruction ▸ *Drive a policy here*,
+  `falcon recon closedloop`; docs/reconstruction.md): `NeuralSim` has the learning environment's surface, so every
+  policy trained for CARLA drives through a reconstruction unchanged; the ego is the environment's kinematic bicycle
+  model, the other road users an `ActorController` (logged motion, or a reactive controller with the same interface);
+  each episode is an ordinary Falcon run folder that the rules, STL, criticality and exporters read. A trust envelope
+  from the reconstruction's own lateral-shift measurement (PSNR within 3 dB of the unshifted view) is recorded per
+  step, and an episode ends beyond `--deviate` (3 m). No road surface, no map, no traffic lights; tested on synthetic
+  scenes only.
+
+- **Introspection and bias audits** (`core/tokenpolicy.py`, `core/tokenfeatures.py`, `core/introspect.py`,
+  `core/biasaudit.py`, `workers/gym.py`, `workers/director.py`, `core/vlm_models.py`, `ui/introspect_tab.py`,
+  `ui/view3d.py`, Models ▸ Introspection, `falcon policy bc --arch token`, `falcon introspect
+  attention|intervene|audit`; docs/introspection.md, docs/bias-audit.md): a token transformer driving policy (40 image
+  patches from a ResNet-18 trunk, up to 16 object tokens with a brake-light bit, route and ego tokens with the speed
+  history) cloned in the environment from a privileged expert with optional DAgger; the environment gains object
+  tokens, the ego's speed history and an aligned depth image, and scenario vehicles light their brake lights as they
+  decelerate. Attention hooks on it and on Qwen2-VL with eager attention, attention rollout, patches projected into the
+  world; deterministic token, head and activation interventions. Bias audits run closed loop with common random
+  numbers and bootstrap reliance ratios: on the fake, a planted brake-light shortcut is flagged (minimum-TTC cue effect
+  4.67 [4.32, 5.00], reliance 1.00) and an honest IDM policy is not (cue effects exactly 0). CI and the Leaderboard run
+  token policies with their object tokens. The assistant: `formal_causal_probe`, `formal_causal_result`. The ResNet-18
+  trunk trains from random weights: no ImageNet weights are pinned in this build. Training on the real server and real
+  VLM weights are still to be run.
+
+- **Level-k traffic** (`core/levelk.py`, `core/trafficgraph.py`, `workers/levelk_traffic.py`, `workers/director.py`,
+  `workers/adversary.py`, `workers/scene.py`, Rare cases ▸ the adversaries' *Add level-k adversaries*, `falcon levelk
+  simulate|check|calibrate`; docs/levelk.md): game-theoretic road users (car, two-wheeler, autorickshaw, bus,
+  pedestrian) that choose an acceleration and lateral target by quantal best response to the others predicted a level
+  below, level 0 being IDM with gap acceptance and predicted reactively; plans executed through the jerk limit, so
+  motion stays within the realism limits by construction. They drive background traffic (a profile's `behaviour.model:
+  levelk`, set in the project file — the Worlds page has no control for it yet), scenario actors (`"driver": "levelk"`)
+  and adversaries. Measured: a level-1 or level-2 rider with α ≥ 0.5 enters a stream of level-0 cars at 3.05 s into a
+  1.29 s gap and the car brakes at 4.0 m/s², with no collision — inching emerges, while level 0 and a timid level 1
+  wait; calibration recovers planted parameters (α 0.629 ± 0.040 for 0.6, λ 6.20 ± 0.54 for 6.0) in 7 s; a gradient
+  search through a surrogate of the planner lowered the predicted minimum gap from 2.66 m to 2.45 m. On the fake CARLA,
+  twelve level-k adversary episodes were all realistic and none made the lane follower fail. Real-server runs and the
+  CARLA validation of real egos are still to be made.
+
+- **Hardware in the loop over CAN, PTP and V4L2** (`core/chassis.py`, `core/canmsgs.py`, `hil/canbridge.py`,
+  `core/ptp.py`, `hil/v4l2out.py`, `hil/gmsl.py`, `resources/can/falcon_chassis.dbc`, `ui/settings_hardware.py`,
+  Hardware ▸ CAN, Clock source and V4L2 output, Settings ▸ Hardware, `falcon hil setup`, `falcon hil can
+  dbc|interfaces|confirm|revoke|bench`, `falcon hil ptp conf|status`, `falcon hil v4l2 devices|pattern`, `falcon hil
+  session --can … --camera v4l2 --clock-source …`; docs/hardware.md): a chassis model (EPS lag after a transport
+  delay, brake hysteresis with different apply and release rates, friction per surface with Horne's hydroplaning speed,
+  wheel ticks that show slip) on a SocketCAN or CAN FD bus through the standard library, or a simulated link between
+  processes; a generated DBC (alive counters, CRC-8 SAE J1850) or your own DBC mapped by role; an interface allow-list
+  (`vcan*`) and a typed confirmation per real adapter that it is a bench network, not a vehicle (kept in
+  `hil_can.confirmed`); a 100 ms command watchdog to a safe hold, an abort on bus errors, a kernel-timestamped "can"
+  latency stage. PTP and the NTP-style pings both recorded with their disagreement; the camera written into a V4L2
+  device and read back through a GMSL2-ready capture grabber; `falcon hil setup` prints the privileged commands and
+  Falcon never runs them. Measured on a simulated CAN link with the fake carla (30 s at 10 Hz): the "can" stage 0.079 /
+  0.94 ms (median / p95) on classical CAN and 0.040 / 0.58 ms on CAN FD; the shared-realtime clock estimate 0.3 µs off
+  the known truth against 12.7 µs for the pings; tests of the chassis (63 % of a steering step at 110 ms, a brake loop
+  exactly the dead band wide). **Not yet run**: vcan, v4l2loopback, a USB CAN FD adapter and the Orin's mttcan, PTP
+  between two machines; GMSL2 injection needs hardware Falcon does not have.
+
+- **Fixes found while merging** (`core/jobs.py`, `ui/qtjobs.py`, `ui/pages/settings.py`, `sim/service.py`,
+  `core/settings.py`, `tests/test_mcp.py`): a cancelled worker was sent both a cancel on stdin and SIGTERM, which it
+  counted as two cancels and so exited mid-tidy with run.json saying it crashed — a worker now gets the stdin cancel
+  alone, other commands SIGTERM. The MCP tests keep one Qt application for the whole session instead of one each. A
+  settings section may decline a page that has no window (the Settings page then leaves it out) instead of failing.
+  Indexing every finished run into the content store is **opt-in** (`lineage_auto_index`, off by default), because the
+  store hard-links a run's frames on ext4 and so makes the run's own files read-only; `falcon lineage index` does it on
+  demand. The assistant's defaults in core.settings now carry the Claude provider's keys and `mcp_bridge`, the same
+  values `assistant.service` has used; `hil_can` carries `confirmed`.
+
+<!-- 4.0 wave 2: entries of the branches still building go above this line when they merge. -->
+
 - **4.0 scaffolding** (`cli.py`, `pyproject.toml`, `core/settings.py`, `core/project.py`, `schemas/project.schema.json`,
   `core/jobs.py`, `sim/service.py`, `assistant/keystore.py`, `assistant/tools/{cluster,cloud,formal,introspect}.py`,
   `ui/widgets.py`, the pages' hooks, `tests/conftest.py`): the shared files the 4.0 workstreams build on, final before
@@ -24,6 +299,8 @@
   a lint for bare `%` in help strings; markers for UE5, vcan, V4L2, real clusters, paid cloud, the Orin, nuScenes,
   model weights, CUDA and the network, each run only with its variable; no test reaches the network; temporary files on
   disk (`/var/tmp`) instead of the `/tmp` tmpfs.
+
+### Since 2.3.0, before 4.0
 
 - **The research autopilot** (`core/autoresearch.py`, `assistant/tools/autopilot.py`, `ui/research_view.py`,
   `assistant/agent.py`, `assistant/tool_api.py`, Assistant panel ▸ Research; docs/research-autopilot.md): a question

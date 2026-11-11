@@ -24,7 +24,9 @@ SERVER_MEMORY_GB = 12.0
 MEMORY_RESERVE_GB = 2.0          # left free for the desktop and the GUI whenever Falcon starts something heavy
 # the assistant (docs/assistant.md): off and without consent until the user turns it on and accepts its notice; the
 # key is never here (assistant.keystore). Prices: $ per million tokens (input, output), the user's own table — the
-# defaults are what console.groq.com/docs/models listed on 2026-10-30.
+# defaults are what console.groq.com/docs/models listed on 2026-10-30. The Claude provider keeps its own models, limit,
+# server and model list under 'anthropic' (assistant.service.ANTHROPIC_DEFAULTS, the same values; Anthropic's prices
+# are assistant.anthropic_client.PRICES).
 ASSISTANT_DEFAULTS = {
     'enabled': False,
     'consent': 0,                        # the version of the notice the user accepted (0: none)
@@ -44,7 +46,18 @@ ASSISTANT_DEFAULTS = {
                'qwen/qwen3.8-27b': [0.80, 4.00]},
     'models': [],                        # the server's last model list ({id, context_window}), from Refresh
     'models_checked': '',
-    'provider': 'groq',                  # assistant.provider.PROFILES (4.0: groq; local vllm/ollama/sglang to come)
+    'provider': 'groq',                  # groq | vllm | ollama | sglang | openai-compatible | anthropic
+    'anthropic': {                       # the Claude provider's own keys (docs/assistant.md#claude)
+        'main_model': 'claude-opus-5-5',
+        'fast_model': 'claude-sonnet-5-5',
+        'effort': '',                    # '': the reasoning effort above; else low | medium | high | xhigh | max
+        'fallback': True,                # server-side refusal fallback; off: a refused request stops
+        'tpm_limit': 0,                  # no pacing unless the user sets their tier's limit
+        'base_url': 'https://api.anthropic.com',
+        'models': [],
+        'models_checked': '',
+    },
+    'mcp_bridge': True,                  # the open window lets a local MCP client (Claude Code) in (docs/mcp.md)
 }
 # a cloud burst (4.0, cluster/cloud): never without an approved estimate, and refused over these caps even when approved
 CLOUD_DEFAULTS = {
@@ -77,7 +90,7 @@ DEFAULTS = {
     'user_name': '',                     # who you are in a team workspace (core.team): a label, not an account
     'hil_device': {},                    # the HIL device: address, ports, SSH user and key path (core.hil); no password
     'assistant': copy.deepcopy(ASSISTANT_DEFAULTS),
-    # 4.0 (in progress): a second CARLA backend, the low-VRAM profile, cluster and cloud execution, CAN and PTP HIL
+    # 4.0: a second CARLA backend, the low-VRAM profile, cluster and cloud execution, CAN and PTP HIL
     'carla_roots': {},                   # backend id -> its CARLA folder (empty: carla_root / the first found)
     'client_pythons': {},                # backend id -> the venv its workers run in (empty: client_python / beside it)
     'default_backend': 'carla-0.9.16',   # 'carla-0.9.16' or 'carla-ue5' (a project's simulator.backend overrides it)
@@ -86,7 +99,8 @@ DEFAULTS = {
     'texture_pool_mb': 0,                # the server's texture streaming pool; 0: CARLA's own
     'cluster': {'nodes': []},            # compute nodes: {name, host, ssh_user, ssh_key (a path), slots, pool}; no secret
     'cloud': copy.deepcopy(CLOUD_DEFAULTS),
-    'hil_can': {'interfaces_allowed': ['vcan*']},  # CAN interfaces Falcon may open (patterns); real ones added by hand
+    'hil_can': {'interfaces_allowed': ['vcan*'],   # CAN interfaces Falcon may open (patterns); real ones added by hand
+                'confirmed': {}},                   # adapter -> {statement, at}: confirmed as a bench network
     'hil_ptp': {'interface': '', 'clock_source': 'auto'},   # PTP on this NIC, or an NTP-style fallback (recorded)
 }
 
@@ -136,29 +150,32 @@ EXPLAIN = {
     'hil_device': ('Hardware page', 'the hardware-in-the-loop device: address, ports, SSH user and key path (private: '
                    'never in a project; no password here)'),
     'assistant': ('Settings ▸ Assistant (and the Assistant panel)', 'the assistant: on or off, the notice accepted, '
-                  'the server, the main and fast models, the token limit, temperature, reasoning effort, permission '
-                  'mode, the price table, next-step suggestions on or off, show-me mode; never the key (keyring or '
-                  'secrets file)'),
-    'carla_roots': ('Settings ▸ Simulator (4.0, in progress)', 'the CARLA folder of each backend (carla-0.9.16, '
+                  'the provider (Groq, a local vLLM, Ollama, SGLang or other OpenAI-compatible server, or Anthropic\'s '
+                  'Claude) and its server, the main and fast models, the token limit, temperature, reasoning effort, '
+                  'permission mode, the price table, next-step suggestions on or off, show-me mode; Claude\'s own '
+                  'models (Opus 5.5 and Sonnet 5.5), effort, refusal fallback, limit and server; whether the open '
+                  'window lets a local MCP client such as Claude Code in; never a key (keyring or secrets file)'),
+    'carla_roots': ('Settings ▸ Simulator', 'the CARLA folder of each backend (carla-0.9.16, '
                     'carla-ue5); empty: the CARLA folder setting or the first one found'),
-    'client_pythons': ('Settings ▸ Simulator (4.0, in progress)', 'the venv each backend\'s workers run in; empty: '
+    'client_pythons': ('Settings ▸ Simulator', 'the venv each backend\'s workers run in; empty: '
                        'the CARLA Python setting or the venv beside that backend\'s folder'),
-    'default_backend': ('Settings ▸ Simulator (4.0, in progress)', 'the CARLA backend runs use when the project does '
+    'default_backend': ('Settings ▸ Simulator', 'the CARLA backend runs use when the project does '
                         'not name one: carla-0.9.16 (UE4) or carla-ue5 (0.10.x)'),
-    'profile': ('Settings ▸ Performance (4.0, in progress)', 'standard, or low_vram: Low quality, a smaller texture '
+    'profile': ('Settings ▸ Performance', 'standard, or low_vram: Low quality, a smaller texture '
                 'pool and render budget, FP16 inference, for cards of about 8 GB'),
-    'inference_precision': ('Settings ▸ Performance (4.0, in progress)', 'fp32, fp16 or auto (fp16 kept only when '
+    'inference_precision': ('Settings ▸ Performance', 'fp32, fp16 or auto (fp16 kept only when '
                             'the accuracy drop stays within half a point)'),
-    'texture_pool_mb': ('Settings ▸ Performance (4.0, in progress)', 'the server\'s texture streaming pool in MB; 0: '
+    'texture_pool_mb': ('Settings ▸ Performance', 'the server\'s texture streaming pool in MB; 0: '
                         'CARLA\'s own'),
-    'cluster': ('Settings ▸ Compute (4.0, in progress)', 'compute nodes jobs may be placed on: address, SSH user, key '
+    'cluster': ('Settings ▸ Compute', 'compute nodes jobs may be placed on: address, SSH user, key '
                 'path, slots and pool (private: addresses; never a password)'),
-    'cloud': ('Settings ▸ Compute (4.0, in progress)', 'cloud bursts: the provider, the caps per burst ($10) and per '
+    'cloud': ('Settings ▸ Compute', 'cloud bursts: the provider, the caps per burst ($10) and per '
               'month ($50) that refuse a burst even when approved, and the factor over the estimate after which its '
               'machines are terminated; the API key is kept in the keyring'),
-    'hil_can': ('Settings ▸ Hardware (4.0, in progress)', 'the CAN interfaces Falcon may open (patterns; vcan* by '
-                'default, a real adapter only once confirmed there)'),
-    'hil_ptp': ('Settings ▸ Hardware (4.0, in progress)', 'the network interface for PTP time sync, and the clock '
+    'hil_can': ('Settings ▸ Hardware', 'the CAN interfaces Falcon may open (patterns; vcan* by '
+                'default, a real adapter only once confirmed there), and the adapters confirmed as wired to a bench '
+                'network, not a vehicle, each with the statement and its time (falcon hil can confirm|revoke)'),
+    'hil_ptp': ('Settings ▸ Hardware', 'the network interface for PTP time sync, and the clock '
                 'source (auto: PTP when available, else an NTP-style fallback; both recorded)'),
 }
 PRIVATE_SETTINGS = ('recent_projects', 'hil_device', 'cloud_llm', 'cluster')

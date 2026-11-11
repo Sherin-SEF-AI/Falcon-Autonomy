@@ -116,6 +116,43 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
   asks), approval cards with the exact change, an activity log with Undo, a grounding check on every number, text
   only and nothing sent before you accept its notice ([assistant](docs/assistant.md)).
 
+### 4.0 (unreleased)
+
+Built and tested in this repository; most of it only against fakes, as each line says. Numbers are the tests' or the
+reference machine's.
+
+- **Two CARLA backends and a low-VRAM profile**: CARLA 0.9.16 stays the default; CARLA's UE5 line (0.10.x) runs
+  through an adapter tested on a fake UE5 `carla`, never yet on a real 0.10 server. The low_vram profile (Low quality,
+  a 512 MB texture pool, a 96 Mpx budget, FP16 kept only when AP drops by at most 0.5 points) has not yet been measured
+  on an 8 GB card ([backends](docs/backends.md), [profiles](docs/profiles.md)).
+- **More assistant providers, and Falcon in Claude Code**: local vLLM, Ollama and SGLang servers without a key, Claude
+  Opus 5.5 and Sonnet 5.5 on Anthropic's SDK, and `falcon --mcp` serving the assistant's tools to Claude Code in the
+  open window (one undo step per call) or on a project file; tested against fake servers
+  ([assistant](docs/assistant.md#providers), [MCP](docs/mcp.md)).
+- **Other machines**: a study's drives on LAN workstations, Slurm or Kubernetes (`--on cluster`), and one study on a
+  rented RunPod or Lambda GPU, priced and approved first under caps with an independent watchdog; tested with local
+  daemons and fake batch systems and providers only ([cluster](docs/cluster.md), [cloud](docs/cloud.md)).
+- **Content-addressed lineage**: every dataset version and trained model names the Merkle root of its frames and
+  labels; a frame's membership proved with an RFC 6962 audit path ([lineage](docs/lineage.md)).
+- **Near-misses in your dashcam footage**: detection, tracking, monocular ranges and TTC, PET and DRAC over a folder
+  of clips, ranked events made scenarios or reconstructed in 4D and driven through in closed loop; private to this
+  machine; tested on synthetic clips, not yet on real footage ([near-misses](docs/nearmiss.md)).
+- **Falsification and a living safety case**: STL requirements searched by their robustness (on a planted landscape
+  CMA-ES and Bayesian optimisation found the violation in 10 of 10 seeds, random sampling in 1), and a GSN argument
+  whose evidence is bound by hash and claim and re-verified in CI ([falsification](docs/falsification.md),
+  [safety case](docs/gsn.md)).
+- **Surround view and 4D reconstruction**: a bird's-eye view stitched from a rig's cameras at 122–137 frames/s for
+  four 1080p fisheyes, with an Apache-2.0 stitcher for the vehicle; tracked actors, a neural lidar, fisheye rendering
+  and a closed-loop neural simulator, tested on synthetic scenes ([surround view](docs/bev.md),
+  [reconstruction](docs/reconstruction.md)).
+- **Introspection, bias audits and level-k traffic**: a token transformer policy with attention in the world and
+  interventions; closed-loop bias audits that flag a planted brake-light shortcut and not an honest policy; game-
+  theoretic road users where two-wheeler inching emerges; on the fake CARLA ([introspection](docs/introspection.md),
+  [bias audits](docs/bias-audit.md), [level-k traffic](docs/levelk.md)).
+- **Hardware in the loop over CAN, PTP and V4L2**: a chassis model on a CAN or CAN FD bus with a command watchdog, PTP
+  and NTP-style clock offsets recorded side by side, the camera as a V4L2 device; measured on a simulated CAN link
+  only — a real bus, adapter and PTP between machines are still to be run ([hardware](docs/hardware.md#can)).
+
 ## Requirements
 
 - Linux x86_64 (developed on Ubuntu 26.04), an NVIDIA GPU with its Vulkan driver, systemd (user scopes).
@@ -153,6 +190,10 @@ FALCON_REAL_CARLA=1 python3 -m pytest -m real_server     # also against a real C
 [world model](docs/world-model.md) · [audio](docs/audio.md) · [training](docs/training.md) · [experiments](docs/experiments.md) · [research autopilot](docs/research-autopilot.md) · [generating data](docs/generation.md) · [scenarios from text](docs/scenario-text.md) · [policies](docs/policies.md) · [loop](docs/loop.md) · [reports](docs/reports.md) ·
 [stack testing](docs/stack-testing.md) · [V2X](docs/v2x.md) · [log replay](docs/log-replay.md) · [hardware](docs/hardware.md) ·
 [packaging](docs/packaging.md) · [deploy](docs/deploy.md) · [CI](docs/ci.md) · [assistant](docs/assistant.md) ·
+[MCP](docs/mcp.md) · [backends](docs/backends.md) · [profiles](docs/profiles.md) · [cluster](docs/cluster.md) ·
+[cloud](docs/cloud.md) · [lineage](docs/lineage.md) · [near-misses](docs/nearmiss.md) ·
+[falsification](docs/falsification.md) · [safety case](docs/gsn.md) · [surround view](docs/bev.md) ·
+[introspection](docs/introspection.md) · [bias audits](docs/bias-audit.md) · [level-k traffic](docs/levelk.md) ·
 [roadmap](docs/roadmap.md) · [changelog](CHANGELOG.md)
 
 ## Licence
