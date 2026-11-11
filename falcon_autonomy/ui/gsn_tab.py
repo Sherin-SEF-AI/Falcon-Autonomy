@@ -136,7 +136,8 @@ class GsnTab(QWidget):
         self.view.setMinimumHeight(320)
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
         v.addWidget(self.view)
-        self.info = KeyValues(('Node', 'Type', 'Text', 'Status', 'Why', 'Evidence', 'Claim', 'Pinned', 'Bound'))
+        self.info = KeyValues(('Node', 'Type', 'Text', 'Status', 'Why', 'Evidence', 'Claim', 'Pinned', 'Ran',
+                               'Bound'))
         v.addWidget(self.info)
         self.undo.canUndoChanged.connect(self.undo_btn.setEnabled)
         self.undo_btn.setEnabled(False)
@@ -224,7 +225,10 @@ class GsnTab(QWidget):
         self.info.set('Evidence', f'{ev.get("kind")}: {ev.get("ref")} → {r.get("path") or ev.get("path") or "—"}'
                       if ev else '—')
         self.info.set('Claim', json.dumps(ev.get('claim')) if ev else '—')
-        self.info.set('Pinned', ev.get('sha256') or '—')
+        self.info.set('Pinned', ev.get('sha256') or '—', tip='\n'.join(f'{k}: {v}' for k, v in (
+            (ev.get('data') or {}).get('sha256') or {}).items()))
+        w = ev.get('where')
+        self.info.set('Ran', G.where_text(w) if w else '—', tip=', '.join((w or {}).get('gids') or ())[:2000])
         self.info.set('Bound', ev.get('bound_at') or '—')
         self.rebind_btn.setEnabled(n['type'] == 'Solution' and bool(ev.get('ref')))
 

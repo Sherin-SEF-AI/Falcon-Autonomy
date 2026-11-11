@@ -4,7 +4,9 @@
 * Failure rate — adaptive importance sampling over the page's scenario (its objective, world, rig, threshold, weather
   searched, rate and seed), a job (`falcon failrate run`, sim.estimate); the probability per encounter with its 95 %
   interval, the effective failures, the rate per km or hour when an encounter rate is given, and why an estimate was
-  refused or carries a warning;
+  refused or carries a warning. Its runs go to this machine, the cluster or a pool of it (Runs on, ui.placement:
+  `--on`); a scenario or world made from the dashcam footage never leaves this machine — the reason shows and nothing
+  is queued;
 * Operating-domain coverage — the ODD grid (core.oddcoverage) as two dimensions at a time, each entry coloured by the
   stated rule on its runs, with how many of its cells are untested; a chosen entry's cells listed with their runs,
   bounds and the failure-rate estimates there; and an action that adds a scenario per empty or under-sampled cell to
@@ -23,6 +25,7 @@ from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout
 from ..core import failrate as FR
 from ..core import oddcoverage as OC
 from ..core.jobs import FINAL, JobSpec
+from .placement import PlacementCombo
 from .widgets import Form, KeyValues, Section, Stat, button, callout, label
 
 JUDGES = (('objective', 'The search\'s objective ≥ the threshold'), ('checks', 'The scenario\'s pass criteria'),
@@ -50,7 +53,7 @@ class FailureRateSection(Section):
                          'effective failures carry it. It uses the scenario, objective, world, rig, threshold, '
                          'weather, rate and seed chosen above. docs/failure-rate.md.')
         self.page = page
-        self.win = page.win
+        self.win = getattr(page, 'win', None)
         self.job = None
         f = Form()
         self.stage = QSpinBox()
@@ -78,15 +81,21 @@ class FailureRateSection(Section):
                                    'your figure, with its source — simulation cannot measure it')
         self.source = QLineEdit()
         self.source.setPlaceholderText('where the encounter rate comes from')
+        self.placement = PlacementCombo(getattr(self.win, 'settings', None))
+        self.placement.currentIndexChanged.connect(lambda _: self._placement_changed())
         for text, w, note in (('Runs per stage', self.stage, 'adaptation: each stage moves the sampling towards the '
                                                              'failures'),
                               ('Final runs', self.final, 'the estimate is made from these'),
                               ('Stages at most', self.stages, ''), ('A failure is', self.judge, ''),
                               ('Rate', self.per, ''), ('Encounters per unit', self.encounters, ''),
-                              ('Source of the rate', self.source, '')):
+                              ('Source of the rate', self.source, ''),
+                              ('Runs on', self.placement, 'the study runs here; its drives go there')):
             f.row(text, w, note)
         self.form = f
         self.add(f)
+        self.where = callout('', 'critical')
+        self.where.hide()
+        self.add(self.where)
         b = QHBoxLayout()
         self.start_btn = button('Estimate the failure rate', self.start, role='primary',
                                 tip='falcon failrate run (a job; resumable)')
@@ -116,6 +125,26 @@ class FailureRateSection(Section):
             self.form.set_row_visible(w, on)
         self.load()
 
+    # ---------------------------------------------------------------- where its runs go
+    def placement_refusal(self) -> str:
+        """Why the page's scenario cannot run where chosen ('' when it can): dashcam-derived data stays here."""
+        p = self.page
+        ident = p.scenario.currentData() if hasattr(p, 'scenario') else None
+        scn = next((s for k, s in p.scenarios() if k == ident), None) if hasattr(p, 'scenarios') else None
+        world = None
+        try:
+            world = self.win.project.item('worlds', p.world.currentData())
+        except AttributeError:
+            pass
+        return self.placement.refusal(scn, world)
+
+    def _placement_changed(self) -> str:
+        why = self.placement_refusal()
+        self.where.label.setText(why)
+        self.where.setVisible(bool(why))
+        self.start_btn.setEnabled(not why)
+        return why
+
     def study(self) -> str:
         from ..sim.estimate import estimate_name
         p = self.page
@@ -124,7 +153,7 @@ class FailureRateSection(Section):
                              self.judge.currentData() or 'objective')
 
     def result_path(self) -> str:
-        if not self.win.project.path:
+        if self.win is None or not self.win.project.path:
             return ''
         return os.path.join(self.win.workspace(), 'studies', self.study(), 'failure-rate.json')
 
@@ -144,21 +173,29 @@ class FailureRateSection(Section):
         if per != 'encounter' and not self.encounters.value() > 0:
             self.kv.set('State', f'give how many encounters happen per {per}, or choose per encounter')
             return
+        why = self._placement_changed()
+        if why:
+            self.kv.set('State', f'not queued: {why}')
+            return
         argv = [sys.executable, '-m', 'falcon_autonomy'] + estimate_argv(
             w.project.path, p.scenario.currentData(), self.study(), p.world.currentData(), p.rig.currentData(),
             self.stage.value(), self.final.value(), max_stages=self.stages.value(), batch=p.batch.value(),
             threshold=p.threshold.value(), seed=p.seed.value(), judge=self.judge.currentData(), objective=obj,
             count=p.count.currentData(), feasibility=p.feasible.isChecked(), model=p.model.currentData() or '',
             weather=p.weather_dims(), fps=p.fps.value(), exposure_per=per, encounters=self.encounters.value(),
-            exposure_source=self.source.text().strip(), fake_carla=w.fake_carla)
+            exposure_source=self.source.text().strip(), fake_carla=w.fake_carla) + self.placement.argv()
+        on = self.placement.placement()
         self.job = w.queue.submit(JobSpec('study', f'Failure rate of {p.scenario.currentText()} (at most '
                                                    f'{self.stages.value() * self.stage.value() + self.final.value()} '
-                                                   'runs)', argv, memory_gb=0.5))
-        w.jobs_dock.raise_()
+                                                   'runs)' + ('' if on == 'local' else f' on {on}'), argv,
+                                          memory_gb=0.5))
+        if hasattr(w, 'jobs_dock'):
+            w.jobs_dock.raise_()
         self.kv.set('State', self.job.summary())
 
     def load(self):
         from ..core.provenance import read_json
+        self._placement_changed()                               # the page's scenario or world may have changed
         path = self.result_path()
         res = None
         if path and os.path.isfile(path):

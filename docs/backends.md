@@ -85,6 +85,12 @@ falcon backend probe [ID] [--wait S] [--keep-server] [--json]
 
 `check` and `probe` default to the setting's backend.
 
+**On a cluster** ([cluster.md](cluster.md#scheduling)) each worker daemon's hello names the backends its machine has
+— a backend whose folder holds its server and whose client Python is there — with their capabilities and maps as
+above (declared, or a probe's), and the scheduler sends a job only to a node that has the job's backend and the map
+and capabilities its run needs: a project on CARLA 0.10 with no 0.10 node is refused ("no node has carla-ue5 (ws1/0
+has carla-0.9.16)…"). Tested with the UE5 fake behind one local daemon and the 0.9.16 fake behind another.
+
 ## Tests and limits
 
 `tests/fake_carla_ue5` is the 0.9.16 fake run in its own namespace and changed where the adapter has to cope: version

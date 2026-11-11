@@ -12,8 +12,8 @@ minimum, the deciding time), `core/search.py` (the searchers, `cem` among them);
 
 | where | what |
 |---|---|
-| Rare cases ▸ *Falsify* | the requirement typed with its parse error (and column) as you type, or a rule of a set, or a saved one; scenario, method, budget, scale, smoothing, near-miss margin; *Falsify* queues the study as a job; the best ρ, the falsified runs (ρ < 0), the near misses (0 ≤ ρ < margin), the runs whose ρ was unknown, and the chosen run's ρ(t) with the time that decides it |
-| `falcon falsify run PROJECT --scenario S (--stl TEXT \| --rule SET:ID \| --name N) [--method cmaes\|cem\|bayes\|bayes-pof\|adaptive\|random] [--budget N] [--batch N] [--scale S] [--smooth β] [--margin M] [--world W] [--rig R] [--seed N] [--weather FIELD] [--fps F] [--fake-carla DIR]` | a resumable study `studies/falsify-<scenario>-<key>`; its `falsify.json` at the end |
+| Rare cases ▸ *Falsify* | the requirement typed with its parse error (and column) as you type, or a rule of a set, or a saved one; scenario, method, budget, scale, smoothing, near-miss margin, *Runs on* (this machine, the cluster or one of its pools: [cluster](cluster.md); a scenario or world made from the dashcam footage stays on this machine — the reason shows and the study is not queued); *Falsify* queues the study as a job; the best ρ, the falsified runs (ρ < 0), the near misses (0 ≤ ρ < margin), the runs whose ρ was unknown, and the chosen run's ρ(t) with the time that decides it |
+| `falcon falsify run PROJECT --scenario S (--stl TEXT \| --rule SET:ID \| --name N) [--method cmaes\|cem\|bayes\|bayes-pof\|adaptive\|random] [--budget N] [--batch N] [--scale S] [--smooth β] [--margin M] [--world W] [--rig R] [--seed N] [--weather FIELD] [--fps F] [--on local\|cluster\|cluster:POOL] [--fake-carla DIR]` | a resumable study `studies/falsify-<scenario>-<key>`; its `falsify.json` at the end; `--on` sends its drives to the cluster's nodes (the study and its scoring stay here), refused for a dashcam-derived scenario or world before anything is queued |
 | `falcon falsify show STUDY` · `falcon falsify check` | the result's headline (or `--json`); the planted-landscape comparison below (no CARLA) |
 | `falcon stl compile TEXT \| --rule SET:ID [--save NAME --project P]` | the normal form, signals, horizon and key; `--save` writes it to `safety/formulas.json` |
 | `falcon stl robustness RUN… (--stl TEXT \| --rule SET:ID \| --name N --project P) [--series] [--json]` | ρ of recorded runs, the deciding time, the share evaluated, the signals not recorded |
@@ -21,7 +21,7 @@ minimum, the deciding time), `core/search.py` (the searchers, `cem` among them);
 | `falcon failrate run … --judge stl --stl TEXT` | a failure rate whose failure is the requirement's violation ([failure rate](failure-rate.md)) |
 | the loop's ODD `search: {objective: robustness, stl: …}` | the loop's search step falsifies the requirement in each weak cell |
 | the assistant | `formal_stl_check`, `formal_stl_compile`, `formal_stl_robustness`, `formal_falsify_stl` ([assistant tools](assistant-tools.md)) |
-| [the safety case](gsn.md) | a falsification study as evidence: `min_robustness ≥ 0` (not falsified), `falsified_runs ≤ k` |
+| [the safety case](gsn.md) | a falsification study as evidence: `min_robustness ≥ 0` (not falsified), `falsified_runs ≤ k`; its evidence records where its runs were made (this machine, the cluster's nodes and jobs) |
 
 ## The robustness and the search's value
 

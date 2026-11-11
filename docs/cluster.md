@@ -15,8 +15,15 @@ falcon cluster dispatch sweep PROJECT --pool gpu --scenario lead_brake --name s1
 ```
 
 In the window: Settings ▸ Compute lists the nodes and pools; the Jobs dock gains a **Node** column as soon as a job
-runs elsewhere (the node and slot, or the pool it waits for; its tooltip says how often it was queued again). The
-assistant has `cluster_nodes`, `cluster_quotas` and `cluster_dispatch` ([assistant tools](assistant-tools.md)).
+runs elsewhere (the node and slot, or the pool it waits for; its tooltip says how often it was queued again); Rare
+cases ▸ Falsify and the failure-rate panel have a **Runs on** choice (this machine, the cluster, each pool). The
+assistant has `cluster_nodes`, `cluster_quotas`, `cluster_dispatch` and `cluster_cache_gc`
+([assistant tools](assistant-tools.md)).
+
+```
+falcon falsify run PROJECT --scenario cut_in --stl "G (ttc_min_s >= 1.5)" --on cluster:gpu
+falcon cluster gc --dry-run --workspace PROJECT        # what the caches hold that nothing refers to
+```
 
 ## What goes, and what never does
 
@@ -55,8 +62,16 @@ falcon cluster nodes test ws1          # each slot's daemon answers (or the batc
 falcon cluster nodes list | remove NAME
 ```
 
-A node may say what it can run: `--backend` (default carla-0.9.16; one per CARLA backend it has) and `--vram-gb`; a
-job that names a backend or video memory (`meta['backend']`, `meta['vram_gb']`) goes only to a node that has them.
+**What a node can run.** A worker daemon says it in its hello: the CARLA backends its machine has
+([backends](backends.md) — each backend whose folder holds its server and whose client Python is there; a fake carla
+is the one it is) with each one's capabilities and maps (as declared, or as `falcon backend probe` read them there).
+A job carries its backend (`meta['backend']`: the project's or the setting's, carla-0.9.16 unless changed) and goes
+only to a node that has it, with the map and capabilities its run needs (its town, an imported world, lateral
+filtering, …); otherwise it is refused before anything is sent — `no node has carla-ue5 (ws1/0 has carla-0.9.16)`, or
+`no node with carla-ue5 can run it: ws2/0: CARLA 0.10 (Unreal Engine 5) has no map Town05 …`. Before a slot has
+answered, and for batch nodes, which run no daemon, the node's own `--backend` list counts (default carla-0.9.16; one
+per CARLA backend it has). `--vram-gb` likewise: a job that names video memory (`meta['vram_gb']`) goes only to a node
+with at least that much. `falcon cluster nodes test` shows each slot's backends.
 
 ### A workstation as a node
 
@@ -105,6 +120,8 @@ the command), and everything runs as the image's user `carla` (CARLA refuses roo
 
 ## Scheduling
 
+- **Matching.** A job goes to a node of its pool that has its backend, map and capabilities, and its video memory
+  (above); none: refused, saying what each node has. A slot not yet heard from may still take it: the job waits for it.
 - **Slots.** A daemon slot takes one of this process's jobs at a time (the idlest first); a batch node takes up to
   `max_jobs`. A job that finds no free slot waits in the queue ("waiting for a free slot on the cluster").
 - **Pools and quotas.** `falcon cluster pools set gpu --max-running 4 --max-per-day 500`: at most 4 at once (the
@@ -133,16 +150,40 @@ this on a 12-run sweep across two daemons.
 ## Protocol
 
 `falcon_autonomy/cluster/protocol.py` documents the frames (a 4-byte length, a JSON message, an optional payload):
-`hello` (with the token), `submit` (a bundle), `cancel`, `attach` (after a reconnect), `release`, `ping` from the
-client; `hello`, `accepted`, `refused`, `msg` (each worker protocol line as it came), `done` (+ the run folder),
-`heartbeat`, `state`, `error` from the daemon.
+`hello` (with the token), `submit` (a bundle), `cancel`, `attach` (after a reconnect), `release`, `gc` (collect the
+slot's scratch), `ping` from the client; `hello` (with `backends` and their `capabilities`), `accepted`, `refused`,
+`msg` (each worker protocol line as it came), `done` (+ the run folder), `heartbeat`, `state`, `gc` (what was, or would
+be, removed), `error` from the daemon.
+
+## Cleaning up
+
+`falcon cluster gc [--dry-run] [--node N] [--older-than H] [--workspace W] [--json]` (and the assistant's
+`cluster_cache_gc`) removes the caches nothing refers to, each **unchanged for H hours** (default 24). `--dry-run` lists
+every item with its size and removes nothing; `--node` collects one node only; without it, this machine's store (with
+`--workspace`), every node and the cloud. Code: `falcon_autonomy/cluster/gc.py` (its docstring is the reference).
+
+| where | what may go | what never does |
+|---|---|---|
+| this machine | objects of the workspace's content store (`cas/`) that no dataset version's splits file, run index — the workspace's runs, a study's runs, a dataset's drives, a run in the trash (it can be restored) — or training's `data.json` names, linked in more than max(1 h, H) ago ([lineage](lineage.md#the-store); a root that cannot be read stops it all) | anything outside `cas/objects` and `cas/tmp`; an object is the store's own name for bytes, so removing one never changes a run — one hard-linked from a run frees nothing until the run goes too (the dry run's *frees*) |
+| a daemon node | each slot's scratch workspace: `runs/<global id>.<attempt>` folders of jobs it no longer runs (left by an earlier life of the daemon, or finished and never collected) and its CARLA logs | a job running there, or finished within the hour (it waits to be collected); one whose global id a scheduler of this process still has (running, waiting, lost and re-queueable); any other name; a link; anything private |
+| a Slurm node | `falcon-<id>` array folders under its workdir | an array in Slurm's queue (`squeue`: one waiting for days stays) or run by this process; everything, when `squeue` does not answer; any other name |
+| Kubernetes | nothing: a run's Job and ConfigMap are deleted when its run comes back | |
+| the cloud | nothing: a burst's machine is terminated at its end and keeps nothing | the ledger and the bursts' records, ever; a burst still running is listed, never touched |
+
+Never anywhere: a run folder, the trash, a project, anything derived from the dashcam footage. The assistant's tool
+runs a dry run first (the default) and keeps its list as a plan for an hour; removing takes that plan's id, asks you on
+a card in every permission mode (no "approve all" — it cannot be undone; the card lists what goes now with its sizes)
+and removes only what the plan listed that is still removable: what became referenced or busy since stays, what
+appeared since is not touched.
 
 ## What the tests cover, and what needs your machines
 
 Tested here with fakes only: two daemons on 127.0.0.1 with the fake CARLA (a 12-run sweep equal to the local run but
 for `node`; a daemon killed mid-run and its job finished on the other; cancel; pools; refusals; the token and the
-allow-list), fake `sbatch`/`squeue`/`sacct`/`scancel` and a fake `kubectl` on PATH running `oneshot` here (arrays, a
-lost task, an evicted pod, cancel), and SSH through an in-process SSH server on loopback (tunnels, commands, host keys).
+allow-list), a daemon behind the UE5 fake beside one behind the 0.9.16 fake (each job to the node with its backend, a
+map the UE5 node lacks and a cluster without UE5 refused), the cache gc on a daemon's scratch, a fake Slurm workdir and
+a content store (`tests/test_cluster_gc.py`), fake `sbatch`/`squeue`/`sacct`/`scancel` and a fake `kubectl` on PATH
+running `oneshot` here (arrays, a lost task, an evicted pod, cancel), and SSH through an in-process SSH server on loopback (tunnels, commands, host keys).
 Not yet run against real machines: two LAN workstations with the systemd unit, a real Slurm array, real Kubernetes
 pods with the worker image (the Dockerfile has not been built in this build: no registry or network here), and
 multi-GPU workstations (each slot shares the GPU 0 CARLA lock; a per-GPU slot needs CARLA's `-graphicsadapter`, a

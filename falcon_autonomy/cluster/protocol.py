@@ -10,16 +10,21 @@ client -> daemon
     cancel    {"rid", "force": false}            polite (the worker tidies up), force: killed
     attach    {"rids": [...]}                    after a reconnect: what became of these
     release   {"rid"}                            the artifact arrived: the daemon deletes its scratch folder
+    gc        {"older_than_s", "dry_run", "keep": [gid, …], "only": [name, …] | null}   collect the slot's scratch
+                                                 (cluster.gc; never a job running there or one the client keeps)
     ping      {}
 daemon -> client
     hello     {"protocol": 1, "node": "<host name>", "slot": n, "app_version", "codecs": [...], "carla": "0.9.16",
-               "backends": [...], "memory_gb": .., "jobs": n}
+               "backends": [id, …], "capabilities": {id: {"caps", "maps", "probed", "measured", "title"}},
+               "memory_gb": .., "jobs": n}       the backends this node has (sim.backends.advertised)
     accepted  {"rid"}
     refused   {"rid", "why"}                     never started (not on the allow-list, a bundle it cannot read, …)
     msg       {"rid", "msg": {…}}                one of the worker's protocol lines (core.protocol), as it came
     done      {"rid", "code", "codec", "size", "sha256", "scratch"}  + the artifact: the run folder, packed
     heartbeat {"time", "running": [rid, …], "queued": n}     every HEARTBEAT_S seconds
     state     {"rid", "state": "running" | "queued" | "unknown"}  the answer to attach for a job not finished
+    gc        {"items": [{"name", "what", "bytes", "age_h"}], "kept": [{"name", "why"}], "removed", "bytes_freed"}
+               (or {"error"})                    the answer to gc: what was (or, dry, would be) removed
     error     {"why"}                            and the daemon closes the connection (a bad hello, a bad frame)
 
 An artifact is a tar of the run folder (regular files and folders only), compressed with zstd when both ends have it

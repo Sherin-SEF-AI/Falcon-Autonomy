@@ -792,7 +792,9 @@ def burst(eid: str, workspace: str, settings=None, prov: Provider | None = None,
         code, tar = run(st, bundle_bytes, on_line, key_path)
         st['state'] = 'collecting'
         save_state(st)
-        files = _import_summary(tar, workspace, est['bundle'])
+        files = _import_summary(tar, workspace, est['bundle'], {'provider': prov.name, 'burst': bid, 'gpu': est['gpu'],
+                                                                 'estimate_id': eid,
+                                                                 'instance_id': launched['id']})
         st.update(state='done' if code == 0 else 'failed', study_exit=code, files=len(files))
         save_state(st)
         log(bid, f'study {"finished" if code == 0 else f"ended with exit {code}"}; {len(files)} files back in '
@@ -809,9 +811,11 @@ def burst(eid: str, workspace: str, settings=None, prov: Provider | None = None,
     return st
 
 
-def _import_summary(tar: bytes, workspace: str, b: dict) -> list:
+def _import_summary(tar: bytes, workspace: str, b: dict, origin: dict | None = None) -> list:
     """The pulled summary into WORKSPACE/studies/<name>/ (the study's files; runs/<key>/ of its top failures), the
-    machine's workspace path replaced by this one."""
+    machine's workspace path replaced by this one; cloud.json says where it ran (origin: the provider, the burst's
+    id, the GPU, the approved estimate's id and the instance) — what a GSN Solution bound to it records
+    (core.gsn.where_ran)."""
     from . import protocol as W
     dest = os.path.join(workspace, 'studies', str(b['name']))
     names = W.unpack_tar(tar, dest, max_bytes=512 << 20)
@@ -819,6 +823,7 @@ def _import_summary(tar: bytes, workspace: str, b: dict) -> list:
     if meta.get('workspace'):
         W.translate_paths(dest, names, meta['workspace'], os.path.abspath(workspace))
     with open(os.path.join(dest, 'cloud.json'), 'w', encoding='utf-8') as fh:
-        json.dump({'note': 'run on a cloud burst: the study\'s files and its ten most critical runs\' records came '
-                           'back (not their frames)', 'no_render': bool(b.get('no_render'))}, fh, indent=1)
+        json.dump(dict({'note': 'run on a cloud burst: the study\'s files and its ten most critical runs\' records '
+                                'came back (not their frames)', 'no_render': bool(b.get('no_render'))},
+                       **(origin or {})), fh, indent=1)
     return names

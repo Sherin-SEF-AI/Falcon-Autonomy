@@ -1,14 +1,20 @@
 """Where a study's runs go: a combo of this machine, the whole cluster and each of its pools (docs/cluster.md). A
 dialog that queues a study puts it beside its other options and passes placement() on as `--on`; with no cluster set
-up it offers only this machine and says so in its tooltip."""
+up it offers only this machine and says so in its tooltip. refusal(scenario, world) says why a study of a
+dashcam-derived scenario or world cannot go to the placement chosen (cluster.bundle.placement_refusal: it never leaves
+this machine) — the panel shows it and does not queue the study. settings: the window's (a page without a window: the
+user's)."""
 from __future__ import annotations
 
 from PyQt6.QtWidgets import QComboBox
 
 
 class PlacementCombo(QComboBox):
-    def __init__(self, settings, parent=None):
+    def __init__(self, settings=None, parent=None):
         super().__init__(parent)
+        if settings is None:
+            from ..core.settings import Settings
+            settings = Settings()
         self.settings = settings
         self.reload()
 
@@ -38,3 +44,8 @@ class PlacementCombo(QComboBox):
         """['--on', WHERE] for a study's command line, or [] on this machine."""
         p = self.placement()
         return [] if p == 'local' else ['--on', p]
+
+    def refusal(self, scenario: dict | None, world: dict | None = None) -> str:
+        """'' when a study of this scenario (on this world) may run where chosen, else why not (module doc)."""
+        from ..cluster.bundle import placement_refusal
+        return placement_refusal(self.placement(), scenario, world)

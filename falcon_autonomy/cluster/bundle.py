@@ -62,6 +62,17 @@ def _private(cfg: dict, paths) -> str | None:
     return None
 
 
+def placement_refusal(placement: str, scenario: dict | None, world: dict | None = None) -> str:
+    """Why a study of this scenario (on this world) cannot send its drives to `placement`: '' on this machine or when
+    nothing in it is private; else the reason — a scenario or world made from the dashcam footage stays here (the
+    same test as every bundle's, said before anything is queued: the study commands' --on, the Falsify and failure-rate
+    panels' placement)."""
+    if (placement or 'local') == 'local':
+        return ''
+    why = _private({'scenario': scenario or {}}, []) or (_private(world, []) if isinstance(world, dict) else None)
+    return f'private: {why} — dashcam-derived data never leaves this machine: run it on this machine' if why else ''
+
+
 # ------------------------------------------------------------------------------------------------ job bundles
 def worker_of(spec) -> str:
     """The worker a JobSpec runs (meta['worker'], set by CarlaService.worker_spec; else read from its command)."""

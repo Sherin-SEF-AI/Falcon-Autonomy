@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -28,6 +29,7 @@ from ..core import protocol as CP
 from . import protocol as W
 
 LOST_STATES = ('NODE_FAIL', 'PREEMPTED', 'BOOT_FAIL')
+ARRAY_DIR = re.compile(r'^falcon-[0-9a-f]{12}$')          # an array's folder under the workdir (_flush)
 END_STATES = ('COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT', 'OUT_OF_MEMORY', 'DEADLINE') + LOST_STATES
 
 
@@ -246,8 +248,58 @@ class Backend:
                     self.batches.pop(t['batch'], None)
                     self._cleanup(b['dir'])
 
+    # ---------------------------------------------------------------- the cache's garbage collection
+    def gc(self, older_than_s: float, dry_run: bool = True, only=None, busy=(), now: float | None = None) -> dict:
+        """The node's workdir collected (cluster.gc): falcon-<id> array folders (ARRAY_DIR: Falcon's own names only)
+        in which nothing changed for older_than_s (du --time: the newest file in it), of no array in Slurm's queue
+        (squeue's job names: an array waiting days for its turn stays) and none this process runs (busy: their
+        folders). When squeue does not answer nothing is removed. only: just these folder names (an approved plan).
+        {'items': [{'name', 'what', 'bytes', 'age_h'}], 'kept': [{'name', 'why'}], 'removed', 'bytes_freed'}."""
+        wd = self.node['workdir'].rstrip('/')
+        now = time.time() if now is None else now
+        code, so, se = self._run(['find', wd, '-mindepth', '1', '-maxdepth', '1', '-type', 'd', '-name', 'falcon-*',
+                                  '-exec', 'du', '-s', '-b', '--time', '--time-style=+%s', '{}', '+'], timeout=300)
+        if code != 0 and b'No such file' not in se:
+            raise OSError(f'listing {self.key}\'s workdir failed: {se.decode("utf-8", "replace").strip()[-200:]}')
+        found = []
+        for ln in so.decode('utf-8', 'replace').splitlines():
+            parts = ln.split('\t')
+            if len(parts) == 3 and ARRAY_DIR.match(os.path.basename(parts[2])) and \
+                    os.path.dirname(parts[2].rstrip('/')) == wd:
+                found.append((os.path.basename(parts[2]), int(parts[0]), float(parts[1])))
+        qc, qo, _qe = self._run(['squeue', '-h', '-o', '%j'], timeout=60)
+        queued = set(qo.decode('utf-8', 'replace').split()) if qc == 0 else None
+        busy = {os.path.basename(str(d).rstrip('/')) for d in busy}
+        with self.lock:
+            busy |= {os.path.basename(b['dir']) for b in self.batches.values()}
+        items, kept = [], []
+        for name, size, newest in sorted(found):
+            if only is not None and name not in only:
+                continue
+            age = now - newest
+            if name in busy:
+                why = 'an array this Falcon runs'
+            elif queued is None:
+                why = 'squeue did not answer: what runs is unknown, so nothing is removed'
+            elif name in queued:
+                why = 'its array is in Slurm\'s queue'
+            elif age < older_than_s:
+                why = f'changed {age / 3600.0:.1f} h ago'
+            else:
+                items.append({'name': name, 'what': 'Slurm array folder (bundles, logs, runs)', 'bytes': size,
+                              'age_h': round(age / 3600.0, 2)})
+                continue
+            kept.append({'name': name, 'why': why})
+        removed = freed = 0
+        if not dry_run:
+            for it in items:
+                self._cleanup(f'{wd}/{it["name"]}')
+                removed += 1
+                freed += it['bytes']
+        return {'items': items, 'kept': kept, 'removed': removed, 'bytes_freed': freed, 'dry_run': bool(dry_run)}
+
     def _cleanup(self, d: str):
-        if not os.path.basename(d).startswith('falcon-'):
+        if not ARRAY_DIR.match(os.path.basename(d)):
             return
         if self.host:
             try:

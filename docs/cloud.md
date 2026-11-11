@@ -60,7 +60,9 @@ case — over the monthly cap. The tests check that no launch call reaches a pro
    progress line is the burst's sign of life.
 5. The summary comes back into `studies/<name>/`: the study's files (study.json, results.jsonl, the estimate) and the
    **ten most critical runs**' drive.json, run.json and recorder log — not their frames — with the machine's paths
-   made this workspace's; `cloud.json` there says it came from a burst.
+   made this workspace's; `cloud.json` there says it came from a burst — the provider, the burst's id, the GPU, the
+   approved estimate's id and the instance — which a safety-case Solution bound to the result records
+   ([GSN](gsn.md#where-it-ran)).
 6. The machine is **terminated and the termination confirmed** (the provider says terminated, or no longer knows it);
    the ledger records the cost (hours × price). Any error on the way still terminates. A terminate that fails is
    retried with backoff (2, 4, 8 s); if it keeps failing, the burst is marked *terminate_failed*, a **red banner**

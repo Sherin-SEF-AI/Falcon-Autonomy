@@ -37,9 +37,11 @@ after the 0444 bit is set, so an object can never be named after bytes it does n
 once.
 
 **Garbage collection** is mark and sweep: the roots are every dataset version's splits file (its frames, label files
-and label sets), every run index and every training's data.json; objects none of them names are removed, except any
+and label sets), every run index (the workspace's runs, a study's runs, a dataset's drives and a run in the trash,
+which can be restored) and every training's data.json; objects none of them names are removed, except any
 linked within the last hour (`--grace`: a put whose reference is not yet written). A root that cannot be parsed stops
-the sweep before anything is removed. `--dry-run` lists what would go.
+the sweep before anything is removed. `--dry-run` lists what would go. `falcon cluster gc` runs the same sweep with
+the cluster's caches ([cluster.md](cluster.md#cleaning-up)).
 
 ## The run index
 
@@ -93,6 +95,10 @@ the registration's SHA-256 against the file and (without `--quick`) re-hashes ev
 
 The catalogue indexes dataset versions (`dataset:<spec>@v<k>`) and trained models (`model:<training id>`) with their
 roots, and links a model to the version it was trained on (`trained_on`).
+
+The safety case can bind a model's data as evidence: a `data_root` claim checks the ONNX file's
+`falcon.data_merkle_root` against its `data.json` or the dataset version it names, amber when the model or the data
+changes, red when they disagree ([GSN](gsn.md#a-models-data-data_root)).
 
 ## Limits
 

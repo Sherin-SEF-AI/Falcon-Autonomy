@@ -13,6 +13,10 @@
     falcon cluster dispatch sweep|search|failrate PROJECT [--pool P] ARGS…   a study whose runs go to the cluster
                                                                             (`falcon sweep … --on cluster:P`)
     falcon cluster status [--json]               nodes reachable now, jobs running on them, pools used today
+    falcon cluster gc [--dry-run] [--node N] [--older-than H] [--workspace W] [--json]
+                                                 remove the caches nothing refers to: the workspace's content store,
+                                                 the nodes' scratch folders and Slurm array folders (cluster.gc;
+                                                 never a run folder, the trash, private data or the cloud's ledger)
 
 Nodes live in the private `cluster` setting: an SSH key is a path to the user's key file, never the key. Exit codes:
 0 ok, 2 failed (the message says why); dispatch exits with the study's code.
@@ -69,6 +73,18 @@ def parser() -> argparse.ArgumentParser:
     di.add_argument('--pool', default='')
     st = sub.add_parser('status', help='nodes reachable now and pools used today')
     st.add_argument('--json', action='store_true')
+    from .gc import DEFAULT_H
+    gc = sub.add_parser('gc', help='remove the caches nothing refers to: the workspace\'s content store and the '
+                                   'nodes\' scratch (docs/cluster.md, "Cleaning up")')
+    gc.add_argument('--dry-run', action='store_true', help='list what would be removed, with sizes; remove nothing')
+    gc.add_argument('--node', default='', help='only this node (default: this machine\'s store, every node, the '
+                                               'cloud)')
+    gc.add_argument('--older-than', type=float, default=DEFAULT_H, metavar='H',
+                    help=f'only what nothing changed in for H hours (default {DEFAULT_H:g}; the store keeps at least '
+                         'the last hour\'s)')
+    gc.add_argument('--workspace', default='', help='the workspace (or a project file) whose content store is '
+                                                    'collected')
+    gc.add_argument('--json', action='store_true')
     return ap
 
 
@@ -100,7 +116,8 @@ def test_node(node: dict, timeout: float = 20.0) -> dict:
                 try:
                     s.connect()
                     row.update(ok=True, node=s.info.get('node'), app_version=s.info.get('app_version'),
-                               jobs=s.info.get('jobs'), codecs=s.info.get('codecs'))
+                               jobs=s.info.get('jobs'), codecs=s.info.get('codecs'),
+                               backends=s.info.get('backends') or [])
                 except Exception as e:           # noqa: BLE001 (reported per slot)
                     row.update(ok=False, error=str(e)[:300])
                     out['ok'] = False
@@ -175,6 +192,7 @@ def main_cluster(argv) -> int:
                 else:
                     for s in r['slots']:
                         print(f'slot {s["slot"]}: ' + (f'ok — {s.get("node")}, Falcon {s.get("app_version")}, '
+                                                       f'{", ".join(s.get("backends") or []) or "no CARLA"}, '
                                                        f'{s.get("jobs")} job(s)' if s.get('ok') else
                                                        f'FAILED: {s.get("error")}'))
                     if not r['slots']:
@@ -190,6 +208,8 @@ def main_cluster(argv) -> int:
             return _pools(cfg, a.json)
         if a.cmd == 'dispatch':
             return _dispatch(a, extra)
+        if a.cmd == 'gc':
+            return _gc(a, st)
         if a.cmd == 'status':
             rows = [test_node(n, timeout=10) for n in cfg['nodes']]
             if a.json:
@@ -221,6 +241,36 @@ def _pools(cfg: dict, as_json: bool) -> int:
                                     f'{p["max_per_day"]} a day' if p['max_per_day'] else '') if x) or 'no limits'
         print(f'{name:12s} {len(p["nodes"])} node(s), {p["slots"]} slot(s); {lim}; {p["used_today"]} started today')
     return 0
+
+
+def _workspace(path: str) -> str:
+    """A workspace folder, or a project file's workspace."""
+    import os
+    if not path:
+        return ''
+    path = os.path.abspath(os.path.expanduser(path))
+    if os.path.isfile(path):
+        from ..core.project import Project
+        return Project.load(path).workspace
+    if not os.path.isdir(path):
+        raise ValueError(f'{path}: no such workspace or project')
+    return path
+
+
+def _gc(a, st) -> int:
+    from . import gc as G
+    try:
+        res = G.collect(st, _workspace(a.workspace), a.node, a.older_than, dry_run=a.dry_run)
+    except G.GCError as e:
+        print(f'failed: {e}', file=sys.stderr)
+        return 2
+    if a.json:
+        print(json.dumps(res, indent=1))
+    else:
+        print('\n'.join(G.lines(res)))
+    for e in res['errors']:
+        print(f'failed: {e}', file=sys.stderr)
+    return 2 if res['errors'] else 0
 
 
 def _dispatch(a, rest: list) -> int:
