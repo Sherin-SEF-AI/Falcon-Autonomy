@@ -16,7 +16,8 @@ with about 8 GB of video memory. Settings ▸ **Performance**; `falcon profile s
 | `inference_precision` | auto | fp32 | model evaluations (`falcon evaluate`) |
 
 and caps for 3D reconstruction (`RECON_CAPS`: at most 300 000 Gaussians, a 480 px wide training image, 150 000 initial
-points, half the GPU), applied to `falcon recon train`'s settings (`profiles.cap_recon()`).
+points, half the GPU), applied to `falcon recon train`'s settings (`profiles.cap_recon()`), and for the near-miss
+perception ([below](#the-near-miss-perception)).
 
 `falcon profile set low_vram` (or choosing it and pressing Apply) writes these into the settings and keeps the values
 it replaced in `profile-saved.json` beside `settings.json`; `set standard` puts them back. Every part of Falcon reads
@@ -27,6 +28,28 @@ difference from the profile.
 `-ini:Engine:[/Script/Engine.RendererSettings]:r.Streaming.PoolSize=512` and `-ExecCmds=r.Streaming.PoolSize 512`
 (the same value). Which of the two CARLA 0.9.16's packaged server honours has not been measured. 512 MB is half UE4's
 default pool (1000 MB), chosen, not measured.
+
+## The near-miss perception
+
+`falcon dashcam ingest` ([near-misses](nearmiss.md)) runs a detector and a depth network over every clip.
+`profiles.cap_perception()` resolves its settings under the profile in force, wherever an ingest starts (the command,
+the GUI's job, `dashcam_ingest.ingest`):
+
+| | low_vram (`PERCEPTION_CAPS`) | standard |
+|---|---|---|
+| batch (frames through both models at once) | at most 2 | as asked (8 by default) |
+| detector | `rtdetr-v2-r18` in place of `rtdetr-v2-r50` (`--keep-detector` keeps r50) | as asked (r18 by default) |
+| Depth Anything V2's working resolution | 364 px (its processor's resize target: 364 × 644 for a 960 × 540 frame, 0.49 of 518 × 924's pixels) | its own, 518 px |
+| GPU share (`torch.cuda.set_per_process_memory_fraction`, both models; onnxruntime's CUDA arena for Metric3D) | at most 0.35 | 0.5 (torch only) |
+| precision on CUDA | FP16 when `inference_precision` is fp16 or auto, FP32 when it is fp32 | FP16 (the models' own default) |
+
+An ingest has no ground truth to gate FP16 on, so *auto* means FP16 there; FP32 always on the CPU. Metric3D's input is
+fixed (616 × 1064) and not capped. What was used — the profile, the caps, every value it changed and why the
+precision is what it is — is recorded in the ingest's `ingest.json` (its settings' `profile`) and in every clip's
+`perception.json` (with the batch and the runners' dtype and GPU share). The detector swap and the depth resolution
+change what is perceived, so they are part of the ingest's settings key (a folder perceived under the other profile is
+perceived again); batch, precision and GPU share are not. `falcon profile show` lists these caps under low_vram.
+Chosen, not measured: the models are fetched only at acceptance.
 
 ## FP16 inference
 

@@ -62,6 +62,10 @@ class ProfileSection(Section):
             return ''
         eff = PR.effective(self.settings)
         out = f'In force: {eff["profile"]} — {eff["about"]}.'
+        if eff.get('perception'):
+            c = eff['perception']
+            out += (f' Near-miss mining: batches of {c["batch"]}, {c["detector"]}, depth at {c["depth_input_px"]} px, '
+                    f'{c["gpu_memory_fraction"]:.0%} of the GPU.')
         if eff['differs']:
             out += ' Changed since: ' + ', '.join(f'{k} {d["setting"]} (the profile\'s {d["profile"]})'
                                                  for k, d in eff['differs'].items()) + '.'

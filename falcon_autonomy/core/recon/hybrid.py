@@ -373,6 +373,11 @@ def hybrid_run(recon, drive_dir: str, out_dir: str, cameras=None, method: str = 
                     'align': None if align is None else comp.A.round(9).tolist(), 'measure': exact, 'link': link,
                     **{k: s[k] for k in ('near_px', 'min_actor_px', 'jpeg_quality', 'depth_max_m')}}
     os.makedirs(out_dir, exist_ok=True)
+    from .scene import private_source
+    private = private_source(rec.path)                  # a dashcam reconstruction: the hybrid run is private too
+    if private:
+        PV.write_json(os.path.join(out_dir, 'run.json'), {'worker': 'recon.hybrid', 'status': 'running',
+                                                          'source': private})
     partial = os.path.join(out_dir, '.hybrid-partial')
     open(partial, 'w').close()
     t_start = time.perf_counter()
@@ -477,6 +482,8 @@ def hybrid_run(recon, drive_dir: str, out_dir: str, cameras=None, method: str = 
         ds['name'] = os.path.basename(os.path.normpath(out_dir))
         ds['hybrid'] = {k: what[k] for k in ('source_run', 'reconstruction', 'splat_sha256', 'compositing', 'labels',
                                              'not_modelled', 'cameras')}
+        if private:
+            ds['source'] = private
         PV.write_json(os.path.join(out_dir, 'dataset.json'), ds)
         doc = dict(run.run)
         doc.update(name=ds['name'], worker='recon.hybrid', argv=list(argv or ['recon', 'hybrid']), status='ok',
@@ -484,6 +491,8 @@ def hybrid_run(recon, drive_dir: str, out_dir: str, cameras=None, method: str = 
                    notes=list(run.run.get('notes') or ()) + [
                        f'hybrid: CARLA\'s actors from {run.dir} composited over the reconstruction {rec.path} '
                        f'({comp.method}); every label is CARLA\'s; started/finished are the drive\'s times'])
+        if private:
+            doc['source'] = private
         os.remove(partial)
         doc['outputs'] = PV.hash_tree(out_dir)
         PV.write_json(os.path.join(out_dir, 'run.json'), doc)

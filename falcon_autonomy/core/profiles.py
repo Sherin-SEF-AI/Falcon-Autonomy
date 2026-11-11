@@ -19,7 +19,20 @@ low_vram:
                                    evaluated frames, else FP32 (core.models.fp16_gate)
 
 and caps for 3D reconstruction (RECON_CAPS: fewer Gaussians, a narrower training image, a smaller share of the GPU),
-applied where a reconstruction's settings are resolved (cap_recon()).
+applied where a reconstruction's settings are resolved (cap_recon()), and for the dashcam near-miss perception
+(PERCEPTION_CAPS, cap_perception(): core.dashcam_ingest's detector and depth network) —
+
+    batch                 2        frames a batch through the detector and the depth network (standard: 8)
+    detector              rtdetr-v2-r18 in place of rtdetr-v2-r50 (unless kept on purpose: --keep-detector)
+    depth_input_px        364      Depth Anything V2's working resolution (its processor's 518 by default: about
+                                   half the pixels; 364 = 26 × 14, its patch size); Metric3D's input is fixed
+    gpu_memory_fraction   0.35     torch.cuda.set_per_process_memory_fraction for both models (standard: 0.5);
+                                   onnxruntime's CUDA arena limit for Metric3D
+    precision             FP16 on CUDA when inference_precision is fp16 or auto, FP32 when it is fp32 (standard
+                                   keeps the near-miss models' own FP16 on CUDA: inference_precision acts on
+                                   evaluations there)
+
+— recorded with the profile in the ingest's ingest.json and every clip's perception.json.
 
 None of these numbers is measured on an 8 GB card: the acceptance target is a measured peak of at most 7.5 GB of
 video memory over an 8-step loop on the 16 GB reference card (`falcon profile measure -- COMMAND` samples it), since a
@@ -43,6 +56,10 @@ PROFILES = {
 }
 KEYS = ('server_quality', 'server_memory_gb', 'render_budget_mpx', 'texture_pool_mb', 'inference_precision')
 RECON_CAPS = {'max_gaussians': 300_000, 'width': 480, 'max_init_points': 150_000, 'gpu_memory_fraction': 0.5}
+# the near-miss perception (core.dashcam_ingest) under low_vram; chosen, not measured on an 8 GB card
+PERCEPTION_CAPS = {'batch': 2, 'detector': 'rtdetr-v2-r18', 'depth_input_px': 364, 'gpu_memory_fraction': 0.35}
+PERCEPTION_STANDARD = {'precision': 'fp16', 'gpu_memory_fraction': 0.5}     # core.dashcam_ingest's own defaults
+LARGE_DETECTORS = ('rtdetr-v2-r50',)
 SUGGEST_AT_GB = 9.0                 # doctor suggests low_vram on a GPU with this much video memory or less
 TARGET_PEAK_GB = 7.5                # the acceptance target on the reference card (see the module doc)
 PRECISIONS = ('fp32', 'fp16', 'auto')
@@ -110,6 +127,7 @@ def effective(settings) -> dict:
     mb = int(values.get('texture_pool_mb') or 0)
     return {'profile': name, 'about': prof['about'], 'values': values, 'differs': differs,
             'recon': dict(RECON_CAPS) if name == 'low_vram' else {},
+            'perception': dict(PERCEPTION_CAPS) if name == 'low_vram' else {},
             'server_args': [POOL_INI.format(mb=mb), POOL_EXEC.format(mb=mb)] if mb > 0 else []}
 
 
@@ -125,6 +143,54 @@ def cap_recon(recon_settings: dict | None, settings=None) -> dict:
     for k, cap in RECON_CAPS.items():         # every cap is below core.recon.train's default for its key
         v = out.get(k)
         out[k] = cap if v is None else min(cap, type(cap)(v))
+    return out
+
+
+def cap_perception(perception_settings: dict | None, settings=None, keep_detector: bool = False) -> dict:
+    """The near-miss perception's settings (core.dashcam_ingest's keys) under the profile, with 'profile': what was
+    used and why — {'name', 'caps' (low_vram's PERCEPTION_CAPS, else {}), 'changed' {key: [asked, used]},
+    'precision' {'used', 'inference_precision', 'why'}} — for the ingest's provenance. low_vram: batch at most 2,
+    rtdetr-v2-r50 swapped for rtdetr-v2-r18 (unless keep_detector), Depth Anything V2 at 364 px at most, at most
+    0.35 of the GPU, FP16 on CUDA unless inference_precision is fp32. standard: the settings as asked, FP16 on CUDA
+    and half the GPU (the models' own defaults) where they say nothing."""
+    out = dict(perception_settings or {})
+    if settings is None:
+        from .settings import Settings
+        settings = Settings()
+    name = current(settings)
+    ip = settings.get('inference_precision') or 'fp32'
+    changed = {}
+
+    def use(key, value):
+        if out.get(key) != value:
+            changed[key] = [out.get(key), value]
+        out[key] = value
+    if name != 'low_vram':
+        for k, v in PERCEPTION_STANDARD.items():
+            if out.get(k) is None:
+                out[k] = v
+        out['profile'] = {'name': name, 'caps': {}, 'changed': {},
+                          'precision': {'used': out['precision'], 'inference_precision': ip,
+                                        'why': 'the near-miss models\' own FP16 on CUDA (FP32 on the CPU); '
+                                               'inference_precision acts on evaluations under standard'}}
+        return out
+    caps = PERCEPTION_CAPS
+    use('batch', min(int(out.get('batch') or caps['batch']), caps['batch']))
+    det = out.get('detector') or caps['detector']
+    if det in LARGE_DETECTORS and not keep_detector:
+        use('detector', caps['detector'])
+    px = out.get('depth_input_px')
+    use('depth_input_px', caps['depth_input_px'] if px is None else min(int(px), caps['depth_input_px']))
+    frac = out.get('gpu_memory_fraction')
+    use('gpu_memory_fraction', caps['gpu_memory_fraction'] if frac is None else
+        min(float(frac), caps['gpu_memory_fraction']))
+    use('precision', 'fp32' if ip == 'fp32' else 'fp16')
+    out['profile'] = {'name': name, 'caps': dict(caps), 'changed': changed,
+                      'precision': {'used': out['precision'], 'inference_precision': ip,
+                                    'why': ('inference_precision is fp32' if ip == 'fp32' else
+                                            f'inference_precision is {ip}: FP16 on CUDA (no ground truth in an '
+                                            f'ingest to gate it on, so auto means FP16; FP32 on the CPU)')},
+                      'kept_detector': bool(keep_detector and det in LARGE_DETECTORS)}
     return out
 
 
@@ -200,6 +266,8 @@ def main_profile(argv) -> int:
             print(f'  {k:20s} {v}' + (f'   (the profile\'s: {d["profile"]})' if d else ''))
         if eff['recon']:
             print('  reconstruction caps  ' + ', '.join(f'{k} {v}' for k, v in eff['recon'].items()))
+        if eff['perception']:
+            print('  near-miss perception ' + ', '.join(f'{k} {v}' for k, v in eff['perception'].items()))
         return P.OK
     if a.action == 'set':
         try:

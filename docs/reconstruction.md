@@ -25,6 +25,9 @@ falcon recon render ~/demo.falcon/recon/drive-4d --frame 40 --camera fisheye --l
 falcon recon eval ~/demo.falcon/recon/drive-4d --lidar --warp-shift 0.5 --warp-shift 1 --warp-shift 2
 falcon recon closedloop ~/demo.falcon/recon/drive-4d --policy ~/FalconWorkspace/policies/bc --deviate 3.0 \
     --episodes 5 --out ~/demo.falcon/runs/neural-bc
+falcon recon from-dashcam --clip ~/Videos/dashcam-videos/Movie_F/clip.MP4 --start 30 --seconds 12 --dynamic \
+    [--tracks ~/Videos/dashcam-videos]          # the ingest's tracked road users as moving actors
+falcon dashcam nearmiss reconstruct ~/Videos/dashcam-videos 1   # a near-miss event, the same way
 ```
 
 `train` also takes `--iterations` (7000), `--width` (640: images are worked on at most this wide), `--init
@@ -161,7 +164,7 @@ anyway; the tests write their own KITTI- and nuScenes-shaped folders with made-u
 |---|---|---|---|
 | `falcon:RUN` | a pinhole camera's `rgb/`; the ego pose of `frames.jsonl` and the camera's actual mount (its faults included); K from its field of view | every vehicle and walker (instance labels → objects with a CARLA actor id; without instance labels, the vehicle and person classes — parked map cars too) and the ego's body | every sweep's static returns (actor id 0, not the ego, not weather noise) through `lidar_pose` |
 | `kitti_raw:DRIVE` | `image_02/` (or `image_03/`), rectified; OXTS poses exactly as log replay reads them; the date folder's calibration, cam ← world = [I \| K⁻¹·P_rect's offset] · R_rect_00 · T_cam0←velo · T_velo←imu · T_imu←world (the devkit's chain) | **none**: the tracklets are a separate download and are not read, so moving vehicles stay in the images and blur the reconstruction where they pass | `velodyne_points/` (not motion-compensated: KITTI raw's own limit) |
-| `posed:DIR` | a posed-image folder (`posed.json`, `images/`, `masks/`, `points.npz`), today written by `from-dashcam` ([From a dashcam](#from-a-dashcam)): each image's pinhole K, world → camera matrix, ego and mount as the folder states them | the folder's per-image masks | none: its `points.npz` (`--init points`) |
+| `posed:DIR` | a posed-image folder (`posed.json`, `images/`, `masks/`, `points.npz`, and `tracks.json` when it brings road users), today written by `from-dashcam` ([From a dashcam](#from-a-dashcam)): each image's pinhole K, world → camera matrix, ego and mount as the folder states them | the folder's per-image masks, and its tracks' projected boxes (`--dynamic`: learned instead, [from a dashcam](#moving-road-users-from-a-dashcam)) | none: its `points.npz` (`--init points`) |
 | `nuscenes:ROOT?scene=NAME` | one camera's key frames (`CAM_FRONT` by default), each with its own ego pose and calibrated sensor | the key frame's annotated boxes of Falcon's actor classes, projected (edges clipped at the near plane), filled and dilated 2 px | `LIDAR_TOP` key-frame sweeps, points inside annotated boxes left out |
 
 Checked: a Falcon run's lidar points against its own range labels (median |difference| 0.12 m for every sweep's
@@ -597,7 +600,8 @@ scipy — COLMAP, OpenSfM and pycolmap are not used) poses a short segment (10�
 hands the posed images to the reconstruction above as a `posed:` source. The clip's frames and GPS come from the
 dashcam ingest (`core/dashcam.py`, [dashcam](dashcam.md)). Other flags: `--iterations`, `--width`, `--seed`,
 `--device`, `--image-every` (3: every third decoded frame is a posed image), `--vo-width` (960), `--no-train`,
-`--keep-raw`, `--config FILE` (every setting of `fromdashcam.DEFAULTS`). The page: *From a dashcam* in the
+`--keep-raw`, `--config FILE` (every setting of `fromdashcam.DEFAULTS`), `--dynamic [--tracks PATH]` ([moving road
+users](#moving-road-users-from-a-dashcam)). The page: *From a dashcam* in the
 *Reconstruction* section of *Replay* (a clip, a window, a world; the result opens in the section's view).
 
 ### The method
@@ -796,8 +800,9 @@ rasteriser: `core/recon/actors.py`, `lidar.py`, `lens_raster.py`, `closedloop.py
 
 **Dynamic mode** (`--dynamic`). The source's tracked road users are learned instead of masked: a Falcon run's
 `actors.jsonl` (every vehicle and walker but the ego: CARLA's boxes, the box centre the actor's transform composed with
-its bounding box's centre) and nuScenes' `sample_annotation` instances (every annotated object; moving when it moved
-more than 0.3 m or is a person, else posed where it was annotated). Only the ego's body and actors without a track
+its bounding box's centre), nuScenes' `sample_annotation` instances (every annotated object; moving when it moved
+more than 0.3 m or is a person, else posed where it was annotated) and a dashcam segment's road users from its
+near-miss ingest ([below](#moving-road-users-from-a-dashcam)). Only the ego's body and actors without a track
 (traffic lights) stay masked. Several cameras train together (`--camera all`: nuScenes' six; a Falcon rig's pinhole
 cameras).
 
@@ -860,6 +865,43 @@ sides; every step records the ego's deviation from the logged path, the PSNR exp
 the envelope, and beyond `--deviate` (3 m) the step is flagged and the episode ends (truncated, termination
 `outside_reconstruction`).
 
+### Moving road users from a dashcam
+
+A dashcam has no lidar and no annotations, but `falcon dashcam ingest` ([near-misses](nearmiss.md)) tracks its road
+users (ByteTrack boxes, fused monocular ranges, RTS-smoothed trajectories). `from-dashcam --dynamic` reads that ingest
+for the clip — `--tracks` names the ingested folder, its `falcon-ingest/` or an exported event folder; without it,
+the `falcon-ingest/` beside the clip or up to three folders above it — and carries every track seen at least 3 times
+in the segment into the segment's world (`core/recon/dashcam_tracks.py`), frame by frame:
+
+  A_recon(t) = C_recon(t) · E_nearmiss(t)⁻¹ · A_nearmiss(t)
+
+A_nearmiss is the track's smoothed box in the ingest's world (east-north-up about the clip's first GPS fix; a
+vehicle's centre half its typical length beyond its near face, its heading the smoothed velocity's), E_nearmiss the
+ego pose its ranges were attached to (the camera's levelled frame on the road), and C_recon the same levelled frame of
+this reconstruction's camera — the posed frames' optical axis made horizontal, on z = 0 under the camera, linear in
+time between posed frames. Each box therefore keeps where the ingest measured it relative to the camera and is placed
+where the reconstruction's own camera was: the images that train the actor are posed by the segment's odometry, not by
+the ingest's GPS track, so the two can disagree by metres without moving the actor off its pixels. Sizes are the
+kind's typical ones (`core.scenario_plan.SIZES` and `dashcam_tracks.HEIGHTS`: a car 4.6 × 2.0 × 1.5 m, a truck 6.0 ×
+2.6 × 3.0 m, …), the box's centre half its height above the road plane. The tracks are written as `posed/tracks.json`
+(`falcon.recon_tracks/1`, named in `posed.json`), so the posed folder trains either way: **dynamic** — the tracked
+road users become actors (their kind's model: a truck is a four-wheeled car, a motorcycle a two-wheeler), their
+projected boxes are taken out of the folder's motion masks so their pixels are learned, and with no lidar their
+Gaussians start on the box's surface coloured from the frames that see it; **static** — their projected boxes
+(dilated 2 px) are masked on top of the motion masks. `dashcam.json`'s `road_users` says what was carried, what was
+left out (seen too rarely, outside the segment) and how. `falcon dashcam nearmiss reconstruct DIR EVENT` does all this
+for a ranked near-miss (its window ± 2 s), and `falcon recon closedloop` then drives a policy through the incident,
+the road users replaying their tracks (or moved by a reactive controller).
+
+Measured on a synthetic clip (tests/test_recon_dashcam_dynamic.py; numbers in [near-misses](nearmiss.md#measured)):
+the car's and the truck's boxes a median 0.73 m and 0.45 m from the truth in the reconstruction's world, headings
+within 1.5° and 1.9°; on a world that is a rotated and shifted copy of the ingest's, within 5 cm and 0.5°.
+
+**Privacy**: the reconstruction is the user's footage (its `dashcam.json` is written before anything else), its
+tracks with it, and every run made from it — closed-loop drives (`closedloop.json` before the first image), re-rendered
+and hybrid runs — carries the dashcam marker in its records (`scene.private_source`); `assistant.privacy` also follows
+a record's `reconstruction` to a private one. Nothing of it reaches a model, the cluster or a cloud burst.
+
 ## Limits
 
 - **Dynamic mode, the neural lidar and closed loop are a first cut**, tested on synthetic scenes rendered by Falcon's
@@ -870,6 +912,11 @@ the envelope, and beyond `--deviate` (3 m) the step is flagged and the episode e
   they were never seen against; an actor's number of Gaussians is fixed; **radar is geometric, not learned**; the
   closed-loop ego has no road-surface model (height, roll and pitch follow the logged path) and no map (no off-road or
   lane facts, lane width assumed 3.5 m, no traffic lights).
+- **A dashcam's road users** are as good as the ingest's monocular tracks (flat road, a known camera height, the
+  horizon; typical sizes, not measured ones) and the segment's odometry; the learned rigid correction absorbs a box a
+  little off, not one a metre off; a road user seen in fewer than 3 frames is no actor — only the motion mask, when it
+  catches it, keeps it out of training; the camera heights the ingest assumed and the reconstruction found can differ
+  (a scale error of their ratio in the ranges). Tested on synthetic clips only.
 - **Extrapolation degrades fast**: the measured numbers above fall with every metre off the recorded path, and areas
   the drive never saw (behind objects, beyond the lidar's range, the far side of a shifted view) are blurred, missing
   or filled by the far shell. A single forward camera sees each surface over a narrow range of directions.
