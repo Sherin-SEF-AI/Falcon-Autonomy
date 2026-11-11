@@ -226,6 +226,8 @@ def main_recon(argv) -> int:
                     'voxel_m': a.voxel_m, 'sky_points': a.sky_points, 'gpu_memory_fraction': a.gpu_memory_fraction,
                     'init': a.init, 'camera': a.camera, 'device': a.device, 'raster_backend': a.raster_backend}
             s.update({k: v for k, v in over.items() if v is not None})
+            from ..profiles import cap_recon
+            s = cap_recon(s)                    # the low_vram profile's caps (core.profiles); standard: unchanged
             if a.no_masks:
                 s['masks'] = False
             if a.no_semantic:

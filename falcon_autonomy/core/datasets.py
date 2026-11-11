@@ -61,9 +61,12 @@ def cells(spec: dict) -> list:
 
 def drive_key(cfg: dict) -> str:
     """The cache key of a drive: its config without where it is written, the server's ports, and the ODD monitor
-    (it only observes)."""
+    (it only observes). The backend it runs on (cfg['backend'], sim.backends) is in it: a CARLA 0.10 drive never
+    stands in for a 0.9.16 one."""
     c = {k: v for k, v in cfg.items() if k not in ('out', 'port', 'tm_port', 'host', 'name', 'odd', 'odd_reference',
                                                     'odd_every', 'odd_workspace')}
+    if c.get('backend') == 'carla-0.9.16':      # the backend is part of the key; 0.9.16, named or not, keys as before
+        del c['backend']
     return sha256_json(c)
 
 

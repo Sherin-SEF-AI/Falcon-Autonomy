@@ -14,6 +14,7 @@ import time
 
 from ..core.budget import label_cameras
 from .common import ROLE_HERO, ROLE_SENSOR, ROLE_TRAFFIC, Failed, place_now
+from .compat import of
 
 FRAME_TIMEOUT_S = 10.0
 OPENDRIVE_DEFAULTS = {'vertex_distance': 2.0, 'max_road_length': 500.0, 'wall_height': 0.0, 'additional_width': 0.6,
@@ -25,6 +26,7 @@ def load_map(w, cfg: dict):
     (cfg['xodr'], a file) generated with cfg['opendrive'] parameters — skipped when the server already has exactly
     that road network (its Map.to_opendrive() hashes the same). Returns the world."""
     client, world = w.client, w.world
+    of(w).check_config(cfg, client)         # a run for another backend, a map or world this backend lacks: refused
     load_s = float(cfg.get('load_timeout_s', 180.0))
     w.speed_control = None
     w.traffic_keeper = None
@@ -106,6 +108,8 @@ def weather_params(carla, fields: dict):
     for k, v in (fields or {}).items():
         if hasattr(wp, k):
             setattr(wp, k, float(v))
+    from .compat import active
+    active().weather_missing(wp, fields)     # another backend: fields its weather lacks are noted
     return wp
 
 
@@ -608,6 +612,8 @@ class Cameras:
         for k, v in (attrs or {}).items():
             if bp.has_attribute(k):
                 bp.set_attribute(k, str(v))
+            else:
+                of(self.w).missing_attribute(bp_id, k)        # noted off 0.9.16 (a view's lens attributes)
         bp.set_attribute('image_size_x', str(int(width)))
         bp.set_attribute('image_size_y', str(int(height)))
         bp.set_attribute('fov', str(float(fov)))

@@ -67,8 +67,9 @@ def vulkan_icds(dirs=ICD_DIRS) -> list:
 
 
 def gpus(timeout=5.0) -> list:
-    """NVIDIA GPUs from nvidia-smi: [{'index', 'name', 'memory_total_mb', 'memory_used_mb', 'utilization_pct',
-    'driver'}] ([] without nvidia-smi)."""
+    """NVIDIA GPUs from nvidia-smi: [{'index', 'name', 'memory_total_mb', 'memory_used_mb', 'memory_free_mb',
+    'utilization_pct', 'driver'}] — video memory total and used (of the whole GPU, every program's) in MiB; [] without
+    nvidia-smi."""
     smi = shutil.which('nvidia-smi')
     if not smi:
         return []
@@ -85,10 +86,64 @@ def gpus(timeout=5.0) -> list:
             continue
         try:
             out.append({'index': int(f[0]), 'name': f[1], 'memory_total_mb': float(f[2]),
-                        'memory_used_mb': float(f[3]), 'utilization_pct': float(f[4]), 'driver': f[5]})
+                        'memory_used_mb': float(f[3]), 'memory_free_mb': max(float(f[2]) - float(f[3]), 0.0),
+                        'utilization_pct': float(f[4]), 'driver': f[5]})
         except ValueError:
             continue
     return out
+
+
+class VramSampler:
+    """Samples one GPU's used video memory (nvidia-smi, every `interval` s) in a background thread until stop():
+    values (MiB), peak_mb. The whole GPU's (other programs' too); a peak shorter than the interval can be missed."""
+
+    def __init__(self, interval: float = 0.5, index: int = 0, query=None):
+        import threading
+        self.interval, self.index = max(float(interval), 0.05), int(index)
+        self.query = query or gpus
+        self.values: list = []
+        self.gpu_name = ''
+        self._stop = threading.Event()
+        self._t = None
+
+    def sample(self):
+        """One reading (MiB used), or None when the GPU does not answer."""
+        g = next((x for x in self.query() if x['index'] == self.index), None)
+        if g is None:
+            return None
+        self.gpu_name = g['name']
+        return g['memory_used_mb']
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            v = self.sample()
+            if v is not None:
+                self.values.append(v)
+
+    def start(self):
+        import threading
+        self._stop.clear()
+        self._t = threading.Thread(target=self._run, daemon=True, name='falcon-vram')
+        self._t.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        if self._t is not None:
+            self._t.join(self.interval + 10.0)
+        v = self.sample()                        # the last reading, at the end
+        if v is not None:
+            self.values.append(v)
+        return self
+
+    @property
+    def peak_mb(self) -> float:
+        return max(self.values) if self.values else 0.0
+
+
+def vram_sampler(interval: float = 0.5, index: int = 0) -> VramSampler:
+    """A started VramSampler (stop() it; peak_mb)."""
+    return VramSampler(interval, index).start()
 
 
 def has_systemd_run() -> bool:
@@ -110,4 +165,10 @@ def checks() -> list:
                                                  'now'))
     out.append(('systemd-run', has_systemd_run(), 'servers and workers run in memory-capped scopes' if
                 has_systemd_run() else 'missing: Falcon only starts CARLA under a memory cap'))
+    try:                                         # low_vram suggested on a GPU with 9 GB or less (core.profiles)
+        from .profiles import current, suggestion
+        from .settings import Settings
+        out.append(('Performance profile',) + suggestion(g, current(Settings())))
+    except (OSError, ValueError):
+        pass
     return out

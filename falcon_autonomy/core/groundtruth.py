@@ -208,6 +208,64 @@ GROUND_LUT[list(GROUND_TAGS)] = True
 PART_CLASS = {'TrafficLight': 7, 'TrafficSigns': 8}
 
 
+# ---------------------------------------------------------------- tags of other backends (sim.backends)
+def _label_key(name: str) -> str:
+    """A CityObjectLabel name compared loosely: case, underscores and a plural s ignored (TrafficSigns, Traffic_Sign,
+    trafficsign are one label)."""
+    k = str(name).replace('_', '').lower()
+    return k[:-1] if k.endswith('s') and len(k) > 3 else k
+
+
+CLASS_OF_LABEL = {_label_key(c[2]): c[0] for c in CLASSES if c[2]}
+
+
+def labels_of(col) -> dict:
+    """{name: value} of a client module's carla.CityObjectLabel (a class of int attributes, or a dict); {} for None.
+    'Any' (255, a query wildcard) is left out."""
+    if col is None:
+        return {}
+    items = col.items() if isinstance(col, dict) else ((k, getattr(col, k)) for k in dir(col) if k[:1].isupper())
+    out = {}
+    for k, v in items:
+        if k == 'Any':
+            continue
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= iv < 256:
+            out[str(k)] = iv
+    return out
+
+
+def tags_for(backend: str = 'carla-0.9.16', labels=None) -> dict:
+    """{CityObjectLabel name: the tag value a backend's sensors write}. CARLA 0.9.16: CLASSES' (read from its client
+    module and measured on its server). Another backend: its client module's CityObjectLabel read at run time
+    (labels: the class or {name: value}; workers.compat passes it) — {} when it was not read, since its values are
+    not assumed."""
+    if backend == 'carla-0.9.16':
+        return {c[2]: c[0] for c in CLASSES if c[2]}
+    return labels_of(labels)
+
+
+def tag_lut(labels: dict) -> tuple:
+    """((256,) uint8: a backend's tag value -> Falcon's class id (0.9.16's tag) by label name, unknown names and
+    values 0, unlabelled; the label names that have no Falcon class). Falcon's own weather-noise tag (written by its
+    sensor physics, never by CARLA) maps to itself unless the backend uses that value."""
+    lut = np.zeros(256, np.uint8)
+    unknown = []
+    for name, v in labels.items():
+        cid = CLASS_OF_LABEL.get(_label_key(name))
+        if cid is None:
+            if _label_key(name) not in ('none', 'unlabeled', 'unlabelled'):
+                unknown.append(name)
+            continue
+        lut[int(v)] = cid
+    if WEATHER_NOISE_CLASS not in labels.values():
+        lut[WEATHER_NOISE_CLASS] = WEATHER_NOISE_CLASS
+    return lut, unknown
+
+
 def classes_doc() -> list:
     """The class table as index.json writes it."""
     out = []

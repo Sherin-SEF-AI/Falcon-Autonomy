@@ -15,7 +15,12 @@ then publishes the sensors a client enabled with Sensor.enable_for_ros() and tak
 (docs/carla-lessons.md, "Native ROS 2", says what was measured).
 
 Workers (falcon_autonomy.workers) run in CARLA's own Python with Falcon's source folder on PYTHONPATH, each in a
-capped scope of its own.
+capped scope of its own; FALCON_BACKEND in their environment names the backend the job was started for.
+
+Backends (sim.backends): the binary, its project argument and the client wheel are per backend — CARLA 0.9.16 as above
+(the default, and what everything here was measured on), or CARLA's UE5 line (CarlaUnreal/Binaries/Linux/
+CarlaUnreal-Linux-Shipping CarlaUnreal …, unverified on a real 0.10 server). A low-VRAM profile (core.profiles) adds
+the texture streaming pool size (-ini:… and -ExecCmds=…; which of the two 0.9.16 honours is unmeasured).
 """
 from __future__ import annotations
 
@@ -31,16 +36,25 @@ import time
 
 from ..core import sysinfo
 from ..core.settings import port_allowed, rpc_ports
+from . import backends as B
 
-BINARY = os.path.join('CarlaUE4', 'Binaries', 'Linux', 'CarlaUE4-Linux-Shipping')
+BINARY = B.get(B.DEFAULT).binary      # CARLA 0.9.16's server (other backends: sim.backends, binary_of)
 CLIENT_MODULES = ('carla', 'numpy', 'cv2')
 WORKER_MEMORY_GB = 4.0           # a worker's scope cap
 WORKER_NEED_GB = 1.0             # what a worker is counted as needing when the queue checks memory
 START_TIMEOUT_S = 180.0
 
 
-def is_carla_root(path) -> bool:
-    return bool(path) and os.path.isfile(os.path.join(path, BINARY))
+def binary_of(backend: str = B.DEFAULT) -> str:
+    """A backend's server binary, relative to its CARLA folder."""
+    return B.get(backend).binary
+
+
+def is_carla_root(path, backend: str = '') -> str:
+    """The backend of a CARLA folder ('' when it is none; truthy when it is one). With backend: that backend's id
+    when the folder is one of it, else ''."""
+    found = B.detect_root(path)
+    return found if not backend or found == backend else ''
 
 
 def carla_version(root) -> str:
@@ -53,17 +67,21 @@ def carla_version(root) -> str:
     return m if m[:1].isdigit() else ''
 
 
-def candidate_roots(home: str | None = None) -> list:
-    """CARLA folders in the usual places (a folder holding CarlaUE4/Binaries/Linux/CarlaUE4-Linux-Shipping)."""
+def candidate_roots(home: str | None = None, backend: str = B.DEFAULT) -> list:
+    """A backend's CARLA folders in the usual places (for 0.9.16, a folder holding CarlaUE4/Binaries/Linux/
+    CarlaUE4-Linux-Shipping; for the UE5 line, CarlaUnreal/Binaries/Linux/CarlaUnreal-Linux-Shipping)."""
     home = home or os.path.expanduser('~')
     pats = [os.path.join(home, p) for p in ('carla', 'CARLA*', 'carla/CARLA*', 'Documents/carla/CARLA*',
                                             'Documents/*/carla/CARLA*', 'Documents/*/carla', 'opt/carla*')]
     pats += ['/opt/carla*', '/opt/carla-simulator']
+    if backend != B.DEFAULT:                    # the UE5 line's releases unpack as Carla-0.10.x-…
+        pats += [os.path.join(home, p) for p in ('Carla*', 'carla/Carla*', 'Documents/carla/Carla*',
+                                                 'Documents/*/carla/Carla*')]
     out = []
     for p in pats:
         for d in sorted(glob.glob(p)):
             d = os.path.abspath(d)
-            if is_carla_root(d) and d not in out:
+            if is_carla_root(d, backend) and d not in out:
                 out.append(d)
     return out
 
@@ -86,16 +104,21 @@ def clean_env(extra: dict | None = None) -> dict:
     return env
 
 
-def check_client(python, timeout=60.0) -> dict:
-    """Whether CARLA's Python imports what the workers need: {'ok', 'carla_version', 'python', 'missing', 'text'}."""
+def check_client(python, timeout=60.0, backend: str = B.DEFAULT) -> dict:
+    """Whether CARLA's Python imports what the workers need, with the backend's client: {'ok', 'carla_version',
+    'python', 'missing', 'text'} (a carla wheel of another backend is not ok; an unknown version is not held
+    against it)."""
     if not python or not os.path.isfile(python):
         return {'ok': False, 'missing': list(CLIENT_MODULES), 'text': 'No Python for CARLA\'s client chosen.'}
     code = ('import importlib, json, sys\nout = {"python": sys.version.split()[0], "missing": []}\n'
             f'for m in {CLIENT_MODULES!r}:\n'
             '    try:\n        importlib.import_module(m)\n'
             '    except Exception:\n        out["missing"].append(m)\n'
-            'try:\n    from importlib.metadata import version\n    out["carla_version"] = version("carla")\n'
-            'except Exception:\n    out["carla_version"] = ""\nprint(json.dumps(out))\n')
+            'try:\n    import carla\n    out["carla_version"] = str(getattr(carla, "__version__", "") or "")\n'
+            'except Exception:\n    out["carla_version"] = ""\n'
+            'try:\n    from importlib.metadata import version\n'
+            '    out["carla_version"] = out["carla_version"] or version("carla")\n'
+            'except Exception:\n    pass\nprint(json.dumps(out))\n')
     try:
         r = subprocess.run([python, '-I', '-c', code], capture_output=True, text=True, timeout=timeout,
                            env=clean_env())
@@ -105,10 +128,16 @@ def check_client(python, timeout=60.0) -> dict:
         out = json.loads(r.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
         return {'ok': False, 'missing': list(CLIENT_MODULES), 'text': (r.stderr or r.stdout).strip()[-400:]}
-    out['ok'] = not out['missing']
-    out['text'] = (f'Python {out["python"]}, carla {out.get("carla_version") or "?"}' if out['ok'] else
-                   f'Missing in CARLA\'s Python: {", ".join(out["missing"])} (pip install carla==0.9.16 numpy '
-                   'opencv-python-headless)')
+    b = B.get(backend)
+    got = B.detect_version(out.get('carla_version'))
+    out['ok'] = not out['missing'] and (not got or got == b.id)
+    if out['missing']:
+        out['text'] = f'Missing in CARLA\'s Python: {", ".join(out["missing"])} ({b.wheel})'
+    elif not out['ok']:
+        out['text'] = (f'carla {out["carla_version"]} in CARLA\'s Python is {B.get(got).title}\'s client, not '
+                       f'{b.title}\'s ({b.wheel})')
+    else:
+        out['text'] = f'Python {out["python"]}, carla {out.get("carla_version") or "?"}'
     return out
 
 
@@ -198,8 +227,10 @@ class Server:
     STOPPED, STARTING, READY, CRASHED, EXTERNAL = 'stopped', 'starting', 'ready', 'crashed', 'external'
 
     def __init__(self, root='', port=2310, memory_gb=12.0, quality='Epic', no_render=False, log_path='',
-                 external=False, settings=None, host='127.0.0.1', ros2=False):
+                 external=False, settings=None, host='127.0.0.1', ros2=False, backend=B.DEFAULT, texture_pool_mb=0):
         self.root, self.port, self.memory_gb = root, int(port), float(memory_gb)
+        self.backend = B.get(backend).id
+        self.texture_pool_mb = int(texture_pool_mb or 0)
         self.ros2 = bool(ros2)
         self.quality, self.no_render, self.log_path = quality, bool(no_render), log_path
         self.external, self.settings, self.host = bool(external), settings, host
@@ -212,16 +243,14 @@ class Server:
         self._log = None
 
     def command(self) -> list:
-        args = [os.path.join(self.root, BINARY), 'CarlaUE4', f'-carla-rpc-port={self.port}', '-nosound']
-        if self.no_render:
-            args.append('-nullrhi')                       # (-quality-level=Low crashes UE4 with -nullrhi)
-        else:
-            args.append('-RenderOffScreen')
-            if self.quality == 'Low':
-                args.append('-quality-level=Low')
-        if self.ros2:
-            args.append('--ros2')                         # CARLA 0.9.16's native ROS 2 (its own Fast DDS)
-        return scoped(args, self.memory_gb, self.unit)
+        """The backend's server with its arguments (sim.backends.server_args), in the capped scope. RuntimeError when
+        the backend cannot do what is asked (native ROS 2 on the UE5 line)."""
+        try:
+            args = B.server_args(self.backend, self.port, self.quality, self.no_render, self.ros2,
+                                 self.texture_pool_mb)
+        except B.BackendError as e:
+            raise RuntimeError(str(e)) from None
+        return scoped([os.path.join(self.root, binary_of(self.backend))] + args, self.memory_gb, self.unit)
 
     def environment(self) -> dict:
         env = clean_env()
@@ -238,8 +267,12 @@ class Server:
     def start(self):
         if self.external or self.running:
             return
-        if not is_carla_root(self.root):
-            raise RuntimeError(f'{self.root or "(none)"} is not a CARLA folder ({BINARY} is missing).')
+        if not is_carla_root(self.root, self.backend):
+            found = is_carla_root(self.root)
+            raise RuntimeError(f'{self.root} is a {B.get(found).title} folder, not {B.get(self.backend).title}: set '
+                               f'each backend\'s folder in Settings ▸ Simulator.' if found else
+                               f'{self.root or "(none)"} is not a CARLA folder ({binary_of(self.backend)} is '
+                               'missing).')
         if not port_allowed(self.port, self.settings):
             raise RuntimeError(f'Port {self.port} is one of CARLA\'s defaults (2000–2010, 8100), where a server you '
                                'started may listen: Falcon starts its own server elsewhere unless you choose this '
@@ -338,9 +371,10 @@ class Server:
 
 
 def worker_command(python: str, worker: str, args=(), memory_gb=WORKER_MEMORY_GB, scope=True,
-                   extra_path=(), unit: str = '') -> tuple[list, dict]:
+                   extra_path=(), unit: str = '', backend: str = '') -> tuple[list, dict]:
     """(argv, env) running `python -m falcon_autonomy.workers <worker> args` in CARLA's Python with Falcon's source on
-    PYTHONPATH (extra_path first: tests put the fake carla there), in a capped scope unless scope=False."""
+    PYTHONPATH (extra_path first: tests put the fake carla there), in a capped scope unless scope=False. backend: the
+    backend the job is for, in FALCON_BACKEND (the worker refuses a client module of another one)."""
     src = falcon_source()
     if not src:
         raise RuntimeError('The workers need Falcon\'s source folder (a frozen build carries it as data): none found.')
@@ -348,4 +382,7 @@ def worker_command(python: str, worker: str, args=(), memory_gb=WORKER_MEMORY_GB
     if scope:
         cmd = scoped(cmd, memory_gb, unit)
     path = os.pathsep.join(list(extra_path) + [src])
-    return cmd, clean_env({'PYTHONPATH': path, 'PYTHONUNBUFFERED': '1'})
+    env = {'PYTHONPATH': path, 'PYTHONUNBUFFERED': '1'}
+    if backend:
+        env['FALCON_BACKEND'] = B.get(backend).id
+    return cmd, clean_env(env)

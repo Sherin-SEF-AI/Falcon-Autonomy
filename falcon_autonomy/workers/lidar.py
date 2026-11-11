@@ -39,6 +39,7 @@ import numpy as np
 
 from ..core.labels import VEHICLE_TAGS
 from ..core.rig import with_defaults
+from .compat import of
 from .live import transform_matrix
 
 DIR_TOL_DEG = 0.01
@@ -170,6 +171,7 @@ class LidarRecorder:
         rc, sc = counts_of(m_raw, self.nch), counts_of(m_sem, self.nch)
         cols = int(round(self.s['points_per_second'] / max(self.nch, 1) / max(self.s['rotation_frequency'], 1e-6)))
         tag, idx, exact, st = match(raw, rc, m_sem, sc, cols, float(self.s.get('horizontal_fov', 360.0)))
+        tag = of(self.w).canon_tags(tag)                 # another backend's tag values as Falcon's classes
         S = self.stats
         S['slices'] += 1
         S['points'] += st['points']

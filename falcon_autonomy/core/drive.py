@@ -75,6 +75,10 @@ def drive_config(project: Project, world_id: str, rig_id: str, out_dir: str, por
     attach(cfg, workspace or getattr(project, 'workspace', '') or '', project)
     from .v2x import attach as v2x_attach                       # the world's roadside units (docs/v2x.md); absent
     v2x_attach(cfg, project, world_id)                          # otherwise: cache keys unchanged
+    from ..sim.backends import DEFAULT, run_backend             # the simulator it runs on (sim.backends); absent for
+    backend = run_backend(project)                              # CARLA 0.9.16: cache keys unchanged
+    if backend != DEFAULT:
+        cfg['backend'] = backend
     return cfg
 
 

@@ -1,0 +1,15 @@
+{
+ "schema": "falcon.blueprint_aliases/1",
+ "backend": "carla-ue5",
+ "about": "CARLA 0.9.16 blueprint ids and the CARLA 0.10 (UE5) blueprint a run uses in their place (workers.compat). Not read from a 0.10 server: `falcon backend probe carla-ue5` lists the server's blueprints; an id with no alias the server has falls back to the first blueprint of its 0.9.16 base type, and every substitution is recorded in run.json (compat.substitutions).",
+ "measured": false,
+ "aliases": {
+  "vehicle.lincoln.mkz_2020": "vehicle.lincoln.mkz",
+  "vehicle.lincoln.mkz_2017": "vehicle.lincoln.mkz",
+  "vehicle.mini.cooper_s": "vehicle.mini.cooper",
+  "vehicle.mini.cooper_s_2021": "vehicle.mini.cooper",
+  "vehicle.dodge.charger_2020": "vehicle.dodge.charger",
+  "vehicle.dodge.charger_police_2020": "vehicle.dodge.charger_police",
+  "vehicle.nissan.patrol_2021": "vehicle.nissan.patrol"
+ }
+}

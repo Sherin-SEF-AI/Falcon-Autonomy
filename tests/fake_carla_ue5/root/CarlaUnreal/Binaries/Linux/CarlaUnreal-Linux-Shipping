@@ -1,0 +1,4 @@
+#!/bin/sh
+# A stand-in for CARLA 0.10's server binary (tests/fake_carla_ue5): folder detection only; it never runs a server.
+echo "fake CarlaUnreal-Linux-Shipping: not a server" >&2
+exit 1

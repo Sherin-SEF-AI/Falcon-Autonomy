@@ -61,6 +61,7 @@ class OsmImport(Worker):
         if cfg.get('city_only'):
             return self.city_only(cfg)
         carla = self.import_carla()
+        self.compat.require('osm2odr', 'importing a place')     # the UE5 line has no carla.Osm2Odr
         t = {}
         t0 = time.monotonic()
         bbox = tuple(cfg['bbox']) if cfg.get('bbox') else None

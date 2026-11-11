@@ -918,6 +918,10 @@ class Sensor(Actor):
     def stop(self):
         self._cb = None
 
+    def enable_for_ros(self):
+        """(0.9.16's native ROS 2: the fake publishes nothing.)"""
+        LOG.append(('enable_for_ros', self.id))
+
     @property
     def is_listening(self):
         return self._cb is not None
@@ -1175,6 +1179,10 @@ class TrafficManager:
 
     def set_random_device_seed(self, s):
         LOG.append(('tm_seed', int(s)))
+
+    def set_osm_mode(self, on):
+        """(0.9.16 has it; the fake's traffic manager does nothing with it.)"""
+        LOG.append(('tm_osm_mode', bool(on)))
 
     def set_desired_speed(self, actor, kmh):
         """(The fake's vehicle is at its desired speed at once, as if it had been cruising.)"""

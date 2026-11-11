@@ -230,9 +230,11 @@ class LateralFilter:
         self.hist = {'abs_offset': [0] * 12, 'between_lanes': 0, 'samples': 0}
         tm = getattr(w, 'tm', None)
         self.ok = True
-        if self.controller == 'tm' and (tm is None or not hasattr(tm, 'vehicle_lane_offset')):
+        from .compat import of
+        if self.controller == 'tm' and (tm is None or not of(w).has('lane_offset', tm)):
             self.ok = False
-            w.note('lateral filtering needs TrafficManager.vehicle_lane_offset (CARLA 0.9.14 and later): off')
+            w.note('lateral filtering needs TrafficManager.vehicle_lane_offset (CARLA 0.9.14 and later; '
+                   f'{of(w).backend.title} here): off')
 
     # ------------------------------------------------------------------ the vehicles
     def wants(self, a, kind: str = '', cls: str | None = None) -> bool:

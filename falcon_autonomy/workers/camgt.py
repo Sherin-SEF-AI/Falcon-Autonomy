@@ -39,6 +39,7 @@ import numpy as np
 from ..core import groundtruth as GT
 from ..core import lens as LENS
 from ..core.rig import carla_rotation
+from .compat import of
 from .live import transform_matrix
 
 GT_LABELS = ('semantic', 'instance', 'depth', 'boxes2d', 'boxes3d')
@@ -153,7 +154,8 @@ class CameraRecorder:
                                    w.carla.Rotation(pitch=vp['pitch'], yaw=vp['yaw'], roll=vp['roll']))
             self.views[0]['flow'] = cameras.spawn(world, lib, 'sensor.camera.optical_flow', v['width'], v['height'],
                                                   v['fov'], tf, ego)
-        self.devig = LENS.devignette_layers(self.plan) if fisheye else None
+        # the vignette correction is 0.9.16's measured camera response (sim.tonemap): off on another backend
+        self.devig = LENS.devignette_layers(self.plan) if fisheye and of(w).tonemap_measured() else None
         self.o2v = LENS.optical_to_vehicle(pose_actual)
         self.assoc = {}
         self.relabelled = 0
@@ -211,6 +213,7 @@ class CameraRecorder:
                 a32[y0:y0 + im.height, :im.width] = GT.packed(im.raw_data, im.width, im.height)
             atl[kind] = a32
         tags, raw = GT.unpack_instance(cg.gather(atl['instance']))
+        tags = of(self.w).canon_tags(tags)               # another backend's tag values as Falcon's classes
         sem = GT.CLASS_OF_TAG[tags]
         rng = cg.range_from_packed(atl['depth'], atl['instance'])
         if raster is not None:

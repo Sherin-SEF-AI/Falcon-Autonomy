@@ -49,19 +49,43 @@ class CarlaService:
         if self.catalog is not None and is_team(workspace):     # a local catalogue of a shared folder (core.team)
             self.catalog.rebuild(workspace)
 
+    # ---------------------------------------------------------------- the CARLA backend (sim.backends; workstream P)
+    @property
+    def backend(self) -> str:
+        """The backend this service runs: a fake's own (its carla module's version; tests), else use_backend()'s
+        choice, else the setting default_backend (CARLA 0.9.16 unless changed)."""
+        from . import backends as B
+        if self.fake_carla:
+            return B.fake_backend(self.fake_carla)
+        return getattr(self, '_backend', '') or B.default_backend(self.settings)
+
+    def use_backend(self, backend_id: str):
+        """Run this backend from now on (a project's simulator.backend). A server of another backend that this
+        service started is stopped first when idle; RuntimeError when it is busy."""
+        from . import backends as B
+        bid = B.get(backend_id).id
+        if bid == self.backend:
+            return
+        if self.server is not None and self.server.running and not self.stop_server():
+            raise RuntimeError(f'Falcon\'s {B.get(self.server.backend).title} server is busy ({self.server_error}): '
+                               f'{B.get(bid).title} starts when it is free')
+        self._backend = bid
+
     @property
     def carla_root(self) -> str:
-        r = self.settings.get('carla_root')
-        if not r:
-            found = S.candidate_roots()
-            r = found[0] if found else ''
-        return r
+        from . import backends as B
+        return B.root_for(self.settings, self.backend)
 
     @property
     def python(self) -> str:
         if self.fake_carla:
             return sys.executable
-        return self.settings.get('client_python') or S.client_python(self.carla_root)
+        from . import backends as B
+        return B.python_for(self.settings, self.backend, self.carla_root)
+
+    def server_options(self) -> dict:
+        """The server's backend and the profile's texture streaming pool (core.profiles; 0: CARLA's own)."""
+        return {'backend': self.backend, 'texture_pool_mb': int(self.settings.get('texture_pool_mb', 0) or 0)}
 
     @property
     def port(self) -> int:
@@ -82,12 +106,14 @@ class CarlaService:
     # ---------------------------------------------------------------- the server
     def ensure_server_object(self) -> S.Server:
         ros2 = bool(self.settings.get('server_ros2'))
-        if self.server is None or self.server.port != self.port or (self.server.ros2 != ros2 and
-                                                                     not self.server.running):
+        opts = self.server_options()
+        if self.server is None or self.server.port != self.port or (
+                (self.server.ros2 != ros2 or self.server.backend != opts['backend'] or
+                 self.server.texture_pool_mb != opts['texture_pool_mb']) and not self.server.running):
             log = os.path.join(self.workspace, 'logs', f'carla-{self.port}.log') if self.workspace else ''
             self.server = S.Server(self.carla_root, self.port, float(self.settings.get('server_memory_gb')),
                                    self.settings.get('server_quality'), log_path=log, external=self.external,
-                                   settings=self.settings, ros2=ros2)
+                                   settings=self.settings, ros2=ros2, **opts)
         return self.server
 
     def server_state(self) -> str:
@@ -195,7 +221,7 @@ class CarlaService:
         if not py:
             raise RuntimeError('No Python for CARLA\'s client: choose CARLA\'s folder (and its venv) in Settings.')
         argv, env = S.worker_command(py, worker, args, S.WORKER_MEMORY_GB, scope=self.scope,
-                                     extra_path=[self.fake_carla] if self.fake_carla else ())
+                                     extra_path=[self.fake_carla] if self.fake_carla else (), backend=self.backend)
         return JobSpec(kind, title, argv, env, needs_carla=needs_carla, memory_gb=memory_gb, run_dir=run_dir,
                        meta=meta)
 

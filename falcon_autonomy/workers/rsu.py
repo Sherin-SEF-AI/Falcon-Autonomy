@@ -36,6 +36,7 @@ import numpy as np
 from ..core import cpm as C
 from ..core import v2x as V
 from .common import ROLE_SENSOR
+from .compat import of
 
 ROAD_USER_TAGS = np.arange(12, 20)
 STATIC_OCCLUDER_TAGS = np.array([3, 4, 5, 6, 7, 8, 9, 20, 21, 22, 26, 28])
@@ -236,6 +237,7 @@ class Station:
                 S = np.frombuffer(m.raw_data, C_SEM)
                 xyz = np.c_[S['x'], S['y'], S['z']].astype(np.float64)
                 tag, idx = S['tag'].astype(np.uint8), S['idx'].astype(np.uint32)
+                tag = of(self.w).canon_tags(tag)
             x['window'].append((xyz, tag, idx))
         if i % self.every:
             return None

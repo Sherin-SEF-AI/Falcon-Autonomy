@@ -67,6 +67,10 @@ class TrafficKeeper:
     def __init__(self, w, world, seed: int = 0):
         import numpy as np
         self.w, self.world = w, world
+        from .compat import of
+        if not of(w).default:
+            of(w).note('the traffic keeper\'s look-ahead and fall limits were measured with CARLA 0.9.16\'s '
+                          f'traffic manager, not {w.compat.backend.title}\'s')
         self.cmap = world.get_map()
         spawns = list(self.cmap.get_spawn_points())
         rng = np.random.default_rng([int(seed), 0x7AF1C])

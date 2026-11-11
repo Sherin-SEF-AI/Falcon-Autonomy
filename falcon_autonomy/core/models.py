@@ -19,6 +19,13 @@ else on the CPU — the providers used are reported with every evaluation. Torch
 predict(images) -> per image a list of {'bbox' [x0 y0 x1 y1] pixels, 'class', 'score'} (a detector) or an H × W class
 map (a segmenter).
 
+Precision (the low-VRAM profile, core.profiles): Runner(precision='fp16') runs an ONNX model converted to FP16 by
+onnxruntime.transformers.float16.convert_float_to_float16 with keep_io_types (inputs and outputs stay FP32), cached
+as <sha256 of the FP32 file>.fp16.onnx in Falcon's cache folder; a TorchScript model .half() (under autocast on CUDA).
+A model that does not load in FP16 runs in FP32 and says why (Runner.precision, .precision_note). fp16_gate() decides
+'auto': the model runs on the evaluated frames in both precisions and FP16 is kept only when its AP (a segmenter's
+mIoU) is at most FP16_MAX_DROP_PT points below FP32's; every evaluation records the precision it ran at and why.
+
 Downloads only on request: fetch() downloads a registered model's pinned URL, checks its SHA-256 and refuses on a
 mismatch; the licence is shown before. No model is bundled, and no AGPL-licensed code (e.g. Ultralytics) is a
 dependency: "yolo" here is only the output layout (rows of cx cy w h + class scores, as YOLOv5/v8-style exports
@@ -36,6 +43,8 @@ KINDS = ('detector', 'segmenter')
 RUNTIMES = ('onnx', 'torchscript', 'python')
 FORMATS = ('boxes_scores_labels', 'yolo', 'logits')
 PERMISSIVE = ('Apache-2.0', 'MIT', 'BSD-2-Clause', 'BSD-3-Clause', 'CC0-1.0', 'CC-BY-4.0')
+PRECISIONS = ('fp32', 'fp16')
+FP16_MAX_DROP_PT = 0.5          # 'auto' keeps FP16 when AP (mIoU) drops by at most this many points
 
 
 def validate(m: dict) -> list:
@@ -234,42 +243,98 @@ def decode_segmentation(outputs: list, m: dict, back: dict, size: tuple) -> np.n
     return lut[lab]
 
 
+# ------------------------------------------------------------------------------------------------ FP16
+def fp16_path(src: str) -> str:
+    """Where the FP16 conversion of an ONNX file is cached: <cache>/fp16/<sha256 of the file>.fp16.onnx."""
+    from .paths import cache_dir
+    from .provenance import sha256_file
+    return os.path.join(cache_dir(), 'fp16', f'{sha256_file(src)}.fp16.onnx')
+
+
+def fp16_onnx(src: str) -> str:
+    """The FP16 conversion of an ONNX model (onnxruntime.transformers.float16.convert_float_to_float16,
+    keep_io_types: FP32 inputs and outputs), made once and cached (fp16_path)."""
+    out = fp16_path(src)
+    if os.path.isfile(out):
+        return out
+    import onnx
+    from onnxruntime.transformers.float16 import convert_float_to_float16
+    m16 = convert_float_to_float16(onnx.load(src), keep_io_types=True)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    tmp = out + f'.part{os.getpid()}'
+    onnx.save(m16, tmp)
+    os.replace(tmp, out)
+    return out
+
+
 # ------------------------------------------------------------------------------------------------ runners
 class Runner:
     """Loads a registered model once; predict(rgb image) -> detections or a class map. `providers` says where it
-    ran (onnxruntime's execution providers, or torch's device)."""
+    ran (onnxruntime's execution providers, or torch's device); `precision` what it runs at ('fp32' or 'fp16'; a
+    plug-in: 'native') and `precision_note` why it is not what was asked."""
 
-    def __init__(self, m: dict, workspace: str = ''):
+    def __init__(self, m: dict, workspace: str = '', precision: str = 'fp32'):
         problems = validate(m)
         if problems:
             raise ValueError('; '.join(problems))
+        if precision not in PRECISIONS:
+            raise ValueError(f'precision must be one of {PRECISIONS} (\'auto\' is decided by fp16_gate)')
         self.m = m
+        self.requested = precision
+        self.precision, self.precision_note = 'fp32', ''
         rt = m['runtime']
         if rt == 'onnx':
             import onnxruntime as ort
             avail = ort.get_available_providers()
             prov = [p for p in ('CUDAExecutionProvider', 'CPUExecutionProvider') if p in avail]
-            self.sess = ort.InferenceSession(resolve_path(m, workspace), providers=prov)
+            path = resolve_path(m, workspace)
+            self.sess = None
+            if precision == 'fp16':
+                try:
+                    self.sess = ort.InferenceSession(fp16_onnx(path), providers=prov)
+                    self.precision, self.weights = 'fp16', fp16_path(path)
+                except Exception as e:                     # noqa: BLE001 (no converter, an op without FP16)
+                    self.precision_note = f'FP16 did not load ({type(e).__name__}: {str(e)[:160]}): FP32'
+            if self.sess is None:
+                self.sess = ort.InferenceSession(path, providers=prov)
+                self.weights = path
             self.providers = self.sess.get_providers()
             self.input_name = self.sess.get_inputs()[0].name
         elif rt == 'torchscript':
             import torch
             self.dev = 'cuda' if torch.cuda.is_available() else 'cpu'
             self.net = torch.jit.load(resolve_path(m, workspace), map_location=self.dev).eval()
+            if precision == 'fp16':
+                self.net = self.net.half()
+                self.precision = 'fp16'
             self.providers = [f'torch:{self.dev}']
         else:
             mod, _, cls = m['entry'].partition(':')
             self.plugin = getattr(importlib.import_module(mod), cls)(**(m.get('params') or {}))
             self.providers = ['python']
+            self.precision = 'native'
+            if precision == 'fp16':
+                self.precision_note = 'a plug-in runs at its own precision'
+
+    def provenance(self) -> dict:
+        return {'precision': self.precision, 'requested': self.requested, 'note': self.precision_note or None}
 
     def raw(self, x):
         if self.m['runtime'] == 'onnx':
             return self.sess.run(None, {self.input_name: x})
+        import contextlib
+
         import torch
-        with torch.no_grad():
-            y = self.net(torch.from_numpy(x).to(self.dev))
+        t = torch.from_numpy(x).to(self.dev)
+        half = self.precision == 'fp16'
+        if half:
+            t = t.half()
+        amp = torch.autocast('cuda', dtype=torch.float16) if half and self.dev == 'cuda' else \
+            contextlib.nullcontext()
+        with torch.no_grad(), amp:
+            y = self.net(t)
         y = y if isinstance(y, (list, tuple)) else [y]
-        return [t.detach().cpu().numpy() for t in y]
+        return [(t.float() if t.is_floating_point() else t).detach().cpu().numpy() for t in y]
 
     def predict(self, rgb: np.ndarray, meta: dict | None = None):
         if self.m['runtime'] == 'python':
@@ -279,6 +344,47 @@ class Runner:
         if self.m['kind'] == 'segmenter':
             return decode_segmentation(outs, self.m, back, rgb.shape[:2])
         return decode_detections(outs, self.m, back)
+
+
+def fp16_gate(runs: list, m: dict, workspace: str = '', camera: str | None = None, every: int = 1,
+              max_drop_pt: float = FP16_MAX_DROP_PT, progress=None, cancel=None) -> dict:
+    """'auto' precision: the model on the same frames in FP32 and FP16 (core.harness.collect), scored against the
+    ground truth (AP; a segmenter's mIoU); FP16 kept when it is at most max_drop_pt points below FP32. {'precision',
+    'requested': 'auto', 'metric', 'fp32', 'fp16', 'drop_pt', 'max_drop_pt', 'frames', 'reason', 'collected':
+    {precision: harness.collect's result}} — the kept collection is the evaluation's, nothing runs a third time."""
+    from . import harness as H
+    out = {'requested': 'auto', 'max_drop_pt': float(max_drop_pt), 'metric': None, 'fp32': None, 'fp16': None,
+           'drop_pt': None}
+
+    def sub(lo, hi):
+        return (lambda f, t: progress(lo + (hi - lo) * f, t)) if progress else None
+    r32 = Runner(m, workspace, 'fp32')
+    c32 = H.collect(runs, m, workspace, camera, every, sub(0.0, 0.5), None, cancel, runner=r32)
+    r16 = Runner(m, workspace, 'fp16')
+    if r16.precision != 'fp16':
+        return dict(out, precision='fp32', frames=len(c32['frames']), collected={'fp32': c32},
+                    reason=r16.precision_note or 'FP16 is not available for this runtime')
+    c16 = H.collect(runs, m, workspace, camera, every, sub(0.5, 1.0), None, cancel, runner=r16)
+    seg = m['kind'] == 'segmenter'
+    metric = 'mIoU' if seg else 'AP'
+
+    def value(col):
+        sc = H.score(col['frames'], m['kind'], n_boot=10)
+        v = sc['full'].get(metric)
+        return None if v is None else float(v)
+    v32, v16 = value(c32), value(c16)
+    out.update(metric=metric, fp32=v32, fp16=v16, frames=len(c32['frames']),
+               collected={'fp32': c32, 'fp16': c16})
+    if v32 is None or v16 is None:
+        return dict(out, precision='fp32', reason=f'no {metric} to compare (no ground truth the model can name): '
+                                                  'FP32 kept')
+    drop = round((v32 - v16) * 100.0, 3)
+    out['drop_pt'] = drop
+    if drop > max_drop_pt:
+        return dict(out, precision='fp32', reason=f'FP16 {metric} {v16 * 100:.2f} is {drop:.2f} points below FP32\'s '
+                                                  f'{v32 * 100:.2f} (more than {max_drop_pt:g}): FP32')
+    return dict(out, precision='fp16', reason=f'FP16 {metric} {v16 * 100:.2f} within {max_drop_pt:g} points of FP32\'s '
+                                              f'{v32 * 100:.2f}: FP16')
 
 
 def main_model(argv) -> int:

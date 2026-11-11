@@ -173,4 +173,4 @@ def test_optional_tab_skips_what_is_missing(qapp):
     W.optional_tab(v, 'ui.widgets', 'label', 'Section')
     assert isinstance(v.itemAt(1).widget(), W.Section) and v.itemAt(2).spacerItem() is not None
     from falcon_autonomy.ui.pages import settings as SP
-    assert SP.extra_sections(None) == []                  # none of the 4.0 sections is in this build yet
+    assert all(isinstance(w, W.Section) for w in SP.extra_sections(None))     # the 4.0 sections this build has

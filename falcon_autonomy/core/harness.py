@@ -171,6 +171,7 @@ def collect(runs: list, m: dict, workspace: str = '', camera: str | None = None,
             fh.close()
     l = np.asarray(lat)
     return {'frames': frames, 'providers': list(runner.providers), 'classes': classes,
+            'precision': getattr(runner, 'precision', 'fp32'),
             'synthetic': bool(getattr(getattr(runner, 'plugin', None), 'synthetic', False)),
             'latency_ms': {'n': len(l), 'median': float(np.median(l)), 'p90': float(np.percentile(l, 90)),
                            'p99': float(np.percentile(l, 99)), 'mean': float(l.mean())},
@@ -350,15 +351,30 @@ def compare(frames_a: list, frames_b: list, kind: str = 'detector', n_boot: int 
 
 # ================================================================================================ the command
 def evaluate(runs: list, m: dict, out_dir: str, workspace: str = '', camera: str | None = None, every: int = 1,
-             n_boot: int = 1000, seed: int = 0, grid: tuple | None = None, progress=None, cancel=None) -> dict:
-    """The whole evaluation into out_dir: predictions.jsonl and evaluation.json."""
+             n_boot: int = 1000, seed: int = 0, grid: tuple | None = None, progress=None, cancel=None,
+             precision: str | None = None) -> dict:
+    """The whole evaluation into out_dir: predictions.jsonl and evaluation.json. precision: 'fp32' (default),
+    'fp16' or 'auto' (core.models.fp16_gate: FP16 kept when AP drops by at most 0.5 points); evaluation.json's
+    'precision' says what it ran at and why."""
     from . import provenance as PV
+    from .models import Runner, fp16_gate
     os.makedirs(out_dir, exist_ok=True)
 
     def sub(lo, hi):
         return (lambda f, t: progress(lo + (hi - lo) * f, t)) if progress else None
-    col = collect(runs, m, workspace, camera, every, sub(0.0, 0.8), os.path.join(out_dir, 'predictions.jsonl'),
-                  cancel)
+    precision = precision or 'fp32'
+    pred_path = os.path.join(out_dir, 'predictions.jsonl')
+    if precision == 'auto':
+        gate = fp16_gate(runs, m, workspace, camera, every, progress=sub(0.0, 0.8), cancel=cancel)
+        col = gate.pop('collected')[gate['precision']]
+        with open(pred_path, 'w', encoding='utf-8') as fh:
+            for fr in col['frames']:
+                fh.write(json.dumps(fr, separators=(',', ':')) + '\n')
+        prec = gate
+    else:
+        runner = Runner(m, workspace, precision)
+        col = collect(runs, m, workspace, camera, every, sub(0.0, 0.8), pred_path, cancel, runner=runner)
+        prec = runner.provenance()
     frames = col['frames']
     if progress:
         progress(0.8, 'scoring')
@@ -371,7 +387,7 @@ def evaluate(runs: list, m: dict, out_dir: str, workspace: str = '', camera: str
            'method': {'min_pixels': MIN_PIXELS, 'max_occluded': MAX_OCCLUDED, 'bootstrap_unit': sc['unit'],
                       'n_boot': n_boot, 'seed': seed,
                       'latency': 'measured on this machine per frame: pre-processing, inference and decoding'},
-           'scores': sc, 'grid': None, 'gallery': None}
+           'scores': sc, 'grid': None, 'gallery': None, 'precision': prec}
     if m['kind'] == 'detector':
         doc['gallery'] = gallery(frames)
         if grid:
@@ -383,7 +399,8 @@ def evaluate(runs: list, m: dict, out_dir: str, workspace: str = '', camera: str
                                  | ({'model': os.path.join(workspace, 'models', m['path'])}
                                     if m.get('path') and not os.path.isabs(m['path']) else
                                     ({'model': m['path']} if m.get('path') else {})), seed,
-                                 {'every': every, 'camera': camera, 'n_boot': n_boot, 'grid': list(grid or ())})
+                                 {'every': every, 'camera': camera, 'n_boot': n_boot, 'grid': list(grid or ()),
+                                  'precision': prec['precision']})
     PV.write_json(os.path.join(out_dir, 'evaluation.json'), _clean(doc))
     if progress:
         progress(1.0, 'done')
@@ -406,11 +423,17 @@ def main_evaluate(argv) -> int:
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--grid', help='two conditions for the heat map, e.g. fog_density,sun_altitude_angle')
     ap.add_argument('--compare', nargs=2, metavar=('EVAL_A', 'EVAL_B'))
+    ap.add_argument('--precision', choices=('fp32', 'fp16', 'auto'),
+                    help='inference precision (default: the setting inference_precision; auto keeps FP16 when AP '
+                         'drops by at most 0.5 points)')
     ap.add_argument('--out', '-o', required=True)
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:
         return P.OK if e.code == 0 else P.FAILED
+    if not a.precision:
+        from .settings import Settings
+        a.precision = Settings().get('inference_precision', 'fp32') or 'fp32'
     em = P.Emitter()
     em.hello('evaluate')
     try:
@@ -443,9 +466,9 @@ def main_evaluate(argv) -> int:
         if grid and len(grid) != 2:
             raise HarnessError('--grid is two condition names, X,Y')
         doc = evaluate(a.run, m, a.out, workspace_for(a.project), a.camera, a.every, a.boot, a.seed, grid,
-                       lambda f, t: em.progress(f, t))
+                       lambda f, t: em.progress(f, t), precision=a.precision)
         head = {r['metric']: r['value'] for r in doc['scores']['table'] if r['metric'] in HEADLINE + ('mIoU',)}
-        em.result('ok', summary={'frames': doc['n_frames'], **head})
+        em.result('ok', summary={'frames': doc['n_frames'], 'precision': doc['precision']['precision'], **head})
         return P.OK
     except (HarnessError, ValueError, OSError, KeyError) as e:
         print(f'failed: {e}', flush=True)

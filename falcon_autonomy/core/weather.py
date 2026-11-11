@@ -57,6 +57,15 @@ SLIDERS = {
 }
 
 
+def unsupported(fields: dict | None, have) -> list:
+    """The fields of a weather (resolve()'s, or overrides) that a backend's WeatherParameters lacks (have: the names it
+    has) and that ask for something (non-zero), sorted. The tables here are 0.9.16's; another backend gets the same
+    values field by field, where it has the field."""
+    have = set(have or ())
+    return sorted(k for k, v in (fields or {}).items()
+                  if k in FIELDS and k not in have and isinstance(v, (int, float)) and float(v) != 0.0)
+
+
 def preset_values(name: str) -> dict:
     if name not in _P:
         raise KeyError(f'Unknown CARLA weather preset {name!r}')

@@ -158,6 +158,17 @@ def correction_lut(bins: int = BINS) -> np.ndarray:
     return out
 
 
+# per backend (sim.backends): the camera response and vignette intensity measured on it. Only CARLA 0.9.16's were
+# measured; another backend's tone curve (UE5's differs from UE4's) and vignette are unknown, so the correction is off
+PARAMS = {'carla-0.9.16': {'response_ln': RESPONSE_LN, 'vignette_intensity': VIGNETTE_INTENSITY,
+                           'measured': 'CARLA 0.9.16, Town10HD, 2026-10-27'}}
+
+
+def params_for(backend: str = 'carla-0.9.16'):
+    """The measured camera response and vignette of a backend, None when not measured."""
+    return PARAMS.get(backend)
+
+
 _LUT = None
 
 

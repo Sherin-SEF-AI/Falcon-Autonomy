@@ -13,6 +13,10 @@ Lessons applied (CARLA 0.9.16):
 * Tidy-up in all cases: stop and destroy every actor this worker spawned (sensors first), switch the traffic manager
   and the world back to asynchronous mode (variable step).
 
+Backends: import_carla() attaches a workers.compat.Compat (w.compat) for the client module's backend — nothing changes
+on CARLA 0.9.16; on CARLA's UE5 line it maps blueprints, semantic tags and capabilities (see workers.compat). run.json
+records the backend in its provenance (provenance.backend) and, off 0.9.16, what was adapted (compat).
+
 Role names: everything a worker spawns carries a role name starting with ROLE_PREFIX (the ego: CARLA's 'hero', with
 Falcon sensors on it), so `workers tidy` can remove exactly that after a worker was killed.
 """
@@ -66,6 +70,8 @@ class Worker:
         self.spawned: list = []            # actors to destroy at tidy-up, in spawn order
         self.client = self.world = self.tm = None
         self.carla = None
+        from .compat import Compat
+        self.compat = Compat()             # the identity until import_carla() reads the client's backend
         self.remove_outputs_on_cancel = False
         self.keep_files = {'run.json'}     # never removed: run.json and the run's inputs
         self._done = False
@@ -145,6 +151,11 @@ class Worker:
         return os.path.join(self.out_dir, 'run.json') if self.out_dir else ''
 
     def finish_run(self, code: int, error=None, **extra):
+        if self.carla is not None:
+            self.run['provenance']['backend'] = self.compat.doc()
+            rep = self.compat.report()
+            if rep is not None:
+                self.run['compat'] = rep
         self.run.update(status=P.status_of(code), exit_code=code, finished=utc_now(), error=error,
                         notes=self.notes, **extra)
         if self.out_dir:
@@ -172,6 +183,8 @@ class Worker:
         except Exception as e:                             # noqa: BLE001
             raise Failed(f'could not import carla in {sys.executable}: {e}', P.NO_CARLA) from e
         self.carla = carla
+        from . import compat
+        compat.attach(self, carla)                         # the backend (FALCON_BACKEND checked); 0.9.16: no change
         return carla
 
     def connect(self, host: str, port: int, wait_s: float = 60.0):
