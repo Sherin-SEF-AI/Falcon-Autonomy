@@ -96,6 +96,23 @@
   are 10,481 tokens: the test's cap on them is raised to 14,000 (they are never sent at once; each group stays under
   3,500).
 
+- **Rig variants compared by perception** (`core/vantagerig.py`, `core/rigcompare.py`, `sim/rigstudy.py`,
+  `ui/rigcompare.py`, `assistant/tools/research.py`; `falcon rigs`; docs/rig-compare.md): a Vantage project's variants
+  become rigs on one CARLA car — the `.vantage` file read only (cameras with pose, module and lens, Kannala–Brandt and
+  the other projections, unit calibrations, lidars, radars, GNSS, IMUs, the seams set per variant), poses into CARLA's
+  frame from the car's rear axle as Vantage's bridge mounts them. Seams Vantage computes itself are not in its file:
+  estimated by its rule on a box-shaped body, within a median 1.1° (largest 6.5°) of Vantage's own on its 26 sample
+  seams. Every rig records the same scenarios and seeds in kinematic motion (two new surround-view scenarios: children
+  and two-wheelers close round a stopped car, creeping past a child at the kerb); a registered detector runs on every
+  camera; precision, recall and the stitched view's recall per rig with bootstrap 95 % intervals, by sector, clearance
+  and ±10° about every seam, AP; each rig against the first paired object by object, its verdict a cluster-robust
+  t-test over runs with Holm's adjustment (on null data with six runs the percentile bootstrap claimed a difference
+  11 % of the time at a nominal 5 %, the t-test 3.8 %). Rigs ▸ Import / export: import variants, compare, the
+  results; a Vantage design-log note written to its own file, never into the `.vantage`. The assistant's new
+  `research` group (`research_rig_compare`); `analysis_outputs` kind `rigstudy`. Falcon renders no stitched image:
+  "stitched recall" is detection in the camera the stitched view shows there. Tested against the fake carla only —
+  the Tigor variants' real numbers need a CARLA run. Tests: tests/test_rigcompare.py, tests/test_gui_rigcompare.py.
+
 - **A lab-console interface** (`ui/theme.py`, `ui/frame.py`, `ui/motion.py`, `ui/widgets.py`; docs/index.md ▸ The
   window): graphite panels and bordered cards with one blue accent for the main action and the selection, status
   colours only for state, monospaced right-aligned numbers, 13 px IBM Plex. A top bar (the project and its folder,

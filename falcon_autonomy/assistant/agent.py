@@ -143,7 +143,8 @@ GROUP_ABOUT = {
     'research': 'ablations of a hypothesis (plan with a power analysis, run, analyse, re-run and check), the '
                 'experiment registry, tables, figures and data cards for papers; the closed-loop planner benchmark '
                 '(PDM score) and its results; a dashcam incident made a scenario; failure modes (failures clustered '
-                'and named, a CI run\'s new ones), the triage queue and comments, regression bisect of a stack\'s commits',
+                'and named, a CI run\'s new ones), the triage queue and comments, regression bisect of a stack\'s '
+                'commits; rig variants (from Vantage) recorded on the same scenarios and compared by a detector',
     'ui': 'Falcon\'s window: the open page, go to a page, show a run or frame, outline a control',
     'knowledge': 'the manual (search), the command line, settings, the tools themselves',
     'system': 'the CARLA server, the machine, the queue\'s locks, versions',
@@ -238,7 +239,8 @@ GUESS = {
     'analysis': r'\b(evaluat\w*|metrics?|mAP|AP|mIoU|recall|precision|compare|regressions?|failures?|worse|better)\b',
     'research': r'\b(clusters?|failure.modes?|triage|comments?|assign\w*|bisect\w*|which commit|broke|benchmark\w*|'
                 r'pdm|nuplan|navsim|planners?|incidents?|ablations?|hypothes[ie]s|registry|power.analysis|'
-                r'sample.size|latex|paper|data.?cards?|datasheets?)\b',
+                r'sample.size|latex|paper|data.?cards?|datasheets?|vantage|variants?|seams?|stitch\w*|surround.view|'
+                r'bird.s.eye)\b',
     'knowledge': r'(\bhow (do|can|to)\b|\bwhat is\b|\bmanual\b|\bdocs?\b)',
     'system': r'\b(gpu|vram|memory|ram|server|machine)\b',
     'lab': r'\b(hil|hardware.in.the.loop|deploy\w*|tensorrt|orin|jetson|ci|log.replay|adversar\w*|experiments?|'

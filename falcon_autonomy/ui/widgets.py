@@ -99,7 +99,10 @@ class Note(QLabel):
                                      Qt.TextInteractionFlag.LinksAccessibleByMouse)
         self.linkActivated.connect(lambda _href: self.toggle())
         from .theme import THEME
-        THEME.changed.connect(lambda _n: self._render())
+        THEME.changed.connect(self._themed)          # a bound slot: let go when the note is deleted (a lambda is not)
+        self._render()
+
+    def _themed(self, _name):
         self._render()
 
     def toggle(self):

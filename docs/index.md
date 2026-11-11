@@ -170,6 +170,12 @@ and static TF, nuScenes calibration (CARLA's left-handed frame converted through
 rain on the lens, glare, rolling shutter, compression, motion blur. Outputs keep the planned calibration, as a real
 faulty rig's would; each frame says which faults touched it.
 
+**Vantage variants, compared by perception** (Import / export ▸ Import variants from a Vantage project…, Compare rigs
+by perception…, Rig studies…; `falcon rigs`): a `.vantage` project's variants become rigs on one CARLA car (read
+only: the file is never written), every rig records the same surround-view scenarios with the same seeds, a detector
+runs on every camera, and each rig is compared with the first — recall by sector, by clearance and near each stitch
+seam, paired, with intervals — and a note can be written for Vantage's design log ([rig comparison](rig-compare.md)).
+
 ### Scenarios
 The scenario studio: the library (eleven built-ins, four of them for Indian roads) and the project's own scenarios; a
 sketch of the scene with the actors where the seed's sample puts them and each parameter's range as a band; the

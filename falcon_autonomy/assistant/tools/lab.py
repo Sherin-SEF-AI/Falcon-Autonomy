@@ -487,6 +487,22 @@ def result(ctx, kind, id):
             raise ToolError(f'not a readable log: {e}') from e
         return C.rounded({'log': id, 'name': lg.meta.get('name'), 'source_kind': lg.meta.get('kind'),
                           'map': {k: lg.map.get(k) for k in ('kind', 'name')}, **lg.counts()}, 3)
+    if kind == 'rigstudy':
+        rep = rd('report.json')
+        if not rep:
+            raise ToolError('no report yet (the runs are recorded first; the report is written when the job ends)')
+        head = ('precision', 'recall', 'seen', 'stitched_recall', 'camera_recall')
+        return C.rounded({'study': id, 'synthetic_model': rep.get('synthetic_model'), 'unit': rep.get('unit'),
+                          'units': rep.get('n_units'), 'notes': rep.get('notes'),
+                          'rigs': {k: {r['metric']: [r['value'], r['ci_low'], r['ci_high']] for r in v['table']
+                                       if r['metric'] in head} for k, v in (rep.get('variants') or {}).items()},
+                          'seams': {k: [f'{s["a"]}|{s["b"]} {s["angle_deg"]:+.0f} ({s["source"]})'
+                                        for s in v.get('seams') or []] for k, v in (rep.get('variants') or {}).items()},
+                          'pairs': [{'a': p['a'], 'b': p['b'], 'objects': p['n_objects'], 'worse': p['worse'][:12],
+                                     'better': p['better'][:12],
+                                     'recall': next(([r['diff'], r['ci_low'], r['ci_high']] for r in p['rows']
+                                                     if r['metric'] == 'recall'), None)}
+                                    for p in rep.get('pairs') or []]}, 3)
     doc = rd({'experiment': 'results.json', 'vlm': 'scores.json', 'replay_comparison': 'comparison.json'}[kind])
     if not doc:
         n = len([x for x in os.listdir(os.path.join(d, 'runs'))]) if os.path.isdir(os.path.join(d, 'runs')) else 0

@@ -78,6 +78,8 @@ SHORT = {
                          'export.',
     'research_registry': 'Every experiment with hypothesis, factors, status and verdict; with id, its results.',
     'research_paper': 'LaTeX and CSV tables and figures of an experiment or evaluation, or an export\'s data card.',
+    'research_rig_compare': 'Queue recording rigs on the same scenarios and comparing a detector\'s recall on '
+                            'them.',
     # knowledge
     'knowledge_manual': 'Search the built-in manual offline: best sections with heading, link and text.',
     'knowledge_cli': 'Falcon\'s command-line commands with what they do, optionally filtered.',
