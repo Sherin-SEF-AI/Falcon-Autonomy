@@ -10,6 +10,13 @@ model_params(model, effort, quick): the parameters each model family takes, as G
 qwen3-32b takes reasoning_effort none/default; other Qwen 3 models take reasoning_format (parsed or hidden with tools,
 never raw). Anything a server rejects is dropped and the request retried once (groq.GroqClient), so a local
 OpenAI-compatible server that knows none of them still works.
+
+PROFILES: the OpenAI-compatible servers Falcon knows — Groq; the local servers vLLM, Ollama and SGLang; any other
+OpenAI-compatible server — each with whether it needs a key, whether it states the account's per-minute limits in
+headers (Groq's x-ratelimit-*), where its model list gives the context window, and whether Falcon knows its model
+families' parallel-tool-call support and reasoning parameters (Groq's). local_address(url) says whether a server is on
+this machine or the local network (loopback, private, link-local addresses): only those may be used without a key.
+The Claude API is a provider of its own (assistant.anthropic_client).
 """
 from __future__ import annotations
 
@@ -19,14 +26,15 @@ from dataclasses import dataclass, field
 
 # kinds of failure: what the user is told, by kind (the server's own message is added where it helps)
 KINDS = ('consent', 'no_key', 'auth', 'forbidden', 'model', 'context', 'too_large', 'no_tools', 'tool_use_failed',
-         'bad_request', 'rate', 'server', 'network', 'cancelled', 'protocol')
+         'bad_request', 'rate', 'server', 'network', 'cancelled', 'protocol', 'billing', 'binding', 'refusal')
 
 
 class ProviderError(Exception):
     def __init__(self, kind: str, message: str, status: int | None = None, retry_after: float | None = None,
-                 detail: str = ''):
+                 detail: str = '', request_id: str = ''):
         super().__init__(message)
         self.kind, self.message, self.status, self.retry_after, self.detail = kind, message, status, retry_after, detail
+        self.request_id = request_id or ''        # the server's request id (Anthropic's request-id), for support
 
     def __str__(self):
         return self.message
@@ -49,16 +57,25 @@ class ToolCall:
 
 @dataclass
 class Usage:
-    prompt: int = 0
+    prompt: int = 0                          # input tokens at the full price (Claude: the part not read from cache)
     completion: int = 0
+    cache_read: int = 0                      # input tokens read from the prompt cache (Claude)
+    cache_write: int = 0                     # input tokens written to the prompt cache (Claude)
 
     @property
     def total(self) -> int:
-        return self.prompt + self.completion
+        return self.prompt + self.completion + self.cache_read + self.cache_write
+
+    @property
+    def paced(self) -> int:
+        """The tokens a per-minute limit counts: cache reads do not count toward Anthropic's input limits."""
+        return self.prompt + self.cache_write + self.completion
 
     def add(self, other: 'Usage'):
         self.prompt += other.prompt
         self.completion += other.completion
+        self.cache_read += other.cache_read
+        self.cache_write += other.cache_write
 
     @classmethod
     def of(cls, d) -> 'Usage':
@@ -71,16 +88,31 @@ class ChatResult:
     content: str = ''
     reasoning: str = ''
     tool_calls: list = field(default_factory=list)       # ToolCall
-    finish_reason: str = ''
+    finish_reason: str = ''                              # stop | tool_calls | length | refusal | pause
     usage: Usage = field(default_factory=Usage)
-    model: str = ''
+    model: str = ''                                      # the model that answered (a fallback model when one did)
     attempts: int = 1
+    # a Claude turn (assistant.anthropic_client): the response's content blocks exactly as received, its stop reason
+    # and details, the request id, and per attempt (model, Usage) — more than one when a server-side fallback ran
+    native: list | None = None
+    stop_reason: str = ''
+    stop_details: dict | None = None
+    request_id: str = ''
+    iterations: list = field(default_factory=list)
+    fallback: dict | None = None                         # {'from', 'to', 'category'} when a fallback model answered
 
     def message(self) -> dict:
-        """The assistant message as it goes back into the conversation."""
+        """The assistant message as it goes back into the conversation: the OpenAI-compatible view (content, tool
+        calls) that every provider, the panel and the grounding check read, and for a Claude turn its content blocks
+        unchanged (_anthropic) — what is sent back to Claude, block for block."""
         m = {'role': 'assistant', 'content': self.content or None}
         if self.tool_calls:
             m['tool_calls'] = [t.wire() for t in self.tool_calls]
+        if self.native is not None:
+            m['_anthropic'] = self.native
+            m['_model'] = self.model
+            if self.fallback:
+                m['_fallback'] = dict(self.fallback)
         return m
 
 
@@ -155,6 +187,65 @@ def parallel_tools(model: str):
     return None
 
 
+# --------------------------------------------------------------------------------------------- servers
+@dataclass(frozen=True)
+class Profile:
+    id: str
+    title: str
+    default_url: str
+    needs_key: bool             # False: a server on this machine or the local network may be used without a key
+    rate_headers: bool          # the server states the account's per-minute limits (x-ratelimit-limit-*)
+    context_key: str            # where its model list gives a model's context window ('': it does not)
+    known_families: bool        # Groq's model families: their parallel tool use and reasoning parameters are known
+    default_context: int        # the context window assumed when the model list does not say
+    note: str
+
+
+PROFILES = {
+    'groq': Profile('groq', 'Groq', 'https://api.groq.com/openai/v1', True, True, 'context_window', True, 131072,
+                    'Groq\'s cloud: a key from console.groq.com'),
+    'vllm': Profile('vllm', 'vLLM (local)', 'http://127.0.0.1:8000/v1', False, False, 'max_model_len', False, 32768,
+                    'vllm serve MODEL --enable-auto-tool-choice --tool-call-parser …; no key on this machine'),
+    'ollama': Profile('ollama', 'Ollama (local)', 'http://127.0.0.1:11434/v1', False, False, '', False, 8192,
+                      'ollama serve: its OpenAI-compatible API is at /v1; the context window is Ollama\'s num_ctx'),
+    'sglang': Profile('sglang', 'SGLang (local)', 'http://127.0.0.1:30000/v1', False, False, 'max_model_len', False,
+                      32768, 'python -m sglang.launch_server … --tool-call-parser …; no key on this machine'),
+    'openai-compatible': Profile('openai-compatible', 'Other OpenAI-compatible server', '', False, False, '', False,
+                                 32768, 'any chat-completions API (…/v1); one off this machine and network '
+                                 'needs a key'),
+}
+
+
+def profile(pid: str) -> Profile:
+    return PROFILES.get(pid) or PROFILES['openai-compatible']
+
+
+def local_address(url: str) -> bool:
+    """Whether url's host is this machine or the local network, by its address alone: localhost, a loopback, private
+    (RFC 1918, fc00::/7, CGNAT) or link-local address. A host name other than localhost is not resolved (that would be
+    a request on the network) and does not count as local."""
+    import ipaddress
+    import urllib.parse
+    try:
+        host = (urllib.parse.urlsplit(url or '').hostname or '').strip('[]').lower()
+    except ValueError:
+        return False
+    if host == 'localhost' or host.endswith('.localhost'):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    # by name, not ipaddress's is_private (that also counts documentation and reserved ranges, which are not a LAN)
+    return any(ip in ipaddress.ip_network(n) for n in LOCAL_NETWORKS if ip.version == ipaddress.ip_network(n).version)
+
+
+LOCAL_NETWORKS = ('127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10',
+                  '::1/128', 'fc00::/7', 'fe80::/10')
+
+
 OPTIONAL_PARAMS = ('reasoning_effort', 'include_reasoning', 'reasoning_format', 'stream_options',
                    'parallel_tool_calls')
 
@@ -222,42 +313,50 @@ def scrubber(*secrets):
         text = str(text)
         for s in vals:
             text = text.replace(s, '[secret]')
+        text = re.sub(r'sk-ant-[A-Za-z0-9_\-]{8,}', '[secret]', text)
         return re.sub(r'gsk_[A-Za-z0-9]{8,}', '[secret]', text)
     return scrub
 
 
 # --------------------------------------------------------------------------------------------- cost
 def cost(prices: dict, model: str, usage: Usage) -> float | None:
-    """US dollars for usage from the user's price table ({model: [input, output] per million tokens}); None when the
-    table has no price for model."""
+    """US dollars for usage from the user's price table ({model: [input, output, cache read, cache write] per million
+    tokens; the cache prices optional — without them cache reads and writes are priced as input}); None when the table
+    has no price for model."""
     p = (prices or {}).get(model)
-    if not isinstance(p, (list, tuple)) or len(p) != 2:
+    if not isinstance(p, (list, tuple)) or not 2 <= len(p) <= 4:
         return None
     try:
-        return usage.prompt / 1e6 * float(p[0]) + usage.completion / 1e6 * float(p[1])
+        inp, out = float(p[0]), float(p[1])
+        cr = float(p[2]) if len(p) > 2 else inp
+        cw = float(p[3]) if len(p) > 3 else inp
     except (TypeError, ValueError):
         return None
+    return (usage.prompt * inp + usage.completion * out + usage.cache_read * cr + usage.cache_write * cw) / 1e6
 
 
 def parse_prices(text: str) -> dict:
-    """The price table as the user writes it: one 'model input output' per line ($ per million tokens), # comments."""
+    """The price table as the user writes it: one 'model input output [cache-read [cache-write]]' per line ($ per
+    million tokens), # comments."""
     out = {}
     for line in (text or '').splitlines():
         line = line.split('#', 1)[0].strip()
         if not line:
             continue
         parts = line.replace(',', ' ').split()
-        if len(parts) != 3:
-            raise ValueError(f'"{line}": write a model and two prices (input, output per million tokens)')
+        if not 3 <= len(parts) <= 5:
+            raise ValueError(f'"{line}": write a model and two prices (input, output per million tokens), optionally '
+                             'followed by the cache-read and cache-write prices')
         try:
-            out[parts[0]] = [float(parts[1]), float(parts[2])]
+            out[parts[0]] = [float(x) for x in parts[1:]]
         except ValueError:
             raise ValueError(f'"{line}": the prices must be numbers') from None
     return out
 
 
 def format_prices(prices: dict) -> str:
-    return '\n'.join(f'{m}  {p[0]:g}  {p[1]:g}' for m, p in sorted((prices or {}).items()))
+    return '\n'.join(f'{m}  ' + '  '.join(f'{x:g}' for x in p) for m, p in sorted((prices or {}).items())
+                     if isinstance(p, (list, tuple)))
 
 
 def estimate_tokens(*objs) -> int:

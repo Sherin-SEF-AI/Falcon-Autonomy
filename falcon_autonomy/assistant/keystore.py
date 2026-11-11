@@ -9,7 +9,7 @@ from __future__ import annotations
 
 SERVICE = 'FalconAutonomy'
 NAME = 'assistant_api_key'
-NAMES = (NAME, 'runpod_api_key', 'lambda_api_key')        # the secrets Falcon keeps (one keyring entry each)
+NAMES = (NAME, 'runpod_api_key', 'lambda_api_key', 'anthropic_api_key')     # one keyring entry each
 
 
 def _keyring():

@@ -83,6 +83,7 @@ class FakeGroq:
         self.requests: list = []
         self.models = list(MODELS)
         self.headers: dict = {}            # sent with every response (the account's x-ratelimit-limit-*)
+        self.keyless = False               # a local server (vLLM, Ollama, SGLang) that takes no key
         self.lock = threading.Lock()
         self.httpd = None
         self.thread = None
@@ -132,7 +133,7 @@ class FakeGroq:
             def do_GET(self):                                   # noqa: N802
                 self._record()
                 if self.path.endswith('/models'):
-                    if self.headers.get('Authorization', '') != f'Bearer {FAKE_KEY}':
+                    if not srv.keyless and self.headers.get('Authorization', '') != f'Bearer {FAKE_KEY}':
                         return self._send_json(401, {'error': {'message': 'Invalid API Key',
                                                                'type': 'invalid_request_error',
                                                                'code': 'invalid_api_key'}})

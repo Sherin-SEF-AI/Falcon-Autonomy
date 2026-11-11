@@ -1,6 +1,9 @@
 """The assistant's chat-completions client against a fake Groq server (no network): streaming, tool calls assembled
 from split and interleaved chunks, retries honouring retry-after, every failure as a sentence (never the key),
-redaction of what is sent, Stop mid-stream, the model list, prices."""
+redaction of what is sent, Stop mid-stream, the model list, prices. Then the same fake as a local server in the modes
+of vLLM, Ollama and SGLang (provider.PROFILES): no key and no Authorization header, Groq's own paths off, tool-call
+arguments sent as objects, their error and model-list shapes, keyless only for this machine and the local network,
+and a token limit of 0 that paces nothing."""
 import json
 import socket
 import threading
@@ -181,3 +184,181 @@ def test_model_params_prices_and_cost():
     with pytest.raises(ValueError, match='two prices'):
         PR.parse_prices('model 1')
     assert PR.scrubber(FAKE_KEY)(f'x {FAKE_KEY} y') == 'x [secret] y'
+
+
+# ======================================================================= local servers (vLLM, Ollama, SGLang)
+def _chunk(delta=None, finish=None, usage=None, extra=None):
+    c = {'id': 'local', 'object': 'chat.completion.chunk', 'model': 'local-model',
+         'choices': [{'index': 0, 'delta': delta or {}, 'finish_reason': finish}]}
+    if usage:
+        c['usage'] = usage
+    c.update(extra or {})
+    return c
+
+
+@pytest.fixture
+def local():
+    s = FakeGroq().start()
+    s.keyless = True
+    s.models = [{'id': 'Qwen/Qwen3-32B', 'object': 'model', 'owned_by': 'vllm', 'max_model_len': 40960},
+                {'id': 'qwen3:8b', 'object': 'model', 'owned_by': 'library'}]
+    yield s
+    s.stop()
+
+
+def keyless(srv, pid, **kw):
+    kw.setdefault('sleep', lambda s: None)
+    return G.GroqClient(srv.base_url, '', profile_id=pid, require_key=False, **kw)
+
+
+@pytest.mark.parametrize('pid', ['vllm', 'ollama', 'sglang'])
+def test_local_server_without_a_key_sends_no_authorization(local, pid):
+    local.push({'stream': [_chunk({'role': 'assistant', 'content': ''}), _chunk({'content': 'Hello '}),
+                           _chunk({'reasoning_content': 'thought'}), _chunk({'content': 'there'}),
+                           _chunk({}, 'stop', {'prompt_tokens': 50, 'completion_tokens': 4})]})
+    res = keyless(local, pid).chat([{'role': 'user', 'content': 'hi'}], 'local-model')
+    assert res.content == 'Hello there' and res.reasoning == 'thought' and (res.usage.prompt, res.usage.completion) \
+        == (50, 4)
+    assert 'Authorization' not in local.chats()[0]['headers']
+    ms = keyless(local, pid).models()
+    assert [m['id'] for m in ms] == ['Qwen/Qwen3-32B', 'qwen3:8b'] and ms[0]['context_window'] == 40960
+    assert ms[1]['context_window'] is None
+    with pytest.raises(PR.ProviderError) as ei:                     # the same client, key required: nothing sent
+        G.GroqClient(local.base_url, '', profile_id=pid).chat([{'role': 'user', 'content': 'x'}], 'm')
+    assert ei.value.kind == 'no_key' and len(local.chats()) == 1
+
+
+def test_object_valued_tool_arguments(local):
+    whole = {'index': 0, 'id': 'call_a', 'type': 'function',
+             'function': {'name': 'runs_get', 'arguments': {'run': 'r1'}}}
+    local.push({'stream': [_chunk({'role': 'assistant'}), _chunk({'tool_calls': [whole]}),
+                           _chunk({}, 'tool_calls')]},
+               {'json': {'model': 'm', 'choices': [{'finish_reason': 'tool_calls', 'message': {
+                   'role': 'assistant', 'content': None, 'tool_calls': [
+                       {'id': 'call_b', 'type': 'function', 'function': {'name': 'runs_get',
+                                                                         'arguments': {'run': 'r2', 'n': 3}}}]}}],
+                         'usage': {'prompt_tokens': 9, 'completion_tokens': 2}}})
+    c = keyless(local, 'ollama')
+    res = c.chat([{'role': 'user', 'content': 'x'}], 'qwen3:8b')
+    assert json.loads(res.tool_calls[0].arguments) == {'run': 'r1'}
+    res = c.chat([{'role': 'user', 'content': 'x'}], 'qwen3:8b', stream=False)
+    assert json.loads(res.tool_calls[0].arguments) == {'run': 'r2', 'n': 3} and res.usage.prompt == 9
+
+
+def test_groq_only_paths_are_off_for_local_servers(local):
+    local.headers = {'x-ratelimit-limit-tokens': '6000', 'x-ratelimit-limit-requests': '30'}
+    for pid, expect_limits, expect_usage in (('vllm', {}, 0), ('groq', {'tokens': 6000, 'requests': 30}, 77)):
+        local.push({'stream': [_chunk({'content': 'ok'}),
+                               _chunk({}, 'stop', extra={'x_groq': {'usage': {'prompt_tokens': 77,
+                                                                               'completion_tokens': 1}}})]})
+        seen = {}
+        c = G.GroqClient(local.base_url, FAKE_KEY, profile_id=pid, sleep=lambda s: None)
+        c.on_limits = seen.update
+        res = c.chat([{'role': 'user', 'content': 'x'}], 'm')
+        assert seen == expect_limits and res.usage.prompt == expect_usage
+
+
+def test_local_error_shapes_are_sentences(local):
+    local.push({'status': 400, 'json': {'object': 'error', 'message': 'This model\'s maximum context length is 4096 '
+                                        'tokens. However, you requested 9000 tokens.', 'type': 'BadRequestError',
+                                        'code': 400}},
+               {'status': 401, 'json': {'error': {'message': 'Unauthorized'}}})
+    with pytest.raises(PR.ProviderError) as ei:
+        keyless(local, 'vllm').chat([{'role': 'user', 'content': 'x'}], 'm')
+    assert ei.value.kind == 'context' and '4096' in str(ei.value)
+    with pytest.raises(PR.ProviderError) as ei:
+        keyless(local, 'sglang').chat([{'role': 'user', 'content': 'x'}], 'm')
+    assert ei.value.kind == 'auth' and 'groq' not in str(ei.value).lower() and '127.0.0.1' in str(ei.value)
+
+
+@pytest.mark.parametrize('url,ok', [
+    ('http://127.0.0.1:8000/v1', True), ('http://localhost:11434/v1', True), ('http://[::1]:30000/v1', True),
+    ('http://192.168.1.20:8000/v1', True), ('http://10.0.0.5/v1', True), ('http://172.16.4.2/v1', True),
+    ('http://169.254.3.3/v1', True), ('http://100.64.1.1/v1', True), ('http://[fd00::12]/v1', True),
+    ('http://8.8.8.8/v1', False), ('https://api.example.com/v1', False), ('http://gpu-box:8000/v1', False),
+    ('http://0.0.0.0:8000/v1', False), ('http://[2001:db8::1]/v1', False), ('not a url', False), ('', False)])
+def test_local_address(url, ok):
+    assert PR.local_address(url) is ok
+
+
+def _svc(tmp_path, provider, url, tpm=0):
+    from falcon_autonomy.assistant.keystore import KeyStore
+    from falcon_autonomy.assistant.service import AssistantService
+    from falcon_autonomy.core.settings import Secrets, Settings
+    st = Settings(str(tmp_path / 'settings.json'))
+    ks = KeyStore(Secrets(str(tmp_path / 'secrets.json')), use_keyring=False)
+    svc = AssistantService(st, ks, workspace_fn=lambda: str(tmp_path / 'ws'))
+    svc.set_cfg(enabled=True, provider=provider, base_url=url, tpm_limit=tpm)
+    svc.accept_notice()
+    return svc, ks
+
+
+def test_ready_without_a_key_only_on_this_machine_or_network(tmp_path):
+    for provider, url, ok in (('vllm', 'http://127.0.0.1:8000/v1', True), ('ollama', 'http://192.168.0.9:11434/v1',
+                                                                          True),
+                              ('sglang', 'http://203.0.113.7:30000/v1', False),
+                              ('openai-compatible', 'https://llm.example.org/v1', False),
+                              ('openai-compatible', 'http://10.1.2.3/v1', True),
+                              ('groq', 'https://api.groq.com/openai/v1', False)):
+        svc, ks = _svc(tmp_path / provider / str(ok), provider, url)
+        got, why = svc.ready()
+        assert got is ok, (provider, url, why)
+        if not ok:
+            assert 'key' in why
+            ks.set(FAKE_KEY)
+            assert svc.ready() == (True, '')
+        else:
+            assert svc.client().require_key is False
+
+
+def test_params_and_parallel_by_profile(tmp_path):
+    svc, _ = _svc(tmp_path / 'g', 'groq', 'https://api.groq.com/openai/v1')
+    assert svc.params('openai/gpt-oss-120b') == {'reasoning_effort': 'medium', 'include_reasoning': False}
+    assert svc.parallel('openai/gpt-oss-120b') is False and svc.parallel('qwen/qwen3.8-27b') is True
+    svc, _ = _svc(tmp_path / 'v', 'vllm', 'http://127.0.0.1:8000/v1')
+    assert svc.params('openai/gpt-oss-20b', quick=True) == {'reasoning_effort': 'low'}
+    assert svc.params('qwen/qwen3.8-27b') == {} and svc.parallel('qwen/qwen3.8-27b') is None
+    assert svc.context_window('unknown-model') == PR.PROFILES['vllm'].default_context
+
+
+def test_token_limit_zero_paces_nothing(tmp_path):
+    svc, _ = _svc(tmp_path, 'vllm', 'http://127.0.0.1:8000/v1', tpm=0)
+    for _ in range(5):
+        svc.add_usage('m', PR.Usage(900_000, 100_000))
+    assert svc.tpm_used() == 5_000_000 and svc.tpm_wait(10 ** 9) == 0.0
+    svc.set_cfg(tpm_limit=1000)
+    assert svc.tpm_wait(10) > 0
+
+
+def test_agent_on_a_local_server(tmp_path, local, monkeypatch):
+    from falcon_autonomy.assistant import agent as A
+    from falcon_autonomy.assistant import tool_api as T
+    from falcon_autonomy.assistant.session import Session
+    monkeypatch.setattr(T, 'REGISTRY', {})
+    T.register(T.Tool('runs_get', 'runs', 'read', 'one run', {'type': 'object', 'properties': {
+        'run': {'type': 'string'}}, 'required': ['run']}, lambda ctx, run: {'run': run, 'frames': 120}))
+    svc, ks = _svc(tmp_path, 'sglang', local.base_url)
+    assert not ks.has() and svc.ready() == (True, '')
+    whole = {'index': 0, 'id': 'call_1', 'type': 'function',
+             'function': {'name': 'runs_get', 'arguments': {'run': 'r'}}}
+    local.push({'stream': [_chunk({'tool_calls': [whole]}), _chunk({}, 'tool_calls')]},
+               {'stream': [_chunk({'content': 'Run r has 120 frames.'}), _chunk({}, 'stop')]})
+    host = A.Host(T.ToolContext(workspace=str(tmp_path / 'ws')))
+    ag = A.Agent(svc, Session(str(tmp_path / 'ws')), host, 'auto')
+    assert ag.start('how many frames in r?')
+    assert ag.wait(10)
+    assert ag.session.messages[-1]['content'] == 'Run r has 120 frames.'
+    for r in local.chats():
+        assert 'Authorization' not in r['headers']
+        assert not {'parallel_tool_calls', 'reasoning_format', 'include_reasoning'} & set(r['body'])
+    assert local.chats()[1]['body']['messages'][-1]['role'] == 'tool'
+
+
+def test_prices_with_cache_columns():
+    p = PR.parse_prices('claude-opus-5-5 4 20 0.2 5\nm 1 2')
+    assert p == {'claude-opus-5-5': [4.0, 20.0, 0.2, 5.0], 'm': [1.0, 2.0]}
+    assert PR.parse_prices(PR.format_prices(p)) == p
+    u = PR.Usage(prompt=1_000_000, completion=0, cache_read=2_000_000, cache_write=1_000_000)
+    assert PR.cost(p, 'claude-opus-5-5', u) == pytest.approx(4 + 0.4 + 5)
+    assert PR.cost(p, 'm', u) == pytest.approx(1 + 2 + 1)               # no cache prices: priced as input
+    assert u.total == 4_000_000 and u.paced == 2_000_000

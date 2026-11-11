@@ -14,6 +14,12 @@ GroqClient(base_url, key, gate, on_request).chat(messages, model, tools=…, str
     cancel (provider.CancelToken) closes the socket in flight: a blocked read returns at once.
 models(): GET /models — the live list (id, context window, whether active).
 Failures are provider.ProviderError with a sentence for the user; the key never appears in one.
+
+The server profile (provider.PROFILES: groq, vllm, ollama, sglang, openai-compatible) decides what is Groq's alone:
+the account's limits read from x-ratelimit-limit-* headers and usage from x_groq. The Authorization header is sent
+only with a key; a keyless request is allowed only when require_key is False (the service allows that for a server on
+this machine or the local network). Tool-call arguments a server sends as a JSON object instead of a string (some
+local servers do) are kept as that object's JSON text.
 """
 from __future__ import annotations
 
@@ -27,18 +33,31 @@ import urllib.parse
 
 from . import privacy
 from .provider import (RETRY_STATUS, Cancelled, CancelToken, ChatResult, ProviderError, ToolCall, Usage, classify,
-                       rejected_params, scrubber)
+                       profile, rejected_params, scrubber)
 
 DEFAULT_BASE_URL = 'https://api.groq.com/openai/v1'
 USER_AGENT = 'FalconAutonomy-assistant'
 
 
+def arguments_text(v) -> str:
+    """A tool call's arguments as JSON text: a string as sent, an object (some local servers send one) as its JSON."""
+    if v is None:
+        return ''
+    if isinstance(v, str):
+        return v
+    return json.dumps(v, ensure_ascii=False)
+
+
 class GroqClient:
+    native = False                             # takes and returns the OpenAI-compatible message format
+
     def __init__(self, base_url: str = DEFAULT_BASE_URL, key: str = '', gate=None, on_request=None,
                  retries: int = 4, backoff_s: float = 1.0, max_wait_s: float = 60.0, connect_timeout_s: float = 15.0,
-                 read_timeout_s: float = 180.0, sleep=None):
+                 read_timeout_s: float = 180.0, sleep=None, profile_id: str = 'groq', require_key: bool = True):
         self.base_url = (base_url or DEFAULT_BASE_URL).rstrip('/')
         self._key = key or ''
+        self.profile = profile(profile_id)
+        self.require_key = bool(require_key)
         self.gate = gate
         self.on_request = on_request
         self.retries, self.backoff_s, self.max_wait_s = int(retries), float(backoff_s), float(max_wait_s)
@@ -51,12 +70,16 @@ class GroqClient:
 
     # ------------------------------------------------------------------ public
     def models(self, cancel: CancelToken | None = None) -> list:
-        """The server's models: [{'id', 'context_window', 'active', 'owned_by'}], sorted by id."""
+        """The server's models: [{'id', 'context_window', 'active', 'owned_by'}], sorted by id. The context window is
+        where the profile's server states it (Groq: context_window; vLLM, SGLang: max_model_len), else None."""
         doc = self._json('GET', '/models', None, cancel or CancelToken(), model='')
         out = []
         for m in (doc.get('data') or []) if isinstance(doc, dict) else []:
             if isinstance(m, dict) and m.get('id'):
-                out.append({'id': str(m['id']), 'context_window': m.get('context_window'),
+                cw = m.get(self.profile.context_key) if self.profile.context_key else None
+                if cw is None:
+                    cw = m.get('context_window') or m.get('max_model_len') or m.get('context_length')
+                out.append({'id': str(m['id']), 'context_window': cw if isinstance(cw, int) and cw > 0 else None,
                             'active': m.get('active', True), 'owned_by': m.get('owned_by', ''),
                             'max_completion_tokens': m.get('max_completion_tokens')})
         return sorted(out, key=lambda m: m['id'])
@@ -96,7 +119,7 @@ class GroqClient:
     def _check_gate(self):
         if self.gate is not None:
             self.gate()                        # raises ProviderError('consent' | 'no_key')
-        if not self._key:
+        if not self._key and self.require_key:
             raise ProviderError('no_key', 'No API key: paste yours in Settings ▸ Assistant.')
 
     def _body(self, payload) -> bytes:
@@ -136,7 +159,9 @@ class GroqClient:
             except OSError:
                 pass
         cancel.on_cancel(close)
-        headers = {'Authorization': f'Bearer {self._key}', 'Accept': accept, 'User-Agent': USER_AGENT}
+        headers = {'Accept': accept, 'User-Agent': USER_AGENT}
+        if self._key:                          # a local server without a key gets no Authorization header at all
+            headers['Authorization'] = f'Bearer {self._key}'
         if body is not None:
             headers['Content-Type'] = 'application/json'
         try:
@@ -156,8 +181,9 @@ class GroqClient:
 
     def _limits(self, resp):
         """Pass on the per-minute limits the server says the account has (Groq: x-ratelimit-limit-tokens, -requests),
-        when it says them; a missing or malformed header is no limit known."""
-        if self.on_limits is None:
+        when it says them; a missing or malformed header is no limit known. Only for a server whose profile states
+        them (Groq): a local server's headers are not an account's limits."""
+        if self.on_limits is None or not self.profile.rate_headers:
             return
         out = {}
         for k in ('tokens', 'requests'):
@@ -192,10 +218,19 @@ class GroqClient:
                 msg, code = str(err.get('message') or ''), str(err.get('code') or err.get('type') or '')
             elif isinstance(err, str):
                 msg = err
+            elif isinstance(doc, dict) and doc.get('message'):          # vLLM, SGLang: {"object": "error", …}
+                msg, code = str(doc['message']), str(doc.get('type') or '')
         except ValueError:
             msg = body.decode('utf-8', 'replace')[:300]
         msg = self.scrub(privacy.redact_text(msg))
         e = classify(resp.status, msg, model, code)
+        if self.profile.id != 'groq' and e.kind in ('auth', 'rate', 'too_large'):
+            e.message = {'auth': f'{self._host()} refused the request without a valid key ({resp.status}): give '
+                                 'the key that server expects in Settings ▸ Assistant.',
+                         'rate': f'{self._host()} is busy or limiting requests (429) and retries did not clear it. '
+                                 'Wait a moment and ask again.',
+                         'too_large': f'{self._host()} says the request is too large for it ({resp.status}).'}[e.kind] \
+                + (f' The server said: {msg.strip()[:300]}' if msg.strip() and e.kind != 'auth' else '')
         e.detail = msg + (f' [{code}]' if code else '')
         ra = resp.getheader('retry-after')
         try:
@@ -317,12 +352,19 @@ class GroqClient:
             raise ProviderError('protocol', f'{self._host()} answered with something that is not a chat '
                                 'completion.') from None
         calls = [ToolCall(tc.get('id') or f'call_{i}', (tc.get('function') or {}).get('name') or '',
-                          (tc.get('function') or {}).get('arguments') or '')
+                          arguments_text((tc.get('function') or {}).get('arguments')))
                  for i, tc in enumerate(msg.get('tool_calls') or [])]
-        return ChatResult(content=msg.get('content') or '', reasoning=msg.get('reasoning') or '', tool_calls=calls,
-                          finish_reason=ch.get('finish_reason') or '',
-                          usage=Usage.of(doc.get('usage') or (doc.get('x_groq') or {}).get('usage')),
+        return ChatResult(content=msg.get('content') or '',
+                          reasoning=msg.get('reasoning') or msg.get('reasoning_content') or '', tool_calls=calls,
+                          finish_reason=ch.get('finish_reason') or '', usage=self._usage_of(doc),
                           model=doc.get('model') or model)
+
+    def _usage_of(self, doc) -> Usage | None:
+        """A response's (or chunk's) usage: the OpenAI-compatible field, and Groq's x_groq.usage for Groq only."""
+        u = doc.get('usage') if isinstance(doc, dict) else None
+        if not u and self.profile.id == 'groq' and isinstance(doc, dict):
+            u = (doc.get('x_groq') or {}).get('usage')
+        return Usage.of(u) if u else Usage()
 
     def _stream(self, body, model, cancel: CancelToken, on_delta) -> ChatResult:
         conn, resp, close = self._open('POST', '/chat/completions', body, cancel, accept='text/event-stream')
@@ -366,9 +408,8 @@ class GroqClient:
                     if streamed:
                         e.status = -1
                     raise e
-                u = chunk.get('usage') or (chunk.get('x_groq') or {}).get('usage')
-                if u:
-                    res.usage = Usage.of(u)
+                if chunk.get('usage') or (self.profile.id == 'groq' and (chunk.get('x_groq') or {}).get('usage')):
+                    res.usage = self._usage_of(chunk)
                 for ch in chunk.get('choices') or []:
                     d = ch.get('delta') or {}
                     if d.get('content'):
@@ -376,8 +417,8 @@ class GroqClient:
                         streamed = True
                         if on_delta is not None:
                             on_delta(d['content'])
-                    if d.get('reasoning'):
-                        res.reasoning += d['reasoning']
+                    if d.get('reasoning') or d.get('reasoning_content'):
+                        res.reasoning += d.get('reasoning') or d.get('reasoning_content')
                     for tc in d.get('tool_calls') or []:
                         i = tc.get('index', len(calls))
                         c = calls.setdefault(i, ToolCall('', ''))
@@ -387,7 +428,7 @@ class GroqClient:
                         if fn.get('name'):
                             c.name = fn['name']
                         if fn.get('arguments'):
-                            c.arguments += fn['arguments']
+                            c.arguments += arguments_text(fn['arguments'])
                         streamed = True
                     if ch.get('finish_reason'):
                         res.finish_reason = ch['finish_reason']

@@ -6,9 +6,18 @@ WORKSPACE/assistant/conversation.json — the conversation, resumable after a re
 plan checklist; the tools the user approved for the whole conversation; the tool groups loaded; the activity log
 (what it changed, and how to undo it); the tokens it used. Never the key — nothing here ever holds it.
 
-WORKSPACE/assistant/audit.jsonl — one line per request to the model server: the time (UTC), what it was for, the model,
-the HTTP status, the token counts, the tools the answer called and the SHA-256 of the exact payload sent (not the
-payload). Kept so the user can see every time Falcon spoke to the server.
+A Claude turn keeps its content blocks exactly as Claude returned them (_anthropic, thinking blocks included) beside
+the OpenAI-compatible view (content, tool_calls); they go back to Claude unchanged (anthropic_client.to_native). The
+page and mode notes of a Claude conversation are system messages appended to it (_note; never sent to another
+provider: wire() leaves them out), and a refused answer is kept for the panel only (_skip). The conversation is
+append-only: nothing earlier is edited or reordered. `native` holds what the Claude provider keeps between steps: the
+tools it was given (frozen for the conversation, so the prompt cache and earlier thinking stay valid) and, after the
+one recovery the API asks for, the index before which thinking blocks are no longer sent.
+
+WORKSPACE/assistant/audit.jsonl — one line per request to the model server: the time (UTC), what it was for, the
+provider and model, the HTTP status, the token counts (cache reads and writes for Claude), the tools the answer
+called, Claude's request id and stop reason, and the SHA-256 of the exact payload sent (not the payload). Kept so the
+user can see every time Falcon spoke to the server.
 """
 from __future__ import annotations
 
@@ -32,8 +41,10 @@ def utc() -> str:
 
 
 def wire(messages: list) -> list:
-    """The messages as sent: Falcon's own '_' notes taken off."""
-    return [{k: v for k, v in m.items() if not k.startswith('_')} for m in messages]
+    """The messages as an OpenAI-compatible server is sent them: Falcon's own '_' notes taken off, and what only a
+    Claude conversation holds left out (its page and mode notes, a refused answer kept for the panel)."""
+    return [{k: v for k, v in m.items() if not k.startswith('_')} for m in messages
+            if not m.get('_skip') and not (m.get('role') == 'system' and m.get('_note'))]
 
 
 class Session:
@@ -48,6 +59,7 @@ class Session:
         self.loaded_tools: list = []         # single tools loaded (tools_find's best, tools_load by name)
         self.activity: list = []             # [{'id', 'time', 'tool', 'kind', 'text', ...undo data}]
         self.usage = {'prompt': 0, 'completion': 0, 'cost': 0.0, 'requests': 0}
+        self.native: dict = {}               # the Claude provider's: {'tools': [names], 'drop_thinking_before': n}
         self.created = utc()
         self.notes: list = []                # what loading said (a damaged file kept aside)
         self.load()
@@ -75,7 +87,9 @@ class Session:
         self.loaded = [str(x) for x in d.get('loaded') or []]
         self.loaded_tools = [str(x) for x in d.get('loaded_tools') or []]
         self.activity = [a for a in d.get('activity') or [] if isinstance(a, dict)]
-        self.usage.update({k: v for k, v in (d.get('usage') or {}).items() if k in self.usage})
+        self.usage.update({k: v for k, v in (d.get('usage') or {}).items()
+                           if k in self.usage or k in ('cache_read', 'cache_write')})
+        self.native = dict(d['native']) if isinstance(d.get('native'), dict) else {}
         self.created = d.get('created') or self.created
 
     def to_dict(self) -> dict:
@@ -83,7 +97,8 @@ class Session:
             return {'version': VERSION, 'created': self.created, 'saved': utc(), 'messages': copy.deepcopy(self.messages),
                     'plan': copy.deepcopy(self.plan), 'allowed': list(self.allowed),
                     'loaded': list(self.loaded), 'loaded_tools': list(self.loaded_tools),
-                    'activity': copy.deepcopy(self.activity), 'usage': dict(self.usage)}
+                    'activity': copy.deepcopy(self.activity), 'usage': dict(self.usage),
+                    'native': copy.deepcopy(self.native)}
 
     def save(self):
         if not self.path:
@@ -95,6 +110,7 @@ class Session:
             self.messages, self.plan, self.allowed, self.activity, self.loaded = [], [], [], [], []
             self.loaded_tools = []
             self.usage = {'prompt': 0, 'completion': 0, 'cost': 0.0, 'requests': 0}
+            self.native = {}
             self.created = utc()
         self.save()
 
@@ -138,7 +154,9 @@ class Audit:
         rec = {'time': utc()}
         rec.update({k: v for k, v in record.items() if k in ('purpose', 'model', 'status', 'attempts', 'bytes',
                                                              'prompt_tokens', 'completion_tokens', 'tools',
-                                                             'payload_sha256', 'base_url')})
+                                                             'payload_sha256', 'base_url', 'provider',
+                                                             'cache_read_tokens', 'cache_write_tokens', 'request_id',
+                                                             'stop_reason')})
         with self._lock:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             with open(self.path, 'a', encoding='utf-8') as fh:

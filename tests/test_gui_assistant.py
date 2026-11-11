@@ -328,3 +328,42 @@ def test_ask_and_propose_hooks(window, qapp, srv, reg, tmp_path):
     sent = srv.chats()[-1]['body']['messages']
     assert sent[-1]['content'].startswith('find rainy runs') and '"page": "data"' in sent[-1]['content']
     assert any('ran runs_trash from a suggestion' in m['content'] for m in sent if m['role'] == 'user')
+
+
+def test_settings_provider_section_claude_and_local_servers(window, qapp, tmp_path, monkeypatch):
+    """Settings ▸ Assistant ▸ Provider: Claude's key kept apart (anthropic_api_key), its two models, effort and
+    fallback; a local server's address filled in; the Assistant section follows the provider chosen."""
+    from falcon_autonomy.assistant.keystore import KeyStore
+    from falcon_autonomy.core.settings import Secrets
+    from falcon_autonomy.ui.settings_provider import ProviderSection
+    svc = window.assistant
+    svc.claude_keys = KeyStore(Secrets(str(tmp_path / 'secrets.json')), use_keyring=False, name='anthropic_api_key')
+    page = window.go('settings')
+    sec = next(w for w in page.extra if isinstance(w, ProviderSection))
+    assert sec.current() == 'groq' and not sec.main.isEnabled() and sec.fallback.isChecked()
+    sec.provider.setCurrentIndex(sec.provider.findData('anthropic'))
+    assert svc.provider() == 'anthropic' and sec.main.isEnabled()
+    assert page.as_main.currentText() == 'claude-opus-5-5' and page.as_fast.currentText() == 'claude-sonnet-5-5'
+    assert page.as_url.text() == 'https://api.anthropic.com' and not page.as_key.isEnabled()
+    assert page.as_tpm.value() == 0 and not page.as_temp.isEnabled()
+    sec.key.setText('sk-ant-FAKEFAKEFAKE-gui-0000000000')
+    sec.effort.setCurrentIndex(sec.effort.findData('high'))
+    sec.fallback.setChecked(False)
+    sec.mcp.setChecked(False)
+    page.apply()
+    assert svc.claude_keys.get() == 'sk-ant-FAKEFAKEFAKE-gui-0000000000' and not svc.keys.has()
+    a = svc.stored()['anthropic']
+    assert a['effort'] == 'high' and a['fallback'] is False and svc.cfg()['main_model'] == 'claude-opus-5-5'
+    assert not window.mcp_bridge.running and svc.cfg()['mcp_bridge'] is False
+    text_ = open(window.settings.path).read()
+    assert 'sk-ant-' not in text_ and '"provider": "anthropic"' in text_
+    assert 'sk-ant-FAKE' not in window.log.toPlainText()
+    sec.provider.setCurrentIndex(sec.provider.findData('ollama'))
+    assert page.as_url.text() == 'http://127.0.0.1:11434/v1' and page.as_key.isEnabled()
+    assert svc.ready() == (False, 'The assistant is off. Turn it on in Settings ▸ Assistant.')
+    svc.set_cfg(enabled=True)
+    svc.accept_notice()
+    assert svc.ready() == (True, '')                                  # a local server: no key needed
+    sec.mcp.setChecked(True)
+    page.apply()
+    assert window.mcp_bridge.running and svc.stored()['provider'] == 'ollama'

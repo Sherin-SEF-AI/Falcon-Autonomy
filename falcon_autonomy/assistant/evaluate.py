@@ -337,7 +337,7 @@ def service(settings, key: str, workspace_fn, timings: list):
                     timings.append({'purpose': kw.get('purpose', purpose), 'seconds': time.monotonic() - t0})
             cl.chat = timed
             return cl
-    return _Timed(settings, _MemoryKeys(key), workspace_fn=workspace_fn)
+    return _Timed(settings, _MemoryKeys(key), workspace_fn=workspace_fn, claude_keys=_MemoryKeys(key))
 
 
 def default_fake_carla() -> str:
@@ -681,6 +681,8 @@ def run_eval(tasks: list, cfg: dict, key: str, out: str, models=(), fake_carla: 
     try:
         for m in models:
             c = dict(copy.deepcopy(cfg), main_model=m)
+            if c.get('provider') == 'anthropic' and isinstance(c.get('anthropic'), dict):
+                c['anthropic']['main_model'] = m            # Claude keeps its models apart (assistant.service)
             for t in sel:
                 records.append(run_task(t, c, key, fake_carla, work, script_sink, log, os.path.join(out, 'audit')))
     finally:
@@ -718,7 +720,7 @@ def main_eval(a) -> int:
     out = a.out or os.path.join(os.getcwd(), f'assistant-eval-{time.strftime("%Y%m%d-%H%M%S")}')
     only = [x for x in (a.only or '').split(',') if x]
     try:
-        doc = run_eval(tasks, svc.cfg(), svc.keys.get(), out, a.model or (), a.fake_carla, only,
+        doc = run_eval(tasks, svc.cfg(), svc.key_store().get(), out, a.model or (), a.fake_carla, only,
                        log=lambda s: print(s, file=sys.stderr))
     except ValueError as e:
         print(f'falcon assistant eval: {e}', file=sys.stderr)

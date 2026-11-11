@@ -662,6 +662,8 @@ class MainWindow(QMainWindow):
         install_assistant(self)                          # the Assistant dock (right, hidden), its badge, Ctrl+Shift+A
         from .suggestions import install as install_suggestions
         install_suggestions(self)                        # next-step chips on the pages and Home's next best action
+        from .mcp_bridge import install as install_mcp
+        install_mcp(self)                                # MCP clients (Claude Code) in this window (docs/mcp.md)
         self.projectChanged.connect(self._on_project_changed)
         self.undo.cleanChanged.connect(lambda _: self._update_title())
         self.service.subscribe(self._on_service)
@@ -1107,6 +1109,7 @@ class MainWindow(QMainWindow):
                 p.shutdown()
         self.suggestions.stop()
         self.assistant_panel.shutdown()
+        self.mcp_bridge.stop()
         for j in self.queue.active():
             self.queue.cancel(j)
         launcher = self.queue.launcher

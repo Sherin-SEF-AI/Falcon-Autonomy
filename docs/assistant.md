@@ -23,6 +23,34 @@ line; Settings shows where it is stored, never what it is. **Remove** deletes it
 
 The server is configurable (*Server*): any OpenAI-compatible chat-completions API (`…/v1`), for example a local one.
 Parameters a server does not know (`reasoning_effort`, `stream_options`, …) are dropped and the request retried once.
+**Settings ▸ Assistant ▸ Provider** chooses the server: Groq, a server of your own, or Anthropic's Claude API
+([Providers](#providers)).
+
+## Providers
+
+| Provider | Server (default address) | Key |
+|---|---|---|
+| **Groq** (the default) | `https://api.groq.com/openai/v1` | yours, from console.groq.com |
+| **vLLM** | `http://127.0.0.1:8000/v1` (`vllm serve MODEL --enable-auto-tool-choice --tool-call-parser …`) | none on this machine or network |
+| **Ollama** | `http://127.0.0.1:11434/v1` (its OpenAI-compatible API) | none on this machine or network |
+| **SGLang** | `http://127.0.0.1:30000/v1` (`python -m sglang.launch_server … --tool-call-parser …`) | none on this machine or network |
+| **Other OpenAI-compatible server** | the address you give | none on this machine or network |
+| **Claude (Anthropic)** | `https://api.anthropic.com` | yours, from console.anthropic.com ([Claude](#claude)) |
+
+A local server needs **no key** when its address is on this machine or your local network — `localhost`, a loopback,
+a private (10/8, 172.16/12, 192.168/16, fc00::/7), link-local or CGNAT (100.64/10) address, judged from the address
+alone (a host name other than `localhost` is not looked up, so it counts as elsewhere: give the address, or a key).
+Without a key no `Authorization` header is sent at all. A server anywhere else needs a key, as Groq does.
+
+What is Groq's alone is used with Groq only: the account limits read from `x-ratelimit-limit-*` headers, usage read
+from `x_groq`, the per-family reasoning parameters (`reasoning_format`, `include_reasoning`) and `parallel_tool_calls`.
+A local server gets the standard OpenAI parameters (a gpt-oss model `reasoning_effort` too); its own error shape
+(`{"object": "error", "message": …}`), a model list with `max_model_len` (vLLM, SGLang: the context window) and tool
+call arguments sent as a JSON object instead of a string (some servers do) are all read. Ollama's list gives no
+context window: 8,192 tokens are assumed (its `num_ctx`) until you set the model list's own. **Token limit 0** turns
+pacing off entirely (no waiting, no trimming for a per-minute limit) — the right setting for a local server.
+
+The same rules hold for every provider: text only, the never-list, the privacy guard, the audit log.
 
 ## The two models
 
@@ -42,6 +70,42 @@ lane) and `parallel_tool_calls: true`; a model Falcon does not know gets neither
 
 Settings ▸ Assistant also sets the temperature (default 0.3), the reasoning effort for models that take it
 (gpt-oss: low, medium, high), the default permission mode and your plan's tokens-per-minute limit.
+
+## Claude
+
+With **Claude (Anthropic)** chosen in Settings ▸ Assistant ▸ Provider, the assistant runs on Anthropic's Claude API
+through its official Python SDK (`pip install "falcon-autonomy[claude]"`, or `anthropic>=2`):
+
+- **Models**: `claude-opus-5-5` runs the agent, `claude-sonnet-5-5` the fast lane — only these two (the model list is
+  filtered to them, and any other id is refused before anything is sent).
+- **The key** is pasted in the Provider section (*Claude API key*, saved by Apply) and kept like the Groq key, in the
+  system keyring or your secrets file, under its own name (`anthropic_api_key`); it is never shown, logged or written
+  anywhere else, and goes only in the request header.
+- **Effort**: Claude Opus 5.5 always thinks (adaptive thinking); how much is its *effort*, which Falcon always sends —
+  by default your *Reasoning effort* above (low, medium, high), or *Claude effort* when set (up to xhigh and max). The
+  fast lane uses low. Claude takes no temperature.
+- **Refusal fallback** (on by default): when Claude's safety classifiers decline a request, Anthropic runs it again on
+  the model it recommends for that kind of request (the `fallbacks: "default"` option, beta
+  `server-side-fallback-2026-07-01`), and the panel says which model answered. Turn *Refusal fallback* off and a
+  declined request just stops. A refusal that stands is shown with Anthropic's category and reason; nothing of a
+  refused answer is run.
+- **Every tool from the start**: Claude is given all of Falcon's tools at every step (no tools on demand), always the
+  same list in the same order, because what Anthropic caches is the start of the request. The system prompt never
+  changes either; the permission mode, show-me and the page open are added to the conversation as system messages
+  when they change. So from the second step on almost all of a request is read from Anthropic's **prompt cache**
+  (a tenth to a twentieth of the input price) — the usage line shows the cached tokens.
+- **The conversation is kept as Claude wrote it**: each of its answers, its reasoning blocks included, goes back
+  exactly as received, and nothing earlier in the conversation is ever edited or reordered (older tool results are
+  not left out to save tokens, as they are for Groq: Claude's context is a million tokens; a conversation longer than
+  that asks you to Clear it).
+- A response cut off at its output limit runs none of the tool calls in it (they go back to Claude as errors); a tool
+  input that is not valid JSON, or not valid for the tool's schema, is never run either.
+- Rate limits (429) wait for their `retry-after`; overloaded (529) and server errors back off; each failure is a
+  sentence with Anthropic's request id, which the audit log keeps too.
+
+Costs use Anthropic's published prices unless your price table names the model: Claude Opus 5.5 $4 input / $20
+output per million tokens, cache reads $0.20, cache writes $5; Claude Sonnet 5.5 $2 / $10, cache reads $0.10, cache
+writes $2.50. A price line may give those two cache prices after input and output.
 
 ## Permission modes
 
@@ -328,6 +392,48 @@ API reference), read on 2026-10-30:
 
 Nothing was sent to Groq while building this: the tests run against a fake server (`tests/fake_groq.py`).
 
+### The Claude provider (2026-11-12)
+
+Checked against the Claude API reference shipped with Anthropic's SDK tooling (Python SDK, tool use, streaming,
+prompt caching, errors, and the migration notes for Claude Opus 5.5 and Sonnet 5.5) and against the installed
+`anthropic` 2.3.0 package itself:
+
+- streaming with `client.beta.messages.stream(...)` and `get_final_message()`; the SDK's own retries off
+  (`max_retries=0`) so Falcon's retry loop, Stop and the panel see each wait; the key passed explicitly (the SDK then
+  reads no environment variable or profile for credentials);
+- Opus 5.5 always thinks: `thinking` is left out (adaptive; `disabled` and `budget_tokens` are 400s), and
+  `output_config.effort` is always sent (its default is medium); `temperature`, `top_p`, `top_k` are removed on these
+  models (the SDK 2.x has no such arguments); no assistant prefill;
+- `tool_choice` `{"type": "auto"}` only — `any` and `tool` are 400s on Opus 5.5 and Sonnet 5.5; `strict: true` needs
+  `additionalProperties: false` on every object and does not support numeric, string-length or array-size
+  constraints (Falcon drops those from what is sent and still validates them itself); a free-form object argument
+  (a scenario, a settings patch: 15 of the 119 tools Claude was given when this was written) cannot be strict, so those go without it;
+- `eager_input_streaming: true` on every tool of a streamed request: the server then does not validate inputs, so
+  Falcon parses the raw streamed JSON strictly and validates it against the tool's schema before running anything;
+- the stop reason before the content: `tool_use`, `end_turn`, `max_tokens` (a cut tool input parses as a valid
+  partial — never run), `pause_turn` (sent back as it is), `refusal` with `stop_details` (`category`, `explanation`);
+  a refusal can arrive with partial content, which is discarded;
+- `fallbacks: "default"` with the beta header `server-side-fallback-2026-07-01`; a `fallback` content block marks a
+  switch, `usage.iterations` (`fallback_message`) is the served-by and per-attempt billing signal; after a mid-output
+  fallback, the thinking and tool_use blocks before the fallback block are left out when the turn is sent back;
+- an assistant turn goes back as its full `content` (thinking blocks unchanged): accounts created from 2026-08-31
+  reject replayed thinking after any edit of the system prompt, the tool list or an earlier message ("bound to a
+  different conversation") — Falcon's conversation is append-only, and if the API says so anyway (an update of Falcon
+  changed a tool's text) it leaves the earlier thinking out from then on, once;
+- mid-conversation `role: "system"` messages (no beta header on Opus 5.5 and Sonnet 5.5) must follow a user message
+  and be last or followed by the assistant's turn — a note never answered (a failed or refused step) is therefore not
+  sent again before the next message; it is sent anew after it;
+- caching: tools render before the system prompt before the messages; one explicit breakpoint on the system prompt
+  (it caches the tools with it) plus top-level automatic caching for the conversation; the minimum cacheable prefix
+  is 512 tokens; cache reads cost 0.05 × input on Opus 5.5 ($0.20) and Sonnet 5.5 ($0.10);
+- errors are the SDK's typed exceptions (`RateLimitError` with `retry-after`, `OverloadedError` 529,
+  `InternalServerError`, `BadRequestError`, `AuthenticationError`, `PermissionDeniedError`, `NotFoundError`,
+  `RequestTooLargeError`, `APIConnectionError`), each with the `request-id` the audit log keeps;
+- `client.models.list()` lists the models a key may use (`max_input_tokens` is the context window).
+
+Nothing was sent to Anthropic while building this: the tests run against a fake Claude API speaking the Messages API's
+server-sent events (`tests/fake_anthropic.py`).
+
 ## Evaluating models
 
 `falcon assistant eval` measures how well a model does Falcon's work through the assistant: about twenty realistic
@@ -381,8 +487,16 @@ the day.
 - `assistant.tool_api` — the tool contract (tiers, the registry, `NEVER`, `call`; `Tool.approval`, a tool's own say on
   its card, and `ToolContext.approval`, how a call was approved); `assistant.privacy` — redaction and the
   private-footage guard.
-- `assistant.groq.GroqClient` — the HTTP client (standard library); `assistant.provider` — results, errors, model
-  parameters, cost; `assistant.keystore` — the key.
+- `assistant.groq.GroqClient` — the HTTP client (standard library) for every OpenAI-compatible server, with the
+  server's profile (`provider.PROFILES`: groq, vllm, ollama, sglang, openai-compatible); `assistant.provider` —
+  results, errors, model parameters, profiles, `local_address`, cost; `assistant.keystore` — the keys.
+- `assistant.anthropic_client.AnthropicClient` — the Claude provider on the official SDK, the same interface
+  (`chat`, `models`, `on_retry`, `native = True`); `to_native` builds the Messages API conversation from the session
+  (a Claude turn's blocks are kept unchanged under `_anthropic`), `tool_defs` the strict, sorted tool list. The agent
+  takes the Claude path (`Agent._request_native`) when its client is native; `Session.native` keeps the frozen tool
+  list. `assistant.service.AssistantService.cfg()` is the provider's effective configuration (`set_cfg` routes the
+  model, server and limit keys to Claude's own when it is chosen); `claude_keys` its key store.
+- `falcon_autonomy.mcp` — Falcon as an MCP server ([MCP](mcp.md)).
 - `assistant.agent.Agent` — the loop, Qt-free, driven by a `Host` (the panel's `QtHost`, or a headless one in tests
   and on the command line). It imports `assistant.tools` (which registers Falcon's tools in `tool_api.REGISTRY`). Its
   own meta-tools (`agent.CORE`: `plan_update`, `plan_wait_jobs`, `tools_find`, `tools_load`) are kept out of the

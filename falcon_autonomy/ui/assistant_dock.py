@@ -1619,8 +1619,11 @@ def install(win):
         limit = int(c.get('tpm_limit') or 0)
         tpm = (f'\nLast minute: {win.assistant.tpm_used()} of {limit} tokens per minute' if limit else
                f'\nLast minute: {win.assistant.tpm_used()} tokens (no per-minute limit set)') + \
-            ' — the limit is your setting; your account\'s limits page at console.groq.com is authoritative.'
-        badge.setToolTip(f'This session: {t["prompt"]} prompt and {t["completion"]} completion tokens in '
+            (' — the limit is your setting; your account\'s limits page at console.groq.com is authoritative.'
+             if c.get('provider', 'groq') == 'groq' else ' — the limit is your setting.')
+        cached = (f', {t["cache_read"]} read from and {t["cache_write"]} written to Claude\'s prompt cache'
+                  if t.get('cache_read') or t.get('cache_write') else '')
+        badge.setToolTip(f'This session: {t["prompt"]} prompt and {t["completion"]} completion tokens{cached} in '
                          f'{t["requests"]} requests' + (f', about ${t["cost"]:.4f} estimated from your price table '
                                                          '(Settings ▸ Assistant)' if t['requests'] else '') + '.' +
                          tpm + '\nClick to show or hide the Assistant panel (Ctrl+Shift+A).')

@@ -25,6 +25,14 @@ GUI thread (a small pool, side by side); Tool.gui calls, and with a window every
 through the undo stack, jobs whose QProcess must be created there), run on the GUI thread through the host. What an
 act or trash call changed goes in the activity log with how to undo it: a project edit by the window's undo stack, a
 queued job by cancelling it, runs moved to the trash by moving them back.
+
+With the Claude provider (a client whose `native` is true: anthropic_client.AnthropicClient) a step is built for
+Claude's prompt cache and its preserved thinking, so nothing earlier ever changes: the system prompt is SYSTEM_CLAUDE,
+frozen; every tool (but tools_find and tools_load, which have nothing to load) is sent every step, the set frozen in
+the session at the first step (Session.native['tools']); nothing is trimmed or elided; the mode, show-me and page
+notes are appended as mid-conversation system messages when they change; Claude's turns go back as the content blocks
+it returned. Its stop reasons are read first: a refusal ends the turn with its category and nothing of it runs; a
+response cut at max_tokens runs none of its tool calls (they go back as errors); pause_turn is sent back to go on.
 """
 from __future__ import annotations
 
@@ -81,6 +89,16 @@ resumes you with the job's outcome when it finishes. Until then there is no resu
 - Refusals from tools are final: a private source, an action that is never allowed, or the user declining. Explain \
 and offer an alternative; never try to work around one.
 - Be brief and precise. Use Markdown sparingly: short paragraphs, lists, `code` for ids and paths."""
+
+TOOLS_RULE = SYSTEM[SYSTEM.index('- Tools: you start'):SYSTEM.index('- Long jobs:')]
+# Claude's system prompt: the same, frozen for the whole conversation (its prompt cache), with every tool callable from
+# the start; the permission mode, show-me and the page come as system messages in the conversation (claude_note)
+SYSTEM_CLAUDE = SYSTEM.replace(TOOLS_RULE, '- Tools: all of Falcon\'s tools are callable from the start. Before you '
+                               'call a tool, say in a short sentence what you are about to do.\n') + \
+    '\n- Falcon adds system messages to the conversation when the permission mode, show-me mode or the open page ' \
+    'changes: the latest one holds.'
+CLAUDE_LEFT_OUT = ('tools_find', 'tools_load')      # nothing to load: Claude is given every tool
+CLAUDE_CUT_LIMIT = 2                                # responses cut at max_tokens in a row before the turn stops
 
 MODE_RULES = {
     'ask': 'Permission mode: Ask. When a request needs a tool that changes anything, say in one sentence what you are '
@@ -639,14 +657,37 @@ class Agent:
     def _loop(self):
         nudged_at = None                        # tool calls made when the last Autopilot nudge went out
         calls_made = 0
+        cut = 0                                 # Claude responses cut at max_tokens in a row
         while True:
             if self.cancel.is_set():
                 raise Cancelled()
             res = self._request()
+            if res.finish_reason == 'refusal':  # nothing of a refused answer runs, nor is it sent back
+                self._refused(res)
+                return
             msg = res.message()
             if res.reasoning:
                 msg['_reasoning_chars'] = len(res.reasoning)
             idx = self.session.add(msg)
+            if res.finish_reason == 'pause':    # Claude paused its turn: sent back as it is, it goes on
+                self.session.save()
+                continue
+            if res.tool_calls and res.native is not None and res.finish_reason == 'length':
+                cut += 1                        # an input cut at max_tokens parses as a valid partial: never run it
+                self.host.event('assistant', {'index': idx, 'content': res.content, 'tool_calls': len(res.tool_calls),
+                                              'final': False})
+                for tc in res.tool_calls:
+                    self.host.event('tool_start', {'id': tc.id, 'name': tc.name, 'arguments': tc.arguments,
+                                                   'tier': 'read'})
+                    self._finish(tc, {'error': 'not run: the response was cut off at the output limit before this '
+                                               'call\'s input was complete; call it again (with shorter arguments)'},
+                                 0.0)
+                self.session.save()
+                if cut > CLAUDE_CUT_LIMIT:
+                    raise ProviderError('context', 'Claude\'s answers were cut off at the output limit again and '
+                                        'again, so the tool calls in them were not run. Ask for less at a time.')
+                continue
+            cut = 0
             if res.tool_calls:
                 self.host.event('assistant', {'index': idx, 'content': res.content, 'tool_calls': len(res.tool_calls),
                                               'final': False})
@@ -683,6 +724,8 @@ class Agent:
         last = next((m for m in reversed(self.session.messages) if m.get('role') == 'user'), None)
         if last is None or last.get('_event'):
             return
+        if self._claude():
+            return                              # Claude is given every tool: nothing to load
         page = (self.host.context_summary() or {}).get('page') or ''
         new = [g for g in guess_groups(last.get('_display') or last.get('content') or '', page)
                if g not in self.session.loaded]
@@ -706,6 +749,10 @@ class Agent:
             self.session.loaded_tools.extend(add)
         if add:
             self.host.event('tools', {'loaded': list(self.session.loaded), 'added': add, 'why': why})
+
+    def _claude(self) -> bool:
+        """Whether the service's provider is Claude (every tool sent from the start: nothing to load)."""
+        return callable(getattr(self.service, 'provider', None)) and self.service.provider() == 'anthropic'
 
     def _always(self) -> set:
         return set(CORE) | {t.name for t in T.REGISTRY.values() if t.group in ALWAYS}
@@ -766,12 +813,145 @@ class Agent:
     # (tool results kept — None: as many as the context holds; which tool groups' schemas are sent)
     LEVELS = ((None, 'loaded'), (4, 'loaded'), (4, 'recent'), (1, 'core'))
 
+    def _tpm_pause(self, est: int, limit: int) -> bool:
+        """Wait while a step of about est tokens does not fit the per-minute limit (the panel counts down; Stop ends
+        it). True when it waited."""
+        wait = self.service.tpm_wait(est) if hasattr(self.service, 'tpm_wait') else 0.0
+        if wait <= 0:
+            return False
+        account = (getattr(self.service, 'account_limits', None) or {}).get('tokens')
+        self.host.event('tpm_wait', {'wait_s': wait, 'tokens': est, 'limit': limit, 'account': account})
+        end = time.monotonic() + wait
+        while time.monotonic() < end:           # a limit raised meanwhile (Settings, the panel) ends it
+            if self.cancel.wait(min(0.5, max(0.0, end - time.monotonic()))):
+                raise Cancelled()
+            if self.service.tpm_wait(est) <= 0:
+                break
+        self.host.event('tpm_wait', {'wait_s': 0.0, 'tokens': est, 'limit': limit, 'account': account})
+        return True
+
+    def _count(self, model: str, res):
+        """The response's usage into the service's totals and the conversation's, and the panel's usage line."""
+        its = list(getattr(res, 'iterations', None) or [])
+        cost = self.service.add_usage(model, res.usage, its) if its else self.service.add_usage(model, res.usage)
+        with self.session.lock:
+            u = self.session.usage
+            u['prompt'] += res.usage.prompt
+            u['completion'] += res.usage.completion
+            if res.usage.cache_read or res.usage.cache_write:
+                u['cache_read'] = u.get('cache_read', 0) + res.usage.cache_read
+                u['cache_write'] = u.get('cache_write', 0) + res.usage.cache_write
+            u['requests'] += 1
+            u['cost'] = round(u['cost'] + (cost or 0.0), 6)
+        return cost
+
+    # ------------------------------------------------------------------ Claude (a native client)
+    def claude_tool_names(self) -> list:
+        """The tools a Claude conversation is given: every one (the window's only with a window), but tools_find and
+        tools_load; fixed at its first step and kept in the session, so the list sent never changes."""
+        with self.session.lock:
+            names = self.session.native.get('tools')
+            if not names:
+                names = sorted([t.name for t in META if t.name not in CLAUDE_LEFT_OUT] +
+                               [t.name for t in T.REGISTRY.values() if self.host.has_window or not t.gui])
+                self.session.native['tools'] = names
+            return list(names)
+
+    def claude_tools(self) -> list:
+        out = []
+        for n in self.claude_tool_names():
+            t = lookup(n)
+            if t is not None:
+                out.append({'type': 'function', 'function': {'name': t.name, 'description': t.description,
+                                                              'parameters': t.params}})
+        return out
+
+    def claude_note(self) -> str:
+        """The mode, show-me and page note of a Claude conversation (a mid-conversation system message)."""
+        text = MODE_RULES[self.mode]
+        if self.showing():
+            text += '\n\n' + SHOW_ME
+            if HOWTO.search(self._last_user_text()):
+                text += ' The user\'s last message is such a question: show it.'
+        ctx = dict(self.host.context_summary())
+        if ctx:
+            text += '\n\nNow: ' + json.dumps(ctx, ensure_ascii=False, sort_keys=True, default=str)
+        return text
+
+    def _note_claude(self):
+        """Append the note when it differs from the one Claude last read (appended, never edited: the conversation
+        stays a prefix of itself). A note follows a user message or tool results only."""
+        from .anthropic_client import _delivered
+        text = self.claude_note()
+        with self.session.lock:
+            msgs = [m for m in self.session.messages if not m.get('_skip')]
+            if not msgs or msgs[-1].get('role') not in ('user', 'tool', 'system'):
+                return
+            last = next((i for i in range(len(msgs) - 1, -1, -1) if msgs[i].get('role') == 'system'
+                         and msgs[i].get('_note')), None)
+            if last is not None and msgs[last].get('content') == text and \
+                    (last == len(msgs) - 1 or _delivered(msgs, last)):
+                return
+            self.session.messages.append({'role': 'system', 'content': text, '_note': True})
+
+    def _refused(self, res):
+        """A refused Claude answer: kept for the panel only (never sent back), its category and explanation told."""
+        from .service import refusal_text
+        text = refusal_text(res)
+        self.session.add({'role': 'assistant', 'content': text, '_skip': True, '_refusal': res.stop_details or {},
+                          '_model': res.model})
+        self.session.save()
+        self.host.event('error', {'kind': 'refusal', 'message': text})
+
+    def _request_native(self, client, cfg: dict):
+        model = cfg['main_model']
+        limit = int(cfg.get('tpm_limit') or 0)
+        tools = self.claude_tools()
+        rebound = False
+        while True:
+            self._note_claude()
+            with self.session.lock:
+                client.drop_thinking_before = int(self.session.native.get('drop_thinking_before') or 0)
+            msgs = [{'role': 'system', 'content': SYSTEM_CLAUDE}] + self.session.snapshot()
+            last_a = max((i for i, m in enumerate(msgs) if m.get('role') == 'assistant'), default=0)
+            fresh = estimate_tokens(wire(msgs[last_a:])) + (estimate_tokens(tools, SYSTEM_CLAUDE) if not last_a else 0)
+            if limit and self._tpm_pause(fresh, limit):            # cache reads do not count: what is new does
+                continue
+            try:
+                res = client.chat(msgs, model, tools=tools, stream=True, extra=self.service.params(model),
+                                  on_delta=lambda d: self.host.event('delta', d), cancel=self.cancel,
+                                  purpose='agent')
+            except ProviderError as e:
+                if e.kind == 'binding' and not rebound:
+                    rebound = True              # Claude's one recovery: its earlier thinking is no longer sent
+                    with self.session.lock:
+                        self.session.native['drop_thinking_before'] = len(self.session.messages)
+                    self.host.event('notice', 'Claude said its earlier reasoning no longer matches this conversation '
+                                    '(the tools changed with an update of Falcon?): it goes on without it.')
+                    continue
+                raise
+            break
+        served = res.model or model
+        if res.fallback:
+            cat = res.fallback.get('category')
+            self.host.event('notice', f'{res.fallback.get("from") or model} declined this step'
+                            + (f' (category: {cat})' if cat else '') + f'; Anthropic\'s fallback '
+                            f'{res.fallback.get("to") or served} answered it (Settings ▸ Assistant ▸ Provider turns '
+                            'the fallback off).')
+        cost = self._count(served, res)
+        self.host.event('usage', {'model': served, 'prompt': res.usage.prompt, 'completion': res.usage.completion,
+                                  'cache_read': res.usage.cache_read, 'cache_write': res.usage.cache_write,
+                                  'cost': cost, 'conversation': dict(self.session.usage), 'estimate': fresh})
+        return res
+
     def _request(self):
         cfg = self.service.cfg()
         model = cfg['main_model']
         client = self.service.client(purpose='agent')
         client.on_retry = lambda status, wait, attempt: self.host.event(
             'retry', {'status': status, 'wait_s': wait, 'attempt': attempt})
+        if getattr(client, 'native', False):
+            return self._request_native(client, cfg)
         level, failed_tool = 0, False
         loaded_on_call: set = set()             # tools loaded because the model called them unloaded
         limit = int(cfg.get('tpm_limit') or 0)
@@ -797,22 +977,16 @@ class Agent:
                                     f'unused tools left out — more than your limit of {limit} tokens per minute '
                                     '(Settings ▸ Assistant). Clear the conversation, or raise the limit if your '
                                     'plan allows it (your account\'s limits page at console.groq.com).')
-            wait = self.service.tpm_wait(est) if hasattr(self.service, 'tpm_wait') else 0.0
-            if wait > 0:
-                account = (getattr(self.service, 'account_limits', None) or {}).get('tokens')
-                self.host.event('tpm_wait', {'wait_s': wait, 'tokens': est, 'limit': limit, 'account': account})
-                end = time.monotonic() + wait
-                while time.monotonic() < end:           # a limit raised meanwhile (Settings, the panel) ends it
-                    if self.cancel.wait(min(0.5, max(0.0, end - time.monotonic()))):
-                        raise Cancelled()
-                    if self.service.tpm_wait(est) <= 0:
-                        break
-                self.host.event('tpm_wait', {'wait_s': 0.0, 'tokens': est, 'limit': limit, 'account': account})
+            if self._tpm_pause(est, limit):
                 continue
+            if hasattr(self.service, 'params'):            # the server's profile decides (assistant.service)
+                extra, parallel = self.service.params(model), self.service.parallel(model)
+            else:
+                extra = model_params(model, cfg.get('reasoning_effort', 'medium'))
+                parallel = parallel_tools(model)
             try:
-                res = client.chat(msgs, model, tools=tools, parallel_tool_calls=parallel_tools(model), stream=True,
-                                  temperature=cfg.get('temperature'),
-                                  extra=model_params(model, cfg.get('reasoning_effort', 'medium')),
+                res = client.chat(msgs, model, tools=tools, parallel_tool_calls=parallel, stream=True,
+                                  temperature=cfg.get('temperature'), extra=extra,
                                   on_delta=lambda d: self.host.event('delta', d), cancel=self.cancel,
                                   purpose='agent')
             except ProviderError as e:
@@ -833,13 +1007,7 @@ class Agent:
                     continue
                 raise
             break
-        cost = self.service.add_usage(model, res.usage)
-        with self.session.lock:
-            u = self.session.usage
-            u['prompt'] += res.usage.prompt
-            u['completion'] += res.usage.completion
-            u['requests'] += 1
-            u['cost'] = round(u['cost'] + (cost or 0.0), 6)
+        cost = self._count(model, res)
         self.host.event('usage', {'model': model, 'prompt': res.usage.prompt, 'completion': res.usage.completion,
                                   'cost': cost, 'conversation': dict(self.session.usage), 'estimate': est})
         return res
@@ -905,10 +1073,12 @@ class Agent:
 
     def _run_tools(self, calls):
         plan = []                                # (tc, tool, args, parse error)
+        claude = self._claude()
         for tc in calls:
             args, err = self._parse(tc)
             tool = lookup(tc.name)
-            if tool is not None and tool.name not in self._always() and tool.group not in self.session.loaded:
+            if tool is not None and not claude and tool.name not in self._always() and \
+                    tool.group not in self.session.loaded:
                 self.load_tools([tool.name], why=f'{tool.name} was called')      # found by name: callable from now
             plan.append((tc, tool, args, err))
         i = 0
