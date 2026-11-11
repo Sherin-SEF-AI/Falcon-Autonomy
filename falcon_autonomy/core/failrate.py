@@ -53,8 +53,8 @@ the standard importance-sampling estimator and its variance (e.g. Owen 2013, Mon
 ch. 9). The adaptation stages' runs are not pooled into it (their proposals depended on earlier runs); they are
 recorded. The failure counted is the JUDGE's: the search's own (the objective ≥ t; for the criticality objective by
 default counting failures the ego could have avoided by RSS, core.rss.rss_objective), the scenario's pass criteria
-(core.stack, as a suite judges), or a traffic-rule violation (core.rules: an STL formula with negative robustness,
-core.stl). The proposal is always adapted on the objective's score; importance sampling stays unbiased for any judge,
+(core.stack, as a suite judges), a traffic-rule violation (core.rules: an STL formula with negative robustness,
+core.stl), or the falsification of the study's own requirement (judge "stl": --stl or --rule, core.stlobjective). The proposal is always adapted on the objective's score; importance sampling stays unbiased for any judge,
 because the defensive part keeps q > 0 wherever p > 0.
 
 Trust. ESS_fail = (Σ_fail w)² / Σ_fail w² (Kish's effective sample size over the failing runs). REFUSED (no interval
@@ -95,7 +95,7 @@ MIN_ESS = 10.0
 WARN_ESS = 30.0
 WARN_REL_SE = 0.3
 WARN_WEIGHT_SHARE = 0.2
-JUDGES = ('objective', 'checks', 'rules')
+JUDGES = ('objective', 'checks', 'rules', 'stl')
 DEFAULTS = {'stage_size': 100, 'final_size': 200, 'rho': 0.1, 'defensive': 0.1, 'max_stages': 6}
 PROPOSAL = ('defensive mixture q(z) = β·N(z; 0, I) + (1 − β)·N(z; μ, I) in standard-normal coordinates (the '
             'mean-shift family), μ fitted by the multilevel cross-entropy method (Rubinstein 1997; Rubinstein & '

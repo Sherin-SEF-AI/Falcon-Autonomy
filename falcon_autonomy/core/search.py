@@ -44,6 +44,11 @@ Methods.
   (value ≥ threshold) once there are enough of them, until then the best evaluations — so the sampling concentrates
   on (and then maps) the failure region; a share of every batch stays uniform to find other failure modes. The
   sampling distribution is a function of the history alone (no smoothing state), so batches and resumes are exact.
+- CrossEntropy ("cem"): the cross-entropy method as an optimiser (de Boer, Kroese, Mannor & Rubinstein 2005, A
+  Tutorial on the Cross-Entropy Method): a diagonal Gaussian on the unit cube, each generation of max(20, 5n) samples
+  keeps its elite 10 % (at least 2) and moves μ and σ towards the elite's with smoothing 0.7; σ0 = 0.5, restarts when
+  every σ falls below 1e-3. Measured on core.stlobjective's planted robustness landscape (docs/falsification.md):
+  the falsifying region (0.1 % of the cube) found within 100 evaluations in 9 of 10 seeds (σ0 = 0.3 found it in 4).
 
 Analysis: failures(history, threshold) ranks the failures; failure_map(...) bins the history on two parameters into
 a grid of max / mean value and failure share (a heatmap of the failure region); compare(...) runs methods with equal
@@ -615,8 +620,74 @@ class AdaptiveSampling(Search):
         return out
 
 
+# --- the cross-entropy method for optimisation ---------------------------------------------------------------------
+
+class CrossEntropy(Search):
+    """The cross-entropy method as an optimiser (Rubinstein 1999; de Boer, Kroese, Mannor & Rubinstein 2005, A
+    Tutorial on the Cross-Entropy Method, Ann. Oper. Res. 134, §4 with smoothed updates): a diagonal Gaussian on the
+    unit cube; each generation of `population` samples (reflected into the box) keeps its elite — the ⌈elite·N⌉ best,
+    at least 2 — and moves the mean and the standard deviations towards the elite's by smoothing α: μ ← α·μ_elite +
+    (1 − α)·μ, σ ← α·σ_elite + (1 − α)·σ. σ is floored at min_sd per dimension; when every σ is below 1e-3 the
+    search restarts from a new uniform mean (σ0). Generations update once `population` evaluations have been told, so
+    any batching works (as CMAES)."""
+
+    method = 'cem'
+
+    def __init__(self, space, seed: int = 0, population: int | None = None, elite: float = 0.1,
+                 smoothing: float = 0.7, sigma0: float = 0.5, min_sd: float = 1e-4, history=None):
+        if not 0.0 < float(elite) <= 0.5:
+            raise ValueError('elite is a share of the generation in (0, 0.5]')
+        if not 0.0 < float(smoothing) <= 1.0:
+            raise ValueError('smoothing must lie in (0, 1]')
+        self.population, self.elite, self.smoothing = population, float(elite), float(smoothing)
+        self.sigma0, self.min_sd = float(sigma0), float(min_sd)
+        super().__init__(space, seed, history)
+
+    def _options(self):
+        return {'population': self.population, 'elite': self.elite, 'smoothing': self.smoothing,
+                'sigma0': self.sigma0, 'min_sd': self.min_sd}
+
+    def _init(self):
+        self.n_pop = int(self.population or max(20, 5 * self.dim))
+        self.n_elite = max(2, int(math.ceil(self.elite * self.n_pop)))
+        self.default_batch = self.n_pop
+        self.restarts = 0
+        self._buffer = []
+        self._restart()
+
+    def _restart(self):
+        self.mean = self.rng.random(self.dim)
+        self.sd = np.full(self.dim, self.sigma0)
+        self.gen = 0
+
+    def _propose(self, n):
+        return _reflect(self.mean + self.sd * self.rng.standard_normal((n, self.dim)))
+
+    def _observe(self, X, y):
+        self._buffer.extend([x.tolist(), float(v)] for x, v in zip(X, y))
+        while len(self._buffer) >= self.n_pop:
+            gen, self._buffer = self._buffer[:self.n_pop], self._buffer[self.n_pop:]
+            el = np.asarray([g[0] for g in sorted(gen, key=lambda g: -g[1])[:self.n_elite]])
+            a = self.smoothing
+            self.mean = np.clip(a * el.mean(axis=0) + (1 - a) * self.mean, 0.0, 1.0)
+            self.sd = np.maximum(a * el.std(axis=0) + (1 - a) * self.sd, self.min_sd)
+            self.gen += 1
+            if np.all(self.sd < 1e-3):
+                self.restarts += 1
+                self._restart()
+
+    def _extra_state(self):
+        return {'mean': self.mean.tolist(), 'sd': self.sd.tolist(), 'gen': self.gen, 'restarts': self.restarts,
+                'buffer': self._buffer}
+
+    def _load_extra(self, d):
+        self.mean, self.sd = np.asarray(d['mean'], float), np.asarray(d['sd'], float)
+        self.gen, self.restarts = int(d['gen']), int(d['restarts'])
+        self._buffer = [[list(x), float(v)] for x, v in d['buffer']]
+
+
 METHODS = {'random': RandomSearch, 'cmaes': CMAES, 'bayesopt': BayesOpt, 'adaptive': AdaptiveSampling,
-           'bayes_pof': BayesFailure}
+           'bayes_pof': BayesFailure, 'cem': CrossEntropy}
 
 
 def make(method: str, space, seed: int = 0, threshold: float | None = None, **opts) -> Search:

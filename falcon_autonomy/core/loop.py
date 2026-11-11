@@ -54,6 +54,8 @@ The steps (STEPS) and their rules:
    runs with the ODD's labelled rig, scores the iteration's model on the scenario's actors and on the cell's class
    within the cell's range bin, and searches the cell weather's ranged fields as dimensions instead of drawing
    them; a model that cannot be run falls back to the criticality, and the record says why (search_objective).
+   search.objective "robustness" falsifies a signal-temporal-logic requirement instead (core.stlobjective: the ODD's
+   search.stl formula or search.rule "SET:ID", with search.scale and search.smooth): no model, the unlabelled rig.
 5. generate — (a) a dataset spec targeting the chosen cells (their classes, range bins and weathers): the drives
    needed come from the yield of the cell's class in its range bin measured on the evaluation set (objects per
    recorded frame), planned with core.datasets.plan and run through sim.engine (cache-keyed, resumable); (b) the
@@ -237,8 +239,14 @@ def normalise_odd(odd: dict | None, project) -> tuple:
         errs.append('weak_cells.fallback: none or lowest')
     if se['method'] not in ('bayes', 'bayes-pof', 'cmaes', 'adaptive', 'random'):
         errs.append('search.method: bayes, bayes-pof, cmaes, adaptive or random')
-    if se.get('objective', 'criticality') not in ('criticality', 'perception', 'both'):
-        errs.append('search.objective: criticality, perception or both')
+    if se.get('objective', 'criticality') not in ('criticality', 'perception', 'both', 'robustness'):
+        errs.append('search.objective: criticality, perception, both or robustness')
+    elif se.get('objective') == 'robustness':
+        from . import stlobjective as SO
+        try:
+            SO.normalise({k: se.get(k) for k in SO.SPEC_KEYS})
+        except SO.STLObjectiveError as e:
+            errs.append(f'search: the robustness objective\'s requirement (search.stl or search.rule): {e}')
     acq = ge.get('acquisition')
     if acq is not None:
         from .activelearn import AGGREGATES, STRATEGIES
@@ -739,12 +747,21 @@ def _study_class():
 
 def search_objective(odd: dict, model: dict, ws: str) -> tuple:
     """(the objective the search step uses, why when it is not the one asked for). The ODD's search.objective:
-    "criticality" (the default), "perception" or "both" (core.milsearch) — the latter two only when the iteration's
-    model can be run (else the criticality, and the record says why)."""
+    "criticality" (the default), "perception" or "both" (core.milsearch) — those two only when the iteration's
+    model can be run (else the criticality, and the record says why) — or "robustness" (core.stlobjective: the ODD's
+    search.stl or search.rule requirement; else the criticality, and why)."""
     from . import milsearch as MS
-    kind = (odd.get('search') or {}).get('objective') or 'criticality'
+    se = odd.get('search') or {}
+    kind = se.get('objective') or 'criticality'
     if kind not in MS.OBJECTIVES:
         return 'criticality', f'search.objective {kind!r} is not one of {", ".join(MS.OBJECTIVES)}'
+    if kind == 'robustness':
+        from . import stlobjective as SO
+        try:
+            SO.normalise({k: se.get(k) for k in SO.SPEC_KEYS})
+        except SO.STLObjectiveError as e:
+            return 'criticality', f'the robustness objective needs a requirement (search.stl or search.rule): {e}'
+        return kind, None
     if kind != 'criticality':
         why = MS.evaluable(model, ws)
         if why:
@@ -759,6 +776,10 @@ def cell_objective(kind: str, cell: dict, cond: dict, odd: dict, model: dict) ->
     if kind == 'criticality':
         return None, []
     se = odd.get('search') or {}
+    if kind == 'robustness':                      # the requirement, over the cell weather's ranged fields
+        from . import stlobjective as SO
+        spec = dict({k: se.get(k) for k in SO.SPEC_KEYS}, objective='robustness')
+        return MS.normalise_spec(spec), MS.weather_space((cond['weather'].get('ranges') or {}))
     lo, hi = cell['bin'][0], cell['bin'][1]
     spec = {'objective': kind, 'model': model, 'target_classes': [cell['class']],
             'range_m': [float(lo), float(hi if hi is not None else SPEC_FAR_M)],
@@ -931,7 +952,8 @@ def estimate(project, it: dict | None, step: str, throughput, odd: dict | None =
                 with open(sdir, encoding='utf-8') as fh:
                     done = sum(1 for x in fh if x.strip())
             kind = search_objective(odd, (it or {}).get('model'), ws)[0]
-            p = _drive_estimate(throughput, steps, rig_mpx(unlabelled_rig(rig) if kind == 'criticality' else rig),
+            p = _drive_estimate(throughput, steps, rig_mpx(unlabelled_rig(rig) if kind in ('criticality',
+                                                                                         'robustness') else rig),
                                 max(int(se['budget']) - done, 0))
             p['source'] = f'{key}: ' + p['source']
             parts.append(p)
@@ -1348,6 +1370,7 @@ class Runner:
         wc = PV.read_json(self._file(it, 'weak_cells.json'))
         rig = self.project.item('rigs', odd['rig'])
         Study = _study_class()
+        from . import milsearch as MS
         out_cells, outs, decisions = [], [], []
         chosen = wc['chosen']
         kind, why_not = search_objective(odd, it['model'], self.ws)
@@ -1371,7 +1394,8 @@ class Runner:
                 scn = scenario_for(cell['class'], fixed, key)
                 name = f'loop-{it["n"]:03d}-{k + 1}-{key}'
                 st = Study(self.svc, self.project, scn, name, cond['world'], odd['rig'],
-                           int(se['seed']) + it['n'], weather, unlabelled_rig(rig) if spec is None else rig,
+                           int(se['seed']) + it['n'], weather,
+                           unlabelled_rig(rig) if spec is None or not MS.needs_model(spec) else rig,
                            se['fps'], int(se['traffic_vehicles']), spec, extra)
                 st.emit = self.em
                 prog = self.sub(k / len(chosen), (k + 1) / len(chosen))
@@ -1401,6 +1425,7 @@ class Runner:
                              rerun_note=note)
                 outs.append(os.path.join(st.dir, f'search-{se["method"]}.json'))
                 what = 'criticality' if spec is None else ('perception failure' if kind == 'perception' else
+                                                            'falsified requirement' if kind == 'robustness' else
                                                             'perception failure and criticality')
                 decisions.append(f'{_cell_name(cell)}: {key} in {cond["label"]}, {len(res["history"])} runs, '
                                  f'{len(fails)} failing ({what} ≥ {se["threshold"]})')
@@ -1411,6 +1436,8 @@ class Runner:
             out_cells.append(entry)
         doc = {'schema': 'falcon.loop_search/1', 'n': it['n'],
                'objective': OBJECTIVE_NOTE if kind == 'criticality' else
+               MS.describe(cell_objective(kind, {'class': '', 'bin': [0, None]}, {'weather': {}}, odd, None)[0])
+               if kind == 'robustness' else
                f'{kind} (core.milsearch): {MS.DEFINITION}' + ('' if kind == 'perception' else
                                                              f'; {MS.BOTH_DEFINITION}'),
                'objective_kind': kind,

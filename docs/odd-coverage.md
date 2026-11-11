@@ -26,7 +26,9 @@ labels (6 × 4 × 13 × 5 × 4 = 6,240 cells) — or, when the workspace has an 
 whose representative conditions lie inside its weather and sun ranges. Runs outside the ODD are counted apart.
 
 **What counts**: rare-case studies (`studies/*`: sweeps, searches, failure-rate estimates — a failure is the study's
-objective ≥ its threshold, as the safety case's triggering conditions read it), stack suites (`suites/*`: a failed
+objective ≥ its threshold, as the safety case's triggering conditions read it; for a falsification study — the
+robustness objective, [falsification](falsification.md) — that is exactly a run whose requirement was violated, ρ < 0;
+a run whose ρ is unknown is not a failure), stack suites (`suites/*`: a failed
 pass criterion, as `core.stack` judges) and single scenario runs (`runs/*`: the scenario's pass criteria). Each cell
 says how many runs came from each source.
 

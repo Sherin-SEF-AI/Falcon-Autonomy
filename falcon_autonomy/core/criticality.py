@@ -227,6 +227,60 @@ def required_deceleration_series(ego_traj, actor_traj):
     return e[ie, T], _drac_rows(e[ie], a[ia])
 
 
+def axis_gaps(ego_state, actor_state) -> tuple:
+    """(longitudinal gap, lateral gap, ahead) of an actor's box from the ego's, in the ego's frame: the actor's corners
+    projected on the ego's heading and its right; each gap is the distance between the two boxes' extents along that
+    axis (0 when they overlap along it); ahead: the actor's centre is in front of the ego's. Batched over rows of
+    (N, 8) states -> three (N,) arrays. Exact for the boxes' projections (no straight-corridor approximation)."""
+    e, a = as_traj(ego_state), as_traj(actor_state)
+    r = np.radians(e[:, YAW])
+    fwd = np.stack([np.cos(r), np.sin(r)], axis=-1)
+    rgt = np.stack([-np.sin(r), np.cos(r)], axis=-1)
+    C = _corners_of(a) - e[:, None, [X, Y]]
+    lon = np.einsum('nkd,nd->nk', C, fwd)
+    lat = np.einsum('nkd,nd->nk', C, rgt)
+    hl, hw = e[:, LEN] / 2.0, e[:, WID] / 2.0
+    g_lon = np.maximum.reduce([np.zeros(len(e)), lon.min(1) - hl, -hl - lon.max(1)])
+    g_lat = np.maximum.reduce([np.zeros(len(e)), lat.min(1) - hw, -hw - lat.max(1)])
+    return g_lon, g_lat, lon.mean(1) > 0
+
+
+def ttc_rows(ego: np.ndarray, actor: np.ndarray, horizon: float = 10.0) -> np.ndarray:
+    """Per row pair of (N, 8) states, the TTC (s) as ttc() gives it; inf when none within the horizon."""
+    return _ttc_rows(as_traj(ego), as_traj(actor), horizon)
+
+
+def drac_rows(ego: np.ndarray, actor: np.ndarray) -> np.ndarray:
+    """Per row pair of (N, 8) states, the DRAC (m/s²) as required_deceleration() gives it."""
+    return _drac_rows(as_traj(ego), as_traj(actor))
+
+
+def pet_rows(ego_traj, actor_traj) -> np.ndarray:
+    """Per ego sample i, the smallest |t_i − t_j| over the actor's samples j whose footprint overlaps the ego's at i
+    (the pointwise post-encroachment time of the conflict point the ego occupies at t_i; its minimum over i is
+    pet()'s value at the trajectories' sampling); inf where the ego's footprint is on no point the actor ever
+    occupies. Uses the whole of both trajectories (past and future of t_i)."""
+    e, a = as_traj(ego_traj), as_traj(actor_traj)
+    out = np.full(len(e), np.inf)
+    if not len(e) or not len(a):
+        return out
+    CE, CA = _corners_of(e), _corners_of(a)
+    ce, ca = CE.mean(axis=1), CA.mean(axis=1)
+    re = np.linalg.norm(CE - ce[:, None, :], axis=-1).max(-1)
+    ra = np.linalg.norm(CA - ca[:, None, :], axis=-1).max(-1)
+    te, ta = e[:, T], a[:, T]
+    for s in range(0, len(CE), 256):          # bounding-circle prefilter, in blocks of ego samples
+        d = np.linalg.norm(ce[s:s + 256, None, :] - ca[None, :, :], axis=-1)
+        i, j = np.nonzero(d <= re[s:s + 256, None] + ra[None, :] + EPS)
+        if not len(i):
+            continue
+        i = i + s
+        hit = _overlap(CE[i], CA[j])
+        if hit.any():
+            np.minimum.at(out, i[hit], np.abs(te[i[hit]] - ta[j[hit]]))
+    return out
+
+
 def _impulse(v) -> float | None:
     if v is None:
         return None

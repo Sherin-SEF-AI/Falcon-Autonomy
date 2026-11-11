@@ -16,6 +16,12 @@ on their frames in this process (an ONNX or TorchScript model under the CARLA an
 never run at full load together) and every full score is kept in perception/<run>-<objective key>.json. A study whose
 objective or model changed re-scores its finished runs from their frames (they are not driven again). Extra search
 dimensions ("weather.<field>") override the run's weather. study.json records the objective and the space.
+
+The robustness objective (core.stlobjective, `falcon falsify`): each finished run is scored against a signal-temporal-
+logic requirement from its recorded trace (core.rules.trace_from_run) in this process — no model, no lock; the row
+keeps ρ, the value and the verdict ('stl'), and stl/<run>-<objective key>.json the per-sample series. Another
+requirement re-scores the same runs (nothing driven again). A run whose ρ is unknown is kept with value 0 and
+'stl.state' "not evaluable", and is told to the searcher as None (it learns nothing from it).
 """
 from __future__ import annotations
 
@@ -32,14 +38,14 @@ from ..core.jobs import FINAL
 from ..core.provenance import read_json, write_json
 
 
-METHOD_NAMES = ('bayes', 'bayes-pof', 'cmaes', 'adaptive', 'random')
+METHOD_NAMES = ('bayes', 'bayes-pof', 'cmaes', 'cem', 'adaptive', 'random')
 
 
 def method_class(name: str):
     """A study method's searcher (core.search) by its command-line name."""
     from ..core import search as S
     return {'random': S.RandomSearch, 'cmaes': S.CMAES, 'bayes': S.BayesOpt, 'adaptive': S.AdaptiveSampling,
-            'bayes-pof': S.BayesFailure}[name]
+            'bayes-pof': S.BayesFailure, 'cem': S.CrossEntropy}[name]
 
 
 WEATHER_TAGS = {'fog_density': 'fog', 'sun_altitude_angle': 'sun', 'precipitation': 'rain'}
@@ -66,20 +72,34 @@ def sweep_argv(project_path: str, scenario: str, name: str, samples: int, seed: 
 def search_argv(project_path: str, scenario: str, name: str, method: str, budget: int, batch: int,
                 threshold: float, seed: int, world: str, rig: str, objective: str = 'criticality',
                 count: str = 'avoidable', feasibility: bool = True, model: str = '', weather=(), fps: float = 20,
-                fake_carla: str = '') -> list:
-    """`falcon search …` as Rare cases ▸ Search queues it (the arguments after `python -m falcon_autonomy`)."""
+                fake_carla: str = '', requirement: dict | None = None) -> list:
+    """`falcon search …` as Rare cases ▸ Search queues it (the arguments after `python -m falcon_autonomy`);
+    requirement: {stl | rule, scale, smooth} for the robustness objective (core.stlobjective)."""
     argv = ['search', project_path, '--scenario', scenario, '--name', name, '--method', method, '--budget',
             str(budget), '--batch', str(batch), '--threshold', str(threshold), '--seed', str(seed), '--world', world,
             '--rig', rig, '--objective', objective, '--count', count]
     if not feasibility:
         argv.append('--no-feasibility')
-    if objective != 'criticality':
+    if objective in ('perception', 'both'):
         argv += ['--model', model]
+    argv += requirement_argv(requirement)
     for k in weather:
         argv += ['--weather', k]
     if fps != 20:
         argv += ['--fps', str(fps)]
     return argv + (['--fake-carla', fake_carla] if fake_carla else [])
+
+
+def requirement_argv(req: dict | None) -> list:
+    """--stl/--rule, --scale, --smooth of a requirement (core.stlobjective) for a study command's argv."""
+    if not req or not (req.get('stl') or req.get('rule')):
+        return []
+    out = ['--stl', req['stl']] if req.get('stl') else ['--rule', req['rule']]
+    if req.get('scale') not in (None, 1.0):
+        out += ['--scale', str(req['scale'])]
+    if req.get('smooth'):
+        out += ['--smooth', str(req['smooth'])]
+    return out
 
 
 def study_dir(workspace, name):
@@ -177,6 +197,10 @@ class Study:
             d.update(model={k: m.get(k) for k in ('id', 'name', 'runtime', 'entry', 'path', 'params')},
                      model_sha256=MS.model_fingerprint(m, self.project.workspace),
                      settings={k: v for k, v in self.spec.items() if k not in ('objective', 'model')})
+        if self.spec['objective'] == 'robustness':
+            from ..core import stlobjective as SO
+            n = SO.normalise(self.spec)
+            d['stl'] = {k: n.get(k) for k in ('stl', 'rule', 'scale', 'smooth', 'formula', 'signals', 'ruleset')}
         return d
 
     def _write_doc(self, **extra):
@@ -244,6 +268,7 @@ class Study:
                 raise RuntimeError(f'scoring the runs with the model failed: {e}') from None
             os.makedirs(os.path.join(self.dir, 'perception'), exist_ok=True)
         from ..core.rss import label_run_dir
+        robust = self.spec['objective'] == 'robustness'
         for r in rows:
             r['criticality'] = objective(r)
             r['objective_kind'] = self.spec['objective']
@@ -254,7 +279,16 @@ class Study:
                 write_json(os.path.join(self.dir, 'perception', f'{os.path.basename(r["run"])}-{self.okey}.json'),
                            sc)
                 r['perception'] = perception_summary(sc)
-            r['objective'] = MS.objective_value(self.spec, r['criticality'], r['perception'], r['rss'])
+            stl = None
+            if robust:
+                from ..core import stlobjective as SO
+                sc = SO.score_run(r['run'], self.spec, series=True)
+                write_json(SO.series_path(self.dir, r['run'], self.okey), sc)
+                stl = r['stl'] = SO.row_summary(sc)
+            else:
+                r.pop('stl', None)
+            v = MS.objective_value(self.spec, r['criticality'], r['perception'], r['rss'], stl)
+            r['objective'] = 0.0 if v is None else v          # unknown ρ: not a failure; told as None (told())
             r['objective_key'] = self.okey
 
     def _ensure_scored(self, rows: list):
@@ -348,12 +382,20 @@ class Study:
             else:
                 new = [r for k, r in by_values.items() if k not in known]
                 if new:
-                    algo.tell([r['values'] for r in new], [r['objective'] for r in new])
+                    algo.tell([r['values'] for r in new], [self.told(r) for r in new])
                 return algo
         algo = cls(space, seed=self.search_seed, **opts)
         if past:                                        # resume: tell the algorithm what was already evaluated
-            algo.tell([r['values'] for r in past], [r['objective'] for r in past])
+            algo.tell([r['values'] for r in past], [self.told(r) for r in past])
         return algo
+
+    @staticmethod
+    def told(r: dict):
+        """What a searcher is told of a row: its objective, or None when the requirement's robustness was unknown
+        (nothing to learn from it)."""
+        if (r.get('stl') or {}).get('state') == 'not evaluable':
+            return None
+        return r['objective']
 
     def sweep(self, sets: list, progress=None) -> list:
         return self.evaluate(sets, progress)
@@ -366,14 +408,21 @@ class Study:
         past = self.current_results()
         algo = self._resume(method, cls, space, opts, past)
         state_path = os.path.join(self.dir, f'searcher-{method}.json')
-        while len(algo.history) < budget:
-            ask = algo.ask(min(batch, budget - len(algo.history)))
+        unknown = {r['key'] for r in past if self.told(r) is None}       # runs with an unknown ρ count to the budget
+        while len(algo.history) + len(unknown) < budget:
+            ask = algo.ask(min(batch, budget - len(algo.history) - len(unknown)))
             res = self.evaluate(ask, progress)
             ok = [(a, r) for a, r in zip(ask, res) if r and r['status'] == 'ok']
             if not ok:
                 raise RuntimeError('every evaluation of the batch failed: ' + '; '.join(
                     str(r.get('error')) for r in res if r))
-            algo.tell([a for a, _ in ok], [r['objective'] for _, r in ok])
+            if all(self.told(r) is None for _, r in ok):
+                miss = sorted({m for _, r in ok for m in (r.get('stl') or {}).get('missing_signals') or ()})
+                raise RuntimeError('the requirement\'s robustness is unknown in every run of the batch' +
+                                   (f' (signals not recorded: {", ".join(miss)})' if miss else
+                                    f' ({(ok[0][1].get("stl") or {}).get("error") or "the runs could not be read"})'))
+            algo.tell([a for a, _ in ok], [self.told(r) for _, r in ok])
+            unknown |= {r['key'] for _, r in ok if self.told(r) is None}
             write_json(state_path, {'objective_key': self.okey, 'threshold': threshold, 'state': algo.state()})
         out = {'method': method, 'budget': budget, 'history': algo.history,
                'failures': S.failures(algo.history, threshold), 'threshold': threshold,
@@ -386,7 +435,8 @@ def objective_args(ap):
     """The objective's command-line options (falcon search and falcon sweep; docs/rare-cases-mil.md)."""
     from ..core import milsearch as MS
     ap.add_argument('--objective', default='criticality', choices=MS.OBJECTIVES,
-                    help='criticality (default), perception (the model\'s failure) or both')
+                    help='criticality (default), perception (the model\'s failure), both, or robustness (falsify '
+                         'the --stl or --rule requirement)')
     ap.add_argument('--model', default='', help='a registered model id (perception and both)')
     ap.add_argument('--metric', default='perception', choices=MS.METRICS)
     ap.add_argument('--target-class', action='append', default=[], help='a class whose objects in --range also count')
@@ -403,6 +453,12 @@ def objective_args(ap):
                     help='the criticality objective counts avoidable failures only (RSS, core.rss; default) or all')
     ap.add_argument('--no-feasibility', action='store_true',
                     help='search the scenario\'s full parameter ranges, not only the kinematically feasible part')
+    ap.add_argument('--stl', default='', help='the requirement as an STL formula over the rule signals (the '
+                                              'robustness objective; the stl judge)')
+    ap.add_argument('--rule', default='', help='or a rule set\'s rule(s) as the requirement: SET:ID[,ID]')
+    ap.add_argument('--scale', type=float, default=1.0, help='robustness: ρ\'s scale in σ(−ρ/scale)')
+    ap.add_argument('--smooth', type=float, default=0.0, help='robustness: β of the soft-min robustness the searcher '
+                                                             'sees (0: exact)')
 
 
 def objective_from_args(a, proj) -> tuple:
@@ -413,7 +469,13 @@ def objective_from_args(a, proj) -> tuple:
             'count': a.count, 'feasibility': not a.no_feasibility}
     if a.range:
         spec['range_m'] = [float(x) for x in a.range.split(',')]
-    if a.objective != 'criticality':
+    if getattr(a, 'stl', '') or getattr(a, 'rule', ''):
+        if a.stl and a.rule:
+            raise ValueError('give --stl or --rule, not both')
+        spec.update(stl=a.stl or None, rule=a.rule or None, scale=a.scale, smooth=a.smooth)
+    elif a.objective == 'robustness':
+        raise ValueError('the robustness objective needs a requirement: --stl FORMULA or --rule SET:ID')
+    if a.objective in MS.MODEL_OBJECTIVES:
         m = proj.item('models', a.model) if a.model else None
         if m is None:
             raise ValueError(f'the {a.objective} objective needs --model ID (a registered model): '

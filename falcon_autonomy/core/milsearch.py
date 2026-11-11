@@ -8,7 +8,9 @@ objective is the run's criticality (core.criticality). This module adds:
   drive, in the app's Python — runs a registered model (core.models.Runner through core.harness.collect) on the
   recorded frames and scores how the model failed on the objects that matter (below);
 - "both": perception failure AND criticality, min(perception, criticality): a case is a combined failure exactly
-  when both reach the threshold (the fuzzy "and"; the product would put two 0.7s under a 0.5 threshold).
+  when both reach the threshold (the fuzzy "and"; the product would put two 0.7s under a 0.5 threshold);
+- "robustness": falsification of a signal-temporal-logic requirement (core.stlobjective): the run's robustness ρ of a
+  formula (spec stl) or of rules (spec rule "SET:ID") as σ(−ρ/scale), so ρ < 0 (falsified) ⇔ value > 0.5; no model.
 
 The objects that matter (RELEVANT): the scenario's actors (its critical actors: the director reports each one's CARLA
 id, which the labels' track ids are), and objects of the target classes (spec target_classes) whose range lies in
@@ -62,7 +64,8 @@ import copy
 import os
 
 SCHEMA = 'falcon.perception_score/1'
-OBJECTIVES = ('criticality', 'perception', 'both')
+OBJECTIVES = ('criticality', 'perception', 'both', 'robustness')
+MODEL_OBJECTIVES = ('perception', 'both')
 METRICS = ('perception', 'window_miss', 'lost_lead', 'miss_rate')
 DEFAULTS = {'objective': 'criticality', 'metric': 'perception', 'iou': 0.5, 'min_score': 0.5, 'window_s': 3.0,
             'lead_s': 3.0, 'target_classes': [], 'range_m': [0.0, 50.0], 'every': 1, 'camera': None,
@@ -112,7 +115,14 @@ def normalise_spec(spec: dict | None) -> dict:
     if s['count'] not in COUNTS:
         raise MilError(f'count must be one of {", ".join(COUNTS)}, not {s["count"]!r}')
     s['feasibility'] = bool(s['feasibility'])
-    if s['objective'] == 'criticality':
+    if s.get('stl') or s.get('rule') or s['objective'] == 'robustness':
+        from . import stlobjective as SO          # the requirement (the robustness objective; the stl judge)
+        try:
+            n = SO.normalise({k: s.get(k) for k in SO.SPEC_KEYS})
+        except SO.STLObjectiveError as e:
+            raise MilError(f'the requirement: {e}') from None
+        s.update({k: n[k] for k in SO.SPEC_KEYS})
+    if s['objective'] in ('criticality', 'robustness'):
         s.pop('model', None)
     elif not isinstance(s.get('model'), dict):
         raise MilError(f'the {s["objective"]} objective needs a registered model (core.models)')
@@ -120,7 +130,7 @@ def normalise_spec(spec: dict | None) -> dict:
 
 
 def needs_model(spec: dict) -> bool:
-    return spec.get('objective', 'criticality') != 'criticality'
+    return spec.get('objective', 'criticality') in MODEL_OBJECTIVES
 
 
 def spec_key(spec: dict, workspace: str = '') -> str:
@@ -129,6 +139,11 @@ def spec_key(spec: dict, workspace: str = '') -> str:
     s = normalise_spec(spec)
     if s['objective'] == 'criticality':
         return 'criticality' if s['count'] == 'all' else 'criticality-rss'
+    if s['objective'] == 'robustness':                 # the requirement's normal form, scale, β, rule-set version
+        from . import stlobjective as SO
+        return SO.spec_key(s)
+    for k in ('stl', 'rule', 'scale', 'smooth'):         # a judge's requirement does not change these scores
+        s.pop(k, None)
     s.pop('count')                    # RSS counting and feasibility act on the criticality objective only: a
     s.pop('feasibility')              # perception study's key (and its scores) stay as they were
     m = s.pop('model')
@@ -355,10 +370,16 @@ def perception_score(frames: list, scenario: dict | None, fps: float, spec: dict
     return out
 
 
-def objective_value(spec: dict, criticality: float, perception: dict | None, rss: dict | None = None) -> float:
+def objective_value(spec: dict, criticality: float, perception: dict | None, rss: dict | None = None,
+                    stl: dict | None = None) -> float | None:
     """The search's value: the criticality (by default counting avoidable failures only: core.rss.rss_objective of
-    the run's RSS label), the perception failure (its chosen metric), or min of both."""
+    the run's RSS label), the perception failure (its chosen metric), min of both, or the requirement's robustness
+    value (core.stlobjective: None when ρ is unknown)."""
     kind = spec.get('objective', 'criticality')
+    if kind == 'robustness':
+        if stl is None:
+            raise MilError('the robustness objective needs the run scored against the requirement')
+        return stl.get('value')
     if kind == 'criticality':
         if spec.get('count', 'avoidable') == 'avoidable':
             from .rss import rss_objective
@@ -383,6 +404,9 @@ def describe(spec: dict) -> str:
                     f'responsible for under RSS (core.rss: the other road user\'s, kinematically unavoidable, or not '
                     f'dangerous) is capped at {NON_AVOIDABLE_CAP:g}')
         return base + '; every failure counted (RSS labels shown, not applied)'
+    if kind == 'robustness':
+        from . import stlobjective as SO
+        return SO.describe(spec)
     m = spec.get('model') or {}
     what = f'{spec.get("metric", "perception")} of {m.get("name") or m.get("id")} ({DEFINITION})'
     if kind == 'perception':
