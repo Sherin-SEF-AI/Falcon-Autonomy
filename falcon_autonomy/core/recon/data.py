@@ -33,7 +33,8 @@ Sources:
   core.recon.fromdashcam (a dashcam segment posed by visual odometry and aligned to its GPS): every frame's image,
   pinhole K (pixel-edge), world → optical matrix, ego and mount as the folder states them, an optional mask per frame
   and the points to start from (init 'points': the odometry's triangulated points). The folder's own world, notes
-  and limits are carried into the capture's meta.
+  and limits are carried into the capture's meta. A folder may bring tracks (tracks.json: a dashcam segment's road
+  users from its near-miss ingest, core.recon.dashcam_tracks): dynamic mode learns them (posed_capture).
 * **nuscenes** — one camera channel (CAM_FRONT by default) of a scene, its key frames (annotated, 2 Hz); the pose
   from the sample_data's ego_pose and the calibrated sensor; masks from the key frame's annotated boxes of Falcon's
   actor classes (core.logreplay.ros2.falcon_class), each 3D box projected (its edges clipped at the near plane) and
@@ -243,12 +244,13 @@ def open_capture(source, camera: str | None = None, **opts) -> Capture:
     dynamic = str(o.get('dynamic', '')).lower() in ('1', 'true', 'yes')
     if kind == 'falcon':
         return falcon_capture(path, camera, every=int(o.get('every', 1)), dynamic=dynamic)
-    if dynamic and kind in ('kitti_raw', 'posed'):
-        raise DataError(f'dynamic mode reads the tracks of Falcon runs and nuScenes; {kind} has none Falcon reads')
+    if dynamic and kind == 'kitti_raw':
+        raise DataError('dynamic mode reads the tracks of Falcon runs, nuScenes and posed folders that bring them (a '
+                        'dashcam segment with its ingest\'s tracks); KITTI raw\'s tracklets are not read')
     if kind == 'kitti_raw':
         return kitti_capture(path, camera or 'image_02', every=int(o.get('every', 1)))
     if kind == 'posed':
-        return posed_capture(path, every=int(o.get('every', 1)))
+        return posed_capture(path, every=int(o.get('every', 1)), dynamic=dynamic)
     return nuscenes_capture(path, o.get('scene'), camera or ('all' if dynamic else 'CAM_FRONT'), dynamic=dynamic)
 
 
@@ -593,8 +595,11 @@ def _kitti_lidar(vdir, cap, T_velo_imu, max_sweeps: int = 40, max_range: float =
 
 
 # ------------------------------------------------------------------------------------------------ posed images
-def posed_capture(path: str, every: int = 1) -> Capture:
-    """A folder of posed images (posed.json; module doc)."""
+def posed_capture(path: str, every: int = 1, dynamic: bool = False) -> Capture:
+    """A folder of posed images (posed.json; module doc). When the folder brings tracks (posed.json 'tracks': a
+    falcon.recon_tracks/1 file, core.recon.dashcam_tracks — a dashcam segment's road users from its ingest), dynamic
+    mode learns them as actors (their projected boxes are taken out of the folder's motion masks, so their pixels
+    are learned) and static mode masks their projected boxes (dilated 2 px) on top of the folder's masks."""
     path = os.path.abspath(path)
     pj = os.path.join(path, 'posed.json')
     if not os.path.isfile(pj):
@@ -603,24 +608,47 @@ def posed_capture(path: str, every: int = 1) -> Capture:
         doc = json.load(fh)
     if doc.get('schema') != POSED_SCHEMA:
         raise DataError(f'{pj}: schema {doc.get("schema")!r}, expected {POSED_SCHEMA}')
+    tracks = None
+    tp = os.path.join(path, doc['tracks']) if doc.get('tracks') else None
+    if tp and os.path.isfile(tp):
+        from .dashcam_tracks import TracksError, read
+        try:
+            tracks = read(tp)
+        except (TracksError, KeyError, ValueError) as e:
+            raise DataError(f'{tp}: {e}') from None
+    if dynamic and tracks is None:
+        raise DataError(f'{path}: the posed folder brings no tracks (posed.json \'tracks\'): dynamic mode needs the '
+                        f'road users\' boxes — reconstruct the dashcam segment with --dynamic (its ingest\'s tracks)')
     frames = []
     for k, r in enumerate(doc['frames']):
         if k % max(1, every):
             continue
         m = os.path.join(path, r['mask']) if r.get('mask') else None
-        frames.append(Frame(int(r['index']), float(r['t']), os.path.join(path, r['image']),
-                            tuple(float(v) for v in r['K']), tuple(int(v) for v in r['size']),
-                            np.asarray(r['viewmat'], float).reshape(4, 4), np.asarray(r['ego'], float).reshape(4, 4),
-                            np.asarray(r['mount'], float).reshape(4, 4), _png_mask(m) if m else None, None, None,
-                            r.get('name') or f'{doc.get("name", "posed")}/{r["index"]}'))
+        vm = np.asarray(r['viewmat'], float).reshape(4, 4)
+        K = tuple(float(v) for v in r['K'])
+        size = tuple(int(v) for v in r['size'])
+        mask = _png_mask(m) if m else None
+        if tracks:
+            mask = _track_mask(mask, tracks, float(r['t']), vm, K, size, learn=dynamic)
+        frames.append(Frame(int(r['index']), float(r['t']), os.path.join(path, r['image']), K, size, vm,
+                            np.asarray(r['ego'], float).reshape(4, 4), np.asarray(r['mount'], float).reshape(4, 4),
+                            mask, None, None, r.get('name') or f'{doc.get("name", "posed")}/{r["index"]}'))
     if not frames:
         raise DataError(f'{path}: posed.json lists no frames')
     meta = {k: doc.get(k) for k in ('world', 'geo', 'name', 'masks', 'notes', 'left_out', 'heuristic', 'source')}
-    meta.update(carla_exact=False, inputs={'posed.json': pj})
+    meta.update(carla_exact=False, inputs={'posed.json': pj}, dynamic=bool(dynamic))
     for k, v in (('notes', []), ('left_out', []), ('heuristic', []), ('masks', 'none')):
         if meta.get(k) is None:
             meta[k] = v
+    if tracks:
+        meta['inputs']['tracks.json'] = tp
+        meta['tracks'] = len(tracks)
+        meta['masks'] = (f'{meta["masks"]}, except the {len(tracks)} tracked road users\' projected boxes (learned: '
+                         f'dynamic mode)' if dynamic else
+                         f'{meta["masks"]}; and the {len(tracks)} tracked road users\' projected boxes, dilated 2 px')
     cap = Capture('posed', path, doc.get('camera') or 'camera', frames, None, meta)
+    if dynamic:
+        cap.tracks = tracks
     pts = os.path.join(path, doc['points']) if doc.get('points') else None
     if pts and os.path.isfile(pts):
         def points():
@@ -628,6 +656,29 @@ def posed_capture(path: str, every: int = 1) -> Capture:
                 return np.asarray(z['xyz'], float), np.asarray(z['rgb'], float)
         cap.points = points
     return cap
+
+
+def _track_mask(base, tracks: dict, t: float, viewmat, K, size, learn: bool, dilate: int = 2):
+    """A posed frame's mask with its tracks' projected boxes at time t: learn (dynamic mode) takes them out of the
+    base mask (their pixels are learned — the folder's motion mask catches moving road users); otherwise they are
+    masked on top of it. Without a base mask, dynamic mode learns every pixel (None)."""
+    if learn and base is None:
+        return None
+
+    def mk():
+        boxes = []
+        for tr in tracks.values():
+            po = tr.pose(t)
+            if po is None:
+                continue
+            B = np.eye(4)
+            B[:3, :3], B[:3, 3] = po
+            boxes.append((B, (tr.size[1], tr.size[0], tr.size[2])))
+        inside = ~_box_mask(boxes, viewmat, K, size, dilate)()
+        m = base() if callable(base) else base
+        m = np.ones((int(size[1]), int(size[0])), bool) if m is None else np.asarray(m, bool)
+        return (m | inside) if learn else (m & ~inside)
+    return mk
 
 
 def _png_mask(p):
@@ -1027,13 +1078,17 @@ def sky_shell(frames: list, xyz, n: int = 20000, seed: int = 0) -> tuple:
     return pts, rgb, radius
 
 
-def actor_points(cap: Capture, max_per_actor: int = 3000, seed: int = 0) -> dict:
+def actor_points(cap: Capture, max_per_actor: int = 3000, seed: int = 0, n_surface: int = 400) -> dict:
     """Dynamic mode: each track's lidar points in its own box frame, coloured from the frames nearest in time —
     {track id: (points (n, 3), rgb (n, 3))}. A point belongs to a track when the recording says so (a Falcon run's
-    lidar labels carry actor ids), else when it lies in the track's box at the sweep's time (10 cm of padding)."""
+    lidar labels carry actor ids), else when it lies in the track's box at the sweep's time (10 cm of padding).
+    Without a lidar (a dashcam's posed folder), samples on each box's surface coloured from the frames that see the
+    box (surface_points)."""
     out = {}
-    if not cap.tracks or not cap.sweeps:
+    if not cap.tracks:
         return out
+    if not cap.sweeps:
+        return {k: surface_points(cap, tr, n_surface, seed + i) for i, (k, tr) in enumerate(sorted(cap.tracks.items()))}
     rng = np.random.default_rng(seed)
     acc = {k: ([], []) for k in cap.tracks}
     for sw in cap.sweeps:
@@ -1066,6 +1121,41 @@ def actor_points(cap: Capture, max_per_actor: int = 3000, seed: int = 0) -> dict
             P, C = P[sel], C[sel]
         out[k] = (P, C)
     return out
+
+
+def surface_points(cap: Capture, tr, n: int = 400, seed: int = 0, views: int = 3) -> tuple:
+    """(points (n, 3) in the track's box frame, rgb (n, 3)): samples on its box's surface (a pedestrian's shrunk as
+    core.recon.actors.init_actor shrinks it) coloured from the frames nearest to `views` of the track's times
+    spread over its span — each point from the first of them that sees it (no occlusion test: what is in front of
+    the box lends its colour, which the training corrects; grey where none sees it)."""
+    from .actors import box_surface
+    size = tr.size
+    if tr.kind == 'pedestrian':
+        size = (0.6 * size[0], 0.6 * size[1], 0.95 * size[2])
+    P = box_surface(size, n, seed)
+    rgb = np.full((len(P), 3), 0.5)
+    todo = np.ones(len(P), bool)
+    ts = np.array([f.t for f in cap.frames])
+    for t in np.asarray(tr.t)[np.unique(np.linspace(0, len(tr.t) - 1, max(1, views)).round().astype(int))]:
+        po = tr.pose(float(t))
+        if po is None or not todo.any():
+            continue
+        f = cap.frames[int(np.argmin(np.abs(ts - t)))]
+        if abs(f.t - t) > 0.5:
+            continue
+        w = P[todo] @ po[0].T + po[1]
+        img = load_rgb(f.image)
+        H, W = img.shape[:2]
+        K = scaled_K(f.K, f.size, (W, H))
+        pc = w @ f.viewmat[:3, :3].T + f.viewmat[:3, 3]
+        z = np.where(pc[:, 2] > 0.1, pc[:, 2], np.nan)
+        with np.errstate(invalid='ignore'):
+            u, v = K[0] * pc[:, 0] / z + K[2], K[1] * pc[:, 1] / z + K[3]
+            seen = np.isfinite(z) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
+        idx = np.nonzero(todo)[0][seen]
+        rgb[idx] = img[v[seen].astype(int), u[seen].astype(int)] / 255.0
+        todo[idx] = False
+    return P, rgb
 
 
 def init_points(cap: Capture, init: str = 'auto', train_frames=None, voxel: float = 0.15,

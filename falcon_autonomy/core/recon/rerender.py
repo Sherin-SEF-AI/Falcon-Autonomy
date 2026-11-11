@@ -84,6 +84,11 @@ def rerender(recon, out_dir: str, lateral_m=0.0, forward_m=0.0, up_m=0.0, yaw_de
     run = PV.new_run('recon.rerender', argv or [], None, shift, {'recon/run.json': os.path.join(rec.path, 'run.json'),
                                                                  'recon/point_cloud.ply':
                                                                      os.path.join(rec.path, 'point_cloud.ply')})
+    from .scene import private_source
+    private = private_source(rec.path)                  # a dashcam reconstruction: the run is private too
+    if private:
+        run['source'] = private
+        PV.write_json(os.path.join(out_dir, 'run.json'), dict(run, status='running'))   # before any image
     votes = rec.gs.votes is not None and not rec.actors
     for d in ('rgb', 'range') + (('semantic',) if votes else ()):
         os.makedirs(os.path.join(out_dir, d, cam_id), exist_ok=True)
@@ -203,6 +208,8 @@ def rerender(recon, out_dir: str, lateral_m=0.0, forward_m=0.0, up_m=0.0, yaw_de
                                                                 .get('vehicle'), 'sensors': [sensor] + extra_sensors},
                  reconstruction=what, out=out_dir)
     drive.setdefault('fps', round(fps, 6))
+    if private:
+        ds['source'] = drive['source'] = private
     PV.write_json(os.path.join(out_dir, 'dataset.json'), ds)
     PV.write_json(os.path.join(out_dir, 'drive.json'), drive)
     run.update(status='ok', exit_code=0, finished=PV.utc_now(), name=ds['name'], reconstruction=what,

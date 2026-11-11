@@ -55,7 +55,7 @@ def _private(cfg: dict, paths) -> str | None:
     why = privacy._says_dashcam(cfg)
     if why:
         return why
-    for p in paths:
+    for p in list(paths) + privacy._made_from(cfg):    # and a reconstruction the config renders (a hybrid drive's)
         why = privacy.private_reason(p)
         if why:
             return why

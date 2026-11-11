@@ -6,7 +6,8 @@ Detectors (make_detector):
     rtdetr-v2-r18 | rtdetr-v2-r50   RT-DETRv2 (core.perception_models; Apache-2.0) through transformers'
                     RTDetrV2ForObjectDetection, loaded offline from its verified folder; frames in batches (batch 8),
                     FP16 on CUDA (FP32 on the CPU), every box above score 0.1 kept (ByteTrack's second association
-                    uses the low-score ones; core.bytetrack).
+                    uses the low-score ones; core.bytetrack). The low_vram profile (core.profiles.cap_perception)
+                    makes it batches of 2, r18 in place of r50, 0.35 of the GPU, FP32 when inference_precision is.
     file:PATH       detections read from a file — {"frames": {"<video frame n>": [{"box": [x1, y1, x2, y2],
                     "score": s, "label": COCO name}]}} in the processed frames' pixels — for detections made
                     elsewhere and for the tests (a ground-truth sidecar of a synthetic clip). NOT a model.
@@ -160,7 +161,8 @@ class RTDetrV2:
         self.info = {'detector': name, 'repo': PM.CANDIDATES[name]['repo'],
                      'revision': PM.CANDIDATES[name]['revision'], 'licence': PM.CANDIDATES[name]['licence'],
                      'device': str(self.device), 'dtype': str(self.dtype).replace('torch.', ''),
-                     'threshold': self.threshold, 'is_model': True}
+                     'threshold': self.threshold, 'is_model': True,
+                     'gpu_memory_fraction': float(gpu_memory_fraction) if self.device.type == 'cuda' else None}
 
     def __call__(self, frames: list) -> list:
         import torch
@@ -181,8 +183,10 @@ class RTDetrV2:
         return frames_out
 
 
-def make_detector(spec: str, models_dir: str = '', device: str = 'auto', fp16: bool = True):
-    """'rtdetr-v2-r18' (default), 'rtdetr-v2-r50' or 'file:PATH'. A YOLO or another refused model: DetectError."""
+def make_detector(spec: str, models_dir: str = '', device: str = 'auto', fp16: bool = True,
+                  gpu_memory_fraction: float = 0.5):
+    """'rtdetr-v2-r18' (default), 'rtdetr-v2-r50' or 'file:PATH'. A YOLO or another refused model: DetectError.
+    fp16 (on CUDA) and gpu_memory_fraction come from the profile (core.profiles.cap_perception)."""
     from . import perception_models as PM
     spec = spec or 'rtdetr-v2-r18'
     if spec.startswith('file:'):
@@ -192,7 +196,7 @@ def make_detector(spec: str, models_dir: str = '', device: str = 'auto', fp16: b
         raise DetectError(why)
     if spec in ('rtdetr-v2-r18', 'rtdetr-v2-r50'):
         try:
-            return RTDetrV2(spec, models_dir, device, fp16)
+            return RTDetrV2(spec, models_dir, device, fp16, gpu_memory_fraction=gpu_memory_fraction)
         except PM.PerceptionModelError as e:
             raise DetectError(str(e)) from None
     raise DetectError(f'unknown detector {spec!r}: rtdetr-v2-r18, rtdetr-v2-r50 or file:PATH')

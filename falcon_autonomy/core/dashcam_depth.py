@@ -344,11 +344,13 @@ def estimate_horizon(foes: list, cam: Camera, min_pairs: int = 5) -> dict:
 
 # ------------------------------------------------------------------------------------------------ depth runners
 class DepthAnythingV2:
-    """Depth Anything V2 Small through transformers (relative depth), loaded offline from its verified folder."""
+    """Depth Anything V2 Small through transformers (relative depth), loaded offline from its verified folder.
+    input_px: its working resolution — the processor's resize target (aspect kept, a multiple of the 14 px patch);
+    None keeps the processor's own (518). The low_vram profile asks for 364 (core.profiles.cap_perception)."""
     kind = 'relative'
 
     def __init__(self, name: str = 'da2-small', models_dir: str = '', device: str = 'auto', fp16: bool = True,
-                 gpu_memory_fraction: float = 0.5):
+                 gpu_memory_fraction: float = 0.5, input_px: int | None = None):
         from . import perception_models as PM
         folder = PM.load_folder(name, models_dir)
         os.environ['HF_HUB_OFFLINE'] = '1'
@@ -365,14 +367,18 @@ class DepthAnythingV2:
         self.model = AutoModelForDepthEstimation.from_pretrained(folder, local_files_only=True).to(
             self.device, self.dtype).eval()
         self.name = name
+        self.input_px = int(input_px) if input_px else None
         self.info = {'model': name, 'licence': PM.CANDIDATES[name]['licence'], 'device': str(self.device),
-                     'dtype': str(self.dtype).replace('torch.', ''), 'kind': self.kind}
+                     'dtype': str(self.dtype).replace('torch.', ''), 'kind': self.kind,
+                     'input_px': self.input_px or 'the processor\'s own (518)',
+                     'gpu_memory_fraction': float(gpu_memory_fraction) if self.device.type == 'cuda' else None}
 
     def __call__(self, frames: list) -> list:
         """frames [(n, rgb)] → relative depth maps (inverse depth, larger nearer) at each frame's size."""
         import torch
         images = [rgb for _n, rgb in frames]
-        enc = self.processor(images=images, return_tensors='pt')
+        size = {'size': {'height': self.input_px, 'width': self.input_px}} if self.input_px else {}
+        enc = self.processor(images=images, return_tensors='pt', **size)
         x = enc['pixel_values'].to(self.device, self.dtype)
         with torch.inference_mode():
             out = self.model(pixel_values=x).predicted_depth.float()
@@ -393,7 +399,7 @@ class Metric3DOnnx:
     kind = 'metric'
 
     def __init__(self, cam_f: float, name: str = 'metric3d-small', models_dir: str = '', device: str = 'auto',
-                 accept_unstated: bool = False):
+                 accept_unstated: bool = False, gpu_memory_fraction: float | None = None):
         import json
         import onnxruntime as ort
         from . import perception_models as PM
@@ -401,7 +407,12 @@ class Metric3DOnnx:
         prov = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if device in ('auto', 'cuda') else \
             ['CPUExecutionProvider']
         prov = [p for p in prov if p in ort.get_available_providers()]
+        limit = cuda_arena_limit(gpu_memory_fraction) if 'CUDAExecutionProvider' in prov else None
+        if limit:                          # the profile's share of the GPU, as onnxruntime's CUDA arena limit
+            prov = [('CUDAExecutionProvider', {'gpu_mem_limit': limit, 'arena_extend_strategy': 'kSameAsRequested'})
+                    if p == 'CUDAExecutionProvider' else p for p in prov]
         self.sess = ort.InferenceSession(os.path.join(folder, 'onnx', 'model.onnx'), providers=prov)
+        self.gpu_mem_limit = limit
         cfg = {}
         pc = os.path.join(folder, 'preprocessor_config.json')
         if os.path.isfile(pc):
@@ -416,7 +427,8 @@ class Metric3DOnnx:
         self.inp = self.sess.get_inputs()[0].name
         self.name = name
         self.info = {'model': name, 'licence': PM.CANDIDATES[name]['licence'], 'providers': self.sess.get_providers(),
-                     'kind': self.kind, 'accepted_unstated_terms': True}
+                     'kind': self.kind, 'accepted_unstated_terms': True, 'gpu_mem_limit_bytes': limit,
+                     'input': '616 × 1064 (the model\'s fixed input; not capped by a profile)'}
 
     def __call__(self, frames: list) -> list:
         """frames [(n, rgb)] → metric depth maps (metres along the optical axis) at each frame's size."""
@@ -437,8 +449,27 @@ class Metric3DOnnx:
         return out
 
 
-def make_depth(spec: str, cam_f: float, models_dir: str = '', device: str = 'auto', accept_unstated: bool = False):
-    """'da2-small' (default), 'metric3d-small' (opt-in) or 'none' (geometric ranges only)."""
+def cuda_arena_limit(fraction: float | None) -> int | None:
+    """Bytes for onnxruntime's CUDA arena (gpu_mem_limit): the fraction of the first GPU's memory, from torch when it
+    sees a GPU, else None (no limit)."""
+    if not fraction:
+        return None
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return None
+        total = torch.cuda.get_device_properties(0).total_memory
+    except Exception:                       # noqa: BLE001 (no torch, no driver: no limit, as before)
+        return None
+    return int(float(fraction) * total)
+
+
+def make_depth(spec: str, cam_f: float, models_dir: str = '', device: str = 'auto', accept_unstated: bool = False,
+               fp16: bool = True, input_px: int | None = None, gpu_memory_fraction: float = 0.5,
+               limit_onnx: bool = False):
+    """'da2-small' (default), 'metric3d-small' (opt-in) or 'none' (geometric ranges only). fp16 (on CUDA),
+    input_px (Depth Anything V2's working resolution) and gpu_memory_fraction come from the profile
+    (core.profiles.cap_perception); limit_onnx (low_vram) also caps Metric3D's onnxruntime arena at that share."""
     from . import perception_models as PM
     if spec in ('none', '', None):
         return None
@@ -447,9 +478,10 @@ def make_depth(spec: str, cam_f: float, models_dir: str = '', device: str = 'aut
         raise DepthError(why)
     try:
         if spec == 'da2-small':
-            return DepthAnythingV2(spec, models_dir, device)
+            return DepthAnythingV2(spec, models_dir, device, fp16, gpu_memory_fraction, input_px)
         if spec == 'metric3d-small':
-            return Metric3DOnnx(cam_f, spec, models_dir, device, accept_unstated)
+            return Metric3DOnnx(cam_f, spec, models_dir, device, accept_unstated,
+                                gpu_memory_fraction if limit_onnx else None)
     except PM.PerceptionModelError as e:
         raise DepthError(str(e)) from None
     raise DepthError(f'unknown depth model {spec!r}: da2-small, metric3d-small (opt-in) or none')

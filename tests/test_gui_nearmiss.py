@@ -70,3 +70,36 @@ def test_nearmiss_section(window, qapp, tmp_path, ingested):
     assert ij.spec.argv[ij.spec.argv.index('ingest') + 1] == ingested
     window.queue.cancel(ij)
     assert pump(qapp, lambda: ij.state in ('done', 'failed', 'cancelled'), 60)
+
+
+def test_reconstruct_with_moving_road_users(window, qapp, ingested):
+    """The action on an event: a local recon job of `falcon dashcam nearmiss reconstruct` (its end to end is
+    tests/test_recon_dashcam_dynamic.py), and a finished one opened in the page's Reconstruction section."""
+    page = window.go('replay')
+    tab = page.nearmiss
+    tab.folder.setText(ingested)
+    assert tab.refresh() >= 3
+    assert not tab.recon_btn.isEnabled()                     # no event chosen yet
+    tab.tree.setCurrentItem(tab.tree.topLevelItem(0))
+    assert tab.recon_btn.isEnabled()
+    tab.device.setCurrentIndex(tab.device.findData('cpu'))
+    job = tab.reconstruct()
+    e = tab.selected()
+    a = job.spec.argv
+    assert job.spec.kind == 'recon' and not job.spec.needs_gpu and job.spec.meta['source']['format'] == 'dashcam'
+    assert a[a.index('nearmiss') + 1:a.index('nearmiss') + 4] == ['reconstruct', ingested, e['id']]
+    assert a[a.index('--out') + 1] == os.path.join(window.workspace(), 'recon', f'nearmiss-{e["id"]}')
+    assert job.spec.placement == 'local' and tab.reconstruct() is None       # one at a time
+    window.queue.cancel(job)
+    assert pump(qapp, lambda: job.state in ('done', 'failed', 'cancelled') and 'recon' not in tab.jobs, 30)
+    assert tab.info.vals['Reconstruction'].text().startswith('cancelled')
+
+    class Done:
+        state = 'done'
+
+        def summary(self):
+            return 'ok'
+    opened = []
+    page.recon.open_recon = lambda: opened.append(page.recon.rec_dir)
+    tab.recon_out = os.path.join(window.workspace(), 'recon', 'nearmiss-x')
+    assert tab.reconstructed(Done()) and opened == [tab.recon_out] and page.recon.rec_dir == tab.recon_out

@@ -74,6 +74,16 @@ def shift_matrix(lateral_m=0.0, forward_m=0.0, up_m=0.0, yaw_deg=0.0) -> np.ndar
     return T
 
 
+def private_source(path: str) -> dict | None:
+    """The marker a run rendered from this reconstruction carries when the reconstruction is private (assistant.
+    privacy: posed from the dashcam footage, or of a drive along a dashcam route): {'format': 'dashcam', 'kind':
+    'reconstruction', 'why'} — written into the run's records so the run stays private even when the reconstruction
+    is moved or deleted (its files never leave the machine: cluster and cloud bundles refuse them). None otherwise."""
+    from ...assistant.privacy import private_reason
+    why = private_reason(path)
+    return {'format': 'dashcam', 'kind': 'reconstruction', 'why': why} if why else None
+
+
 def frame_doc(f: D.Frame, split: str) -> dict:
     return {'index': f.index, 't': round(float(f.t), 6), 'name': f.name, 'split': split,
             'image': f.image if isinstance(f.image, str) else None, 'K': [float(v) for v in f.K],

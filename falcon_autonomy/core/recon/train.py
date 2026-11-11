@@ -35,10 +35,11 @@ other GPU jobs; measured on one machine, driver, torch and Triton version: docs/
 version may differ.
 
 Dynamic mode (dynamic: true, `--dynamic`; core.recon.actors): the source's tracks (a Falcon run's actors.jsonl,
-nuScenes' annotations) are not masked but learned — each road user's Gaussians start from the lidar points that fell
-in its box (else samples on the box's surface), live in its box frame, and are rendered with the static scene in one
-rasterisation at each frame's time; the photometric loss covers them, and the actors' parameters (positions, scales,
-rotations, opacities, colours: the paper's learning rates, positions at lr_actor_means; the pose corrections and
+nuScenes' annotations, a dashcam segment's ingest tracks in its posed folder: core.recon.dashcam_tracks) are not
+masked but learned — each road user's Gaussians start from the lidar points that fell in its box (else samples on the
+box's surface, coloured from the frames that see it), live in its box frame, and are rendered with the static scene
+in one rasterisation at each frame's time; the photometric loss covers them, and the actors' parameters (positions,
+scales, rotations, opacities, colours: the paper's learning rates, positions at lr_actor_means; the pose corrections and
 wheel phases at lr_pose; a pedestrian's deformation network at lr_deform) take Adam steps with the static scene's.
 reg_weight × each actor's regulariser (the correction's size and roughness, a pedestrian's deformation's size,
 temporal change and local rigidity) is added. Density control is the static scene's only (an actor keeps its
@@ -421,7 +422,7 @@ def _train(source, out_dir: str, s: dict, emitter, cancel, argv) -> dict:
 def _actors(cap, gs, s: dict, dev):
     """The actors of a dynamic training (module doc) and their optimiser."""
     from .actors import DynamicModel, init_actor
-    apts = D.actor_points(cap, seed=s['seed'])
+    apts = D.actor_points(cap, seed=s['seed'], n_surface=s['actor_points'])
     actors = []
     for i, (k, tr) in enumerate(sorted((cap.tracks or {}).items())):
         pts, rgb = apts.get(k, (None, None))

@@ -29,8 +29,17 @@ The steps, each recorded in dashcam.json:
    source (core.recon.data.posed_capture) with the odometry's points to start from and, per frame, a mask of
    independently moving pixels (dense Farnebäck flow off its epipolar line by more than motion_px — catches crossing
    traffic, not traffic moving along the camera's own line).
-8. **Training** (core.recon.train) and **novel views**: each of a few frames re-rendered with the ego moved
-   sideways and the camera raised / lowered (renders/novel-*.png).
+   **Moving road users** (`dynamic`, `--dynamic`): the road users the dashcam ingest tracked in the clip
+   (core.dashcam_ingest; `tracks`: the ingested folder, its falcon-ingest/ or an event folder, else found beside the
+   clip) are carried into the segment's world frame by frame (core.recon.dashcam_tracks: the ingest's RTS-smoothed
+   box relative to its camera, placed at this reconstruction's camera) and written as posed/tracks.json, so the
+   training learns them as moving actors instead of masking them (their boxes are taken out of the motion masks).
+8. **Training** (core.recon.train; dynamic mode with the tracks) and **novel views**: each of a few frames
+   re-rendered with the ego moved sideways and the camera raised / lowered (renders/novel-*.png), the actors at the
+   frame's time.
+
+Privacy: the clip is the user's footage; dashcam.json is written into the output folder before anything else (the
+marker assistant.privacy reads), so the folder is private from its first file.
 9. **On the map**: the geolocated track converted into the imported world's frame (core.dashcam.to_world), whether it
    is inside the import box, its distance from it, and — when it is near the imported lanes — log replay's map match
    (core.logreplay.mapmatch) and the share of the reconstruction's road-plane points that fall on the imported lanes.
@@ -56,6 +65,7 @@ DEFAULTS = {
     'iterations': 7000, 'width': 640, 'seed': 0, 'device': 'auto', 'project': None, 'world': None,
     'novel_lateral_m': [-1.0, -0.5, 0.5, 1.0], 'novel_up_m': [-0.5, 0.5], 'novel_frames': 3, 'keep_raw': False,
     'vo': {}, 'gps_sigma_m': 3.0, 'height_sigma_m': 2.0, 'camera_height_m': 1.3,
+    'dynamic': False, 'tracks': None,
 }
 NATIVE = (3840, 2160)
 
@@ -678,9 +688,11 @@ def from_dashcam(clip: str, out_dir: str, start: float, seconds: float, settings
     timings = {}
     rep = {'schema': SCHEMA, 'clip': clip, 'start_s': float(start), 'seconds': float(seconds), 'settings': s,
            'notes': [], 'limits': []}
+    rp = os.path.join(out_dir, 'dashcam.json')
+    PV.write_json(rp, dict(rep, status='posing'))      # the privacy marker first (module doc)
     run = PV.new_run('recon.from_dashcam', argv or [], s['seed'], s)
     run['provenance']['inputs'] = {'clip': DC.fingerprint(clip)}
-    rp = os.path.join(out_dir, 'dashcam.json')
+    run['source'] = {'format': 'dashcam', 'kind': 'segment'}
     PV.write_json(os.path.join(out_dir, 'run.json'), run)
     t_all = time.perf_counter()
 
@@ -839,6 +851,28 @@ def from_dashcam(clip: str, out_dir: str, start: float, seconds: float, settings
            'points': 'points.npz', 'frames': recs,
            'gps': [{'t': round(float(f['t'] - times[use[0]]), 3), 'e': round(float(e), 3), 'n': round(float(n), 3)}
                    for f, (e, n) in zip(fx, gxy)]}
+    if s['dynamic']:                         # the ingest's tracked road users, in this segment's world
+        from . import dashcam_tracks as DT
+        from ..provenance import read_json
+        try:
+            src = DT.find_ingest(clip, s['tracks'])
+            perc = read_json(src['perception'])
+            mined = read_json(src['nearmiss']) if src['nearmiss'] else None
+            tracks, trep = DT.recon_tracks(recs, perc, mined)
+        except DT.TracksError as e:
+            raise DashcamReconError(str(e)) from None
+        if not tracks:
+            raise DashcamReconError(f'the ingest tracked no road user in this segment with at least {DT.MIN_OBS} '
+                                    f'observations ({trep["left_out"]}): nothing to learn as moving actors — '
+                                    f'reconstruct it without --dynamic')
+        doc['tracks'] = DT.write(posed, tracks, dict(trep, ingest_clip_key=src['clip_key']))
+        doc['notes'].append(f'{len(tracks)} tracked road users from the dashcam ingest (posed/tracks.json): '
+                            'learned as moving actors in dynamic mode, masked in static mode')
+        doc['heuristic'] += trep['heuristic']
+        rep['road_users'] = dict(trep, ingest_clip_key=src['clip_key'],
+                                 perception={'detector': (perc.get('detector') or {}).get('detector'),
+                                             'depth': (perc.get('depth') or {}).get('model'),
+                                             'profile': perc.get('profile')})
     with open(os.path.join(posed, 'posed.json'), 'w', encoding='utf-8') as fh:
         json.dump(doc, fh)
     # the odometry's points, coloured from the posed images
@@ -891,8 +925,10 @@ def from_dashcam(clip: str, out_dir: str, start: float, seconds: float, settings
         em.progress(0.35, 'training the reconstruction', force=True)
         t1 = time.perf_counter()
         res = train(('posed', posed), out_dir, {'iterations': s['iterations'], 'width': s['width'],
-                                                'seed': s['seed'], 'device': s['device'], 'semantic': False},
-                    em, cancel, argv=['recon', 'train', '--source', f'posed:{posed}'])
+                                                'seed': s['seed'], 'device': s['device'], 'semantic': False,
+                                                'dynamic': bool(s['dynamic'])},
+                    em, cancel, argv=['recon', 'train', '--source', f'posed:{posed}'] +
+                    (['--dynamic'] if s['dynamic'] else []))
         rep['recon'] = res
         rep['heldout_by_horizon'] = heldout_by_horizon(out_dir, s['device'])
         em.progress(0.95, 'rendering novel views', force=True)
@@ -901,9 +937,14 @@ def from_dashcam(clip: str, out_dir: str, start: float, seconds: float, settings
         summary['recon'] = {'heldout': res.get('heldout'), 'heldout_by_horizon': rep['heldout_by_horizon'],
                             'gaussians': res.get('gaussians')}
         summary['novel_views'] = rep['novel_views']['files'][:3]
+        if s['dynamic']:
+            summary['recon']['actors'] = (res.get('dynamic') or {}).get('actors')
+    if s['dynamic']:
+        summary['road_users'] = {k: rep['road_users'][k] for k in ('tracks', 'kinds', 'moving', 'left_out')}
     from ..provenance import read_json
     rj = read_json(os.path.join(out_dir, 'run.json')) if os.path.isfile(os.path.join(out_dir, 'run.json')) else run
     rj['dashcam'] = {'report': rp, 'summary': summary, 'timings': timings}
+    rj['source'] = dict(rj.get('source') or {}, format='dashcam')
     if not s['train']:
         rj.update(status='ok', exit_code=0, finished=PV.utc_now())
     PV.write_json(os.path.join(out_dir, 'run.json'), rj)
@@ -931,7 +972,9 @@ def heldout_by_horizon(rec_dir: str, device: str = 'auto') -> dict:
         if f is None:
             continue
         K = D.scaled_K(f.K, f.size, wh)
-        out = EV._render(rec.gs, EV._t(f.viewmat, rec.device), K, wh)
+        with torch.no_grad():                # a dynamic reconstruction: its actors at the frame's time
+            out = EV._render(rec.scene_model() if rec.actors else rec.gs, EV._t(f.viewmat, rec.device), K, wh,
+                             t=float(f.t))
         img = out['image'].clamp(0, 1)
         gt = EV._t(D.resize_rgb(D.load_rgb(f.image), wh), rec.device) / 255.0
         u, v = np.meshgrid(np.arange(wh[0]) + 0.5, np.arange(wh[1]) + 0.5)

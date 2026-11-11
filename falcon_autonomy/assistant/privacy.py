@@ -14,9 +14,14 @@ whose source is a dashcam route, an incident made a scenario (worker dashcam-inc
 of such a scenario (its scenario's source {"format": "dashcam"}, in drive.json, stack.json, study.json or run.json's
 provenance), and a folder of clips ingested for near-miss mining (core.dashcam_ingest): the folder, every clip in it and
 everything under its falcon-ingest/ (perception, rankings, event folders, cut clips) — found at any depth by the
-ingest's own record, falcon-ingest/ingest.json. The markers are read from the folder's own run.json / import.json /
-model json (and its parent's, for a file in a run); a folder without any record is not private by this test — the tools
-only hand over Falcon's own outputs.
+ingest's own record, falcon-ingest/ingest.json. A reconstruction of a dashcam segment or near-miss (dashcam.json; its
+posed/tracks.json of the ingest's road users with it) and everything rendered from it — re-rendered runs, hybrid runs,
+closed-loop drives (their records carry the source marker {"format": "dashcam"}, and closedloop.json is read too) —
+are private; a record that names the reconstruction it was rendered from (its 'reconstruction', under 'neural' or
+'hybrid' too), or a reconstruction's run.json naming its source, is private when that is (followed two levels), so
+older outputs without the marker are covered while their reconstruction exists. The markers are read from the
+folder's own run.json / import.json / model json (and its parent's, for a file in a run); a folder without any record
+is not private by this test — the tools only hand over Falcon's own outputs.
 
 guard(path): raise ToolError(private_reason) when it is private. Tools call it on every path they read before
 returning anything from it.
@@ -37,7 +42,7 @@ SECRET_PATTERNS = (
     re.compile(r'(?i)\b(password|passwd|token|api[_-]?key|secret)\s*[=:]\s*\S+'),
 )
 RECORDS = ('run.json', 'import.json', 'dashcam.json', 'translator.json', 'model.json', 'set.json', 'drive.json',
-           'stack.json', 'study.json')
+           'stack.json', 'study.json', 'closedloop.json')
 
 
 def redact_text(s: str) -> str:
@@ -91,6 +96,27 @@ def _says_dashcam(doc) -> str | None:
     return None
 
 
+def _made_from(doc) -> list:
+    """The reconstructions (and a reconstruction's source) a record says it was made from: a re-rendered run's, a
+    hybrid run's or a closed-loop drive's 'reconstruction' (top level, or under 'neural' / 'hybrid'), and a
+    reconstruction's own source folder (run.json 'source' of a recon.* worker) — so what is rendered from a private
+    reconstruction, or reconstructed from a private drive, is private too even without its own marker."""
+    out = []
+    if not isinstance(doc, dict):
+        return out
+    for d in (doc, doc.get('neural'), doc.get('hybrid')):
+        r = d.get('reconstruction') if isinstance(d, dict) else None
+        if isinstance(r, dict):
+            r = r.get('reconstruction')
+        if isinstance(r, str) and r:
+            out.append(r)
+    src = doc.get('source')
+    if str(doc.get('worker') or '').startswith('recon.') and isinstance(src, dict) and isinstance(src.get('path'),
+                                                                                                 str):
+        out.append(src['path'])
+    return out
+
+
 INGEST_DIR = 'falcon-ingest'               # core.dashcam_ingest.INGEST_DIR (not imported: this module stays light)
 
 
@@ -109,7 +135,7 @@ def ingest_reason(p: str) -> str | None:
         d = up
 
 
-def private_reason(path: str) -> str | None:
+def private_reason(path: str, _depth: int = 0) -> str | None:
     if not path:
         return None
     p = os.path.realpath(os.path.expanduser(str(path)))
@@ -133,11 +159,17 @@ def private_reason(path: str) -> str | None:
                 continue
             try:
                 with open(fp, encoding='utf-8') as fh:
-                    why = _says_dashcam(json.load(fh))
+                    doc = json.load(fh)
             except (OSError, ValueError):
                 continue
+            why = _says_dashcam(doc)
             if why:
                 return why
+            if _depth < 2:                   # rendered from a private reconstruction, or of a private source
+                for src in _made_from(doc):
+                    if src and os.path.realpath(os.path.expanduser(src)) != p and private_reason(src, _depth + 1):
+                        return 'made from data derived from the dashcam footage (a reconstruction, or the drive it ' \
+                               'reconstructs)'
     return None
 
 

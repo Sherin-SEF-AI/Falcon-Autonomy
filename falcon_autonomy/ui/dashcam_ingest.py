@@ -7,7 +7,10 @@ the resumable job (a GPU job unless on the CPU) and its progress shows here and 
 event's kind, score with its interval, minimum TTC, PET, required deceleration and the ego's braking; selecting one
 loads its clip into the player (play, pause, scrub). Make scenario turns the selected event into a Falcon scenario,
 variations and OpenSCENARIO on the chosen imported world (a job); Queue variations queues the rare-case search over
-them on this machine. Everything here is the user's footage: it stays local (the folder is private to the assistant)."""
+them on this machine; Reconstruct with moving road users reconstructs the event's stretch of the clip in 3D with its
+tracked road users as moving actors (core.recon.dashcam_tracks; a GPU job) and opens it in the page's Reconstruction
+section, whose Drive a policy here runs a policy in closed loop through the incident. Everything here is the user's
+footage: it stays local (the folder, the reconstruction and its drives are private to the assistant)."""
 from __future__ import annotations
 
 import os
@@ -193,8 +196,19 @@ class NearMissTab(QWidget):
         s.addWidget(self.scenario_btn)
         s.addWidget(self.vary_btn)
         v.addLayout(s)
+        r = QHBoxLayout()
+        self.recon_btn = button('Reconstruct with moving road users', self.reconstruct,
+                                tip='the event\'s stretch of the clip reconstructed in 3D with its tracked road users '
+                                    'as moving actors (falcon dashcam nearmiss reconstruct; a GPU job, on this '
+                                    'machine); it opens in Reconstruction, where Drive a policy here runs closed loop '
+                                    'through the incident')
+        r.addWidget(self.recon_btn)
+        r.addStretch(1)
+        v.addLayout(r)
+        self.recon_out = ''
         set_enabled(self.scenario_btn, False, 'choose an event first')
         set_enabled(self.vary_btn, False, 'make a scenario first')
+        set_enabled(self.recon_btn, False, 'choose an event first')
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll)
         self.refresh_worlds()
@@ -271,6 +285,7 @@ class NearMissTab(QWidget):
         self.info.set('Heading', 'odometry' if vo.get('used') else f'GPS ({vo.get("why", "no odometry")})')
         set_enabled(self.scenario_btn, d is not None and self.world.count() > 0,
                     'not an exported event' if d is None else 'import a world where the footage drove first')
+        set_enabled(self.recon_btn, d is not None, 'not an exported event (only the top events are exported)')
 
     # ---------------------------------------------------------------- jobs
     def ingest_argv(self) -> list:
@@ -300,6 +315,8 @@ class NearMissTab(QWidget):
                     self.info.set('Scenario', f'{self.incident}: in the project\'s incidents/ (Queue variations to '
                                               'search around it)')
                     set_enabled(self.vary_btn, True)
+                elif key == 'recon':
+                    self.reconstructed(job)
                 del self.jobs[key]
             else:
                 busy = True
@@ -325,6 +342,40 @@ class NearMissTab(QWidget):
         self.incident = name
         self.timer.start(1000)
         return job
+
+    def reconstruct(self):
+        """The selected event reconstructed with its tracked road users as moving actors (a GPU job, local)."""
+        e = self.selected()
+        folder = self.folder.text().strip()
+        if e is None or not folder:
+            return None
+        busy = self.jobs.get('recon')
+        if busy is not None and busy.state not in FINAL:
+            return None
+        w = self.win
+        out = os.path.join(w.workspace(), 'recon', f'nearmiss-{e["id"]}')
+        job = w.queue.submit(I.reconstruct_spec(folder, e['id'], out, self.device.currentData(),
+                                                title=f'Reconstruct near-miss {e["rank"]} with its road users'))
+        self.jobs['recon'] = job
+        self.recon_out = out
+        self.info.set('Reconstruction', f'posing the stretch and learning its road users: {out}')
+        self.timer.start(1000)
+        w.jobs_dock.raise_()
+        return job
+
+    def reconstructed(self, job):
+        """A finished reconstruction opens in Replay ▸ Reconstruction (its Drive a policy here runs closed loop)."""
+        if job.state != 'done':
+            self.info.set('Reconstruction', f'{job.state}: {job.summary()}')
+            return False
+        self.info.set('Reconstruction', f'{self.recon_out} — open in Reconstruction below; Drive a policy here runs '
+                                        'closed loop through the incident')
+        panel = getattr(self.page, 'recon', None)
+        if panel is None or not hasattr(panel, 'open_recon'):
+            return False
+        panel.rec_dir = self.recon_out
+        panel.open_recon()
+        return True
 
     def queue_variations(self):
         w = self.win

@@ -40,6 +40,11 @@ Each episode is written as a normal Falcon run folder (ep-<n>/: frames.jsonl, ac
 drive.json, dataset.json, run.json, closedloop.json), so the traffic rules (core.rules.check_run), STL, criticality
 and the exporters read it like a CARLA run; the run folder holds episodes.jsonl (FalconDriveEnv's), closedloop.json
 (the envelope and every episode's deviations) and rollout.json when core.policy.rollout writes one.
+
+Privacy: a reconstruction of the user's dashcam footage (a dashcam segment or near-miss, with its tracked road users)
+is private, and so is every drive through it — the run folder's closedloop.json (written before the first image),
+each episode's closedloop.json, drive.json, dataset.json and run.json carry its marker (scene.private_source), which
+assistant.privacy reads and cluster and cloud bundles refuse.
 """
 from __future__ import annotations
 
@@ -259,6 +264,12 @@ class NeuralSim:
         self.summary = {'schema': SCHEMA, 'reconstruction': self.rec.path, 'envelope': self.envelope,
                         'deviate_m': self.deviate_m, 'cameras': self.cameras, 'obs_size': list(self.obs_size),
                         'fps': self.fps, 'episodes': []}
+        from .scene import private_source
+        self.private = private_source(self.rec.path)      # a dashcam reconstruction: every record says so
+        if self.private:
+            self.summary['source'] = self.private
+            from ..provenance import write_json
+            write_json(os.path.join(self.out, 'closedloop.json'), self.summary)   # before any image is written
         obs = {'state': {'shape': [DF.N_FEATURES], 'dtype': 'float32'}}
         sp_ = {'state': make_box(-np.inf, np.inf, (DF.N_FEATURES,), np.float32)}
         if self.want_camera:
@@ -358,6 +369,10 @@ class NeuralSim:
         self._n_ep += 1
         ep_dir = os.path.join(self.out, f'ep-{n:04d}')
         os.makedirs(ep_dir, exist_ok=True)
+        if self.private:                                   # the episode's folder is private from its first image
+            from ..provenance import write_json
+            write_json(os.path.join(ep_dir, 'closedloop.json'), {'schema': SCHEMA, 'episode': n, 'status': 'running',
+                                                                 'source': self.private})
         feat = DF.Featuriser(self.route, float(opts.get('target_speed_mps', self.target)), self.dt)
         mon = DF.InfractionMonitor(self.dt, opts.get('thresholds'), opts.get('terminate_on',
                                                                              DF.DEFAULT_TERMINATE_ON))
@@ -581,25 +596,25 @@ class NeuralSim:
                      neural=what, out=d)
         if not drive.get('town'):
             drive['town'] = self.rec.views.get('town') or ''
-        PV.write_json(os.path.join(d, 'drive.json'), drive)
-        PV.write_json(os.path.join(d, 'dataset.json'), {
+        mark = {'source': self.private} if self.private else {}     # private like its reconstruction
+        PV.write_json(os.path.join(d, 'drive.json'), dict(drive, **mark))
+        PV.write_json(os.path.join(d, 'dataset.json'), dict({
             'schema': 'falcon.dataset/1', 'layout': 'falcon-raw', 'name': drive['name'], 'frames': len(ep['rows']),
             'fps': self.fps, 'sensors': sensors, 'labels': {},
             'coordinates': 'CARLA\'s frames: x forward, y right, z up (left-handed); metres, degrees',
-            'reconstruction': what})
-        PV.write_json(os.path.join(d, 'closedloop.json'), {'schema': SCHEMA, 'episode': ep['n'], 'seed': ep['seed'],
-                                                           'envelope': self.envelope, 'deviate_m': self.deviate_m,
-                                                           'steps': ep['dev'], 'summary': {
-                                                               k: summ[k] for k in ('termination', 'progress_m',
-                                                                                    'distance_m', 'deviation',
-                                                                                    'infraction_counts')}})
+            'reconstruction': what}, **mark))
+        PV.write_json(os.path.join(d, 'closedloop.json'), dict({
+            'schema': SCHEMA, 'episode': ep['n'], 'seed': ep['seed'], 'envelope': self.envelope,
+            'deviate_m': self.deviate_m, 'steps': ep['dev'], 'summary': {
+                k: summ[k] for k in ('termination', 'progress_m', 'distance_m', 'deviation', 'infraction_counts')}},
+            **mark))
         run = PV.new_run('recon.closedloop', [], ep['seed'], {'options': ep['options'], 'fps': self.fps,
                                                               'deviate_m': self.deviate_m},
                          {'recon/run.json': os.path.join(self.rec.path, 'run.json'),
                           'recon/point_cloud.ply': os.path.join(self.rec.path, 'point_cloud.ply')})
         run.update(status='ok', exit_code=0, finished=PV.utc_now(), name=drive['name'], neural=what,
                    notes=['the camera images are the reconstruction\'s renders, not a simulator\'s ground truth',
-                          f'{ep["flagged"]} step(s) beyond the {self.deviate_m} m limit'])
+                          f'{ep["flagged"]} step(s) beyond the {self.deviate_m} m limit'], **mark)
         run['outputs'] = PV.hash_tree(d, skip=('run.json',))
         PV.write_json(os.path.join(d, 'run.json'), run)
 

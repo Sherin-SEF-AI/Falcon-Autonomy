@@ -148,6 +148,12 @@ def main_recon(argv) -> int:
     for k, typ in (('iterations', int), ('width', int), ('seed', int), ('image-every', int), ('vo-width', int)):
         dc.add_argument(f'--{k}', type=typ)
     dc.add_argument('--device')
+    dc.add_argument('--dynamic', action='store_true',
+                    help='learn the road users the dashcam ingest tracked in the clip as moving actors instead of '
+                         'masking them (4D; core.recon.dashcam_tracks)')
+    dc.add_argument('--tracks', metavar='PATH',
+                    help='with --dynamic: the ingested folder, its falcon-ingest/ or an exported near-miss event '
+                         'folder (default: the falcon-ingest/ beside the clip or up to three folders above it)')
     dc.add_argument('--no-train', action='store_true', help='pose and place the segment only')
     dc.add_argument('--keep-raw', action='store_true', help='keep the decoded (distorted) frames')
     pl = sub.add_parser('place', help='place a posed dashcam segment on an imported world after the fact')
@@ -283,6 +289,12 @@ def main_recon(argv) -> int:
                 s['train'] = False
             if a.keep_raw:
                 s['keep_raw'] = True
+            if a.dynamic:
+                s['dynamic'] = True
+            if a.tracks:
+                if not s.get('dynamic'):
+                    raise ValueError('--tracks names the road users to learn: give --dynamic too')
+                s['tracks'] = a.tracks
             out = a.out or default_out(a.clip, a.start)
             if s.get('train', True):
                 locks = _locks(s.get('device') or 'auto', em, flag)

@@ -20,6 +20,9 @@ falcon dashcam ingest DIR [--detector rtdetr-v2-r18|rtdetr-v2-r50|file:PATH] [--
 falcon dashcam nearmiss list DIR [--top N]                       # the ranked events
 falcon dashcam nearmiss scenario DIR EVENT --project P --world W [--name N]   # EVENT: its rank or id
 falcon dashcam nearmiss variations PROJECT NAME [--budget N] [--method M]     # the local rare-case search
+falcon dashcam nearmiss reconstruct DIR EVENT [--out OUT] [--pad 2] [--iterations N] [--width W] [--device D]
+    [--intrinsics …] [--config FILE] [--no-train]                # the event in 4D, its road users moving
+falcon recon closedloop OUT --policy P --out RUN                 # then drive a policy through it
 ```
 
 ## Models and licences
@@ -118,17 +121,38 @@ world where the footage drove, every actor on its track, a replay scenario, a pa
 `incident.xosc` (OpenSCENARIO 1.2), in the project's `incidents/<name>/`. *Queue variations* (`nearmiss variations`)
 runs the rare-case search over the variations on this machine (sim.studio).
 
+**The event in 4D** (`nearmiss reconstruct DIR EVENT`, or *Reconstruct with moving road users* in the GUI): the
+event's window ± 2 s (`--pad`) of its clip goes through `falcon recon from-dashcam --dynamic --tracks EVENT_DIR`
+([reconstruction](reconstruction.md#moving-road-users-from-a-dashcam)): the segment is posed by its own odometry, and
+every road user the ingest tracked in it becomes a moving actor of the reconstruction instead of being masked — its
+smoothed track carried frame by frame from the ingest's world into the reconstruction's, its size the kind's typical
+one. The result (`~/FalconWorkspace/recon/nearmiss-<id>` by default; the GUI opens it in Replay ▸ Reconstruction) is a
+dynamic reconstruction like any other: `falcon recon closedloop` (*Drive a policy here*) drives a policy through the
+real incident, with the incident's road users replaying what they did. A GPU job unless `--device cpu`; on this machine
+only.
+
 **Resuming**: a clip already perceived with the same settings and the same clip (its fingerprint) is not processed
 again, nor mined again; a cancel loses only the clip in progress. `--redo` starts over.
+
+**On an 8 GB card** (the low_vram [profile](profiles.md#the-near-miss-perception)): the detector and the depth
+network run in batches of 2, `rtdetr-v2-r50` becomes `rtdetr-v2-r18` (`--keep-detector` keeps it), Depth Anything V2
+works at 364 px instead of 518 (about half the pixels), both models get 0.35 of the GPU
+(`torch.cuda.set_per_process_memory_fraction`; onnxruntime's CUDA arena for Metric3D), and they run FP16 on CUDA unless
+`inference_precision` is fp32. The profile and what it changed are recorded in `ingest.json` and every
+`perception.json`. A swapped detector or the capped depth resolution changes the settings, so a folder perceived under
+the other profile is perceived again; batch, precision and GPU share do not.
 
 ## Privacy
 
 Your footage shows where and when you drove, and other people. Everything here stays on this machine: the folder,
 every clip in it and everything under its `falcon-ingest/` are private to the assistant (`assistant.privacy` finds
 `falcon-ingest/ingest.json` at any depth), the event folders and the scenarios made from them carry dashcam markers,
-and dashcam-derived scenarios and studies are refused by cluster and cloud bundles. What a tool or a log may say about
-an ingest (`dashcam_ingest.summary`) is counts and event ids only — no clip names, places, times, positions or
-images.
+and dashcam-derived scenarios and studies are refused by cluster and cloud bundles. A reconstruction of an event is
+private from its first file (its `dashcam.json`), with its `posed/tracks.json`; so is every drive through it — the
+closed-loop run folders, re-rendered and hybrid runs carry the dashcam marker in their records (and a record that names
+a private reconstruction is private while that exists) — and no bundle carries any of it. What a tool or a log may say
+about an ingest (`dashcam_ingest.summary`) is counts and event ids only — no clip names, places, times, positions or
+images; no image or track is sent to any model.
 
 ## Measured
 
@@ -141,6 +165,15 @@ this clip). The odometry on a synthetic road yawing 1° a frame while moving 0.5
 (tests/test_dashcam_perception.py); on the straight clip its integrated heading stayed within 5° of the GPS's over 7 s
 at 320 px wide. **Not yet measured on real footage**: the models are downloaded only at acceptance (the lead's approved
 download), and the user's clips are never read during the build.
+
+An event in 4D (tests/test_recon_dashcam_dynamic.py: an 8 s synthetic clip at 480 × 270 of a walled, textured street,
+the ego at 6 m/s weaving ±4°, a lead car closing at 1.5 m/s in its lane and a truck in the next one, ingested with a
+ground-truth detector and flat-ground ranges, its top event reconstructed on the CPU with 30 training steps): both
+road users became moving actors with their kinds' sizes; over 63 boxes each, the car's centre lay a median 0.73 m
+and the truck's 0.45 m from where the clip drew them in the reconstruction's world (whose own GPS-aided poses sit a
+median 0.54 m from the fixes), their headings within a median 1.5° and 1.9°; a policy drove through it in closed
+loop with both replayed. The chain itself is exact: on a reconstruction world that is a rotated and shifted copy of the
+ingest's, every box landed within 5 cm and 0.5° of where it should.
 
 ## Limits
 
@@ -158,3 +191,8 @@ download), and the user's clips are never read during the build.
   nothing); a real class needs a detector fine-tuned on labelled footage.
 - The criticality score's scales are heuristic ([core.criticality](scenarios.md)); a box overlap from monocular noise
   scores as a collision.
+- An event in 4D carries every limit above into its actors (monocular ranges, typical sizes, a flat road under the
+  boxes) and the [reconstruction's](reconstruction.md#moving-road-users-from-a-dashcam) own; a road user seen in fewer
+  than 3 frames of the segment is left out (counted in `dashcam.json`), and one hidden behind another is where its
+  track extrapolates.
+- The low_vram caps are chosen, not measured on an 8 GB card (the models are fetched only at acceptance).

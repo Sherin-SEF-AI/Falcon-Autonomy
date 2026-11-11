@@ -24,8 +24,19 @@ Pass 2 — mining (core.nearmiss.mine_clip), per clip: ego motion, candidate win
 criticality with the depth-scale bootstrap. Then the folder's ranking and the top events exported.
 
 Resuming. A clip whose perception.json has the same settings key (every setting but the device, batch, models folder,
-top and clip cutting) and the same clip fingerprint is not processed again, nor its nearmiss.json; a cancel loses only
-the clip in progress (files are written whole, atomically). --redo starts over.
+top, clip cutting, precision and GPU share) and the same clip fingerprint is not processed again, nor its
+nearmiss.json; a cancel loses only the clip in progress (files are written whole, atomically). --redo starts over.
+
+The performance profile (core.profiles.cap_perception): under low_vram the detector and the depth network run in
+batches of 2, rtdetr-v2-r50 becomes rtdetr-v2-r18 (--keep-detector keeps it), Depth Anything V2 works at 364 px,
+both models get 0.35 of the GPU, FP16 on CUDA unless inference_precision is fp32; the profile and what it changed are
+recorded in ingest.json's settings and every perception.json. A swapped detector or a capped depth resolution changes
+the settings key, so a folder perceived under the other profile is perceived again.
+
+A near-miss as a 4D reconstruction (`nearmiss reconstruct FOLDER EVENT`, reconstruct_spec for the GUI): the event's
+window ± 2 s of its clip through `falcon recon from-dashcam --dynamic --tracks EVENT_DIR` — the road users tracked
+here become the reconstruction's moving actors (core.recon.dashcam_tracks), so `falcon recon closedloop` can drive a
+policy through the real incident. The reconstruction is private like everything here (its dashcam.json).
 
 Privacy: dashcam-derived — the tracks, events, clips and the scenarios made from them stay on this machine;
 summary() (what a tool may report) is counts and event ids only.
@@ -52,8 +63,13 @@ INGEST_DIR = 'falcon-ingest'
 DEFAULTS = {'detector': 'rtdetr-v2-r18', 'depth': 'da2-small', 'rate': 10.0, 'size': [960, 540], 'crop_bottom': 0.0,
             'batch': 8, 'device': 'auto', 'camera_height_m': DD.DEFAULT_HEIGHT_M, 'hfov_deg': DD.DEFAULT_HFOV_DEG,
             'focal_px': None, 'horizon_v': None, 'top': NM.TOP, 'models_dir': '', 'vo': True, 'cut_clips': True,
-            'accept_unstated_weights_terms': False, 'include_rear': False}
-VOLATILE = ('device', 'batch', 'models_dir', 'top', 'cut_clips')
+            'accept_unstated_weights_terms': False, 'include_rear': False,
+            # the profile's (core.profiles.cap_perception): precision on CUDA, the GPU share, Depth Anything V2's
+            # working resolution (None: its own 518), keeping r50 under low_vram, and the record of what was used
+            'precision': 'fp16', 'gpu_memory_fraction': 0.5, 'depth_input_px': None, 'keep_detector': False,
+            'profile': None}
+VOLATILE = ('device', 'batch', 'models_dir', 'top', 'cut_clips', 'precision', 'gpu_memory_fraction',
+            'keep_detector', 'profile')
 STRAIGHT_DEG_S = 2.0
 STRAIGHT_MIN_MPS = 4.0
 
@@ -71,7 +87,9 @@ def clip_key(path: str) -> str:
 
 
 def settings_key(s: dict) -> str:
-    return sha256_json({k: v for k, v in s.items() if k not in VOLATILE})
+    """What the perception depends on (every setting but VOLATILE); depth_input_px only when set — a capped depth
+    resolution perceives again, the model's own one keeps the key of ingests made before it existed."""
+    return sha256_json({k: v for k, v in s.items() if k not in VOLATILE and not (k == 'depth_input_px' and v is None)})
 
 
 def normalise(settings: dict | None) -> dict:
@@ -203,6 +221,7 @@ def perceive(clip: str, s: dict, detector, depth=None, trk: dict | None = None, 
             'foe_pairs': len(foes), 'detector': getattr(detector, 'info', {}),
             'depth': getattr(depth, 'info', {'model': None}) if depth is not None else {'model': None},
             'tracker': tracker.params(), 'counts': counts, 'gps': trk, 'frames': recs,
+            'batch': int(s['batch']), 'profile': s.get('profile'),
             'seconds': round(time.perf_counter() - t_start, 2), 'created': utc_now()}
 
 
@@ -245,10 +264,14 @@ def _decoder(clip: str, s: dict):
 
 
 def ingest(folder: str, settings: dict | None = None, detector=None, depth=None, emitter=None, cancel=None,
-           redo: bool = False) -> dict:
+           redo: bool = False, app_settings=None) -> dict:
     """Both passes over a folder's clips, then the ranking and the top events (module doc). detector / depth:
-    objects (tests) or None to build them from the settings. Returns summary()."""
-    s = normalise(settings)
+    objects (tests) or None to build them from the settings. The performance profile in force (app_settings: a
+    core.settings.Settings, default the user's) caps the perception (core.profiles.cap_perception); what it used is
+    recorded in ingest.json's settings ('profile') and every perception.json. Returns summary()."""
+    from .profiles import cap_perception
+    asked = dict(settings or {})
+    s = normalise(cap_perception(asked, app_settings, keep_detector=bool(asked.get('keep_detector'))))
     folder = os.path.abspath(folder)
     if not os.path.isdir(folder):
         raise IngestError(f'{folder} is not a folder')
@@ -286,11 +309,15 @@ def ingest(folder: str, settings: dict | None = None, detector=None, depth=None,
                         counts['no_gps'] += 1
                         rec.update(perceived=False, mined=False, why='fewer than two GPS fixes')
                         continue
+                    fp16 = s['precision'] != 'fp32'
                     if detector is None:
-                        detector = DT.make_detector(s['detector'], s['models_dir'], s['device'])
+                        detector = DT.make_detector(s['detector'], s['models_dir'], s['device'], fp16,
+                                                    float(s['gpu_memory_fraction']))
                     if depth is None and s['depth'] not in ('none', '', None):
                         depth = DD.make_depth(s['depth'], camera(s).f, s['models_dir'], s['device'],
-                                              bool(s['accept_unstated_weights_terms']))
+                                              bool(s['accept_unstated_weights_terms']), fp16, s['depth_input_px'],
+                                              float(s['gpu_memory_fraction']),
+                                              limit_onnx=(s.get('profile') or {}).get('name') == 'low_vram')
                     perc = perceive(clip, s, detector, depth, trk, emitter, cancel,
                                     (i / len(clips) * 0.9, (i + 0.8) / len(clips) * 0.9))
                     os.makedirs(cd, exist_ok=True)
@@ -406,6 +433,53 @@ def event_dir(folder: str, event: str) -> str:
     return d
 
 
+RECON_PAD_S = 2.0               # a near-miss reconstruction's segment: the event's window and this much either side
+
+
+def event_segment(folder: str, event: str, pad_s: float = RECON_PAD_S) -> dict:
+    """The clip and segment a near-miss event is reconstructed from: {'event' (its ranking row), 'event_dir', 'clip',
+    'start', 'seconds'} — the event's window with pad_s either side, inside the clip."""
+    folder = os.path.abspath(os.path.expanduser(folder))
+    d = event_dir(folder, event)
+    eid = os.path.basename(d)
+    ev = next((e for e in ranking(folder) if e['id'] == eid), None)
+    if ev is None:
+        raise IngestError(f'event {eid} is not in the ranking (ingest the folder again)')
+    st = _state(folder)
+    clips, _ = _clips(folder, normalise(st.get('settings') or {}))
+    clip = next((c for c in clips if clip_key(c) == ev['clip_key']), None)
+    if clip is None:
+        raise IngestError(f'the clip of event {eid} is no longer in the folder')
+    dur = DC.probe(clip).get('duration_s') or float(ev['window_s'][1]) + pad_s
+    start = max(0.0, float(ev['window_s'][0]) - pad_s)
+    end = min(float(dur), float(ev['window_s'][1]) + pad_s)
+    return {'event': ev, 'event_dir': d, 'clip': clip, 'start': round(start, 3), 'seconds': round(end - start, 3)}
+
+
+def reconstruct_argv(folder: str, event: str, out: str, pad_s: float = RECON_PAD_S, extra=()) -> list:
+    """`falcon recon from-dashcam` of a near-miss event's segment with its tracked road users (--dynamic --tracks:
+    core.recon.dashcam_tracks), as recon's argv."""
+    seg = event_segment(folder, event, pad_s)
+    return ['from-dashcam', '--clip', seg['clip'], '--start', f'{seg["start"]:g}', '--seconds',
+            f'{seg["seconds"]:g}', '--out', out, '--dynamic', '--tracks', seg['event_dir']] + list(extra)
+
+
+def reconstruct_spec(folder: str, event: str, out: str, device: str = 'auto', iterations: int | None = None,
+                     width: int | None = None, title: str = ''):
+    """`falcon dashcam nearmiss reconstruct FOLDER EVENT --out OUT …` as a queued job: a GPU job unless on the CPU
+    (the queue holds the GPU lock for it), local only (dashcam-derived)."""
+    from .jobs import JobSpec
+    argv = [sys.executable, '-m', 'falcon_autonomy', 'dashcam', 'nearmiss', 'reconstruct', folder, str(event),
+            '--out', out, '--device', device]
+    if iterations:
+        argv += ['--iterations', str(int(iterations))]
+    if width:
+        argv += ['--width', str(int(width))]
+    return JobSpec('recon', title or f'Reconstruct near-miss {event} with its road users', argv,
+                   env=dict(os.environ, FALCON_GPU_LOCK_HELD='1'), needs_gpu=device != 'cpu', memory_gb=6.0,
+                   meta={'source': {'format': 'dashcam'}, 'folder': folder, 'event': str(event), 'out': out})
+
+
 def job_spec(folder: str, argv_extra=(), device: str = 'auto', title: str = ''):
     """`falcon dashcam ingest FOLDER …` as a queued job: a GPU job unless on the CPU, resumable, local only."""
     from .jobs import JobSpec
@@ -425,11 +499,12 @@ def _size(text: str) -> list:
 
 
 def main_ingest(argv) -> int:
-    """`falcon dashcam ingest DIR …` and `falcon dashcam nearmiss list|scenario|variations|models|fetch …` (module
-    doc; docs/nearmiss.md). argv starts with 'ingest' or 'nearmiss'."""
+    """`falcon dashcam ingest DIR …` and `falcon dashcam nearmiss list|scenario|reconstruct|variations|models|fetch
+    …` (module doc; docs/nearmiss.md). argv starts with 'ingest' or 'nearmiss'."""
     import argparse
     from . import perception_models as PM
     from . import protocol as P
+    from .profiles import PERCEPTION_CAPS
     argv = list(argv)
     if argv[:1] == ['dashcam']:
         argv = argv[1:]
@@ -450,7 +525,12 @@ def main_ingest(argv) -> int:
         ap.add_argument('--crop-bottom', type=float, default=0.0, help='share of the height cut off the bottom (the '
                                                                        'burned-in text line: 0.06 on the verified '
                                                                        'camera)')
-        ap.add_argument('--batch', type=int, default=DEFAULTS['batch'])
+        ap.add_argument('--batch', type=int, default=DEFAULTS['batch'],
+                        help='frames a batch (default %(default)d; the low_vram profile caps it at '
+                             f'{PERCEPTION_CAPS["batch"]})')
+        ap.add_argument('--keep-detector', action='store_true',
+                        help='under the low_vram profile, keep rtdetr-v2-r50 when asked for (the profile swaps in '
+                             'rtdetr-v2-r18)')
         ap.add_argument('--device', default='auto', help='auto, cuda or cpu')
         ap.add_argument('--camera-height', type=float, default=DEFAULTS['camera_height_m'],
                         help='the camera above the road, metres (default %(default)g)')
@@ -479,6 +559,20 @@ def main_ingest(argv) -> int:
         sc.add_argument('--project', required=True)
         sc.add_argument('--world', required=True, help='the imported world whose lanes the event is on')
         sc.add_argument('--name', default='')
+        rc = sub.add_parser('reconstruct', help='reconstruct an event\'s segment with its tracked road users as '
+                                                'moving actors (falcon recon from-dashcam --dynamic), on this machine')
+        rc.add_argument('folder')
+        rc.add_argument('event', help='its id or rank')
+        rc.add_argument('--out', '-o', help='the reconstruction folder (default: '
+                                            '~/FalconWorkspace/recon/nearmiss-<event id>)')
+        rc.add_argument('--pad', type=float, default=RECON_PAD_S,
+                        help='seconds of the clip either side of the event\'s window (default %(default)g)')
+        rc.add_argument('--config', help='a JSON file of from-dashcam settings (core.recon.fromdashcam.DEFAULTS)')
+        rc.add_argument('--intrinsics', help='as for falcon recon from-dashcam')
+        for k, typ in (('iterations', int), ('width', int), ('seed', int)):
+            rc.add_argument(f'--{k}', type=typ)
+        rc.add_argument('--device')
+        rc.add_argument('--no-train', action='store_true', help='pose the segment and place its road users only')
         va = sub.add_parser('variations', help='the rare-case search over a scenario\'s variations, on this machine')
         va.add_argument('project')
         va.add_argument('name')
@@ -508,7 +602,7 @@ def main_ingest(argv) -> int:
                  'camera_height_m': a.camera_height, 'hfov_deg': a.hfov, 'focal_px': a.focal_px,
                  'horizon_v': a.horizon_row, 'top': a.top, 'models_dir': a.models, 'vo': not a.no_vo,
                  'cut_clips': not a.no_clips, 'accept_unstated_weights_terms': a.accept_unstated_weights_terms,
-                 'include_rear': a.include_rear}
+                 'include_rear': a.include_rear, 'keep_detector': a.keep_detector}
             try:
                 res = ingest(a.folder, s, emitter=em, cancel=cancel, redo=a.redo)
             except KeyboardInterrupt:
@@ -535,6 +629,18 @@ def main_ingest(argv) -> int:
             res = NM.make_scenario(event_dir(a.folder, a.event), proj, a.world, a.name)
             print(json.dumps(res, indent=1))
             return P.OK
+        if a.cmd == 'reconstruct':
+            from .recon.commands import main_recon
+            eid = os.path.basename(event_dir(a.folder, a.event))
+            out = a.out or os.path.expanduser(f'~/FalconWorkspace/recon/nearmiss-{eid}')
+            extra = []
+            for flag, v in (('--config', a.config), ('--intrinsics', a.intrinsics), ('--iterations', a.iterations),
+                            ('--width', a.width), ('--seed', a.seed), ('--device', a.device)):
+                if v is not None:
+                    extra += [flag, str(v)]
+            if a.no_train:
+                extra.append('--no-train')
+            return main_recon(reconstruct_argv(a.folder, a.event, out, a.pad, extra))
         if a.cmd == 'variations':
             from .incident import search_argv
             from .project import Project
