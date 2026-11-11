@@ -1,0 +1,237 @@
+VERSION "falcon_chassis 1"
+
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: DEVICE FALCON_CHASSIS
+
+BO_ 160 WHEEL_TICKS: 8 FALCON_CHASSIS
+ SG_ TICKS_FL : 0|12@1+ (1,0) [0|4095] "ticks" DEVICE
+ SG_ TICKS_FR : 12|12@1+ (1,0) [0|4095] "ticks" DEVICE
+ SG_ TICKS_RL : 24|12@1+ (1,0) [0|4095] "ticks" DEVICE
+ SG_ TICKS_RR : 36|12@1+ (1,0) [0|4095] "ticks" DEVICE
+ SG_ QUALIFIER : 52|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ COUNTER : 48|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ CRC : 56|8@1+ (1,0) [0|255] "" DEVICE
+
+BO_ 161 WHEEL_SPEEDS: 8 FALCON_CHASSIS
+ SG_ SPEED_FL : 0|12@1+ (0.0625,0) [0|255.9375] "km/h" DEVICE
+ SG_ SPEED_FR : 12|12@1+ (0.0625,0) [0|255.9375] "km/h" DEVICE
+ SG_ SPEED_RL : 24|12@1+ (0.0625,0) [0|255.9375] "km/h" DEVICE
+ SG_ SPEED_RR : 36|12@1+ (0.0625,0) [0|255.9375] "km/h" DEVICE
+ SG_ COUNTER : 48|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ CRC : 56|8@1+ (1,0) [0|255] "" DEVICE
+
+BO_ 162 YAW_ACCEL: 8 FALCON_CHASSIS
+ SG_ YAW_RATE : 0|16@1- (0.01,0) [-327.68|327.67] "deg/s" DEVICE
+ SG_ LAT_ACCEL : 16|16@1- (0.001,0) [-32.768|32.767] "m/s2" DEVICE
+ SG_ LONG_ACCEL : 32|16@1- (0.001,0) [-32.768|32.767] "m/s2" DEVICE
+ SG_ STATUS : 52|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ COUNTER : 48|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ CRC : 56|8@1+ (1,0) [0|255] "" DEVICE
+
+BO_ 163 STEERING: 8 FALCON_CHASSIS
+ SG_ STEER_ANGLE : 0|16@1- (0.1,0) [-3276.8|3276.7] "deg" DEVICE
+ SG_ STEER_RATE : 16|16@1- (1,0) [-32768|32767] "deg/s" DEVICE
+ SG_ EPS_TORQUE : 32|16@1- (0.01,0) [-327.68|327.67] "Nm" DEVICE
+ SG_ EPS_STATUS : 52|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ COUNTER : 48|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ CRC : 56|8@1+ (1,0) [0|255] "" DEVICE
+
+BO_ 164 BRAKE: 8 FALCON_CHASSIS
+ SG_ BRAKE_PRESSURE : 0|16@1+ (0.01,0) [0|655.35] "bar" DEVICE
+ SG_ BRAKE_REQ_ECHO : 16|16@1+ (0.01,0) [0|655.35] "bar" DEVICE
+ SG_ VEHICLE_SPEED : 32|16@1+ (0.01,0) [0|655.35] "km/h" DEVICE
+ SG_ BRAKE_STATUS : 52|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ COUNTER : 48|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ CRC : 56|8@1+ (1,0) [0|255] "" DEVICE
+
+BO_ 165 CHASSIS_STATUS: 8 FALCON_CHASSIS
+ SG_ MODE : 0|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ SURFACE : 4|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ MU_EFF : 8|8@1+ (0.01,0) [0|2.55] "" DEVICE
+ SG_ WATCHDOG_TRIPS : 16|16@1+ (1,0) [0|65535] "" DEVICE
+ SG_ CMD_REJECTED : 32|16@1+ (1,0) [0|65535] "" DEVICE
+ SG_ HYDROPLANING : 52|1@1+ (1,0) [0|1] "" DEVICE
+ SG_ COUNTER : 48|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ CRC : 56|8@1+ (1,0) [0|255] "" DEVICE
+
+BO_ 176 CMD_STEER: 8 DEVICE
+ SG_ STEER_REQ : 0|16@1- (0.1,0) [-3276.8|3276.7] "deg" FALCON_CHASSIS
+ SG_ STEER_TORQUE_REQ : 16|16@1- (0.01,0) [-327.68|327.67] "Nm" FALCON_CHASSIS
+ SG_ STEER_MODE : 32|2@1+ (1,0) [0|3] "" FALCON_CHASSIS
+ SG_ ENABLE : 34|1@1+ (1,0) [0|1] "" FALCON_CHASSIS
+ SG_ STEP : 36|12@1+ (1,0) [0|4095] "" FALCON_CHASSIS
+ SG_ COUNTER : 48|4@1+ (1,0) [0|15] "" FALCON_CHASSIS
+ SG_ CRC : 56|8@1+ (1,0) [0|255] "" FALCON_CHASSIS
+
+BO_ 177 CMD_LONG: 8 DEVICE
+ SG_ BRAKE_REQ : 0|16@1+ (0.01,0) [0|655.35] "bar" FALCON_CHASSIS
+ SG_ THROTTLE_REQ : 16|8@1+ (0.5,0) [0|100] "%" FALCON_CHASSIS
+ SG_ ENABLE : 24|1@1+ (1,0) [0|1] "" FALCON_CHASSIS
+ SG_ STEP : 32|16@1+ (1,0) [0|65535] "" FALCON_CHASSIS
+ SG_ COUNTER : 48|4@1+ (1,0) [0|15] "" FALCON_CHASSIS
+ SG_ CRC : 56|8@1+ (1,0) [0|255] "" FALCON_CHASSIS
+
+BO_ 192 CHASSIS_FD: 64 FALCON_CHASSIS
+ SG_ TICKS_FL : 0|16@1+ (1,0) [0|65535] "ticks" DEVICE
+ SG_ TICKS_FR : 16|16@1+ (1,0) [0|65535] "ticks" DEVICE
+ SG_ TICKS_RL : 32|16@1+ (1,0) [0|65535] "ticks" DEVICE
+ SG_ TICKS_RR : 48|16@1+ (1,0) [0|65535] "ticks" DEVICE
+ SG_ SPEED_FL : 64|16@1+ (0.01,0) [0|655.35] "km/h" DEVICE
+ SG_ SPEED_FR : 80|16@1+ (0.01,0) [0|655.35] "km/h" DEVICE
+ SG_ SPEED_RL : 96|16@1+ (0.01,0) [0|655.35] "km/h" DEVICE
+ SG_ SPEED_RR : 112|16@1+ (0.01,0) [0|655.35] "km/h" DEVICE
+ SG_ YAW_RATE : 128|16@1- (0.01,0) [-327.68|327.67] "deg/s" DEVICE
+ SG_ LAT_ACCEL : 144|16@1- (0.001,0) [-32.768|32.767] "m/s2" DEVICE
+ SG_ LONG_ACCEL : 160|16@1- (0.001,0) [-32.768|32.767] "m/s2" DEVICE
+ SG_ STEER_ANGLE : 176|16@1- (0.1,0) [-3276.8|3276.7] "deg" DEVICE
+ SG_ STEER_RATE : 192|16@1- (1,0) [-32768|32767] "deg/s" DEVICE
+ SG_ EPS_TORQUE : 208|16@1- (0.01,0) [-327.68|327.67] "Nm" DEVICE
+ SG_ BRAKE_PRESSURE : 224|16@1+ (0.01,0) [0|655.35] "bar" DEVICE
+ SG_ VEHICLE_SPEED : 240|16@1+ (0.01,0) [0|655.35] "km/h" DEVICE
+ SG_ MODE : 256|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ SURFACE : 260|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ MU_EFF : 264|8@1+ (0.01,0) [0|2.55] "" DEVICE
+ SG_ HYDROPLANING : 272|1@1+ (1,0) [0|1] "" DEVICE
+ SG_ SIM_TIME : 288|32@1+ (0.001,0) [0|4294967.295] "s" DEVICE
+ SG_ COUNTER : 496|4@1+ (1,0) [0|15] "" DEVICE
+ SG_ CRC : 504|8@1+ (1,0) [0|255] "" DEVICE
+
+BO_ 193 CMD_FD: 64 DEVICE
+ SG_ STEER_REQ : 0|16@1- (0.1,0) [-3276.8|3276.7] "deg" FALCON_CHASSIS
+ SG_ STEER_TORQUE_REQ : 16|16@1- (0.01,0) [-327.68|327.67] "Nm" FALCON_CHASSIS
+ SG_ STEER_MODE : 32|2@1+ (1,0) [0|3] "" FALCON_CHASSIS
+ SG_ ENABLE : 34|1@1+ (1,0) [0|1] "" FALCON_CHASSIS
+ SG_ BRAKE_REQ : 40|16@1+ (0.01,0) [0|655.35] "bar" FALCON_CHASSIS
+ SG_ THROTTLE_REQ : 56|8@1+ (0.5,0) [0|100] "%" FALCON_CHASSIS
+ SG_ STEP : 64|32@1+ (1,0) [0|4294967295] "" FALCON_CHASSIS
+ SG_ COUNTER : 496|4@1+ (1,0) [0|15] "" FALCON_CHASSIS
+ SG_ CRC : 504|8@1+ (1,0) [0|255] "" FALCON_CHASSIS
+
+
+CM_ "Falcon Autonomy chassis emulation <-> device (docs/hardware.md). Generated from falcon_autonomy/core/canmsgs.py: do not edit.";
+CM_ BO_ 160 "Wheel tick counters (ABS tone wheel edges) of the four wheels";
+CM_ SG_ 160 TICKS_FL "FL wheel: tone-wheel edges since start, wraps at 4096";
+CM_ SG_ 160 TICKS_FR "FR wheel: tone-wheel edges since start, wraps at 4096";
+CM_ SG_ 160 TICKS_RL "RL wheel: tone-wheel edges since start, wraps at 4096";
+CM_ SG_ 160 TICKS_RR "RR wheel: tone-wheel edges since start, wraps at 4096";
+CM_ SG_ 160 QUALIFIER "bit per wheel FL FR RL RR: 1 = valid";
+CM_ SG_ 160 COUNTER "alive counter, +1 per frame, modulo 16";
+CM_ SG_ 160 CRC "CRC-8 SAE J1850 over the identifier (2 bytes, little-endian) and the bytes before this one";
+CM_ BO_ 161 "Wheel speeds from the wheels' rotation";
+CM_ SG_ 161 SPEED_FL "FL wheel speed (its rotation × the rolling radius: slip shows)";
+CM_ SG_ 161 SPEED_FR "FR wheel speed (its rotation × the rolling radius: slip shows)";
+CM_ SG_ 161 SPEED_RL "RL wheel speed (its rotation × the rolling radius: slip shows)";
+CM_ SG_ 161 SPEED_RR "RR wheel speed (its rotation × the rolling radius: slip shows)";
+CM_ SG_ 161 COUNTER "alive counter, +1 per frame, modulo 16";
+CM_ SG_ 161 CRC "CRC-8 SAE J1850 over the identifier (2 bytes, little-endian) and the bytes before this one";
+CM_ BO_ 162 "Yaw rate and accelerations (the vehicle's, ISO 8855)";
+CM_ SG_ 162 YAW_RATE "yaw rate, left positive";
+CM_ SG_ 162 LAT_ACCEL "lateral acceleration, left positive";
+CM_ SG_ 162 LONG_ACCEL "longitudinal acceleration";
+CM_ SG_ 162 STATUS "0 = valid";
+CM_ SG_ 162 COUNTER "alive counter, +1 per frame, modulo 16";
+CM_ SG_ 162 CRC "CRC-8 SAE J1850 over the identifier (2 bytes, little-endian) and the bytes before this one";
+CM_ BO_ 163 "The steering (EPS) as it is";
+CM_ SG_ 163 STEER_ANGLE "steering wheel angle, left positive";
+CM_ SG_ 163 STEER_RATE "steering wheel angle rate";
+CM_ SG_ 163 EPS_TORQUE "torque the EPS applies";
+CM_ SG_ 163 COUNTER "alive counter, +1 per frame, modulo 16";
+CM_ SG_ 163 CRC "CRC-8 SAE J1850 over the identifier (2 bytes, little-endian) and the bytes before this one";
+CM_ BO_ 164 "The brake as it is, and the vehicle speed";
+CM_ SG_ 164 BRAKE_PRESSURE "brake line pressure";
+CM_ SG_ 164 BRAKE_REQ_ECHO "the pressure being requested (after the watchdog)";
+CM_ SG_ 164 VEHICLE_SPEED "vehicle speed (over ground)";
+CM_ SG_ 164 COUNTER "alive counter, +1 per frame, modulo 16";
+CM_ SG_ 164 CRC "CRC-8 SAE J1850 over the identifier (2 bytes, little-endian) and the bytes before this one";
+CM_ BO_ 165 "The emulation's state";
+CM_ SG_ 165 MU_EFF "the tyre–road friction coefficient in effect";
+CM_ SG_ 165 WATCHDOG_TRIPS "commands that went stale (> 100 ms) since start";
+CM_ SG_ 165 CMD_REJECTED "command frames rejected (CRC, counter, range)";
+CM_ SG_ 165 HYDROPLANING "1 = the speed is past the hydroplaning onset";
+CM_ SG_ 165 COUNTER "alive counter, +1 per frame, modulo 16";
+CM_ SG_ 165 CRC "CRC-8 SAE J1850 over the identifier (2 bytes, little-endian) and the bytes before this one";
+CM_ BO_ 176 "Steering command";
+CM_ SG_ 176 STEER_REQ "steering wheel angle request (angle mode), left positive";
+CM_ SG_ 176 STEER_TORQUE_REQ "EPS torque request (torque mode)";
+CM_ SG_ 176 ENABLE "1 = the device asks to be in control";
+CM_ SG_ 176 STEP "the simulation step the command answers (low 12 bits)";
+CM_ SG_ 176 COUNTER "alive counter, +1 per frame, modulo 16";
+CM_ SG_ 176 CRC "CRC-8 SAE J1850 over the identifier (2 bytes, little-endian) and the bytes before this one";
+CM_ BO_ 177 "Longitudinal command (brake, throttle)";
+CM_ SG_ 177 BRAKE_REQ "brake pressure request";
+CM_ SG_ 177 THROTTLE_REQ "accelerator pedal";
+CM_ SG_ 177 ENABLE "1 = the device asks to be in control";
+CM_ SG_ 177 STEP "the simulation step the command answers (low 16 bits)";
+CM_ SG_ 177 COUNTER "alive counter, +1 per frame, modulo 16";
+CM_ SG_ 177 CRC "CRC-8 SAE J1850 over the identifier (2 bytes, little-endian) and the bytes before this one";
+CM_ BO_ 192 "All feedback in one CAN FD frame (bit-rate switched)";
+CM_ SG_ 192 TICKS_FL "wraps at 65536";
+CM_ SG_ 192 TICKS_FR "wraps at 65536";
+CM_ SG_ 192 TICKS_RL "wraps at 65536";
+CM_ SG_ 192 TICKS_RR "wraps at 65536";
+CM_ SG_ 192 SIM_TIME "simulation time of the feedback, modulo 2^32 ms";
+CM_ SG_ 192 COUNTER "alive counter, +1 per frame, modulo 16";
+CM_ SG_ 192 CRC "CRC-8 SAE J1850 over the identifier (2 bytes, little-endian) and the bytes before this one";
+CM_ BO_ 193 "Steering and longitudinal command in one CAN FD frame";
+CM_ SG_ 193 STEP "the simulation step the command answers";
+CM_ SG_ 193 COUNTER "alive counter, +1 per frame, modulo 16";
+CM_ SG_ 193 CRC "CRC-8 SAE J1850 over the identifier (2 bytes, little-endian) and the bytes before this one";
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","StandardCAN_FD","ExtendedCAN_FD";
+BA_DEF_ "BusType" STRING ;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_DEF_DEF_ "VFrameFormat" "StandardCAN";
+BA_DEF_DEF_ "BusType" "CAN";
+BA_ "BusType" "CAN FD";
+BA_ "GenMsgCycleTime" BO_ 160 10;
+BA_ "GenMsgCycleTime" BO_ 161 10;
+BA_ "GenMsgCycleTime" BO_ 162 10;
+BA_ "GenMsgCycleTime" BO_ 163 10;
+BA_ "GenMsgCycleTime" BO_ 164 10;
+BA_ "GenMsgCycleTime" BO_ 165 100;
+BA_ "GenMsgCycleTime" BO_ 176 20;
+BA_ "GenMsgCycleTime" BO_ 177 20;
+BA_ "GenMsgCycleTime" BO_ 192 10;
+BA_ "VFrameFormat" BO_ 192 14;
+BA_ "GenMsgCycleTime" BO_ 193 20;
+BA_ "VFrameFormat" BO_ 193 14;
+VAL_ 163 EPS_STATUS 0 "ok" 1 "safe_hold" 2 "fault" ;
+VAL_ 164 BRAKE_STATUS 0 "released" 1 "applied" 2 "safe_hold" ;
+VAL_ 165 MODE 0 "idle" 1 "active" 2 "safe_hold" 3 "aborted" ;
+VAL_ 165 SURFACE 0 "dry_asphalt" 1 "wet_asphalt" 2 "waterlogged" 3 "gravel" 4 "snow" 5 "ice" ;
+VAL_ 176 STEER_MODE 0 "off" 1 "angle" 2 "torque" ;
+VAL_ 192 MODE 0 "idle" 1 "active" 2 "safe_hold" 3 "aborted" ;
+VAL_ 192 SURFACE 0 "dry_asphalt" 1 "wet_asphalt" 2 "waterlogged" 3 "gravel" 4 "snow" 5 "ice" ;
+VAL_ 193 STEER_MODE 0 "off" 1 "angle" 2 "torque" ;

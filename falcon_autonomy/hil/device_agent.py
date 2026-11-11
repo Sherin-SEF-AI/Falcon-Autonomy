@@ -5,7 +5,9 @@
     python3 device_agent.py --check            # what this device has (JSON on stdout), then exit
 
 Needs Python ≥ 3.10, the standard library and numpy; for an H.264 camera also GStreamer and its Python bindings
-(python3-gi, gir1.2-gstreamer-1.0) — all part of JetPack 6 (L4T r36, Ubuntu 22.04). It imports nothing from Falcon:
+(python3-gi, gir1.2-gstreamer-1.0) — all part of JetPack 6 (L4T r36, Ubuntu 22.04). Beside it (falcon hil deploy
+copies them) go falcon_canmsgs.py, v4l2out.py and gmsl.py, loaded only for CAN and a V4L2 camera, standard library and
+numpy too. It imports nothing from Falcon:
 the host's gateway (falcon_autonomy.hil.gateway) imports this module for the wire format, so both ends share one
 definition. Licence: GPL-3.0-or-later, as Falcon Autonomy.
 
@@ -36,6 +38,16 @@ Wire format (docs/hardware.md):
   arrived; an incomplete one is dropped when a newer one completes.
 * Clock pings over UDP to port P: PING (magic "FPNG", sequence, t0) answered at once with PONG ("FPON", sequence, t0,
   t1 = receive time, t2 = send time, both on this device's clock) — the host estimates the offset NTP-style.
+
+* Clock reports (when the hello's session asks, "clock": {"realtime": true}): once a second {"t": "clock", "d_rt":
+  CLOCK_REALTIME, "d_ns": this agent's stamp clock} read together, and every 5 s "pmc": what linuxptp's pmc says here
+  (raw text; the host parses it, core.ptp) — the host's PTP-based offset.
+* CAN (--can IF on this command line; the session's "can" section says the scales): the stack's control goes out as
+  Falcon's command frames (falcon_canmsgs.py beside this file: core/canmsgs.py) at once and every 20 ms after; the
+  chassis's feedback is decoded into meta["can"]; the control message's dev stamps gain can_tx.
+* A V4L2 camera (transport "v4l2", --camera-device /dev/videoN): frames from that capture node (gmsl.py, v4l2out.py
+  beside this file), matched to steps by their barcode, stamped with the driver's buffer time; their sim_t and hw_t
+  from the host's stamp datagrams on UDP camera.stamp_port.
 
 Timestamps are int64 nanoseconds of CLOCK_MONOTONIC (time.monotonic_ns), optionally passed through an emulated clock
 (--clock-offset-ms, --clock-drift-ppm) so that the host's offset estimate can be checked against a known truth.
@@ -336,10 +348,278 @@ class DeviceClock:
         return bool(self.offset_ns or self.drift_ppm)
 
     def now(self) -> int:
-        t = time.monotonic_ns()
+        return self.from_monotonic(time.monotonic_ns())
+
+    def from_monotonic(self, t: int) -> int:
+        """A CLOCK_MONOTONIC reading (a V4L2 buffer's timestamp, say) on this clock."""
+        t = int(t)
         if self.drift_ppm:
             t += int(t * self.drift_ppm * 1e-6)
         return t + self.offset_ns
+
+
+def _sibling(name: str):
+    """A module that travels with this file (falcon hil deploy copies gmsl.py and v4l2out.py beside it): imported
+    as a sibling in Falcon's source tree and on the device alike."""
+    if __package__:
+        return importlib.import_module(f'{__package__}.{name}')
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    return importlib.import_module(name)
+
+
+# ============================================================================================ CAN
+SO_TIMESTAMPNS = 35                      # asm-generic/socket.h (x86-64 and aarch64): CLOCK_REALTIME, struct timespec
+TIMESPEC = struct.Struct('qq')
+CAN_RAW_ERR_FILTER = 2
+
+
+def _canmsgs():
+    """Falcon's CAN message table (falcon_canmsgs.py beside this file, as falcon hil deploy copies it; in Falcon's
+    source tree, core/canmsgs.py)."""
+    try:
+        import falcon_canmsgs
+        return falcon_canmsgs
+    except ImportError:
+        pass
+    here = os.path.dirname(os.path.abspath(__file__))
+    for path in (os.path.join(here, 'falcon_canmsgs.py'), os.path.join(here, '..', 'core', 'canmsgs.py')):
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location('falcon_canmsgs', path)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules['falcon_canmsgs'] = mod
+            spec.loader.exec_module(mod)
+            return mod
+    raise RuntimeError('falcon_canmsgs.py is missing beside the agent (falcon hil deploy copies it)')
+
+
+def interface_mtu(name: str) -> int:
+    """An interface's MTU from sysfs (16: classical CAN, 72: CAN FD), 0 when it does not exist."""
+    try:
+        with open(f'/sys/class/net/{name}/mtu', encoding='ascii') as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def sim_address(name: str, side: str) -> str:
+    """A simulated CAN link's endpoint: an abstract Unix socket (no file; gone with its process)."""
+    return f'\0falcon-can-{name}-{side}'
+
+
+class CanLink:
+    """A CAN bus for raw frames (Linux's 16-byte can_frame / 72-byte canfd_frame): a SocketCAN interface (AF_CAN raw,
+    error frames received, CAN FD frames when fd and the MTU is 72), or a simulated point-to-point link between two
+    processes on one machine ("sim:NAME", side "a" for the chassis, "b" for the device; FD when fd is True).
+    recv() returns (raw, kernel receive time on CLOCK_REALTIME in ns or None)."""
+
+    def __init__(self, spec: str, fd='auto', side: str = 'b'):
+        self.spec = spec
+        self.peer = None
+        if spec.startswith('sim:'):
+            name = spec[4:] or 'falcon'
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            self.sock.bind(sim_address(name, side))
+            self.peer = sim_address(name, 'b' if side == 'a' else 'a')
+            self.mtu = 72 if fd is True or fd == 'on' else 16
+            self.kind = 'sim'
+        else:
+            if not hasattr(socket, 'AF_CAN'):
+                raise RuntimeError('this Python has no AF_CAN (SocketCAN is Linux only)')
+            mtu = interface_mtu(spec)
+            if not mtu:
+                raise RuntimeError(f'no CAN interface {spec} (falcon hil setup prints how to create one)')
+            if fd in (True, 'on') and mtu != 72:
+                raise RuntimeError(f'CAN FD was asked for but {spec}\'s MTU is {mtu}, not 72 (set the interface up '
+                                   'with "fd on")')
+            self.sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+            use_fd = mtu == 72 and fd in ('auto', True, 'on')
+            if use_fd:
+                self.sock.setsockopt(socket.SOL_CAN_RAW, socket.CAN_RAW_FD_FRAMES, 1)
+            self.sock.setsockopt(socket.SOL_CAN_RAW, CAN_RAW_ERR_FILTER, 0x1FFFFFFF)     # every error class
+            self.sock.bind((spec,))
+            self.mtu = 72 if use_fd else 16
+            self.kind = 'socketcan'
+        self.sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPNS, 1)
+        self.fd = self.mtu == 72
+
+    def send(self, raw: bytes):
+        """One frame, never waiting: a full queue raises BlockingIOError (EAGAIN) on SocketCAN; on a simulated link
+        a frame the other end has not read in time, or with nobody there yet, is lost."""
+        if self.peer is not None:
+            try:
+                self.sock.sendto(raw, socket.MSG_DONTWAIT, self.peer)
+            except (FileNotFoundError, ConnectionRefusedError, BlockingIOError):
+                self.lost = getattr(self, 'lost', 0) + 1
+        else:
+            self.sock.send(raw, socket.MSG_DONTWAIT)
+
+    def recv(self, timeout: float = 0.1):
+        # select() for the wait: a socket timeout would also make send() wait (one socket, two threads)
+        import select
+        if not select.select([self.sock], [], [], timeout)[0]:
+            return None
+        try:
+            data, anc, _flags, _addr = self.sock.recvmsg(72, socket.CMSG_SPACE(TIMESPEC.size), socket.MSG_DONTWAIT)
+        except BlockingIOError:
+            return None
+        if not data:
+            raise ConnectionError('the CAN link closed')
+        ts = None
+        for level, kind, payload in anc:
+            if level == socket.SOL_SOCKET and kind == SO_TIMESTAMPNS and len(payload) >= TIMESPEC.size:
+                s, ns = TIMESPEC.unpack_from(payload)
+                ts = s * 1_000_000_000 + ns
+        return data, ts
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+class DeviceCan:
+    """The device's side of the CAN loop: the stack's control goes out as Falcon's command frames (CMD_STEER and
+    CMD_LONG, or CMD_FD on CAN FD) at once and then every period_ms with fresh alive counters (a command older than
+    100 ms trips the chassis's watchdog); the chassis's feedback (wheel speeds and ticks, yaw rate, steering, brake)
+    is decoded for the stack (meta["can"])."""
+
+    def __init__(self, ses, spec: str, fd, cfg: dict):
+        self.ses = ses
+        self.C = _canmsgs()
+        self.link = CanLink(spec, fd, side='b')
+        self.cfg = cfg
+        self.period = float(cfg.get('period_ms', 20.0)) / 1000.0
+        self.counters = self.C.Counters()
+        self.lock = threading.Lock()
+        self.latest = None                               # the newest command's signals
+        self.feedback: dict = {}
+        self.rx_frames = 0
+        self.tx_frames = 0
+        self.errors: list = []
+        self.threads = [threading.Thread(target=self._tx, daemon=True, name='agent-can-tx'),
+                        threading.Thread(target=self._rx, daemon=True, name='agent-can-rx')]
+
+    def start(self):
+        for t in self.threads:
+            t.start()
+
+    def command(self, frame: int, u: dict):
+        """The stack's output as command signals (STEER_REQ left positive: CARLA's steer is right positive), sent
+        at once; returns the device-clock time it went out."""
+        c = self.cfg
+        mode = 'torque' if u.get('steer_torque_nm') is not None else 'angle'
+        sig = {'STEER_REQ': -float(u.get('steer', 0.0)) * float(c.get('steer_max_deg', 540.0)),
+               'STEER_TORQUE_REQ': float(u.get('steer_torque_nm') or 0.0),
+               'STEER_MODE': self.C.STEER_MODES[mode], 'ENABLE': 1,
+               'BRAKE_REQ': float(u['brake_bar']) if u.get('brake_bar') is not None else
+               float(u.get('brake', 0.0)) * float(c.get('brake_full_bar', 100.0)),
+               'THROTTLE_REQ': 100.0 * float(u.get('throttle', 0.0)), 'STEP': int(frame)}
+        with self.lock:
+            self.latest = sig
+        return self._send(sig)
+
+    def _send(self, sig) -> int:
+        C = self.C
+        names = ('CMD_FD',) if self.link.fd else ('CMD_STEER', 'CMD_LONG')
+        t = None
+        for n in names:
+            vals = dict(sig, STEP=int(sig['STEP']) & ((1 << C.BY_NAME[n].signal('STEP').length) - 1))
+            raw = C.pack_frame(C.frame(n, vals, self.counters.next(n)))
+            if t is None:
+                t = self.ses.clock.now()
+            try:
+                self.link.send(raw)
+                self.tx_frames += 1
+            except OSError as e:
+                self.ses.count('can_tx_errors')
+                self.ses.note(f'CAN send failed: {e}')
+        return t
+
+    def _tx(self):
+        while not self.ses.stopping.wait(self.period):
+            with self.lock:
+                sig = self.latest
+            if sig is not None:
+                self._send(sig)
+
+    def _rx(self):
+        C = self.C
+        while not self.ses.stopping.is_set():
+            try:
+                got = self.link.recv(0.2)
+            except OSError:
+                break
+            if got is None:
+                continue
+            try:
+                fr = C.unpack_frame(got[0])
+            except ValueError:
+                continue
+            if fr.error:
+                why = C.describe_error(fr)
+                self.ses.count('can_error_frames')
+                self.errors.append(why)
+                self.ses.note(f'CAN error frame: {", ".join(why)}')
+                continue
+            m = C.BY_ID.get(fr.can_id)
+            if m is None or m.sender != 'FALCON_CHASSIS':
+                continue
+            v = C.decode(m, fr.data)
+            if not v.get('_crc_ok', True):
+                self.ses.count('can_feedback_bad_crc')
+                continue
+            self.rx_frames += 1
+            with self.lock:
+                self.feedback.update({k: round(float(x), 4) for k, x in v.items() if not k.startswith('_')
+                                      and k not in ('CRC', 'COUNTER')})
+                self.feedback['_rx'] = self.ses.clock.now()
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return dict(self.feedback)
+
+    def stop(self):
+        for t in self.threads:
+            t.join(1.0)
+        self.link.close()                                # the device's commands stop: the bus goes silent
+
+    def stats(self) -> dict:
+        return {'interface': self.link.spec, 'kind': self.link.kind, 'fd': self.link.fd, 'tx_frames': self.tx_frames,
+                'rx_frames': self.rx_frames, 'error_frames': len(self.errors), 'errors': self.errors[:20]}
+
+
+# ============================================================================================ PTP status
+def pmc_status(timeout: float = 3.0) -> dict:
+    """This device's PTP state as linuxptp's pmc reports it (raw text: the host parses it with core.ptp), and whether
+    ptp4l / phc2sys run. Never needs more than pmc's own access to ptp4l's socket; nothing is started."""
+    import shutil
+    import subprocess
+    out = {'pmc': shutil.which('pmc'), 'ptp4l_running': _running('ptp4l'), 'phc2sys_running': _running('phc2sys'),
+           'text': None, 'code': None, 'error': None}
+    if out['pmc'] is None:
+        return out
+    try:
+        r = subprocess.run([out['pmc'], '-u', '-b', '0', 'GET TIME_STATUS_NP', 'GET PORT_DATA_SET',
+                            'GET CURRENT_DATA_SET'], capture_output=True, text=True, timeout=timeout)
+        out.update(text=r.stdout[-8000:], code=r.returncode, error=r.stderr.strip()[-400:] or None)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        out['error'] = f'{type(e).__name__}: {e}'
+    return out
+
+
+def _running(comm: str) -> bool:
+    """Whether a process named exactly comm runs (/proc/*/comm, not a pattern match over command lines)."""
+    try:
+        pids = [p for p in os.listdir('/proc') if p.isdigit()]
+    except OSError:
+        return False
+    for p in pids:
+        if _read(f'/proc/{p}/comm', 64) == comm:
+            return True
+    return False
 
 
 # ============================================================================================ what this device has
@@ -389,7 +669,39 @@ def environment(decoder: str = 'auto') -> dict:
     env['elements'] = {e: G.ElementFactory.find(e) is not None for e in ELEMENTS} if G is not None else {}
     env['decoder'] = pick_decoder(decoder)
     env['rclpy'] = importlib.util.find_spec('rclpy') is not None
+    env['can_interfaces'] = can_interfaces()
+    env['video_devices'] = video_devices()
+    ptp = pmc_status()
+    env['ptp'] = {k: ptp[k] for k in ('pmc', 'ptp4l_running', 'phc2sys_running')}
     return env
+
+
+def can_interfaces() -> list:
+    """The CAN interfaces here: [{name, mtu, fd, virtual, up}] (sysfs type 280 = ARPHRD_CAN)."""
+    out = []
+    try:
+        names = sorted(os.listdir('/sys/class/net'))
+    except OSError:
+        return out
+    for n in names:
+        if _read(f'/sys/class/net/{n}/type', 16) != '280':
+            continue
+        mtu = interface_mtu(n)
+        out.append({'name': n, 'mtu': mtu, 'fd': mtu == 72, 'virtual': os.path.exists(f'/sys/devices/virtual/net/{n}'),
+                    'up': _read(f'/sys/class/net/{n}/operstate', 16) in ('up', 'unknown')})
+    return out
+
+
+def video_devices() -> list:
+    """The V4L2 device nodes here: [{device, name}] (a GMSL2 deserialiser's capture nodes, a v4l2loopback's)."""
+    out = []
+    try:
+        names = sorted(os.listdir('/sys/class/video4linux'), key=lambda s: (len(s), s))
+    except OSError:
+        return out
+    for n in names:
+        out.append({'device': f'/dev/{n}', 'name': _read(f'/sys/class/video4linux/{n}/name', 64)})
+    return out
 
 
 # ============================================================================================ the default stack
@@ -590,6 +902,10 @@ class Session:
         self.video = None
         self.udp = None
         self.ros = None
+        self.can = None
+        self.grabber = None
+        self.stamps: dict = {}                           # frame → sidecar stamps of a V4L2 camera
+        self.pmc_last = None
         self.streams: list = []
         st = self.cfg.get('stack') or {}
         self.stack = load_stack(agent.stack_spec, dict(st.get('params') or {}, **agent.stack_params), self.cfg)
@@ -631,7 +947,112 @@ class Session:
                 self.ros = Ros2Out(lid['ros2_topic'], self.clock)
             except Exception as e:                       # noqa: BLE001 (reported; the session goes on)
                 self.note(f'ROS 2 publishing is off: {type(e).__name__}: {e}')
+        if cam.get('transport') == 'v4l2':
+            self._start_v4l2(cam)
+        can = self.cfg.get('can') or {}
+        if can.get('enabled'):
+            if self.agent.can_spec:
+                self.can = DeviceCan(self, self.agent.can_spec, self.agent.can_fd, can)
+                self.can.start()
+            else:
+                self.note('the session uses CAN but this agent was started without --can: commands go over the '
+                          'session only')
         threading.Thread(target=self._stack_loop, daemon=True, name='agent-stack').start()
+
+    def after_ready(self):
+        """What starts once "ready" has gone: the clock reports (the host reads "ready" first)."""
+        if (self.cfg.get('clock') or {}).get('realtime'):
+            threading.Thread(target=self._clock_reports, daemon=True, name='agent-clock').start()
+
+    # ---------------------------------------------------------------- the camera from a V4L2 node
+    def _start_v4l2(self, cam: dict):
+        """The camera from a V4L2 capture node (--camera-device: a GMSL2 deserialiser on the Orin, the host's
+        v4l2loopback node for a simulated device), frames matched to steps by their barcode; their stamps from the
+        sidecar UDP stream (camera.stamp_port)."""
+        dev = self.agent.camera_device
+        if not dev:
+            self.note('the camera is written to a V4L2 device but this agent reads none (--camera-device): the '
+                      'stack runs on the lidar')
+            return
+        if not os.path.exists(dev):
+            raise RuntimeError(f'the camera device {dev} does not exist here')
+        self.grabber = _sibling('gmsl').V4L2CaptureGrabber(dev)      # opened by its thread (module doc)
+        if cam.get('stamp_port'):
+            self.stamp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.stamp_sock.bind((self.agent.listen, int(cam['stamp_port'])))
+            self.stamp_sock.settimeout(0.2)
+            threading.Thread(target=self._v4l2_stamps, daemon=True, name='agent-v4l2-stamps').start()
+        threading.Thread(target=self._v4l2_frames, daemon=True, name='agent-v4l2').start()
+
+    def _v4l2_stamps(self):
+        while not self.stopping.is_set():
+            try:
+                data = self.stamp_sock.recv(512)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                d = json.loads(data.decode('utf-8'))
+                self.stamps[int(d['f'])] = d
+            except (ValueError, KeyError):
+                self.count('v4l2_bad_stamps')
+
+    def _v4l2_frames(self):
+        g = self.grabber
+        # a v4l2loopback node with exclusive_caps=1 becomes a capture device only once its writer (the host's
+        # gateway, after "ready") has set the format: try for 20 s
+        t0, last = time.monotonic(), None
+        while not self.stopping.is_set():
+            try:
+                g.open()
+                break
+            except Exception as e:                       # noqa: BLE001 (retried, then told)
+                last = e
+                if time.monotonic() - t0 > 20.0:
+                    self.note(f'the camera device {g.device} could not be opened: {e}')
+                    return
+                self.stopping.wait(0.2)
+        if last is not None and g.fd is None:
+            return
+        while not self.stopping.is_set():
+            try:
+                got = g.grab(0.2)
+            except Exception as e:                       # noqa: BLE001 (the stream ends, said once)
+                self.note(f'the V4L2 camera stopped: {type(e).__name__}: {e}')
+                break
+            if got is None:
+                continue
+            if got.barcode is None:
+                self.count('v4l2_without_barcode')
+                continue
+            frame = int(got.barcode)
+            # the driver's buffer time is this machine's raw CLOCK_MONOTONIC: put it on the (emulated) device clock
+            t_rx = self.clock.from_monotonic(got.t_buffer_ns) if got.clock == 'monotonic' and got.t_buffer_ns \
+                else self.clock.from_monotonic(got.t_dequeued_ns)
+            t_dec = self.clock.from_monotonic(got.t_converted_ns)
+            st = self.stamps.pop(frame, {})
+            self.arrived(frame, 'cam_rx', t_rx, got.image.nbytes)
+            self.arrived(frame, 'dec_end', t_dec)
+            self.offer(frame, 'camera', got.image, {'sim_t': st.get('s'), 'hw_t': st.get('h')},
+                       {'cam_rx': t_rx, 'dec_start': self.clock.from_monotonic(got.t_dequeued_ns), 'dec_end': t_dec})
+
+    # ---------------------------------------------------------------- clock reports (PTP / shared realtime)
+    def _clock_reports(self):
+        """Once a second this device's CLOCK_REALTIME and its stamp clock read together, and every 5 s what its
+        pmc says (raw: the host parses it) — the host's PTP-based offset (core.ptp)."""
+        k = 0
+        while not self.stopping.wait(0.0 if k == 0 else 1.0):
+            msg = {'t': 'clock', 'd_rt': time.time_ns(), 'd_ns': self.clock.now()}
+            if k % 5 == 0:
+                st = pmc_status()
+                self.pmc_last = st
+                msg['pmc'] = st
+            k += 1
+            try:
+                self.send(msg)
+            except OSError:
+                break
 
     def attach(self, kind: str, sock):
         self.streams.append(sock)
@@ -736,11 +1157,15 @@ class Session:
         for k in missing:
             self.count(f'sets_without_{k}')
         meta = dict(parts['meta'], frame=frame)
+        if self.can is not None:
+            meta['can'] = self.can.snapshot()            # the chassis's newest feedback
         t0 = self.clock.now()
         u = self.stack.act(parts.get('camera'), parts.get('lidar'), meta) or {}
         t1 = self.clock.now()
         self.count('sets_run')
         dev = dict(parts['stamps'], stack_start=t0, stack_end=t1)
+        if self.can is not None:
+            dev['can_tx'] = self.can.command(frame, u)  # onto the bus first: the chassis acts on that
         ctrl = {'t': 'control', 'frame': frame, 'throttle': float(u.get('throttle', 0.0)),
                 'steer': float(u.get('steer', 0.0)), 'brake': float(u.get('brake', 0.0)), 'missing': missing,
                 'info': u.get('info') or {}, 'dev': dev}
@@ -754,6 +1179,12 @@ class Session:
             self.cv.notify_all()
         if self.video is not None:
             self.video.stop()
+        if self.can is not None:
+            self.can.stop()
+        if self.grabber is not None:
+            self.grabber.close()
+        if getattr(self, 'stamp_sock', None) is not None:
+            self.stamp_sock.close()
         for s in self.streams + ([self.udp] if self.udp is not None else []):
             try:
                 s.close()
@@ -768,7 +1199,10 @@ class Session:
         return {'t': 'stats', 'counts': self.counts, 'notes': self.notes, 'stack': self.stack_name,
                 'decoder': self.video.decoder if self.video is not None else None,
                 'arrival_fields': ['frame'] + list(keys), 'arrivals': arr,
-                'ros2': None if self.ros is None else self.ros.stats()}
+                'ros2': None if self.ros is None else self.ros.stats(),
+                'can': None if self.can is None else self.can.stats(),
+                'camera_device': None if self.grabber is None else self.grabber.describe(),
+                'pmc': self.pmc_last}
 
 
 class Ros2Out:
@@ -809,10 +1243,13 @@ class Ros2Out:
 # ============================================================================================ the agent
 class Agent:
     def __init__(self, listen: str, port: int, stack: str = '', stack_params: dict | None = None,
-                 decoder: str = 'auto', clock: DeviceClock | None = None):
+                 decoder: str = 'auto', clock: DeviceClock | None = None, can: str = '', can_fd='auto',
+                 camera_device: str = ''):
         self.listen, self.port = listen, int(port)
         self.stack_spec, self.stack_params = stack, dict(stack_params or {})
         self.decoder = decoder
+        self.can_spec, self.can_fd = can, can_fd       # chosen here, on the device's command line, never by the host
+        self.camera_device = camera_device
         self.clock = clock or DeviceClock()
         self.session = None
         self.lock = threading.Lock()
@@ -911,7 +1348,10 @@ class Agent:
         try:
             ses.send({'t': 'ready', 'env': environment(self.decoder), 'stack': ses.stack_name,
                       'decoder': ses.video.decoder if ses.video is not None else None,
-                      'clock': {'emulated': self.clock.emulated}})
+                      'clock': {'emulated': self.clock.emulated},
+                      'can': None if ses.can is None else {'interface': ses.can.link.spec, 'fd': ses.can.link.fd},
+                      'camera_device': None if ses.grabber is None else ses.grabber.describe()})
+            ses.after_ready()
             while True:
                 h, _ = read_msg(conn)
                 if h.get('t') == 'bye':
@@ -953,6 +1393,12 @@ def main(argv=None) -> int:
     ap.add_argument('--decoder', default='auto', help=f'H.264 decoder element (auto: first of {", ".join(DECODERS)})')
     ap.add_argument('--clock-offset-ms', type=float, default=0.0, help='emulate a clock offset (simulated devices)')
     ap.add_argument('--clock-drift-ppm', type=float, default=0.0, help='emulate a clock drift (simulated devices)')
+    ap.add_argument('--can', default='', help='CAN interface for commands and chassis feedback (can0, vcan0, '
+                                              'sim:NAME); off by default')
+    ap.add_argument('--can-fd', choices=('auto', 'on', 'off'), default='auto',
+                    help='CAN FD frames: auto = when the interface\'s MTU is 72')
+    ap.add_argument('--camera-device', default='', help='read the camera from this V4L2 capture node (a GMSL2 '
+                                                         'deserialiser\'s /dev/videoN) when the host writes it to one')
     a = ap.parse_args(argv)
     if a.check:
         print(json.dumps(environment(a.decoder), indent=1))
@@ -961,7 +1407,8 @@ def main(argv=None) -> int:
     for kv in a.stack_param:
         k, _, v = kv.partition('=')
         params[k] = v
-    agent = Agent(a.listen, a.port, a.stack, params, a.decoder, DeviceClock(a.clock_offset_ms, a.clock_drift_ppm))
+    agent = Agent(a.listen, a.port, a.stack, params, a.decoder, DeviceClock(a.clock_offset_ms, a.clock_drift_ppm),
+                  can=a.can, can_fd=a.can_fd, camera_device=a.camera_device)
     try:
         agent.serve(once=a.once)
     except KeyboardInterrupt:

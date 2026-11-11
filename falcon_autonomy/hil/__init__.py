@@ -14,4 +14,9 @@ Three processes, each in the Python that has what it needs (docs/hardware.md is 
 
 core.hil holds the configs, the emulated sensor clocks, the clock-offset estimate and the latency statistics;
 hil.report the waterfall and the report; hil.deploy copying and starting the agent over SSH with the user's key.
+
+Since 4.0: hil.canbridge puts the chassis model (core.chassis) on a CAN bus with its interlocks (core.canmsgs: the
+message table and the DBC); hil.v4l2out writes the camera into a V4L2 device; hil.gmsl reads V4L2 capture nodes (a
+GMSL2 deserialiser on the Orin) and defines the injector interface; core.ptp parses linuxptp and chooses the clock
+source. The device's copies of canmsgs, v4l2out and gmsl travel with the agent (standard library and numpy).
 """

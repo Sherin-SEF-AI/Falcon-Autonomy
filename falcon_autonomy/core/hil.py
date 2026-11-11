@@ -30,6 +30,16 @@ control computed from it: in a real-time session it is quantised to whole steps.
 applied at the very next step (the deadline is the next step's start); late when at a later one; superseded when a
 newer control arrived first; missing when none came back; after_end when it came back after the session's last step
 (not counted against the deadline).
+
+CAN control (cfg "can" with control "can": hil.canbridge, core.chassis): the device's control comes back as CAN command
+frames, and its stages are CAN_STAGES: the stack's output onto the bus (device), the bus to this machine (one-way:
+the device's send stamp against the kernel's receive timestamp, SO_TIMESTAMPNS), and the "can" stage — the kernel's
+receive timestamp to the bridge's read in the worker — then the wait for the next step. The chassis's own actuator
+delays and lags (core.chassis) are not latency stages: they are the modelled vehicle's, reported with it.
+
+The clock source (core.ptp): the offset may come from PTP-synchronised realtime clocks or the NTP-style pings above;
+both are computed when available, the one used is the session's clock_source (auto, ptp, ntp-style), and their
+disagreement is recorded (summary "clock_sources").
 """
 from __future__ import annotations
 
@@ -44,7 +54,7 @@ WINDOW_S = 2.0
 TRUST_NS = 1_000_000                       # one-way stages are trusted when the offset's uncertainty is below 1 ms
 DEVICE_DEFAULTS = {'address': '', 'port': 7710, 'ssh_user': '', 'ssh_key': '', 'ssh_port': 22,
                    'remote_dir': '~/falcon-hil', 'python': 'python3', 'agent_pid': None}
-CAMERA_TRANSPORTS = ('h264-rtp', 'raw-tcp')
+CAMERA_TRANSPORTS = ('h264-rtp', 'raw-tcp', 'v4l2')
 ENCODERS = ('auto', 'nvh264enc', 'x264enc')
 LIDAR_TRANSPORTS = ('tcp', 'udp')
 DEVICE_MODES = ('local', 'remote')
@@ -69,6 +79,15 @@ STAGES = (
     ('to_sim', 'Control to the simulation', 'ctrl_rx', 'ctrl_worker', 'host'),
     ('wait_step', 'Waiting for the next step', 'ctrl_worker', 'applied', 'host'),
 )
+# control back over CAN (hil.canbridge): the stack's output onto the bus, the bus, the kernel to the worker
+CAN_STAGES = STAGES[:8] + (
+    ('reply', 'Control onto the CAN bus', 'dev_stack_end', 'dev_can_tx', 'device'),
+    ('can_bus', 'CAN bus to this machine', 'dev_can_tx', 'can_rx', 'cross'),
+    ('can', 'CAN frame to the simulation', 'can_rx', 'ctrl_worker', 'host'),
+    ('wait_step', 'Waiting for the next step', 'ctrl_worker', 'applied', 'host'),
+)
+CAN_CONTROLS = ('can', 'record')     # can: the CAN commands drive the ego; record: CAN runs beside, the session drives
+V4L2_DEFAULTS = {'device': '/dev/video40', 'format': 'YUYV', 'method': 'ioctl', 'barcode': True}
 # other measures (key, label, start, end, clock); 'network_rtt' is computed (round trip − time on the device)
 MEASURES = (
     ('e2e', 'End to end (sensor to actuation)', 'tick_start', 'applied', 'host'),
@@ -103,7 +122,8 @@ def hil_config(project, world_id: str, rig_id: str, out_dir: str, port: int, tm_
                sync_timeout_ms: float | None = None, control_timeout_s: float = 0.5,
                traffic_vehicles: int | None = None, gateway_python: str = '', warmup_steps: int = 10,
                workspace: str = '', host: str = '127.0.0.1', name: str = '', faults: list | None = None,
-               mrm=None) -> dict:
+               mrm=None, can: dict | None = None, v4l2: dict | None = None, clock_source: str = '',
+               settings=None) -> dict:
     """A session worker's config (falcon.hil_config/1). The world, its weather and traffic come from the project as
     for a drive (core.drive.drive_config); the rig's first pinhole camera and first lidar are streamed (a rig with
     no lidar gets DEFAULT_LIDAR). seconds 0: until stopped. device 'local' runs the device agent on this machine (a
@@ -111,7 +131,15 @@ def hil_config(project, world_id: str, rig_id: str, out_dir: str, port: int, tm_
     the address in the user's settings, which the config never holds (the worker gets it from its environment).
     faults: timed sensor faults on the streamed camera or lidar [{sensor: 'camera' | 'lidar' | its id, kind,
     onset_s, for_s, …}] (core.faults.TIMED; seconds from the session's first step); mrm: judge the minimal-risk
-    manoeuvre after the first onset (core.mrm; True or its PARAMS overridden)."""
+    manoeuvre after the first onset (core.mrm; True or its PARAMS overridden).
+    camera 'v4l2': the camera is written into a V4L2 output device on this machine (hil.v4l2out; v4l2: {device,
+    format YUYV|UYVY|RGB3|NV12, method ioctl|gstreamer, barcode}); a simulated device reads it back from
+    v4l2.capture_device (the same node, read as a camera), a remote one from its own --camera-device.
+    can: the CAN loop (hil.canbridge): {interface (vcan0, can0, sim:NAME, python-can:IF:CHANNEL), fd auto|on|off,
+    control can|record, chassis: core.chassis PARAMS, device_interface (a simulated device's --can; default: the same
+    vcan, or the other end of a sim link), dbc, dbc_map, bitrate}; the interface must pass the allow-list
+    (settings hil_can; checked here when settings are given, and again by the worker).
+    clock_source: auto | ptp | ntp-style (default: settings hil_ptp.clock_source, else auto)."""
     import sys
     from .drive import drive_config
     if camera not in CAMERA_TRANSPORTS:
@@ -184,7 +212,71 @@ def hil_config(project, world_id: str, rig_id: str, out_dir: str, port: int, tm_
     cfg.update(world_keys(d))                             # road limits, traffic kept, the city, vehicle lights
     from .oddmonitor import CFG_KEYS
     cfg.update({k: d[k] for k in CFG_KEYS if k in d})     # the workspace's ODD, monitored in the session
+    if camera == 'v4l2':
+        cfg['camera']['v4l2'] = v4l2_section(v4l2, cam, device)
+    elif v4l2:
+        raise ValueError('a V4L2 output needs the camera transport v4l2')
+    if can:
+        cfg['can'] = can_section(can, device, settings)
+    pref = clock_source or ((settings.get('hil_ptp') or {}).get('clock_source') if settings is not None else '') \
+        or 'auto'
+    from .ptp import SOURCES
+    if pref not in SOURCES:
+        raise ValueError(f'clock source {pref!r} is not one of {SOURCES}')
+    cfg['clock_source'] = pref
     return cfg
+
+
+def v4l2_section(v4l2: dict | None, cam: dict, device: str) -> dict:
+    """The V4L2 output of the camera (hil.v4l2out), checked."""
+    from ..hil.v4l2out import WRITE_FORMATS
+    v = dict(V4L2_DEFAULTS, **(v4l2 or {}))
+    if v['format'] not in WRITE_FORMATS:
+        raise ValueError(f'V4L2 format {v["format"]!r} is not one of {WRITE_FORMATS}')
+    if v['method'] not in ('ioctl', 'gstreamer'):
+        raise ValueError('the V4L2 writer is ioctl or gstreamer')
+    if not str(v['device']).startswith('/dev/video'):
+        raise ValueError(f'{v["device"]!r} is not a V4L2 device node (/dev/videoN)')
+    if cam['width'] % 2 or (v['format'] == 'NV12' and cam['height'] % 2):
+        raise ValueError('the V4L2 camera needs an even width (and height for NV12)')
+    if v.get('barcode') and cam['width'] < 44:
+        raise ValueError('the barcode needs a camera 44 pixels wide at least')
+    v['width'], v['height'] = int(cam['width']), int(cam['height'])
+    if device == 'local':
+        v.setdefault('capture_device', v['device'])         # the simulated device reads the same node back
+    return v
+
+
+def can_section(can: dict, device: str, settings=None) -> dict:
+    """The session's CAN loop (hil.canbridge, core.chassis), checked — the allow-list when settings are given."""
+    from .chassis import validate
+    c = {'fd': 'auto', 'control': 'can', 'chassis': {}, 'bitrate': 500000, 'steer_max_deg': 540.0,
+         'brake_full_bar': 100.0, 'period_ms': 20.0, **dict(can)}
+    if not c.get('interface'):
+        raise ValueError('the CAN loop needs an interface (vcan0, can0, sim:NAME)')
+    if c['fd'] not in ('auto', 'on', 'off'):
+        raise ValueError('CAN FD is auto, on or off')
+    if c['control'] not in CAN_CONTROLS:
+        raise ValueError(f'CAN control is one of {CAN_CONTROLS}')
+    bad = validate(c['chassis'])
+    if bad:
+        raise ValueError('chassis: ' + '; '.join(bad))
+    if c.get('dbc') and not os.path.isfile(c['dbc']):
+        raise ValueError(f'no DBC file {c["dbc"]}')
+    if settings is not None:
+        from ..hil.canbridge import check_interface
+        ok, why, _ = check_interface(c['interface'], settings)
+        if not ok:
+            raise ValueError(why)
+    if device == 'local' and not c.get('device_interface'):
+        c['device_interface'] = c['interface']               # sim:NAME: the agent takes the other end
+    c['enabled'] = True
+    return c
+
+
+def stages_for(cfg: dict | None) -> tuple:
+    """The stages of a session: CAN_STAGES when its control comes back over CAN."""
+    return CAN_STAGES if ((cfg or {}).get('can') or {}).get('control') == 'can' else STAGES
 
 
 def submit_session(svc, cfg: dict, address: str = '', title: str = ''):
@@ -320,10 +412,10 @@ def _span(rec: dict, a: str, b: str, clock: str, est: dict):
     return (float(tb) - float(ta)) / 1e6
 
 
-def stage_values(records, est: dict) -> dict:
+def stage_values(records, est: dict, stages: tuple = STAGES) -> dict:
     """Per stage and measure, the values (ms) of every record that has both stamps."""
     out = {}
-    for key, _label, a, b, clock in STAGES + MEASURES:
+    for key, _label, a, b, clock in stages + MEASURES:
         out[key] = [_span(r, a, b, clock, est) for r in records]
     rt, dev = out['round_trip'], out['on_device']
     out['network_rtt'] = [None if x is None or y is None else x - y for x, y in zip(rt, dev)]
@@ -355,10 +447,11 @@ def summarise(records: list, est: dict, period_ns: int, counts: dict | None = No
     """The session's latency summary (docs/hardware.md): per stage and measure describe(), the waterfall (median
     cascade), deadline accounting, jitter, the clock estimate and what it allows, the emulated clocks' self-check."""
     import numpy as np
-    vals = stage_values(records, est)
+    order = stages_for(cfg)                     # CAN_STAGES when the control comes back over CAN
+    vals = stage_values(records, est, order)
     trusted = bool(est) and est.get('trusted', False)
     stages = {}
-    for key, label, a, b, clock in STAGES:
+    for key, label, a, b, clock in order:
         d = describe(vals[key])
         d.update(label=label, clock=clock, start=a, end=b)
         if clock == 'cross':
@@ -373,7 +466,7 @@ def summarise(records: list, est: dict, period_ns: int, counts: dict | None = No
     measures['network_rtt'] = dict(describe(vals['network_rtt']), label='Network round trip (exact: round trip − '
                                                                          'time on the device)', clock='host+device')
     cascade, t = [], 0.0
-    for key, label, *_ in STAGES:
+    for key, label, *_ in order:
         m = stages[key].get('median')
         if m is None:
             continue
@@ -419,12 +512,16 @@ def summarise(records: list, est: dict, period_ns: int, counts: dict | None = No
                                      'within_uncertainty': abs(est['offset_ns'] - truth) <= est['uncertainty_ns'],
                                      'note': 'a simulated device: its clock is this machine\'s, offset and drifted '
                                              'by the emulation, so the truth is known'}
+    if cfg and cfg.get('can'):
+        out['can'] = {'control': cfg['can'].get('control'), 'interface': cfg['can'].get('interface'),
+                      'commands_received': sum(1 for r in records if r.get('can_rx') is not None or
+                                               r.get('can_read') is not None)}
     return out
 
 
-def live_stats(records: list, est: dict, period_ns: int) -> dict:
+def live_stats(records: list, est: dict, period_ns: int, cfg: dict | None = None) -> dict:
     """The compact numbers a running session reports once a second (medians of the recent frames)."""
-    s = summarise(records, est, period_ns)
+    s = summarise(records, est, period_ns, cfg={'can': (cfg or {}).get('can')} if (cfg or {}).get('can') else None)
     return {'frames': s['frames'], 'waterfall': s['waterfall'],
             'e2e': {k: s['measures']['e2e'].get(k) for k in ('median', 'p95', 'p99')},
             'round_trip': {k: s['measures']['round_trip'].get(k) for k in ('median', 'p95')},
@@ -461,9 +558,48 @@ def summarise_run(run_dir: str) -> dict:
     if not cfg or not records:
         raise ValueError(f'{run_dir} holds no HIL session (hil.json and latency.jsonl)')
     period = int(round(1e9 / float(cfg['fps'])))
-    est = estimate_offset(samples)
+    sources = clock_sources(run_dir, cfg, samples)
+    est = sources['estimate']
     counts = dict(ses.get('counts') or {}, gateway=rd('gateway.json').get('counts') or {})
     out = summarise(records, est, period, counts, device.get('stats') or {}, cfg)
+    out['clock_sources'] = {k: v for k, v in sources.items() if k != 'estimate'}
+    if (cfg.get('device') or {}).get('mode') == 'local':
+        out['clock_sources']['checks'] = _source_checks(sources, cfg)
+    can = rd('can.json')
+    if can:
+        out['can'] = dict(out.get('can') or {}, **can)
     out['session'] = ses.get('session') or {}
     out['performance'] = ses.get('performance') or {}
+    return out
+
+
+def clock_sources(run_dir: str, cfg: dict, samples: list) -> dict:
+    """Both clock-offset estimates of a session and the one used (core.ptp.choose): the NTP-style pings
+    (clock.jsonl) and the realtime pairs with the pmc statuses (ptp.jsonl, written by the gateway)."""
+    from . import ptp
+    ntp = estimate_offset(samples)
+    rows = read_jsonl(os.path.join(run_dir, 'ptp.jsonl'))
+    pairs = [r for r in rows if r.get('t') == 'pair']
+    host = next((r['status'] for r in reversed(rows) if r.get('t') == 'host_pmc'), None)
+    devs = [r['status'] for r in rows if r.get('t') == 'device_pmc']
+    local = (cfg.get('device') or {}).get('mode') == 'local'
+    basis = ptp.ptp_basis(local, ptp.with_parsed(host) if host else None, [ptp.with_parsed(d) for d in devs])
+    rt = ptp.realtime_estimate(pairs, basis['bound_ns'], basis['basis']) if pairs and basis['ok'] else {}
+    if pairs and not basis['ok']:                       # kept for the record, never used
+        basis['estimate_if_used'] = ptp.realtime_estimate(pairs, basis['bound_ns'], basis['basis'])
+    return ptp.choose(cfg.get('clock_source', 'auto'), rt, ntp, basis)
+
+
+def _source_checks(sources: dict, cfg: dict) -> dict:
+    """A simulated device's known truth against each estimate (offset and drift emulated, so the truth is known)."""
+    sd = cfg.get('sim_device') or {}
+    out = {}
+    for k in ('ptp', 'ntp_style'):
+        est = sources.get(k)
+        if not est:
+            continue
+        truth = float(sd.get('clock_offset_ms', 0.0)) * 1e6 + float(sd.get('clock_drift_ppm', 0.0)) * 1e-6 * \
+            est['t_ref_ns']
+        out[k] = {'error_ns': est['offset_ns'] - truth,
+                  'within_uncertainty': abs(est['offset_ns'] - truth) <= est['uncertainty_ns']}
     return out

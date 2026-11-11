@@ -18,6 +18,12 @@ speed-preset ultrafast, no B-frames, sliced threads); an IDR every gop frames wi
 recovers within a second of a loss. Each sender keeps only the newest frame waiting: when the network or the encoder
 falls behind, an older frame is replaced and counted ("dropped by the gateway"), never queued up.
 
+Camera transport "v4l2" (hil.v4l2out): each frame is written into a V4L2 output device on this machine (the barcode
+painted when asked), its stamps sent to the agent's UDP port P + 3; the device reads the node as a camera. Clock
+reports from the agent ("clock": its realtime and stamp clock, its pmc status) and this machine's own pmc status
+(remote devices, every 5 s) go into ptp.jsonl; the estimate sent to the worker once a second is the session's clock
+source (core.ptp.choose). A CAN loop's device end is the agent's (--can, from the config's can.device_interface).
+
 Local mode ("simulated device"): the gateway starts device_agent.py in this Python on 127.0.0.1 on free ports, with
 the config's emulated clock (offset, drift) and decoder, its log in the run folder, and stops it at the end. Remote
 mode: the address comes from FALCON_HIL_ADDRESS (the user's settings, never a file) and the agent must be running
@@ -56,7 +62,7 @@ def free_base_port(host='127.0.0.1') -> int:
             t = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             socks.append(t)
             t.bind((host, p))
-            for k in range(3):
+            for k in range(4):                           # P + 3: a V4L2 camera's stamps
                 u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 socks.append(u)
                 u.bind((host, p + k))
@@ -222,6 +228,10 @@ class Gateway:
         self.stats_ev = threading.Event()
         self.video = None
         self.cam_slot, self.lidar_slot = Slot(), Slot()
+        self.v4l2 = None                                  # hil.v4l2out writer (camera transport v4l2)
+        self.stamp_tx = None
+        self.ptp_rows: list = []                          # ptp.jsonl: realtime pairs, pmc statuses (core.ptp)
+        self.plock = threading.Lock()
         self.cam_sock = self.lidar_sock = self.lidar_udp = None
         self.threads: list = []
 
@@ -265,6 +275,12 @@ class Gateway:
         st = self.cfg.get('stack') or {}
         if st.get('name'):
             cmd += ['--stack', st['name']]
+        can = self.cfg.get('can') or {}
+        if can.get('device_interface'):                   # the simulated device's end of the CAN loop
+            cmd += ['--can', can['device_interface'], '--can-fd', str(can.get('fd', 'auto'))]
+        v = (self.cfg['camera'].get('v4l2') or {})
+        if self.cfg['camera']['transport'] == 'v4l2' and v.get('capture_device'):
+            cmd += ['--camera-device', v['capture_device']]
         env = {k: v for k, v in os.environ.items() if not k.startswith('PYTHON')}
         log = open(os.path.join(self.out, 'device-agent.log'), 'w', encoding='utf-8')
         self.agent_proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
@@ -302,7 +318,14 @@ class Gateway:
                       'ros2_topic': lid.get('ros2_topic') or '', 'channels': int(ls['channels']),
                       'rotation_frequency': float(ls['rotation_frequency']), 'pose': ls['pose']},
             'stack': {'params': (self.cfg.get('stack') or {}).get('params') or {}},
+            'clock': {'realtime': True},                  # realtime pairs and pmc statuses (core.ptp)
         }
+        if cam['transport'] == 'v4l2':
+            session['camera']['stamp_port'] = self.port + 3
+        can = self.cfg.get('can') or {}
+        if can:
+            session['can'] = {k: can[k] for k in ('enabled', 'fd', 'steer_max_deg', 'brake_full_bar', 'period_ms')
+                              if k in can}
         self.sess = self.connect()
         self.sess.sendall(A.pack({'t': 'hello', 'protocol': A.PROTOCOL, 'session': session}))
         self.sess.settimeout(READY_TIMEOUT_S)
@@ -320,7 +343,11 @@ class Gateway:
     def open_streams(self):
         cam, lid = self.cfg['camera'], self.cfg['lidar']
         cs = cam['sensor']
-        if cam['transport'] == 'h264-rtp':
+        if cam['transport'] == 'v4l2':
+            from . import v4l2out
+            self.v4l2 = v4l2out.open_writer(cam['v4l2'], self.cfg['fps'])
+            self.stamp_tx = v4l2out.StampSender(self.address, self.port + 3)
+        elif cam['transport'] == 'h264-rtp':
             self.video = H264Sender(self, cs['width'], cs['height'], self.cfg['fps'], cam['encoder'],
                                     cam['bitrate_kbps'], cam['gop'], self.address, self.port + 1)
         else:
@@ -360,15 +387,43 @@ class Gateway:
         return False
 
     def pings(self, u):
-        from ..core.hil import estimate_offset
         seq = 1000
         last = time.monotonic()
+        last_pmc = 0.0
         while not self.stopping.wait(0.1):
             seq += 1
             self.ping_once(u, seq)
+            if not self.local and time.monotonic() - last_pmc >= 5.0:
+                last_pmc = time.monotonic()
+                self.host_pmc()
             if time.monotonic() - last >= 1.0:
                 last = time.monotonic()
-                self.to_worker({'t': 'clock', 'estimate': estimate_offset(self.samples)})
+                self.to_worker({'t': 'clock', 'estimate': self.live_estimate()})
+
+    def host_pmc(self):
+        """This machine's pmc status into ptp.jsonl (a remote device's PTP needs both ends' statuses)."""
+        from ..core.ptp import query_pmc
+        st = query_pmc()
+        with self.plock:
+            self.ptp_rows.append({'t': 'host_pmc', 'h_mono': now(),
+                                  'status': {k: st.get(k) for k in ('pmc', 'ptp4l_running', 'phc2sys_running', 'text',
+                                                                    'code', 'error')}})
+
+    def live_estimate(self) -> dict:
+        """The offset estimate the session's clock source chooses, from what has come so far (core.ptp.choose)."""
+        from ..core import ptp
+        from ..core.hil import estimate_offset
+        ntp = estimate_offset(self.samples)
+        with self.plock:
+            rows = list(self.ptp_rows)
+        pairs = [r for r in rows if r['t'] == 'pair']
+        if not pairs:
+            return ntp
+        host = next((r['status'] for r in reversed(rows) if r['t'] == 'host_pmc'), None)
+        devs = [ptp.with_parsed(r['status']) for r in rows if r['t'] == 'device_pmc']
+        basis = ptp.ptp_basis(self.local, ptp.with_parsed(host) if host else None, devs)
+        rt = ptp.realtime_estimate(pairs, basis['bound_ns'], basis['basis']) if basis['ok'] else {}
+        return ptp.choose(self.cfg.get('clock_source', 'auto'), rt, ntp, basis)['estimate']
 
     def session_reader(self):
         while True:
@@ -383,6 +438,13 @@ class Gateway:
             if t == 'control':
                 h['ctrl_rx'] = now()
                 self.to_worker(h)
+            elif t == 'clock':                            # the device's realtime and stamp clock, read together
+                h_rt, h_mono = time.time_ns(), now()
+                with self.plock:
+                    self.ptp_rows.append({'t': 'pair', 'h_rt': h_rt, 'h_mono': h_mono, 'd_rt': h.get('d_rt'),
+                                          'd_ns': h.get('d_ns')})
+                    if h.get('pmc'):
+                        self.ptp_rows.append({'t': 'device_pmc', 'h_mono': h_mono, 'status': h['pmc']})
             elif t == 'stats':
                 self.stats = h
                 self.stats_ev.set()
@@ -400,6 +462,18 @@ class Gateway:
             meta = {'f': frame, 's': h['sim_t'], 'h': h['cam']['hw_t']}
             if self.video is not None:
                 self.video.push(frame, bytes(data), meta)
+                continue
+            if self.v4l2 is not None:                    # into the V4L2 output device, its stamps on the side
+                img = np.frombuffer(data, np.uint8).reshape(int(h['cam']['h']), int(h['cam']['w']), 4)
+                try:
+                    st = self.v4l2.write(img, frame)
+                except (OSError, RuntimeError) as e:
+                    self.error(f'the V4L2 camera failed: {e}')
+                    self.stopping.set()
+                    break
+                self.stamp_tx.send(frame, h['sim_t'], h['cam']['hw_t'], st['cam_sent'])
+                st.pop('written', None)
+                self.stamp(frame, **st, cam_done=True)
                 continue
             w, hh = int(h['cam']['w']), int(h['cam']['h'])
             t0 = now()
@@ -463,11 +537,15 @@ class Gateway:
                 self.ping_once(u, k)
                 time.sleep(0.01)
             from ..core.hil import estimate_offset
+            if not self.local:
+                self.host_pmc()
             self.to_worker({'t': 'ready', 'device': self.device.get('env') or {}, 'stack': self.device.get('stack'),
                             'decoder': self.device.get('decoder'), 'clock': estimate_offset(self.samples),
-                            'encoder': self.video.encoder if self.video is not None else 'raw',
-                            'encoder_props': self.video.props if self.video is not None else {},
-                            'device_clock': self.device.get('clock') or {}})
+                            'encoder': self.encoder_name(),
+                            'encoder_props': self.video.props if self.video is not None else
+                            self.v4l2.describe() if self.v4l2 is not None else {},
+                            'device_clock': self.device.get('clock') or {}, 'device_can': self.device.get('can'),
+                            'camera_device': self.device.get('camera_device')})
             self._start(lambda: self.pings(u), 'gw-pings')
             self._start(self.session_reader, 'gw-session')
             self._start(self.camera_sender, 'gw-camera')
@@ -479,6 +557,13 @@ class Gateway:
         finally:
             self.finish()
         return code
+
+    def encoder_name(self) -> str:
+        if self.video is not None:
+            return self.video.encoder
+        if self.v4l2 is not None:
+            return f'v4l2 {self.v4l2.fmt}'
+        return 'raw'
 
     def from_worker(self):
         while not self.stopping.is_set():
@@ -510,6 +595,9 @@ class Gateway:
             self.stats_ev.wait(5.0)
         if self.video is not None:
             self.video.stop()
+        for w in (self.v4l2, self.stamp_tx):
+            if w is not None:
+                w.close()
         for s in (self.sess, self.cam_sock, self.lidar_sock, self.lidar_udp):
             if s is not None:
                 try:
@@ -533,14 +621,22 @@ class Gateway:
             with open(os.path.join(self.out, 'clock.jsonl'), 'w', encoding='utf-8') as fh:
                 for s in self.samples:
                     fh.write(json.dumps({'t0': s[0], 't1': s[1], 't2': s[2], 't3': s[3]}) + '\n')
+            with self.plock:
+                rows = list(self.ptp_rows)
+            with open(os.path.join(self.out, 'ptp.jsonl'), 'w', encoding='utf-8') as fh:
+                for r in rows:
+                    fh.write(json.dumps(r, separators=(',', ':')) + '\n')
             write_json(os.path.join(self.out, 'device.json'),
-                       {'ready': {k: self.device.get(k) for k in ('env', 'stack', 'decoder', 'clock')},
+                       {'ready': {k: self.device.get(k) for k in ('env', 'stack', 'decoder', 'clock', 'can',
+                                                                   'camera_device')},
                         'stats': self.stats, 'mode': 'local' if self.local else 'remote',
                         'agent_exit': None if self.agent_proc is None else self.agent_proc.returncode})
             write_json(os.path.join(self.out, 'gateway.json'),
                        {'python': sys.version.split()[0], 'counts': counts,
-                        'encoder': self.video.encoder if self.video is not None else 'raw',
+                        'encoder': self.encoder_name(),
                         'encoder_props': self.video.props if self.video is not None else {},
+                        'v4l2': self.v4l2.describe() if self.v4l2 is not None else None,
+                        'v4l2_stamps_sent': self.stamp_tx.n if self.stamp_tx is not None else None,
                         'gstreamer': (A.gst().version_string() if self.video is not None else None)})
         except OSError as e:
             self.error(f'could not write the gateway\'s files: {e}')

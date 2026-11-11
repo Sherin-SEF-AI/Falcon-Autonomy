@@ -5,15 +5,21 @@ latency waterfall and the deadlines as it runs; the report when it ends. docs/ha
 
 Every number shown is measured by the session (core.hil): the waterfall is the median frame, stage by stage, over
 the last two seconds while running and over the whole session at the end; one-way network stages are drawn hatched
-when the clock-offset estimate is not trusted."""
+when the clock-offset estimate is not trusted.
+
+The 4.0 interfaces: the camera into a V4L2 device on this machine (hil.v4l2out), the CAN loop with the chassis model
+(hil.canbridge, core.chassis: an interface Falcon may open — vcan, a simulated link, or a real adapter only once
+confirmed as a bench network — its live counters while running) and the clock source (core.ptp: PTP, the NTP-style
+estimate, or whichever is usable; both are recorded)."""
 from __future__ import annotations
 
 import os
 
 from PyQt6.QtCore import QRectF, Qt, QTimer, QUrl
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
-from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLineEdit,
-                             QMessageBox, QRadioButton, QSpinBox, QSplitter, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout,
+                             QInputDialog, QLineEdit, QMessageBox, QPlainTextEdit, QRadioButton, QSpinBox, QSplitter,
+                             QVBoxLayout, QWidget)
 
 from ...core.drive import run_dir_name
 from ...core.hil import DEVICE_DEFAULTS, device_settings, hil_config, submit_session
@@ -141,7 +147,7 @@ class HardwarePage(Page):
         self.fall = Waterfall()
         rv.addWidget(self.fall, 1)
         self.stats = KeyValues(('Session', 'Steps', 'End to end', 'Round trip', 'Deadlines', 'Clock offset',
-                                'Device'))
+                                'Device', 'CAN'))
         rv.addWidget(self.stats)
         rb = QHBoxLayout()
         self.report_lbl = label('', muted=True, small=True, wrap=True)
@@ -154,6 +160,9 @@ class HardwarePage(Page):
         pv.setContentsMargins(12, 12, 12, 12)
         pv.addWidget(self._device_section())
         pv.addWidget(self._session_section())
+        pv.addWidget(self._v4l2_section())
+        pv.addWidget(self._can_section())
+        pv.addWidget(self._clock_section())
         pv.addStretch(1)
         split.addWidget(scroll(panel))
         split.addWidget(right)
@@ -313,6 +322,8 @@ class HardwarePage(Page):
         self.camera = QComboBox()
         self.camera.addItem('H.264 over RTP/UDP', 'h264-rtp')
         self.camera.addItem('Raw BGR over TCP', 'raw-tcp')
+        self.camera.addItem('A V4L2 device on this machine', 'v4l2')
+        self.camera.currentIndexChanged.connect(lambda _=0: self.update_buttons())
         self.encoder = QComboBox()
         for t, k in (('Auto (NVENC when present)', 'auto'), ('NVENC (nvh264enc)', 'nvh264enc'),
                      ('x264 (x264enc, zero latency)', 'x264enc')):
@@ -347,6 +358,223 @@ class HardwarePage(Page):
         sec.add(b)
         return sec
 
+    # ------------------------------------------------------------------ the 4.0 interfaces
+    def _v4l2_section(self) -> QWidget:
+        from ...hil import v4l2out as V
+        sec = Section('V4L2 output', 'With the camera stream "A V4L2 device on this machine": each frame is written '
+                                     'into a V4L2 output device (a v4l2loopback node), which any program opens as '
+                                     'a camera; the simulated device reads it back. Stamps go on a UDP side stream.')
+        f = Form()
+        self.v4l2_dev = QComboBox()
+        self.v4l2_dev.setEditable(True)
+        devs = [d['device'] for d in V.devices()] or ['/dev/video40']
+        self.v4l2_dev.addItems(devs)
+        self.v4l2_fmt = QComboBox()
+        self.v4l2_fmt.addItems(list(V.WRITE_FORMATS))
+        self.v4l2_method = QComboBox()
+        self.v4l2_method.addItem('ioctl + write() (standard library)', 'ioctl')
+        self.v4l2_method.addItem('GStreamer v4l2sink', 'gstreamer')
+        self.v4l2_barcode = QCheckBox('Frame-number barcode in the top two rows')
+        self.v4l2_barcode.setChecked(True)
+        f.row('Device', self.v4l2_dev, 'falcon hil setup prints how to create /dev/video40 and 41')
+        f.row('Format', self.v4l2_fmt)
+        f.row('Writer', self.v4l2_method)
+        f.row('', self.v4l2_barcode, 'lets a reader match frames and measure the latency; the stack sees it')
+        sec.add(f)
+        self.v4l2_info = label('' if V.devices() else 'No V4L2 devices here (v4l2loopback is not loaded).',
+                               muted=True, small=True, wrap=True)
+        sec.add(self.v4l2_info)
+        return sec
+
+    def _can_section(self) -> QWidget:
+        from ...core.chassis import SURFACES
+        from ...hil import canbridge as B
+        sec = Section('CAN', 'The chassis model on a CAN bus: wheel ticks, speeds, yaw rate, steering and brake out '
+                             'every 10 ms; the device\'s commands in, with a 100 ms watchdog that holds the vehicle. '
+                             'Falcon opens only the interfaces your settings allow (vcan* by default).')
+        self.can_on = QCheckBox('Run the CAN loop in the session')
+        self.can_on.toggled.connect(lambda _=False: self.update_buttons())
+        sec.add(self.can_on)
+        f = Form()
+        self.can_if = QComboBox()
+        self.can_if.setEditable(True)
+        self.can_if.addItem('sim:falcon')                    # a simulated link: no vcan, no privileges
+        for i in B.interfaces():
+            self.can_if.addItem(i['name'])
+        self.can_if.currentTextChanged.connect(lambda _='': self.show_can_status())
+        self.can_fd = QComboBox()
+        for t, k in (('Auto (when the MTU is 72)', 'auto'), ('CAN FD', 'on'), ('Classical CAN', 'off')):
+            self.can_fd.addItem(t, k)
+        self.can_control = QComboBox()
+        self.can_control.addItem('The CAN commands drive the vehicle', 'can')
+        self.can_control.addItem('Recorded beside the session\'s control', 'record')
+        self.surface = QComboBox()
+        for k, s in SURFACES.items():
+            self.surface.addItem(f'{k.replace("_", " ")} (μ {s["range"][0]}–{s["range"][1]})', k)
+        self.mu = QDoubleSpinBox()
+        self.mu.setRange(0.0, 1.2)
+        self.mu.setSingleStep(0.05)
+        self.mu.setSpecialValueText('the surface\'s')
+        self.dbc = QLineEdit()
+        self.dbc.setPlaceholderText('Falcon\'s message table (resources/can/falcon_chassis.dbc)')
+        db = QHBoxLayout()
+        db.addWidget(self.dbc, 1)
+        db.addWidget(button('Browse…', self.browse_dbc))
+        db.addWidget(button('Save Falcon\'s DBC…', self.save_dbc))
+        self.dbc_map = QPlainTextEdit()
+        self.dbc_map.setPlaceholderText('With a DBC of your own: one ROLE=MESSAGE.SIGNAL per line (BRAKE_REQ=…)')
+        self.dbc_map.setMaximumHeight(70)
+        f.row('Interface', self.can_if, 'sim:NAME: a simulated link between the processes here, no vcan needed')
+        f.row('Frames', self.can_fd)
+        f.row('Control', self.can_control)
+        f.row('Surface', self.surface, 'waterlogged: hydroplaning from Horne\'s speed (about 94 km/h at 220 kPa)')
+        f.row('Friction μ', self.mu)
+        f.row('DBC', db)
+        f.row('Signal map', self.dbc_map)
+        sec.add(f)
+        b = QHBoxLayout()
+        self.confirm_btn = button('Confirm a bench adapter…', self.confirm_adapter,
+                                  tip='Record that this adapter is on a bench network, not a vehicle')
+        b.addWidget(self.confirm_btn)
+        b.addStretch(1)
+        sec.add(b)
+        self.can_status = label('', muted=True, small=True, wrap=True, sel=True)
+        sec.add(self.can_status)
+        self.show_can_status()
+        return sec
+
+    def _clock_section(self) -> QWidget:
+        from ...core.ptp import SOURCES
+        sec = Section('Clock source', 'The offset between this machine\'s clock and the device\'s: from PTP when both '
+                                      'follow one grandmaster (ptp4l), else from NTP-style pings. Both are computed '
+                                      'and recorded with their disagreement; this chooses the one the waterfall uses.')
+        f = Form()
+        self.clock_src = QComboBox()
+        for k, t in zip(SOURCES, ('Auto: PTP when usable, else the pings', 'PTP (falls back, saying why)',
+                                  'NTP-style pings only')):
+            self.clock_src.addItem(t, k)
+        cur = (self.win.settings.get('hil_ptp') or {}).get('clock_source', 'auto')
+        self.clock_src.setCurrentIndex(max(self.clock_src.findData(cur), 0))
+        f.row('Clock source', self.clock_src)
+        sec.add(f)
+        b = QHBoxLayout()
+        b.addWidget(button('Check PTP here', self.check_ptp, tip='ptp4l, pmc and ethtool -T on this machine'))
+        b.addWidget(button('Save a ptp4l.conf…', self.save_ptp_conf, tip='software timestamping or the gPTP profile, '
+                                                                          'for you to install'))
+        b.addStretch(1)
+        sec.add(b)
+        self.ptp_info = label('', muted=True, small=True, wrap=True, sel=True)
+        sec.add(self.ptp_info)
+        return sec
+
+    def show_can_status(self):
+        from ...hil import canbridge as B
+        if not hasattr(self, 'can_status'):
+            return
+        name = self.can_if.currentText().strip()
+        if not name:
+            self.can_status.setText('')
+            return
+        ok, why, _ = B.check_interface(name, self.win.settings)
+        real = not name.startswith('sim:') and not B.is_virtual(name)
+        self.can_status.setText(f'{name}: {"allowed" if ok else "refused"} — {why}')
+        set_enabled(self.confirm_btn, real and not ok and not self.running,
+                    'Only a real adapter that is not yet confirmed needs this')
+
+    def confirm_adapter(self):
+        from ...hil import canbridge as B
+        name = self.can_if.currentText().strip()
+        text, ok = QInputDialog.getText(
+            self, 'A real CAN adapter', f'Falcon will send frames on {name} at 100 Hz and act on what comes back. '
+            f'Type "{B.CONFIRM_TEXT}" to confirm that {name} is wired to a bench network, not a vehicle:')
+        if not ok:
+            return
+        try:
+            B.confirm_bench(self.win.settings, name, text)
+        except ValueError as e:
+            QMessageBox.warning(self, 'CAN', str(e))
+            return
+        self.show_can_status()
+
+    def browse_dbc(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'A DBC file', os.path.expanduser('~'), 'DBC (*.dbc)')
+        if path:
+            self.dbc.setText(path)
+
+    def save_dbc(self):
+        from ...core.canmsgs import dbc_text
+        path, _ = QFileDialog.getSaveFileName(self, 'Falcon\'s chassis DBC', 'falcon_chassis.dbc', 'DBC (*.dbc)')
+        if path:
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write(dbc_text())
+
+    def check_ptp(self):
+        from ...core import ptp
+
+        def work():
+            rows = ptp.doctor_rows(self.win.settings)
+            return rows, ptp.query_pmc()
+
+        def done(out):
+            rows, q = out
+            s = q.get('summary') or {}
+            lines = [f'{"✓" if ok else "–"} {n}: {d}' for n, ok, d in rows]
+            lines.append(f'pmc: grandmaster {"present" if s.get("gm_present") else "absent"}, port '
+                         f'{s.get("port_state")}, offset {s.get("offset_ns")} ns' if s else
+                         f'pmc: {q.get("error") or "no answer"}')
+            self.ptp_info.setText('\n'.join(lines))
+        self.ptp_info.setText('Checking…')
+        tasks.run(self, work, done, lambda e: self.ptp_info.setText(f'{type(e).__name__}: {e}'))
+
+    def save_ptp_conf(self):
+        from ...core import ptp
+        prof, ok = QInputDialog.getItem(self, 'ptp4l.conf', 'Profile', ['software timestamping (this NIC)',
+                                                                        'gPTP (802.1AS, hardware timestamping)'],
+                                        0, False)
+        if not ok:
+            return
+        iface = (self.win.settings.get('hil_ptp') or {}).get('interface') or ptp.default_interface() or 'eth0'
+        profile = 'gptp' if prof.startswith('gPTP') else 'software'
+        path, _ = QFileDialog.getSaveFileName(self, 'ptp4l.conf', f'falcon-{profile}.conf', 'conf (*.conf)')
+        if path:
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write(ptp.ptp4l_conf(profile, iface))
+            self.ptp_info.setText(f'Written for {iface}. Install it yourself: falcon hil setup prints the commands '
+                                  '(Falcon runs none of them).')
+
+    def can_config(self):
+        """The session's CAN section (core.hil.can_section), or None when the loop is off."""
+        if not self.can_on.isChecked():
+            return None
+        chassis = {'surface': self.surface.currentData()}
+        if self.mu.value() > 0:
+            chassis['mu'] = round(self.mu.value(), 3)
+        can = {'interface': self.can_if.currentText().strip(), 'fd': self.can_fd.currentData(),
+               'control': self.can_control.currentData(), 'chassis': chassis}
+        if self.dbc.text().strip():
+            mp = {}
+            for line in self.dbc_map.toPlainText().splitlines():
+                k, sep, v = line.partition('=')
+                if sep:
+                    mp[k.strip()] = v.strip()
+            can.update(dbc=os.path.abspath(os.path.expanduser(self.dbc.text().strip())), dbc_map=mp)
+        return can
+
+    def v4l2_config(self):
+        if self.camera.currentData() != 'v4l2':
+            return None
+        return {'device': self.v4l2_dev.currentText().strip(), 'format': self.v4l2_fmt.currentText(),
+                'method': self.v4l2_method.currentData(), 'barcode': self.v4l2_barcode.isChecked()}
+
+    def show_can_live(self, can: dict | None):
+        if not can:
+            return
+        self.stats.set('CAN', f'{can.get("mode")}{" (FD)" if can.get("fd") else ""} · sent {can.get("tx_frames")} · '
+                              f'commands {can.get("commands")} · watchdog {can.get("watchdog_trips")} · rejected '
+                              f'{can.get("rejected_crc", 0) + can.get("rejected_counter", 0)} · error frames '
+                              f'{can.get("error_frames")}' + (f' · ABORTED: {can["aborted"]}' if can.get('aborted')
+                                                              else ''))
+
     def refresh(self):
         doc = self.win.project.doc
         for combo, items in ((self.world, doc['worlds']), (self.rig, doc['rigs'])):
@@ -378,7 +606,8 @@ class HardwarePage(Page):
                   camera=self.camera.currentData(), encoder=self.encoder.currentData(), lidar=self.lidar.currentData(),
                   device='remote' if remote else 'local', device_port=self.port.value(), camera_clock=clock,
                   lidar_clock=clock, sim_device={'clock_offset_ms': soff, 'clock_drift_ppm': sdrift},
-                  workspace=w.workspace())
+                  workspace=w.workspace(), can=self.can_config(), v4l2=self.v4l2_config(),
+                  clock_source=self.clock_src.currentData(), settings=w.settings)
         kw.update(over)
         return hil_config(w.project, self.world.currentData(), self.rig.currentData(),
                           os.path.join(w.service.runs_dir(), run_dir_name('hil')), w.service.port, w.service.tm_port,
@@ -453,6 +682,7 @@ class HardwarePage(Page):
                           live.get('deadline') or {}, live.get('offset'), live.get('one_way_trusted', True),
                           f'{live.get("steps")} steps, ×{live.get("realtime_factor")} real time',
                           'the last two seconds')
+        self.show_can_live(live.get('can'))
 
     def show_numbers(self, rows, e2e, rt, dl, off, trusted, steps, note):
         period = 1000.0 / self.fps.value()
@@ -491,6 +721,16 @@ class HardwarePage(Page):
         env = dev.get('env') or {}
         self.stats.set('Device', f'{"simulated, this machine" if dev.get("mode") == "local" else env.get("model")}'
                                  f' · decoder {dev.get("decoder") or "none (raw)"} · stack {dev.get("stack")}')
+        can = h.get('can') or {}
+        if can.get('stats'):
+            self.show_can_live(dict(can['stats'], aborted=can.get('aborted')))
+        cs = h.get('clock_sources') or {}
+        if cs.get('used') and off:
+            dis = cs.get('disagreement_ns')
+            agree = 'consistent' if cs.get('consistent') else 'beyond their uncertainties'
+            other = '' if dis is None else f'; the other source differs by {dis / 1e3:.1f} µs ({agree})'
+            self.stats.set('Clock offset', f'{off["offset_ms"]:.3f} ms ± {off["uncertainty_ms"]:.3f} ms from '
+                                           f'{cs["used"]}{other}', cs.get('why') or '')
         self.report = os.path.join(run_dir, 'report.html')
         if os.path.isfile(self.report):
             self.report_lbl.setText(tilde(self.report))
@@ -517,3 +757,16 @@ class HardwarePage(Page):
         set_enabled(self.open_btn, bool(self.report) and os.path.isfile(self.report), 'No report written yet')
         for w in (self.world, self.rig, self.size, self.fps, self.seconds, self.camera, self.encoder, self.lidar):
             set_enabled(w, not r, 'Fixed while a run is in progress')
+        if not hasattr(self, 'clock_src'):                 # the 4.0 sections are built after the session's
+            return
+        v4 = self.camera.currentData() == 'v4l2'
+        for w in (self.v4l2_dev, self.v4l2_fmt, self.v4l2_method, self.v4l2_barcode):
+            set_enabled(w, v4 and not r, busy if r else 'Only with the camera stream "A V4L2 device on this machine"')
+        set_enabled(self.encoder, self.camera.currentData() == 'h264-rtp' and not r,
+                    busy if r else 'Only for the H.264 camera stream')
+        on = self.can_on.isChecked()
+        set_enabled(self.can_on, not r, busy)
+        for w in (self.can_if, self.can_fd, self.can_control, self.surface, self.mu, self.dbc, self.dbc_map):
+            set_enabled(w, on and not r, busy if r else 'Turn the CAN loop on first')
+        set_enabled(self.clock_src, not r, busy)
+        self.show_can_status()

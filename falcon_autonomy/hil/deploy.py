@@ -4,7 +4,8 @@ scp programs of OpenSSH). The device's address, SSH user, key path and port live
 BatchMode so that nothing ever waits for a prompt, and accepts a new host key on first contact (accept-new), never a
 changed one. Messages name neither the address nor the user.
 
-    copy(dev)          mkdir the remote folder, copy device_agent.py into it
+    copy(dev)          mkdir the remote folder, copy device_agent.py into it, with the modules it loads beside it
+                       (falcon_canmsgs.py = core/canmsgs.py, v4l2out.py, gmsl.py)
     check(dev)         run `python3 device_agent.py --check` there: the device's Python, numpy, GStreamer, decoder,
                        model and L4T release (JSON)
     start(dev, once)   start the agent in the background (nohup), its log beside it; returns its pid
@@ -23,6 +24,12 @@ import subprocess
 from . import device_agent as A
 
 AGENT = os.path.abspath(A.__file__)
+_HERE = os.path.dirname(AGENT)
+# what goes to the device: the agent and the modules it loads beside it (all standard library and numpy)
+FILES = ((AGENT, 'device_agent.py'),
+         (os.path.join(os.path.dirname(_HERE), 'core', 'canmsgs.py'), 'falcon_canmsgs.py'),
+         (os.path.join(_HERE, 'v4l2out.py'), 'v4l2out.py'),
+         (os.path.join(_HERE, 'gmsl.py'), 'gmsl.py'))
 _HOST = re.compile(r'^[A-Za-z0-9][A-Za-z0-9.:_-]*$')       # a host name, IPv4 or IPv6 address (no option-like text)
 _USER = re.compile(r'^[A-Za-z_][A-Za-z0-9._-]*$')
 
@@ -99,11 +106,13 @@ def copy(dev: dict):
     ssh(dev, f'mkdir -p {d}')
     rd = str(dev.get('remote_dir') or '~/falcon-hil')
     target = rd[2:] if rd.startswith('~/') else rd          # scp's paths are relative to the home folder
-    cmd = [shutil.which('scp') or 'scp', '-P', str(int(dev.get('ssh_port') or 22))] + _opts(dev) + \
-        ['-q', AGENT, f'{dev["ssh_user"]}@{dev["address"]}:{target.rstrip("/")}/device_agent.py']
-    r = run(cmd, 120.0)
-    if r.returncode != 0:
-        raise DeployError(f'copying the agent failed: {_clean(r.stderr or r.stdout, dev)}')
+    dest = f'{dev["ssh_user"]}@{dev["address"]}:{target.rstrip("/")}/'
+    for src, name in FILES:
+        cmd = [shutil.which('scp') or 'scp', '-P', str(int(dev.get('ssh_port') or 22))] + _opts(dev) + \
+            ['-q', src, dest + name]
+        r = run(cmd, 120.0)
+        if r.returncode != 0:
+            raise DeployError(f'copying {name} failed: {_clean(r.stderr or r.stdout, dev)}')
 
 
 def check(dev: dict) -> dict:
@@ -145,7 +154,7 @@ def log_tail(dev: dict, lines: int = 40) -> str:
     return ssh(dev, f'tail -n {int(lines)} {remote_dir(dev)}/agent.log 2>/dev/null || true')
 
 
-def deploy(dev: dict, start_agent: bool = False, once: bool = True) -> dict:
+def deploy(dev: dict, start_agent: bool = False, once: bool = True, extra: list | None = None) -> dict:
     """Copy and check (and start): {'env': ..., 'pid': ...}. Raises DeployError saying what failed."""
     copy(dev)
     env = check(dev)
@@ -160,5 +169,5 @@ def deploy(dev: dict, start_agent: bool = False, once: bool = True) -> dict:
         problems.append('no H.264 decoder element was found')
     out['problems'] = problems
     if start_agent:
-        out['pid'] = start(dev, once)
+        out['pid'] = start(dev, once, extra)
     return out
