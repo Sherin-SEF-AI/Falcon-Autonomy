@@ -34,6 +34,23 @@ bit with either rasteriser backend (two 1500-step PyTorch runs; six 7000-step Tr
 other GPU jobs; measured on one machine, driver, torch and Triton version: docs/reconstruction.md) — another GPU or
 version may differ.
 
+Dynamic mode (dynamic: true, `--dynamic`; core.recon.actors): the source's tracks (a Falcon run's actors.jsonl,
+nuScenes' annotations) are not masked but learned — each road user's Gaussians start from the lidar points that fell
+in its box (else samples on the box's surface), live in its box frame, and are rendered with the static scene in one
+rasterisation at each frame's time; the photometric loss covers them, and the actors' parameters (positions, scales,
+rotations, opacities, colours: the paper's learning rates, positions at lr_actor_means; the pose corrections and
+wheel phases at lr_pose; a pedestrian's deformation network at lr_deform) take Adam steps with the static scene's.
+reg_weight × each actor's regulariser (the correction's size and roughness, a pedestrian's deformation's size,
+temporal change and local rigidity) is added. Density control is the static scene's only (an actor keeps its
+initial number of Gaussians); semantic classes are not voted (an actor's pixels would vote onto the scene behind).
+Several cameras train together (`--camera all` or a comma list: nuScenes' six, a Falcon rig's pinhole cameras).
+
+The neural lidar (lidar: true, `--lidar`, dynamic mode only — a lidar sees the moving actors, which a static scene
+cannot explain): every Gaussian also has a lidar intensity and a ray-drop logit, and every lidar_every steps one
+training sweep (every holdout-th sweep held out, as the frames) is rendered on the recorded beam grid
+(core.recon.lidar.render_sweep) and lidar_weight × lidar_loss (relative L1 range, ray-drop cross-entropy, intensity
+L1) is added to the step's loss; the held-out sweeps are compared beam by beam at the end (evaluation.json 'lidar').
+
 Outputs (the reconstruction folder): point_cloud.ply (+ extras.npz), views.json (every frame's pose and split),
 curves.jsonl (the training curve), evaluation.json (held-out PSNR / SSIM / depth), renders/ (a few held-out frames
 beside their renders), run.json (provenance: the source's files hashed, settings, seed, versions, device, timings,
@@ -63,6 +80,8 @@ DEFAULTS = {
     'grad_threshold': 2e-4, 'percent_dense': 0.01, 'opacity_reset_every': 3000, 'sh_up_every': 1000,
     'eval_every': 1000, 'log_every': 50, 'masks': True, 'semantic': True, 'every': 1, 'camera': None,
     'gpu_memory_fraction': 0.6, 'tile': 8, 'renders': 4, 'background': [0.0, 0.0, 0.0], 'raster_backend': 'auto',
+    'dynamic': False, 'lidar': False, 'lidar_every': 2, 'lidar_weight': 0.5, 'lr_actor_means': 1e-3, 'lr_pose': 1e-3,
+    'lr_deform': 1e-3, 'lr_lidar': 0.02, 'reg_weight': 0.01, 'actor_points': 400,
 }
 
 
@@ -101,6 +120,10 @@ def normalise(s: dict | None) -> dict:
         raise ReconError('iterations must be at least 1')
     if out['densify_until'] is None:
         out['densify_until'] = out['iterations'] // 2
+    out['dynamic'], out['lidar'] = bool(out['dynamic']), bool(out['lidar'])
+    if out['lidar'] and not out['dynamic']:
+        raise ReconError('the neural lidar is trained in dynamic mode (--dynamic): a lidar sees the moving actors, '
+                         'which a static reconstruction cannot explain')
     return out
 
 
@@ -136,7 +159,7 @@ def load_views(frames: list, wh, device, masks=True, semantic=True):
 
 
 @torch.no_grad()
-def quick_psnr(gs: Gaussians, views: dict, deg: int, bg, limit: int = 8) -> float | None:
+def quick_psnr(gs: Gaussians, views: dict, deg: int, bg, limit: int = 8, model=None, times=None) -> float | None:
     n = len(views['images'])
     if not n:
         return None
@@ -144,7 +167,10 @@ def quick_psnr(gs: Gaussians, views: dict, deg: int, bg, limit: int = 8) -> floa
     H, W = views['images'].shape[1:3]
     vals = []
     for i in idx:
-        out = gs.render(views['viewmat'][i], views['K'][i], W, H, deg, bg)
+        if model is not None:
+            out = model.render(views['viewmat'][i], views['K'][i], W, H, float(times[i]), deg, bg)
+        else:
+            out = gs.render(views['viewmat'][i], views['K'][i], W, H, deg, bg)
         gt = views['images'][i].float() / 255.0
         m = views['masks'][i] if views['masks'] is not None else None
         vals.append(psnr(out['image'].clamp(0, 1), gt, m))
@@ -193,6 +219,8 @@ def _train(source, out_dir: str, s: dict, emitter, cancel, argv) -> dict:
         opts['camera'] = s['camera']
     if s['every'] > 1:
         opts['every'] = s['every']
+    if s['dynamic']:
+        opts['dynamic'] = '1'
     cap = D.open_capture((kind, path), opts.get('camera'), **{k: v for k, v in opts.items() if k != 'camera'})
     train_f, test_f = split_frames(cap.frames, s['holdout'])
     if not train_f:
@@ -227,13 +255,34 @@ def _train(source, out_dir: str, s: dict, emitter, cancel, argv) -> dict:
     pts = D.init_points(cap, s['init'], train_f, s['voxel_m'], s['max_init_points'], wh[0], s['seed'],
                         s['sky_points'])
     gs = Gaussians.from_points(pts['xyz'], pts['rgb'], s['sh_degree'], pts['sky'], device=dev)
+    model = aopt = None
+    lidar_train, lidar_test, lidar_tgt = [], [], {}
+    if s['dynamic']:
+        model, aopt = _actors(cap, gs, s, dev)
+        run['dynamic'] = {'tracks': len(cap.tracks or {}), 'actors': len(model.actors),
+                          'kinds': {k: sum(1 for a in model.actors if a.track.kind == k)
+                                    for k in sorted({a.track.kind for a in model.actors})},
+                          'actor_gaussians': int(sum(len(a) for a in model.actors))}
+        if s['lidar']:
+            if not cap.sweeps or cap.lidar_spec is None:
+                raise ReconError(f'{cap.path}: no lidar sweeps to train the neural lidar on')
+            gs.add_lidar()
+            hold = s['holdout'] if s['holdout'] > 1 else 0
+            lidar_test = [sw for k, sw in enumerate(cap.sweeps) if hold and k % hold == 0]
+            lidar_train = [sw for k, sw in enumerate(cap.sweeps) if not (hold and k % hold == 0)] or cap.sweeps
+            run['lidar'] = {'spec': cap.lidar_spec.doc(), 'train_sweeps': len(lidar_train),
+                            'heldout_sweeps': len(lidar_test)}
     t_init = time.perf_counter() - t0
     extent = scene_extent(train_f)
     lrs = {'means': s['lr_means'] * extent, 'sh_dc': s['lr_sh_dc'], 'sh_rest': s['lr_sh_dc'] / 20.0,
-           'opacity_logits': s['lr_opacity'], 'log_scales': s['lr_scales'], 'quats': s['lr_quats']}
+           'opacity_logits': s['lr_opacity'], 'log_scales': s['lr_scales'], 'quats': s['lr_quats'],
+           'lidar_int': s['lr_lidar'], 'lidar_drop': s['lr_lidar']}
     opt = Adam(gs, lrs)
-    dens = Densifier(gs, extent, s['grad_threshold'], s['percent_dense'], max_gaussians=s['max_gaussians'],
-                     generator=gen)
+    # max_gaussians bounds every Gaussian rendered, the actors' included (a profile's cap, core.profiles.cap_recon,
+    # holds for a dynamic reconstruction too): the static scene grows into what the actors leave
+    n_actor = int(sum(len(a) for a in model.actors)) if model is not None else 0
+    dens = Densifier(gs, extent, s['grad_threshold'], s['percent_dense'],
+                     max_gaussians=max(len(gs), s['max_gaussians'] - n_actor), generator=gen)
     bg = torch.tensor(s['background'], dtype=torch.float32, device=dev)
     n_train = len(train_f)
     H, W = wh[1], wh[0]
@@ -258,7 +307,11 @@ def _train(source, out_dir: str, s: dict, emitter, cancel, argv) -> dict:
             opt.lrs['means'] = math.exp((1 - frac) * math.log(s['lr_means'] * extent) +
                                         frac * math.log(s['lr_means_final'] * extent))
             deg = min(s['sh_degree'], (it - 1) // s['sh_up_every'])
-            out = gs.render(views['viewmat'][v], views['K'][v], W, H, deg, bg, tile=s['tile'])
+            if model is not None:
+                t_v = float(train_f[v].t)
+                out = model.render(views['viewmat'][v], views['K'][v], W, H, t_v, deg, bg, tile=s['tile'])
+            else:
+                out = gs.render(views['viewmat'][v], views['K'][v], W, H, deg, bg, tile=s['tile'])
             gt = views['images'][v].float() / 255.0
             img = out['image']
             m = views['masks'][v] if views['masks'] is not None else None
@@ -269,12 +322,27 @@ def _train(source, out_dir: str, s: dict, emitter, cancel, argv) -> dict:
                 mf = None
                 l1 = (img - gt).abs().mean()
             loss = (1 - s['lambda_ssim']) * l1 + s['lambda_ssim'] * ssim_loss(img, gt, mf)
+            lidar_parts = None
+            if model is not None:
+                loss = loss + s['reg_weight'] * model.regulariser(t_v)
+                if lidar_train and it % max(1, s['lidar_every']) == 0:
+                    from .lidar import lidar_loss, render_sweep
+                    sw = lidar_train[int(rng.integers(len(lidar_train)))]
+                    tgt = _sweep_target(lidar_tgt, sw, cap.lidar_spec)
+                    lo = render_sweep(model.gaussians_at, cap.lidar_spec, sw.T, sw.t - cap.lidar_spec.period_s,
+                                      grad=True)
+                    ll, lidar_parts = lidar_loss(lo, tgt)
+                    loss = loss + s['lidar_weight'] * ll
             loss.backward()
             with torch.no_grad():
+                n_st = out.get('n_static', len(gs))
                 if it < s['densify_until'] and out['means2d'].grad is not None:
-                    dens.add_stats(out['means2d'].grad, out['visible'], out['radius'], W, H)
+                    dens.add_stats(out['means2d'].grad[:n_st], out['visible'][:n_st], out['radius'][:n_st], W, H)
                 opt.step()
                 opt.zero_grad()
+                if aopt is not None:
+                    aopt.step()
+                    aopt.zero_grad(set_to_none=True)
                 if s['densify_from'] <= it < s['densify_until'] and it % s['densify_every'] == 0:
                     dens_log.append(dict(dens.step(opt), step=it))
                 if s['opacity_reset_every'] and it % s['opacity_reset_every'] == 0 and it < s['densify_until']:
@@ -284,8 +352,11 @@ def _train(source, out_dir: str, s: dict, emitter, cancel, argv) -> dict:
                 row = {'step': it, 'loss': round(loss.item(), 6), 'l1': round(l1.item(), 6),
                        'psnr_train_view': round(psnr(img.detach().clamp(0, 1), gt, m), 4), 'gaussians': len(gs),
                        'seconds': round(el, 3), 'sh_degree': deg}
+                if lidar_parts:
+                    row['lidar'] = {k: round(v, 5) for k, v in lidar_parts.items()}
                 if s['eval_every'] and (it % s['eval_every'] == 0 or it == n_iter) and tviews is not None:
-                    row['psnr_heldout'] = round(quick_psnr(gs, tviews, deg, bg), 4)
+                    row['psnr_heldout'] = round(quick_psnr(gs, tviews, deg, bg, model=model,
+                                                           times=[f.t for f in test_f]), 4)
                 curves.append(row)
                 fh.write(json.dumps(row) + '\n')
                 fh.flush()
@@ -300,23 +371,29 @@ def _train(source, out_dir: str, s: dict, emitter, cancel, argv) -> dict:
     t_train = time.perf_counter() - t_loop
     em.progress(1.0, 'saving and evaluating', force=True)
     t0 = time.perf_counter()
-    if s['semantic'] and views['semantic'] is not None:
+    if s['semantic'] and views['semantic'] is not None and model is None:
         gs.votes = vote_semantics(gs, views, cancel=cancel)
     t_vote = time.perf_counter() - t0
     gs.write_ply(os.path.join(out_dir, 'point_cloud.ply'))
+    if model is not None:
+        _save_dynamic(out_dir, model, cap if lidar_train else None)
     write_views(os.path.join(out_dir, 'views.json'), cap, train_f, test_f, wh,
                 {k: v for k, v in opts.items() if k != 'camera'})
     del views
     if dev.type == 'cuda':
         torch.cuda.empty_cache()
     t0 = time.perf_counter()
-    ev = EV.heldout(gs, test_f, wh, dev, bg, out_dir, renders=s['renders'], masks=s['masks']) if test_f else None
+    ev = EV.heldout(model if model is not None else gs, test_f, wh, dev, bg, out_dir, renders=s['renders'],
+                    masks=s['masks']) if test_f else None
+    lidar_ev = _lidar_eval(model, cap, lidar_test) if lidar_test else None
     t_eval = time.perf_counter() - t0
     doc = {'schema': 'falcon.recon_evaluation/1', 'heldout': ev,
            'lpips': 'not computed: no pinned LPIPS network is available in Falcon',
            'masks': cap.meta.get('masks'),
            'note': 'held-out frames are interpolations along the recorded path; a pose off the path is an '
                    'extrapolation (falcon recon eval --reference / --warp-shift)'}
+    if lidar_ev is not None:
+        doc['lidar'] = lidar_ev
     doc['provenance'] = PV.block({'run.json': run_path}, s['seed'])
     PV.write_json(os.path.join(out_dir, 'evaluation.json'), doc)
     peak = torch.cuda.max_memory_allocated(dev) / 2 ** 30 if dev.type == 'cuda' else None
@@ -324,7 +401,8 @@ def _train(source, out_dir: str, s: dict, emitter, cancel, argv) -> dict:
                'init_stats': pts['stats'], 'extent_m': round(extent, 3), 'work_size': list(wh),
                'train_frames': n_train, 'heldout_frames': len(test_f),
                'heldout': None if ev is None else ev['mean'], 'semantic_votes': gs.votes is not None,
-               'densification': dens_log[-1] if dens_log else None}
+               'densification': dens_log[-1] if dens_log else None, 'dynamic': run.get('dynamic'),
+               'lidar': None if lidar_ev is None else lidar_ev['mean']}
     run.update(status='ok', exit_code=0, finished=PV.utc_now(), summary=summary,
                timings={'init_s': round(t_init, 2), 'train_s': round(t_train, 2), 'vote_s': round(t_vote, 2),
                         'eval_s': round(t_eval, 2), 'total_s': round(time.perf_counter() - t_start, 2),
@@ -338,6 +416,81 @@ def _train(source, out_dir: str, s: dict, emitter, cancel, argv) -> dict:
     run['outputs'] = PV.hash_tree(out_dir, skip=('run.json',))
     PV.write_json(run_path, run)
     return summary
+
+
+def _actors(cap, gs, s: dict, dev):
+    """The actors of a dynamic training (module doc) and their optimiser."""
+    from .actors import DynamicModel, init_actor
+    apts = D.actor_points(cap, seed=s['seed'])
+    actors = []
+    for i, (k, tr) in enumerate(sorted((cap.tracks or {}).items())):
+        pts, rgb = apts.get(k, (None, None))
+        actors.append(init_actor(tr, pts, rgb, n_surface=s['actor_points'], seed=s['seed'] + i, device=dev))
+    groups = []
+    for a in actors:
+        p = a.p
+        groups += [{'params': [p['means']], 'lr': s['lr_actor_means']},
+                   {'params': [p['log_scales']], 'lr': s['lr_scales']},
+                   {'params': [p['quats']], 'lr': s['lr_quats']},
+                   {'params': [p['opacity_logits']], 'lr': s['lr_opacity']},
+                   {'params': [p['sh_dc']], 'lr': s['lr_sh_dc']},
+                   {'params': [p['lidar_int'], p['lidar_drop']], 'lr': s['lr_lidar']},
+                   {'params': [a.xi, a.phase], 'lr': s['lr_pose']}]
+        if a.deform is not None:
+            groups.append({'params': list(a.deform.parameters()), 'lr': s['lr_deform']})
+    opt = torch.optim.Adam(groups, eps=1e-15) if groups else None
+    return DynamicModel(gs, actors), opt
+
+
+def _sweep_target(cache: dict, sw, spec):
+    from .lidar import beam_targets
+    if sw.name not in cache:
+        P, inten, _ = sw.load()
+        cache[sw.name] = beam_targets(spec, P, inten)
+    return cache[sw.name]
+
+
+def _save_dynamic(out_dir: str, model, cap):
+    """actors.pt (torch tensors and plain values only: torch.load(weights_only=True) reads it), actors.json (what
+    each actor is and its learned correction's size) and, with a lidar, lidar.json (the beam grid and the mount)."""
+    from .. import provenance as PV
+    st = model.state()
+    tmp = os.path.join(out_dir, f'actors.pt.{os.getpid()}.tmp')
+    torch.save(st, tmp)
+    os.replace(tmp, os.path.join(out_dir, 'actors.pt'))
+    rows = []
+    for a in model.actors:
+        xi = a.xi.detach().cpu().numpy()
+        rows.append({'id': a.track.id, 'cls': a.track.cls, 'kind': a.track.kind, 'dynamic': a.track.dynamic,
+                     'size': list(a.track.size), 'annotations': len(a.track.t), 'gaussians': len(a),
+                     'wheels': len(a.wheels), 'deformation': a.deform is not None,
+                     'correction_max_m': round(float(np.linalg.norm(xi[:, :3], axis=1).max()), 4) if len(xi) else 0,
+                     'correction_max_deg': round(float(np.degrees(np.linalg.norm(xi[:, 3:], axis=1).max())), 4)
+                     if len(xi) else 0,
+                     'wheel_phase_deg': [round(float(np.degrees(x)), 3) for x in a.phase.detach().cpu().numpy()]})
+    PV.write_json(os.path.join(out_dir, 'actors.json'), {'schema': 'falcon.recon_actors/1', 'actors': rows})
+    if cap is not None and cap.lidar_spec is not None:
+        PV.write_json(os.path.join(out_dir, 'lidar.json'),
+                      {'schema': 'falcon.recon_lidar/1', 'spec': cap.lidar_spec.doc(),
+                       'mount': np.asarray(cap.lidar_mount if cap.lidar_mount is not None else np.eye(4), float)
+                       .reshape(-1).tolist(), 'frame': 'vehicle <- sensor, right-handed (x forward, y left, z up)'})
+
+
+@torch.no_grad()
+def _lidar_eval(model, cap, sweeps) -> dict:
+    from .lidar import beam_targets, compare_sweep, render_sweep
+    rows = []
+    for sw in sweeps:
+        P, inten, _ = sw.load()
+        tgt = beam_targets(cap.lidar_spec, P, inten)
+        out = render_sweep(model.gaussians_at, cap.lidar_spec, sw.T, sw.t - cap.lidar_spec.period_s)
+        rows.append(dict({'sweep': sw.name, 't': round(sw.t, 4)}, **compare_sweep(cap.lidar_spec, out, tgt)))
+    mean = {'sweeps': len(rows)}
+    for k in ('range_median_abs_m', 'range_mean_abs_m', 'range_within_10cm', 'drop_accuracy', 'intensity_mean_abs'):
+        v = [r[k] for r in rows if r.get(k) is not None]
+        mean[k] = round(float(np.mean(v)), 4) if v else None
+    return {'what': 'held-out lidar sweeps rendered at their recorded poses against the recording, beam by beam',
+            'mean': mean, 'sweeps': rows}
 
 
 def job_spec(argv: list, title: str = 'Reconstruction', memory_gb: float = 6.0):

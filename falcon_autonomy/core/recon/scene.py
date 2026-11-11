@@ -11,6 +11,12 @@ lateral_m to the right (as log replay's lateral_m), forward_m, up_m, and yaw_deg
 right); mount replaces the camera's mount with a CARLA vehicle-frame pose {x y z roll pitch yaw} (a rig's), and fov /
 size replace its intrinsics with a centred pinhole of that horizontal field.
 
+A dynamic reconstruction (trained with --dynamic: core.recon.actors) holds its road users too: actors.pt beside
+the static scene, posed at the camera's time — a camera made from a frame carries the frame's time 't', and
+render(cam, t=…) takes any other instant within the drive (the actors replay their logged motion; outside a track's
+span an actor is not drawn). With a lidar model (--lidar: lidar.json, the static Gaussians' lidar features in
+extras.npz and the actors'), lidar_sweep() renders the recorded lidar's beam grid at any ego pose (core.recon.lidar).
+
 Range: the median depth — the depth of the Gaussian at which a pixel's transmittance falls below ½ — times the ray's
 length per unit depth; 0 where the transmittance never falls that far (nothing the reconstruction is sure of) or where
 that Gaussian is on the far shell (sky) — falcon-raw's "nothing within 256 m". It is the reconstruction's estimate of
@@ -74,16 +80,37 @@ def frame_doc(f: D.Frame, split: str) -> dict:
             'size': [int(v) for v in f.size], 'viewmat': np.asarray(f.viewmat).reshape(-1).tolist(),
             'ego': np.asarray(f.ego).reshape(-1).tolist(), 'mount': np.asarray(f.mount).reshape(-1).tolist(),
             'semantic': f.semantic if isinstance(f.semantic, str) else None,
-            'range': f.range if isinstance(f.range, str) else None}
+            'range': f.range if isinstance(f.range, str) else None, 'camera': getattr(f, 'camera', '') or ''}
 
 
 class Recon:
     """A reconstruction: its Gaussians, its frames (views.json) and its run.json."""
 
-    def __init__(self, path: str, gs: Gaussians, views: dict, run: dict, device):
+    def __init__(self, path: str, gs: Gaussians, views: dict, run: dict, device, actors=None,
+                 lidar: dict | None = None):
         self.path, self.gs, self.views, self.run, self.device = path, gs, views, run, device
         self.work_size = tuple(views.get('work_size') or (640, 360))
         self._capture = None
+        self.actors = list(actors or [])
+        self.lidar = lidar or None
+        self.lidar_spec = None
+        self.lidar_mount = None
+        if lidar:
+            from .lidar import LidarSpec
+            self.lidar_spec = LidarSpec.from_doc(lidar['spec'])
+            self.lidar_mount = np.asarray(lidar['mount'], float).reshape(4, 4)
+
+    @property
+    def dynamic(self) -> bool:
+        return bool(self.views.get('dynamic')) or bool(self.actors)
+
+    def scene_model(self, lidar: bool = False):
+        """The static Gaussians and the actors as one core.recon.actors.DynamicModel (no actors for a static
+        reconstruction); lidar: give the static Gaussians the lidar features they lack (untrained: no drop)."""
+        from .actors import DynamicModel
+        if lidar:
+            self.gs.add_lidar()
+        return DynamicModel(self.gs, self.actors)
 
     @classmethod
     def load(cls, path: str, device: str = 'auto') -> 'Recon':
@@ -96,7 +123,13 @@ class Recon:
         dev = pick_device(device)
         gs = Gaussians.read_ply(ply, device=dev)
         run = read_json(os.path.join(path, 'run.json')) if os.path.isfile(os.path.join(path, 'run.json')) else {}
-        return cls(path, gs, read_json(vj), run, dev)
+        actors = []
+        ap = os.path.join(path, 'actors.pt')
+        if os.path.isfile(ap):
+            from .actors import DynamicModel
+            actors = DynamicModel.actors_from_state(torch.load(ap, map_location=dev, weights_only=True), dev)
+        lj = os.path.join(path, 'lidar.json')
+        return cls(path, gs, read_json(vj), run, dev, actors, read_json(lj) if os.path.isfile(lj) else None)
 
     # ------------------------------------------------------------------------------------------- frames
     @property
@@ -113,7 +146,10 @@ class Recon:
         """The source re-opened (for masks and labels)."""
         if self._capture is None:
             s = self.views['source']
-            self._capture = D.open_capture((s['kind'], s['path']), s.get('camera'), **(s.get('options') or {}))
+            opts = dict(s.get('options') or {})
+            if self.views.get('dynamic'):
+                opts['dynamic'] = '1'
+            self._capture = D.open_capture((s['kind'], s['path']), s.get('camera'), **opts)
         return self._capture
 
     def source_frame(self, f: dict) -> D.Frame:
@@ -134,7 +170,7 @@ class Recon:
         else:
             K = D.scaled_K(f['K'], f['size'], wh)
         return {'viewmat': D.inv(ego @ mt), 'K': tuple(float(v) for v in K), 'size': (int(wh[0]), int(wh[1])),
-                'ego': ego, 'mount': mt}
+                'ego': ego, 'mount': mt, 't': float(f.get('t', 0.0))}
 
     def camera_at(self, pose: dict, fov: float = 90.0, size=None) -> dict:
         """A camera at a world pose in CARLA's convention of the reconstruction's world — {x y z roll pitch yaw} of a
@@ -148,10 +184,17 @@ class Recon:
 
     # ------------------------------------------------------------------------------------------- rendering
     @torch.no_grad()
-    def render(self, cam: dict, semantic: bool = True) -> dict:
+    def render(self, cam: dict, semantic: bool = True, t: float | None = None) -> dict:
         gs = self.gs
         vm = torch.as_tensor(cam['viewmat'], dtype=torch.float32, device=self.device)
         w, h = cam['size']
+        if self.actors:
+            tt = float(cam.get('t', 0.0) if t is None else t)
+            out = self.scene_model().render(vm, cam['K'], w, h, tt)
+            return {'image': (out['image'].clamp(0, 1) * 255 + 0.5).to(torch.uint8).cpu().numpy(),
+                    'image_f': out['image'].clamp(0, 1), 'range': out['range'].cpu().numpy(),
+                    'alpha': out['alpha'].cpu().numpy(), 'sky': out['sky'].cpu().numpy(), 'pairs': out['pairs'],
+                    'actor': out['actor'].cpu().numpy(), 't': tt}
         votes = gs.votes is not None and semantic
         feats = None
         if votes:
@@ -166,6 +209,30 @@ class Recon:
             cls = torch.where(out['alpha'] >= 0.5, cls, torch.zeros_like(cls))
             res['semantic'] = cls.to(torch.uint8).cpu().numpy()
         return res
+
+
+    @torch.no_grad()
+    def render_fisheye(self, cam: dict, intr, method: str = 'cube', t: float | None = None) -> dict:
+        """The camera's pose through a fisheye lens (a core.lens.Intrinsics; core.recon.lens_raster: 'cube' the
+        reference, 'lens' the fast path): {'image' uint8 (H, W, 3), 'alpha', 'range', 'field'}."""
+        vm = torch.as_tensor(cam['viewmat'], dtype=torch.float32, device=self.device)
+        tt = float(cam.get('t', 0.0) if t is None else t)
+        out = self.scene_model().render_fisheye(vm, intr, intr.width, intr.height, tt, method=method)
+        return {'image': (out['image'].clamp(0, 1) * 255 + 0.5).to(torch.uint8).cpu().numpy(),
+                'alpha': out['alpha'].cpu().numpy(), 'range': out['range'].cpu().numpy(),
+                'field': out['field'].cpu().numpy()}
+
+    @torch.no_grad()
+    def lidar_sweep(self, ego, t: float) -> dict:
+        """The lidar's sweep from an ego pose (world ← vehicle, 4 × 4) at time t (core.recon.lidar.render_sweep and
+        to_points): points in the sensor frame (right-handed), the range grid, counts."""
+        from .lidar import render_sweep, to_points
+        if self.lidar_spec is None:
+            raise D.DataError(f'{self.path}: the reconstruction has no lidar model (train with --lidar)')
+        T = np.asarray(ego, float) @ self.lidar_mount
+        out = render_sweep(self.scene_model(lidar=True).gaussians_at, self.lidar_spec, T,
+                           t - self.lidar_spec.period_s)
+        return dict(to_points(self.lidar_spec, out), T_world_sensor=T)
 
 
 def render_views(gs: Gaussians, vm: torch.Tensor, K, w: int, h: int, bg=None, extra=None) -> dict:
@@ -198,6 +265,7 @@ def write_views(path: str, cap: D.Capture, train: list, test: list, work_size, o
     split = {id(f): 'train' for f in train}
     split.update({id(f): 'test' for f in test})
     write_json(path, {'schema': VIEWS_SCHEMA, 'world': cap.meta.get('world'),
+                      'dynamic': bool(cap.meta.get('dynamic')),
                       'carla_exact': bool(cap.meta.get('carla_exact')), 'town': cap.meta.get('town'),
                       'source': {'kind': cap.kind, 'path': cap.path, 'camera': cap.camera, 'options': options},
                       'work_size': list(work_size),

@@ -1,4 +1,5 @@
-"""`falcon recon train|from-dashcam|place|eval|render|rerender|hybrid|hybrid-drive|info` (docs/reconstruction.md). Protocol lines on stdout
+"""`falcon recon train|from-dashcam|place|eval|render|rerender|hybrid|hybrid-drive|closedloop|info`
+(docs/reconstruction.md). Protocol lines on stdout
 (core.protocol); exit codes 0 ok, 2 failed, 3 cancelled. A command that uses CUDA takes Falcon's GPU lock
 (core.training.gpu_locks) unless the job queue holds it for it (FALCON_GPU_LOCK_HELD=1); --device cpu needs no lock.
 hybrid-drive records its CARLA drive first (a CARLA job through CarlaService: the CARLA lock, Falcon's own server,
@@ -122,7 +123,11 @@ def main_recon(argv) -> int:
                    ('gpu-memory-fraction', float)):
         t.add_argument(f'--{k}', type=typ)
     t.add_argument('--init', choices=('auto', 'lidar', 'points', 'sfm', 'range', 'random'))
-    t.add_argument('--camera')
+    t.add_argument('--camera', help='a camera id or channel; with --dynamic also \'all\' or a comma list')
+    t.add_argument('--dynamic', action='store_true',
+                   help='learn the tracked road users as moving Gaussians instead of masking them (4D)')
+    t.add_argument('--lidar', action='store_true', help='also train the neural lidar on the recorded sweeps '
+                                                        '(with --dynamic)')
     t.add_argument('--device')
     t.add_argument('--raster-backend', choices=('auto', 'torch', 'triton'),
                    help='the rasteriser: Triton kernels on a CUDA GPU (auto when Triton imports) or plain PyTorch')
@@ -159,6 +164,7 @@ def main_recon(argv) -> int:
     e.add_argument('--warp-check', action='append', default=[], metavar='DIST_M|falcon:RUN',
                    help='measure the warp itself: frames DIST_M ahead on the path, or another run\'s frames')
     e.add_argument('--limit', type=int, default=20, help='frames per measure')
+    e.add_argument('--lidar', action='store_true', help='the neural lidar on the held-out sweeps')
     e.add_argument('--allow-other-world', action='store_true')
     e.add_argument('--device', default='auto')
     r = sub.add_parser('render', help='render one pose: a frame of the drive, shifted')
@@ -166,6 +172,18 @@ def main_recon(argv) -> int:
     r.add_argument('--frame', type=int, default=0, help='the frame\'s position in views.json')
     r.add_argument('--out', '-o', required=True, help='the image (.png or .jpg)')
     r.add_argument('--depth-out', help='the range as a uint16 PNG (range × 256)')
+    r.add_argument('--camera', choices=('pinhole', 'fisheye'), default='pinhole',
+                   help='the frame\'s pinhole camera, or a fisheye at its pose (--fisheye-*)')
+    r.add_argument('--fisheye-fov', type=float, default=190.0, help='the fisheye\'s field, degrees')
+    r.add_argument('--fisheye-model', default='equidistant',
+                   choices=('equidistant', 'equisolid', 'stereographic', 'orthographic', 'rectilinear'))
+    r.add_argument('--fisheye-size', default='640x640', help='WIDTHxHEIGHT of the fisheye image')
+    r.add_argument('--fisheye-method', choices=('cube', 'lens'), default='cube',
+                   help='cube faces remapped (the reference) or the lens model\'s fast path')
+    r.add_argument('--lidar', action='store_true', help='also write the lidar sweep at that pose (-lidar.bin, '
+                                                        'x y z intensity float32, CARLA\'s sensor axes)')
+    r.add_argument('--radar', action='store_true', help='also write geometric radar detections of a forward radar '
+                                                        '(-radar.npy; not learned)')
     _pose_args(r)
     rr = sub.add_parser('rerender', help='a falcon-raw run of the drive re-rendered from a shifted ego path or '
                                          'another camera')
@@ -192,6 +210,19 @@ def main_recon(argv) -> int:
     hd.add_argument('--vehicles', type=int, help='default: the source drive\'s')
     hd.add_argument('--walkers', type=int, help='default: the source drive\'s')
     _hybrid_args(hd)
+    cl = sub.add_parser('closedloop', help='drive a policy in closed loop through a dynamic reconstruction')
+    cl.add_argument('recon')
+    cl.add_argument('--policy', default='constant', metavar='ID',
+                    help='a policy folder (falcon policy bc|ppo), or constant[:KMH] (a built-in speed holder)')
+    cl.add_argument('--out', '-o', required=True, help='the run folder (ep-<n>/ per episode, rollout.json)')
+    cl.add_argument('--episodes', type=int, default=1)
+    cl.add_argument('--seed', type=int, default=0)
+    cl.add_argument('--deviate', type=float, default=3.0,
+                    help='metres off the logged path that end an episode (flagged: outside the reconstruction)')
+    cl.add_argument('--obs-size', default='160x90', help='WIDTHxHEIGHT of each rendered camera')
+    cl.add_argument('--start', type=float, default=0.0, help='seconds into the drive to start from')
+    cl.add_argument('--lateral', type=float, default=0.0, help='start this far to the right of the logged path, m')
+    cl.add_argument('--device', default='auto')
     i = sub.add_parser('info', help='what a reconstruction is and how it measured')
     i.add_argument('recon')
     try:
@@ -228,6 +259,10 @@ def main_recon(argv) -> int:
             s.update({k: v for k, v in over.items() if v is not None})
             from ..profiles import cap_recon
             s = cap_recon(s)                    # the low_vram profile's caps (core.profiles); standard: unchanged
+            if a.dynamic:
+                s['dynamic'] = True
+            if a.lidar:
+                s['lidar'] = True
             if a.no_masks:
                 s['masks'] = False
             if a.no_semantic:
@@ -270,9 +305,16 @@ def main_recon(argv) -> int:
                              **_hybrid_kw(a))
             em.result('ok', run=res['run'], summary=res)
             return P.OK
+        if a.cmd == 'closedloop':
+            from .closedloop import run_closedloop
+            w, _, h = a.obs_size.lower().partition('x')
+            res = run_closedloop(a.recon, a.out, a.policy, a.episodes, a.seed, a.deviate, (int(w), int(h)), a.device,
+                                 {'start_s': a.start, 'lateral_m': a.lateral}, em)
+            em.result('ok', run=a.out, summary=res)
+            return P.OK
         if a.cmd == 'eval':
             res = evaluate_command(a.recon, a.reference, a.warp_shift, a.warp_check, a.limit, a.device,
-                                   a.allow_other_world, em)
+                                   a.allow_other_world, em, lidar=a.lidar)
             em.result('ok', evaluation=os.path.join(a.recon, 'evaluation.json'), summary=res)
             return P.OK
         if a.cmd == 'render':
@@ -280,14 +322,8 @@ def main_recon(argv) -> int:
             from .scene import Recon
             rec = Recon.load(a.recon, a.device)
             cam = rec.camera(rec.frame(a.frame), **_pose_kw(a))
-            out = rec.render(cam)
-            os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-            cv2.imwrite(a.out, cv2.cvtColor(out['image'], cv2.COLOR_RGB2BGR))
-            if a.depth_out:
-                import numpy as np
-                cv2.imwrite(a.depth_out, np.where(out['range'] < 256, np.round(out['range'] * 256), 0)
-                            .astype(np.uint16))
-            em.result('ok', image=a.out, depth=a.depth_out)
+            res = render_command(rec, cam, a)
+            em.result('ok', **res)
             return P.OK
         from .rerender import rerender
         res = rerender(a.recon, a.out, every=a.every, split=a.split, emitter=em, cancel=flag,
@@ -306,8 +342,48 @@ def main_recon(argv) -> int:
             lk.release()
 
 
+def render_command(rec, cam: dict, a) -> dict:
+    """`falcon recon render`: the image (pinhole, or a fisheye at the camera's pose), its range, and with --lidar the
+    sweep and with --radar geometric detections at the frame's ego pose and time."""
+    import cv2
+    import numpy as np
+    os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+    stem = os.path.splitext(a.out)[0]
+    res = {'image': a.out, 'depth': a.depth_out, 't': cam.get('t')}
+    if a.camera == 'fisheye':
+        from .lens_raster import fisheye_intrinsics
+        w, _, h = a.fisheye_size.lower().partition('x')
+        intr = fisheye_intrinsics(int(w), int(h), a.fisheye_fov, a.fisheye_model)
+        out = rec.render_fisheye(cam, intr, a.fisheye_method)
+        res.update(camera='fisheye', method=a.fisheye_method, fov=a.fisheye_fov, model=a.fisheye_model)
+    else:
+        out = rec.render(cam)
+        res['camera'] = 'pinhole'
+    cv2.imwrite(a.out, cv2.cvtColor(out['image'], cv2.COLOR_RGB2BGR))
+    if a.depth_out:
+        cv2.imwrite(a.depth_out, np.where(out['range'] < 256, np.round(out['range'] * 256), 0).astype(np.uint16))
+    if a.lidar:
+        sw = rec.lidar_sweep(cam['ego'], float(cam.get('t', 0.0)))
+        pts = sw['points'].copy()
+        pts[:, 1] *= -1.0                                  # right-handed sensor frame -> CARLA's sensor axes
+        p = stem + '-lidar.bin'
+        pts.astype(np.float32).tofile(p)
+        res.update(lidar=p, lidar_returns=sw['returns'], lidar_beams=sw['beams'])
+    if a.radar:
+        from ..exporters import pose_matrix, rh
+        from .lidar import render_radar
+        # a forward radar on the bumper (CARLA's vehicle frame), its own axes right-handed
+        T = np.asarray(cam['ego'], float) @ rh(pose_matrix({'x': 2.4, 'y': 0.0, 'z': 0.6}))
+        det = render_radar(rec.scene_model().gaussians_at, {'horizontal_fov': 30.0, 'vertical_fov': 10.0,
+                                                             'range': 100.0}, T, float(cam.get('t', 0.0)))
+        p = stem + '-radar.npy'
+        np.save(p, det['detections'])
+        res.update(radar=p, radar_detections=int(len(det['detections'])), radar_learned=False)
+    return res
+
+
 def evaluate_command(recon_dir: str, references=(), shifts=(), checks=(), limit: int = 20, device: str = 'auto',
-                     allow_other_world: bool = False, em=None) -> dict:
+                     allow_other_world: bool = False, em=None, lidar: bool = False) -> dict:
     """Run the requested measures and merge them into the reconstruction's evaluation.json (key 'novel_view')."""
     import time
     from .. import provenance as PV
@@ -346,6 +422,12 @@ def evaluate_command(recon_dir: str, references=(), shifts=(), checks=(), limit:
         nv.setdefault('warp_checks', []).extend(res)
         summary.setdefault('warp_checks', []).extend({k: r.get(k) for k in ('what', 'distance_m', 'psnr', 'ssim',
                                                                             'coverage')} for r in res)
+    if lidar:
+        if em:
+            em.progress(0.9, 'the neural lidar on the held-out sweeps', force=True)
+        res = EV.lidar_heldout(rec, limit)
+        doc['lidar'] = res
+        summary['lidar'] = res['mean']
     nv['seconds'] = round(time.perf_counter() - t0, 2)
     nv['provenance'] = PV.block({'run.json': os.path.join(rec.path, 'run.json')})
     doc['novel_view'] = nv

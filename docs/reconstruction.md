@@ -19,12 +19,23 @@ falcon recon hybrid ~/demo.falcon/recon/drive --drive ~/demo.falcon/runs/redrive
 falcon recon hybrid-drive ~/demo.falcon/recon/drive --project ~/demo.falcon.json --lateral 1.0 --seed 7 \
     --out ~/demo.falcon/runs/hybrid-1m
 falcon recon info ~/demo.falcon/recon/drive
+falcon recon train --source falcon:~/demo.falcon/runs/drive --out ~/demo.falcon/recon/drive-4d --dynamic --lidar
+falcon recon train --source 'nuscenes:~/data/nuscenes?scene=scene-0061' --camera all --dynamic --lidar --out ~/r/s61-4d
+falcon recon render ~/demo.falcon/recon/drive-4d --frame 40 --camera fisheye --lidar --radar --out fish.png
+falcon recon eval ~/demo.falcon/recon/drive-4d --lidar --warp-shift 0.5 --warp-shift 1 --warp-shift 2
+falcon recon closedloop ~/demo.falcon/recon/drive-4d --policy ~/FalconWorkspace/policies/bc --deviate 3.0 \
+    --episodes 5 --out ~/demo.falcon/runs/neural-bc
 ```
 
 `train` also takes `--iterations` (7000), `--width` (640: images are worked on at most this wide), `--init
 auto|lidar|points|sfm|range|random`, `--holdout` (8), `--seed`, `--sh-degree` (3), `--max-gaussians` (600 000),
 `--every`, `--camera`, `--device`, `--raster-backend auto|torch|triton` ([the rasteriser](#the-rasteriser-triton-kernels-and-a-pytorch-reference)),
-`--no-masks`, `--no-semantic`, `--config FILE`. `render` and `rerender` take
+`--no-masks`, `--no-semantic`, `--config FILE`, `--dynamic` and `--lidar` ([moving actors, the neural lidar and
+closed loop](#moving-actors-a-neural-lidar-fisheyes-and-closed-loop-4d)); with `--dynamic`, `--camera` also takes
+`all` or a comma list. `render` also takes `--camera pinhole|fisheye` with `--fisheye-fov` (190), `--fisheye-model`,
+`--fisheye-size` and `--fisheye-method cube|lens`, `--lidar` and `--radar`; `eval` takes `--lidar`; `closedloop`
+takes `--policy`, `--deviate` (3.0), `--episodes`, `--seed`, `--obs-size`, `--start`, `--lateral`. `render` and
+`rerender` take
 `--lateral` (metres to the right), `--forward`, `--up`, `--yaw` (degrees, CARLA's sense: positive turns right), `--mount
 x,y,z,roll,pitch,yaw` (the camera's mount in CARLA's vehicle frame, as in a rig), `--fov` and `--size WxH`. `hybrid`
 and `hybrid-drive` ([hybrid worlds](#hybrid-worlds-carlas-actors-in-the-reconstruction)) take `--method
@@ -777,15 +788,95 @@ Output (`--out`): `dashcam.json` (every number of every step), `intrinsics.json`
 tests use synthetic clips (a textured street rendered along a known track, encoded with ffmpeg, given a GPS index in
 the camera's layout).
 
+## Moving actors, a neural lidar, fisheyes and closed loop (4D)
+
+A first cut in the manner of SplatAD (Hess et al., *SplatAD: Real-Time Lidar and Camera Rendering with 3D Gaussian
+Splatting for Autonomous Driving*, CVPR 2025) and street-scene Gaussians with tracked actors, written for Falcon's own
+rasteriser: `core/recon/actors.py`, `lidar.py`, `lens_raster.py`, `closedloop.py`.
+
+**Dynamic mode** (`--dynamic`). The source's tracked road users are learned instead of masked: a Falcon run's
+`actors.jsonl` (every vehicle and walker but the ego: CARLA's boxes, the box centre the actor's transform composed with
+its bounding box's centre) and nuScenes' `sample_annotation` instances (every annotated object; moving when it moved
+more than 0.3 m or is a person, else posed where it was annotated). Only the ego's body and actors without a track
+(traffic lights) stay masked. Several cameras train together (`--camera all`: nuScenes' six; a Falcon rig's pinhole
+cameras).
+
+- **An actor** is a set of Gaussians in its own box frame (ported from Vantage's log-replay reconstruction: `Track`,
+  `_build_tracks`, `_posed_means`), started from the lidar points that fell in its box over the drive (else samples on
+  the box's surface), posed at any instant by its logged box composed with a **learned rigid correction** (a
+  translation and a rotation vector per annotation, interpolated in time, regularised towards zero and towards its
+  neighbours in time so it fixes a box that is a little off but cannot absorb the motion). All actors and the static
+  scene go through **one rasterisation** (`raster.render`), so occlusion between them is the rasteriser's depth order.
+- **Wheels**: a vehicle's wheels are template cylinders of Gaussians (four for a car, three for an autorickshaw, two for
+  a two-wheeler) that turn by φ(t) = φ₀ + s(t) / r — s the distance the box travelled along its heading, r a class
+  default, φ₀ a learned phase — and the front wheels steer by the bicycle model's angle from the box's yaw rate,
+  δ = atan(L ψ̇ / v), split left and right by Ackermann geometry.
+- **Pedestrians**: canonical Gaussians plus a small deformation network (Fourier features of position and time, two
+  hidden layers of 64), regularised by the displacement's size, its change over 0.1 s and the local rigidity of
+  neighbouring Gaussians. No body model (SMPL is refused: non-commercial); the network replays the motion the images
+  show at the times they show it.
+- Training: the photometric loss covers the actors; their parameters take Adam steps beside the static scene's; density
+  control is the static scene's only (an actor keeps its number of Gaussians); semantic classes are not voted.
+
+**The neural lidar** (`--lidar`, dynamic mode only — a lidar sees the moving actors, which a static scene cannot
+explain). Every Gaussian also carries a lidar intensity and a ray-drop logit. The recorded lidar's beam grid —
+CARLA's evenly spaced channels for a Falcon lidar, the rings measured from nuScenes' ring indices — is rendered in
+azimuth sectors as an image whose pixel centres are the beams (Vantage's spherical projector and range-sorted
+rasteriser, a beam's dilation 0.05 px² instead of an image's 0.3), each Gaussian contributing the range to its own
+plane along the beam (first order across the splat), its intensity and its drop logit; actors are posed at each
+sector's firing time. A beam returns with probability α·(1 − σ(ℓ)) — α the opacity it met, ℓ the composited drop
+logit — so it drops where it meets nothing or where what it meets drops beams (glass, dark or wet surfaces). Every
+`lidar_every` steps one training sweep adds relative L1 on the ranges of the beams that returned, binary cross-entropy
+of the return probability, and L1 on the intensities (columns with no return at all are left out: in CARLA's partial
+sweeps they may not have been fired). `eval --lidar` and the training's evaluation compare held-out sweeps beam by beam.
+Tested on scenes rendered by Falcon's rasteriser: a plane's ranges within 3 mm, and ray drop learned on a planted window
+of dropped beams (drop accuracy above 90 %). **Radar is not learned**: `render --radar` gives geometric detections
+(range, angle, the radial velocity of what the beam hits — an actor's track velocity — relative to the sensor's, and an
+RCS proxy from the opacity, incidence and footprint).
+
+**Fisheyes** (`render --camera fisheye`). Two renderers of any `core.lens` model: **cube faces** (the reference) — the
+pinhole views CARLA itself renders a fisheye from (`core.lens.plan_views`), each by the pinhole rasteriser, read through
+the lens's remap tables by `grid_sample` (differentiable) — and **the lens fast path**, ported from Vantage
+(`LensProjector`): each Gaussian through the lens model and its covariance through the projection's Jacobian. Measured
+on a 190° equidistant view of a street: they agree to 32 dB PSNR within 60° of the axis and to 24 dB at the rim beyond
+90° off-axis, where the fast path's affine approximation breaks down. Training stays on pinhole images.
+
+**Re-rendered runs** of a dynamic reconstruction draw the actors at each frame's time and gain `actors.jsonl` (the
+boxes as drawn, the shifted ego as the hero) and, with a lidar model, the lidar's sweeps at the shifted poses (CARLA's
+sensor axes, `lidar_pose` in frames.jsonl) — rendered, not ground truth.
+
+**Closed loop** (`falcon recon closedloop`; `core.recon.closedloop.NeuralSim`). A policy drives an ego through the
+reconstruction and sees it rendered from wherever its decisions took it. NeuralSim has the learning environment's
+surface (`reset`, `step`, `feature_names`, the observation and action spaces), so `core.policy.rollout` and every
+policy trained for the CARLA environment run unchanged; observations are the environment's (`state` from
+`core.drivefeatures.Featuriser` on the logged ego path as the route; `camera` the first camera's render). The ego is the
+kinematic bicycle model of the CARLA environment's kinematic motion (a numpy port of the director's); the other road
+users come from an `ActorController` — `LoggedActors` replays their logged motion; a reactive controller (level-k
+traffic) implements the same `reset`, `step`, `poses`. Each episode is written as a **normal Falcon run folder**
+(frames.jsonl, actors.jsonl, rgb/, drive.json, dataset.json, run.json), so the traffic rules, STL, criticality and the
+exporters read it as they read a CARLA run. **The trust envelope**: from the reconstruction's own lateral-shift
+measurement (`eval --warp-shift`), the largest shift at which the PSNR is within 3 dB of the unshifted control on both
+sides; every step records the ego's deviation from the logged path, the PSNR expected there and whether it is inside
+the envelope, and beyond `--deviate` (3 m) the step is flagged and the episode ends (truncated, termination
+`outside_reconstruction`).
+
 ## Limits
 
+- **Dynamic mode, the neural lidar and closed loop are a first cut**, tested on synthetic scenes rendered by Falcon's
+  own rasteriser and on synthetic dataset layouts; **not yet measured on real data** (nuScenes mini, a CARLA drive 3 m
+  off its path: the `nuscenes` and `real_server` acceptance tests). Wheels add little at dashcam resolution (a wheel is
+  a few pixels; its spin is mostly invisible); pedestrians blur where they are occluded and cannot do a motion the drive
+  did not show; actors keep their logged appearance even when a controller moves them into lighting and backgrounds
+  they were never seen against; an actor's number of Gaussians is fixed; **radar is geometric, not learned**; the
+  closed-loop ego has no road-surface model (height, roll and pitch follow the logged path) and no map (no off-road or
+  lane facts, lane width assumed 3.5 m, no traffic lights).
 - **Extrapolation degrades fast**: the measured numbers above fall with every metre off the recorded path, and areas
   the drive never saw (behind objects, beyond the lidar's range, the far side of a shifted view) are blurred, missing
   or filled by the far shell. A single forward camera sees each surface over a narrow range of directions.
 - **The static scene only**; KITTI raw's moving objects are not masked (no tracklets read). What a masked actor hid
   in every frame (the road under a car followed the whole drive) is never observed and renders as a blur.
-- **Pinhole cameras only** (fisheye projection is not implemented); one camera per reconstruction; no rolling shutter,
-  exposure or white-balance modelling (a real log's auto-exposure changes are learned as view-dependent colour).
+- **Training on pinhole cameras only** (fisheyes are rendered, not trained on); one camera per static reconstruction
+  (several in dynamic mode); no rolling shutter, exposure or white-balance modelling (a real log's auto-exposure changes are learned as view-dependent colour).
 - **Depth sorting by the centre's depth** (the paper's): Gaussians can pop when their order changes.
 - **Speed**: the Triton backend made a training 6–12 times faster than plain PyTorch (8.8 × in the least shared
   pair, measured above); a step is now bound by the PyTorch operations around the kernels (projection, SH, sorting,
@@ -817,5 +908,7 @@ the camera's layout).
 ## Licences
 
 The rasteriser, the trainer and the density control are Falcon's (GPL-3.0-or-later), written from the papers cited.
+The actors' tracks, the lens and spherical projectors and their rasteriser, and the lidar's beam rendering are ported
+from Vantage (GPL-3.0-or-later, the same author's).
 Inputs keep their owners' terms: KITTI (CC BY-NC-SA 3.0) and nuScenes (CC BY-NC-SA 4.0) are non-commercial, and so is
 anything reconstructed from them; a reconstruction of a Falcon run is Falcon's output.

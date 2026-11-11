@@ -87,6 +87,7 @@ class Frame:
     semantic: object = None       # a path or an (H, W) uint8 array of classes, or None
     range: object = None          # a path (uint16 PNG, range × 256) or an (H, W) float array (m), or None
     name: str = ''
+    camera: str = ''              # the camera's id or channel (several cameras in one capture: dynamic mode)
 
     @property
     def centre(self) -> np.ndarray:
@@ -102,6 +103,10 @@ class Capture:
     lidar: object = None          # a callable () -> (xyz (N, 3), rgb (N, 3) in [0, 1]) or None
     meta: dict = field(default_factory=dict)
     points: object = None         # a callable () -> (xyz, rgb): points the source brings (not a lidar), or None
+    tracks: object = None         # dynamic mode: {id: core.recon.actors.Track} of the road users, or None
+    sweeps: list = field(default_factory=list)    # dynamic mode: the lidar's Sweeps (the neural lidar's targets)
+    lidar_spec: object = None     # dynamic mode: the lidar's core.recon.lidar.LidarSpec
+    lidar_mount: object = None    # vehicle <- lidar sensor (right-handed 4 × 4)
 
     def summary(self) -> dict:
         c = np.array([f.centre for f in self.frames])
@@ -110,6 +115,16 @@ class Capture:
                 'path_m': round(float(np.sum(np.linalg.norm(np.diff(c, axis=0), axis=1))), 3) if len(c) > 1 else 0.0,
                 'lidar': self.lidar is not None, 'masks': self.meta.get('masks', ''),
                 'world': self.meta.get('world', '')}
+
+
+@dataclass
+class Sweep:
+    """One recorded lidar sweep: t (s from the capture's first frame), T world <- sensor (right-handed), and
+    load() -> (points (n, 3) in the sensor frame, right-handed, intensity (n,) in [0, 1], actor ids (n,) or None)."""
+    t: float
+    T: np.ndarray
+    load: object
+    name: str = ''
 
 
 # ================================================================================================ images
@@ -225,64 +240,169 @@ def open_capture(source, camera: str | None = None, **opts) -> Capture:
         kind, path = source
         o = dict(opts)
     camera = camera or o.pop('camera', None)
+    dynamic = str(o.get('dynamic', '')).lower() in ('1', 'true', 'yes')
     if kind == 'falcon':
-        return falcon_capture(path, camera, every=int(o.get('every', 1)))
+        return falcon_capture(path, camera, every=int(o.get('every', 1)), dynamic=dynamic)
+    if dynamic and kind in ('kitti_raw', 'posed'):
+        raise DataError(f'dynamic mode reads the tracks of Falcon runs and nuScenes; {kind} has none Falcon reads')
     if kind == 'kitti_raw':
         return kitti_capture(path, camera or 'image_02', every=int(o.get('every', 1)))
     if kind == 'posed':
         return posed_capture(path, every=int(o.get('every', 1)))
-    return nuscenes_capture(path, o.get('scene'), camera or 'CAM_FRONT')
+    return nuscenes_capture(path, o.get('scene'), camera or ('all' if dynamic else 'CAM_FRONT'), dynamic=dynamic)
+
+
+def _camera_list(spec, available: list) -> list:
+    """'all', a comma list or one name -> the cameras (in the source's order)."""
+    if spec in (None, ''):
+        return available[:1]
+    if spec == 'all':
+        return list(available)
+    want = [c.strip() for c in str(spec).split(',') if c.strip()]
+    return [c for c in available if c in want] + [c for c in want if c not in available]
 
 
 # ------------------------------------------------------------------------------------------------ Falcon runs
-def falcon_capture(path: str, camera: str | None = None, every: int = 1) -> Capture:
+def falcon_capture(path: str, camera: str | None = None, every: int = 1, dynamic: bool = False) -> Capture:
     from ..exporters import ExportError, Run, camera_T, rh
     try:
         run = Run(path)
     except ExportError as e:
         raise DataError(str(e)) from None
     pins = [c for c, s in run.cams.items() if s['type'] == 'camera.pinhole']
-    cid = camera or (pins[0] if pins else None)
-    if cid not in run.cams:
-        raise DataError(f'{path}: no camera {camera!r} (cameras: {", ".join(run.cams) or "none"})')
-    cam = run.cams[cid]
-    if cam['type'] != 'camera.pinhole':
-        raise DataError(f'{path}: camera {cid} is a {cam["type"]}; a reconstruction reads pinhole cameras only')
-    W, H = int(cam['width']), int(cam['height'])
-    Kc = cam.get('K') or [[cam['width'] / (2 * math.tan(math.radians(cam['fov']) / 2)), 0, W / 2],
-                          [0, cam['width'] / (2 * math.tan(math.radians(cam['fov']) / 2)), H / 2]]
-    K = (float(Kc[0][0]), float(Kc[1][1]), float(Kc[0][2]), float(Kc[1][2]))
-    mount = camera_T(run, cid, actual=True)
-    recs = run.camera_steps(cid, every)
-    if not recs:
-        raise DataError(f'{path}: camera {cid} has no frames')
-    t0 = float(recs[0]['sim_t'])
+    cids = _camera_list(camera, pins) if pins else [camera]
+    for cid in cids:
+        if cid not in run.cams:
+            raise DataError(f'{path}: no camera {cid!r} (cameras: {", ".join(run.cams) or "none"})')
+        if run.cams[cid]['type'] != 'camera.pinhole':
+            raise DataError(f'{path}: camera {cid} is a {run.cams[cid]["type"]}; a reconstruction trains on pinhole '
+                            f'cameras only (core.recon.lens_raster renders fisheyes)')
+    tracks = falcon_tracks(run) if dynamic else None
+    keep_ids = set(tracks) if tracks else set()
+    all_recs = [r for cid in cids for r in run.camera_steps(cid, every)]
+    if not all_recs:
+        raise DataError(f'{path}: camera {cids[0]} has no frames')
+    t0 = min(float(r['sim_t']) for r in all_recs)
     frames = []
-    for r in recs:
-        ego = rh(run.ego(r))
-        Tw = ego @ mount
-        frames.append(Frame(int(r['step']), float(r['sim_t']) - t0, run.p(run.file(r, cid, 'rgb')), K, (W, H),
-                            inv(Tw), ego, mount, _falcon_mask(run, r, cid),
-                            run.p(run.file(r, cid, 'semantic')) if run.own(r, cid, 'semantic') else None,
-                            run.p(run.file(r, cid, 'range')) if run.own(r, cid, 'range') else None,
-                            f'{run.name}/{r["step"]:06d}'))
+    for cid in cids:
+        cam = run.cams[cid]
+        W, H = int(cam['width']), int(cam['height'])
+        Kc = cam.get('K') or [[cam['width'] / (2 * math.tan(math.radians(cam['fov']) / 2)), 0, W / 2],
+                              [0, cam['width'] / (2 * math.tan(math.radians(cam['fov']) / 2)), H / 2]]
+        K = (float(Kc[0][0]), float(Kc[1][1]), float(Kc[0][2]), float(Kc[1][2]))
+        mount = camera_T(run, cid, actual=True)
+        recs = run.camera_steps(cid, every)
+        if not recs:
+            raise DataError(f'{path}: camera {cid} has no frames')
+        for r in recs:
+            ego = rh(run.ego(r))
+            Tw = ego @ mount
+            frames.append(Frame(int(r['step']), float(r['sim_t']) - t0, run.p(run.file(r, cid, 'rgb')), K, (W, H),
+                                inv(Tw), ego, mount, _falcon_mask(run, r, cid, keep_ids),
+                                run.p(run.file(r, cid, 'semantic')) if run.own(r, cid, 'semantic') else None,
+                                run.p(run.file(r, cid, 'range')) if run.own(r, cid, 'range') else None,
+                                f'{run.name}/{r["step"]:06d}' + (f'/{cid}' if len(cids) > 1 else ''), cid))
+    if len(cids) > 1:
+        frames.sort(key=lambda f: (f.t, f.camera))
+    cid = cids[0] if len(cids) == 1 else ','.join(cids)
     lidars = [s['id'] for s in run.of_type('lidar')] or \
         sorted({k.split('/')[0] for r in run.frames for k in r.get('files', {}) if k.endswith('/lidar')})
     lid = lidars[0] if lidars else None
     has_lidar = lid is not None and any(run.file(r, lid, 'lidar') and r.get('lidar_pose', {}).get(lid)
                                         for r in run.frames)
-    has_inst = any(run.own(r, cid, 'instance') for r in recs)
+    has_inst = any(run.own(r, c, 'instance') for c in cids for r in run.camera_steps(c, every))
+    masks = ('actors (instance labels: every vehicle and walker) and the ego\'s body' if has_inst else
+             'none (the run has no instance labels)')
+    if dynamic:
+        masks = ('the ego\'s body and actors without a track (traffic lights); the tracked road users are learned '
+                 '(dynamic mode)')
     meta = {'world': 'the run\'s CARLA world mirrored (x, −y, z): right-handed, z up, metres',
             'town': run.cfg.get('town') or run.cfg.get('xodr') or '', 'name': run.name, 'fps': run.fps,
-            'masks': 'actors (instance labels: every vehicle and walker) and the ego\'s body' if has_inst else
-            'none (the run has no instance labels)',
+            'masks': masks, 'dynamic': bool(dynamic), 'cameras': cids,
             'carla_exact': True, 'weather': run.cfg.get('weather'), 'vehicle': run.rig.get('vehicle'),
             'sensor': cam, 'inputs': run.inputs(), 'notes': [], 'left_out': [], 'heuristic': []}
     cap = Capture('falcon', run.dir, cid, frames, None, meta)
     if has_lidar:
         cap.lidar = lambda: _falcon_lidar(run, lid, cap)
         meta['lidar'] = lid
+    if dynamic:
+        cap.tracks = tracks
+        meta['tracks'] = len(tracks)
+        if has_lidar:
+            _falcon_sweeps(run, lid, cap, t0)
     return cap
+
+
+def falcon_tracks(run) -> dict:
+    """{actor id: Track} of a Falcon run's road users from actors.jsonl (every vehicle and walker but the ego), in the
+    reconstruction's world (CARLA's mirrored): the box centre is the actor's transform composed with its bounding
+    box's centre, the size twice its extent."""
+    from ..exporters import pose_matrix, rh
+    from .actors import build_tracks, rot_to_quat_np
+    p = run.p('actors.jsonl')
+    if not os.path.isfile(p):
+        raise DataError(f'{run.dir}: no actors.jsonl — dynamic mode needs the actors\' boxes (record the run with '
+                        f'them)')
+    t_of = {int(r['step']): float(r['sim_t']) for r in run.frames}
+    t0 = min(t_of.values()) if t_of else 0.0
+    obs, info = {}, {}
+    with open(p, encoding='utf-8') as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            d = json.loads(line)
+            st = int(d['step'])
+            if st not in t_of:
+                continue
+            for a in d.get('actors') or ():
+                tid = str(a.get('type_id', ''))
+                if a.get('role') == 'hero' or not tid.startswith(('vehicle.', 'walker.')):
+                    continue
+                T = pose_matrix(a)
+                T[:3, 3] = T[:3, :3] @ np.asarray(a.get('bbox_center') or [0, 0, 0], float) + T[:3, 3]
+                B = rh(T)
+                ext = a.get('extent') or [0.5, 0.5, 0.5]
+                obs.setdefault(int(a['id']), []).append((t_of[st] - t0, B[:3, 3], rot_to_quat_np(B[:3, :3])[0]))
+                info[int(a['id'])] = ('pedestrian' if tid.startswith('walker.') else (a.get('subclass') or tid),
+                                      str(a.get('category') or tid), True,
+                                      (2.0 * float(ext[0]), 2.0 * float(ext[1]), 2.0 * float(ext[2])))
+    return build_tracks(obs, info, by_motion=True)
+
+
+def _falcon_sweeps(run, lid, cap, t0):
+    """The run's lidar sweeps as the neural lidar's targets (one per recorded file: CARLA casts a tick's partial sweep
+    from one pose) and its beam grid (core.recon.lidar.spec_of_sensor)."""
+    from ..exporters import pose_matrix, rh
+    from .lidar import spec_of_sensor
+    sensor = run.sensors.get(lid) or {}
+    cap.lidar_spec = spec_of_sensor(sensor, period=0.0)
+    cap.lidar_mount = rh(pose_matrix(sensor.get('pose') or {}))
+    for r in run.frames:
+        rel = run.file(r, lid, 'lidar')
+        if not rel or not (r.get('lidar_pose') or {}).get(lid):
+            continue
+        M = np.eye(4)
+        M[:3, :] = np.asarray(r['lidar_pose'][lid], float).reshape(3, 4)
+        cap.sweeps.append(Sweep(float(r['sim_t']) - t0, rh(M), _falcon_sweep_loader(run.p(rel)),
+                                f'{run.name}/{int(r["step"]):06d}'))
+
+
+def _falcon_sweep_loader(p):
+    def load():
+        pts = np.fromfile(p, np.float32).reshape(-1, 4)
+        ids = None
+        lp = p[:-4] + '.labels.bin'
+        if os.path.isfile(lp):
+            lab = np.fromfile(lp, np.uint8)
+            n = len(pts)
+            if len(lab) >= 5 * n:
+                tag = lab[:n]
+                ids = np.frombuffer(lab[n:5 * n].tobytes(), np.uint32).astype(np.int64)
+                keep = (tag != EGO_CLASS) & (tag != 30)
+                pts, ids = pts[keep], ids[keep]
+        P = pts[:, :3].astype(np.float64) @ S3.T                  # CARLA's sensor axes -> right-handed
+        return P, np.clip(pts[:, 3].astype(np.float64), 0, 1), ids
+    return load
 
 
 def actor_object_ids(objs) -> np.ndarray:
@@ -294,7 +414,8 @@ def actor_object_ids(objs) -> np.ndarray:
                      isinstance(o.get('track_id'), int)], np.int64)
 
 
-def _falcon_mask(run, rec, cid):
+def _falcon_mask(run, rec, cid, keep_actors=()):
+    """The learn-from mask of a frame; keep_actors: actor ids learned (dynamic mode's tracked road users), left in."""
     def mk():
         import cv2
         rel_i = run.own(rec, cid, 'instance')
@@ -302,13 +423,18 @@ def _falcon_mask(run, rec, cid):
         m = None
         if rel_i:
             inst = cv2.imread(run.p(rel_i), cv2.IMREAD_UNCHANGED)
-            ids = actor_object_ids(run.objects(rec, cid) or [])
+            objs = run.objects(rec, cid) or []
+            if keep_actors:
+                objs = [o for o in objs if not ((isinstance(o.get('actor_id'), int) and o['actor_id'] in keep_actors)
+                                                or (isinstance(o.get('track_id'), int) and
+                                                    o['track_id'] in keep_actors))]
+            ids = actor_object_ids(objs)
             m = ~np.isin(inst, ids) if len(ids) else np.ones(inst.shape, bool)
         if rel_s:
             sem = cv2.imread(run.p(rel_s), cv2.IMREAD_UNCHANGED)
             ego = sem != EGO_CLASS
             if m is None:                     # no instance labels: the dynamic classes (parked map cars too)
-                m = ego & ~np.isin(sem, DYNAMIC_CLASSES)
+                m = ego if keep_actors else ego & ~np.isin(sem, DYNAMIC_CLASSES)
             else:
                 m &= ego
         return m
@@ -515,10 +641,18 @@ def _png_mask(p):
 
 
 # ------------------------------------------------------------------------------------------------ nuScenes
-def nuscenes_capture(path: str, scene: str | None = None, channel: str = 'CAM_FRONT') -> Capture:
+NUSCENES_CAMERAS = ('CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_RIGHT', 'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_FRONT_LEFT')
+
+
+def nuscenes_capture(path: str, scene: str | None = None, channel: str = 'CAM_FRONT', dynamic: bool = False) -> Capture:
+    """A nuScenes scene's key frames of one camera channel (or several: a comma list, or 'all' — the six cameras).
+    dynamic: every annotated instance becomes a Track (its sample_annotation boxes at the samples' times) and is
+    learned instead of masked; LIDAR_TOP's key-frame sweeps (x, y, z, intensity 0–255, ring index) become the neural
+    lidar's targets and its beam grid is measured from them (core.recon.lidar.spec_of_points)."""
     from ..logreplay.model import quat_matrix
     from ..logreplay.nuscenes import find_version
     from ..logreplay.ros2 import falcon_class
+    from .actors import build_tracks
     path = os.path.abspath(path)
     v = find_version(path)
 
@@ -541,7 +675,10 @@ def nuscenes_capture(path: str, scene: str | None = None, channel: str = 'CAM_FR
 
     def chan(d):
         return sensors[cal[d['calibrated_sensor_token']]['sensor_token']]['channel']
-    cams = sorted((d for d in sds if chan(d) == channel), key=lambda d: d['timestamp'])
+    present = [c for c in NUSCENES_CAMERAS if any(chan(d) == c for d in sds)]
+    present += sorted({chan(d) for d in sds if chan(d).startswith('CAM_') and chan(d) not in present})
+    channels = _camera_list(channel, present) if channel else present[:1]
+    cams = sorted((d for d in sds if chan(d) in channels), key=lambda d: (d['timestamp'], channels.index(chan(d))))
     if not cams:
         raise DataError(f'scene {sc["name"]}: no key frames of {channel}')
 
@@ -553,10 +690,22 @@ def nuscenes_capture(path: str, scene: str | None = None, channel: str = 'CAM_FR
     cats = {c['token']: c['name'] for c in tab('category')}
     inst = {i['token']: cats.get(i['category_token'], '') for i in tab('instance')}
     boxes = {}
+    t0 = min(d['timestamp'] for d in sds) * 1e-6
+    obs, info = {}, {}
+    ids = {}
     for a in tab('sample_annotation'):
-        if a['sample_token'] in samples and falcon_class(inst.get(a['instance_token'], '')):
+        if a['sample_token'] not in samples:
+            continue
+        cat = inst.get(a['instance_token'], '')
+        if dynamic:
+            k = ids.setdefault(a['instance_token'], len(ids) + 1)
+            w, ln, h = (float(x) for x in a['size'])
+            obs.setdefault(k, []).append((samples[a['sample_token']]['timestamp'] * 1e-6 - t0,
+                                          np.asarray(a['translation'], float), np.asarray(a['rotation'], float)))
+            info[k] = (falcon_class(cat) or cat.split('.')[-1], cat, True, (ln, w, h))
+        elif falcon_class(cat):
             boxes.setdefault(a['sample_token'], []).append((T_of(a['rotation'], a['translation']), a['size']))
-    t0 = cams[0]['timestamp'] * 1e-6
+    tracks = build_tracks(obs, info, by_motion=True) if dynamic else None
     frames = []
     for d in cams:
         c = cal[d['calibrated_sensor_token']]
@@ -566,17 +715,20 @@ def nuscenes_capture(path: str, scene: str | None = None, channel: str = 'CAM_FR
         K = (Ki[0, 0], Ki[1, 1], Ki[0, 2] + 0.5, Ki[1, 2] + 0.5)
         W, H = int(d.get('width') or 1600), int(d.get('height') or 900)
         vm = inv(ego @ mount)
+        mask = None if dynamic else _box_mask(boxes.get(d['sample_token'], []), vm, K, (W, H))
         frames.append(Frame(len(frames), d['timestamp'] * 1e-6 - t0, os.path.join(path, d['filename']), K, (W, H),
-                            vm, ego, mount, _box_mask(boxes.get(d['sample_token'], []), vm, K, (W, H)), None, None,
-                            d['filename']))
+                            vm, ego, mount, mask, None, None, d['filename'], chan(d)))
     lids = sorted((d for d in sds if chan(d) == 'LIDAR_TOP'), key=lambda d: d['timestamp'])
     meta = {'world': 'nuScenes\' global frame (x east, y north, z up), metres', 'name': f'nuScenes {sc["name"]}',
-            'masks': 'the key frame\'s annotated boxes of Falcon\'s actor classes, projected and filled',
-            'carla_exact': False, 'inputs': {}, 'notes': [f'{len(frames)} key frames of {channel}'],
+            'masks': ('none: every annotated instance is a track, learned (dynamic mode); the ego\'s own body is '
+                      'outside nuScenes\' camera views') if dynamic else
+            'the key frame\'s annotated boxes of Falcon\'s actor classes, projected and filled',
+            'carla_exact': False, 'inputs': {}, 'notes': [f'{len(frames)} key frames of {", ".join(channels)}'],
             'left_out': [{'what': 'non-key-frame images (sweeps)', 'why': 'their boxes would be interpolated; key '
                                                                          'frames only'}],
-            'heuristic': [{'what': 'mask dilation', 'how': '2 px around each projected box'}]}
-    cap = Capture('nuscenes', path, channel, frames, None, meta)
+            'heuristic': [] if dynamic else [{'what': 'mask dilation', 'how': '2 px around each projected box'}],
+            'dynamic': bool(dynamic), 'cameras': channels}
+    cap = Capture('nuscenes', path, channel if len(channels) > 1 else channels[0], frames, None, meta)
     if lids:
         def lidar():
             xs, cs = [], []
@@ -590,17 +742,53 @@ def nuscenes_capture(path: str, scene: str | None = None, channel: str = 'CAM_FR
                     T_of(c['rotation'], c['translation'])
                 w = pts @ T[:3, :3].T + T[:3, 3]
                 keep = np.ones(len(w), bool)
-                for B, size in boxes.get(d['sample_token'], []):
-                    keep &= ~_in_box(w, B, size, 0.2)
+                tt = d['timestamp'] * 1e-6 - t0
+                if dynamic:
+                    for tr in tracks.values():
+                        po = tr.pose(tt)
+                        if po is not None:
+                            B = np.eye(4)
+                            B[:3, :3], B[:3, 3] = po
+                            keep &= ~_in_box(w, B, (tr.size[1], tr.size[0], tr.size[2]), 0.2)
+                else:
+                    for B, size in boxes.get(d['sample_token'], []):
+                        keep &= ~_in_box(w, B, size, 0.2)
                 w = w[keep]
                 xs.append(w)
-                cs.append(colour_points(w, nearest_frames(frames, d['timestamp'] * 1e-6 - t0)))
+                cs.append(colour_points(w, nearest_frames(frames, tt)))
             if not xs:
                 raise DataError(f'{path}: the LIDAR_TOP files are not on disk')
             return np.concatenate(xs), np.concatenate(cs)
         cap.lidar = lidar
         meta['lidar'] = 'LIDAR_TOP'
+        if dynamic:
+            from .lidar import spec_of_points
+            c0 = cal[lids[0]['calibrated_sensor_token']]
+            cap.lidar_mount = T_of(c0['rotation'], c0['translation'])
+            first = []
+            for d in lids:
+                p = os.path.join(path, d['filename'])
+                if os.path.isfile(p):
+                    first.append(np.fromfile(p, np.float32).reshape(-1, 5).astype(np.float64))
+                    T = T_of(poses[d['ego_pose_token']]['rotation'], poses[d['ego_pose_token']]['translation']) @ \
+                        T_of(cal[d['calibrated_sensor_token']]['rotation'],
+                             cal[d['calibrated_sensor_token']]['translation'])
+                    cap.sweeps.append(Sweep(d['timestamp'] * 1e-6 - t0, T, _nus_sweep_loader(p), d['filename']))
+            if first:
+                cap.lidar_spec = spec_of_points(first, period=0.05)
+                meta['notes'].append('LIDAR_TOP: the beam grid measured from the sweeps\' ring indices; the firing '
+                                     'time of a column assumed from its azimuth at 20 Hz')
+    if dynamic:
+        cap.tracks = tracks
+        meta['tracks'] = len(tracks)
     return cap
+
+
+def _nus_sweep_loader(p):
+    def load():
+        a = np.fromfile(p, np.float32).reshape(-1, 5).astype(np.float64)
+        return a[:, :3], np.clip(a[:, 3] / 255.0, 0, 1), None
+    return load
 
 
 def _in_box(w, B, size, pad=0.0):
@@ -837,6 +1025,47 @@ def sky_shell(frames: list, xyz, n: int = 20000, seed: int = 0) -> tuple:
         cnt[seen] += 1
     rgb = np.where(cnt[:, None] > 0, acc / np.maximum(cnt, 1)[:, None], 0.5)
     return pts, rgb, radius
+
+
+def actor_points(cap: Capture, max_per_actor: int = 3000, seed: int = 0) -> dict:
+    """Dynamic mode: each track's lidar points in its own box frame, coloured from the frames nearest in time —
+    {track id: (points (n, 3), rgb (n, 3))}. A point belongs to a track when the recording says so (a Falcon run's
+    lidar labels carry actor ids), else when it lies in the track's box at the sweep's time (10 cm of padding)."""
+    out = {}
+    if not cap.tracks or not cap.sweeps:
+        return out
+    rng = np.random.default_rng(seed)
+    acc = {k: ([], []) for k in cap.tracks}
+    for sw in cap.sweeps:
+        P, _, ids = sw.load()
+        if not len(P):
+            continue
+        W = P @ sw.T[:3, :3].T + sw.T[:3, 3]
+        near = nearest_frames(cap.frames, sw.t, k=2, spread_s=0.5)
+        for k, tr in cap.tracks.items():
+            po = tr.pose(sw.t)
+            if po is None:
+                continue
+            Rb, cb = po
+            loc = (W - cb) @ Rb
+            if ids is not None:
+                m = ids == int(k)
+            else:
+                L, Wd, H = tr.size
+                m = (np.abs(loc[:, 0]) <= L / 2 + 0.1) & (np.abs(loc[:, 1]) <= Wd / 2 + 0.1) & \
+                    (np.abs(loc[:, 2]) <= H / 2 + 0.1)
+            if m.any():
+                acc[k][0].append(loc[m])
+                acc[k][1].append(colour_points(W[m], near))
+    for k, (ps, cs) in acc.items():
+        if not ps:
+            continue
+        P, C = np.concatenate(ps), np.concatenate(cs)
+        if len(P) > max_per_actor:
+            sel = rng.choice(len(P), max_per_actor, replace=False)
+            P, C = P[sel], C[sel]
+        out[k] = (P, C)
+    return out
 
 
 def init_points(cap: Capture, init: str = 'auto', train_frames=None, voxel: float = 0.15,

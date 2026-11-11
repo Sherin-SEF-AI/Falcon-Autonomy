@@ -50,8 +50,14 @@ def _t(a, dev):
     return torch.as_tensor(np.asarray(a), dtype=torch.float32, device=dev)
 
 
-def _render(gs, viewmat, K, wh, bg=None) -> dict:
-    """core.recon.scene.render_views: image, range (the median depth's; 0 for nothing or sky), alpha."""
+def _render(gs, viewmat, K, wh, bg=None, t: float | None = None) -> dict:
+    """core.recon.scene.render_views: image, range (the median depth's; 0 for nothing or sky), alpha. gs: the static
+    Gaussians, or a dynamic reconstruction's core.recon.actors.DynamicModel (its actors posed at time t)."""
+    if hasattr(gs, 'actors'):
+        if not gs.actors:
+            gs = gs.gs
+        else:
+            return gs.render(viewmat, K, wh[0], wh[1], 0.0 if t is None else float(t), background=bg)
     from .scene import render_views
     return render_views(gs, viewmat, K, wh[0], wh[1], bg)
 
@@ -94,7 +100,7 @@ def heldout(gs, frames: list, wh, dev, bg=None, out_dir: str | None = None, rend
         os.makedirs(os.path.join(out_dir, 'renders'), exist_ok=True)
     for k, f in enumerate(frames):
         K = D.scaled_K(f.K, f.size, wh)
-        out = _render(gs, _t(f.viewmat, dev), K, wh, bg)
+        out = _render(gs, _t(f.viewmat, dev), K, wh, bg, f.t)
         img = out['image'].clamp(0, 1)
         gt = _t(D.resize_rgb(D.load_rgb(f.image), wh), dev) / 255.0
         m = D.resize_mask(D.load_mask(f), wh) if masks else None
@@ -177,7 +183,7 @@ def against_run(rec, ref_source: str, limit: int = 40, max_heading_deg: float = 
     for k in pick:
         f = ref.frames[k]
         K = D.scaled_K(f.K, f.size, wh)
-        out = _render(rec.gs, _t(f.viewmat, rec.device), K, wh)
+        out = _render(rec.scene_model(), _t(f.viewmat, rec.device), K, wh, None, f.t)
         img = out['image'].clamp(0, 1)
         gt = _t(D.resize_rgb(D.load_rgb(f.image), wh), rec.device) / 255.0
         m = D.resize_mask(D.load_mask(f), wh)
@@ -367,7 +373,7 @@ def lateral_shift(rec, shifts=(0.5, 1.0), limit: int = 20, out_dir: str | None =
                 continue
             cam = rec.camera(f, lateral_m=s)
             ref, valid, rref = warp(src, cam)
-            out = _render(rec.gs, _t(cam['viewmat'], rec.device), cam['K'], wh)
+            out = _render(rec.scene_model(), _t(cam['viewmat'], rec.device), cam['K'], wh, None, f['t'])
             img = out['image'].clamp(0, 1)
             vt = torch.as_tensor(valid, device=rec.device)
             r = dict({'index': f['index'], 'lateral_m': s}, **compare(img, _t(ref, rec.device), vt))
@@ -384,3 +390,35 @@ def lateral_shift(rec, shifts=(0.5, 1.0), limit: int = 20, out_dir: str | None =
             res.append(dict(_mean(rows), lateral_m=s, coverage=_cov(rows), frames=rows))
     return {'what': 'held-out frames shifted sideways, against the frame depth-warped there through CARLA\'s range '
                     'labels (an approximation of CARLA\'s render: see warp_check)', 'shifts': res}
+
+
+# ================================================================================================ 4. lidar
+@torch.no_grad()
+def lidar_heldout(rec, limit: int = 20, holdout: int | None = None) -> dict:
+    """The neural lidar on the held-out sweeps (every holdout-th recorded sweep, never trained on): each rendered at
+    its recorded pose with the actors at its time, compared beam by beam with the recording
+    (core.recon.lidar.compare_sweep), the means over the sweeps."""
+    from . import lidar as LD
+    if rec.lidar_spec is None:
+        raise D.DataError(f'{rec.path}: the reconstruction has no lidar model (train with --lidar)')
+    cap = rec.capture()
+    hold = int(holdout or (rec.run.get('provenance') or {}).get('settings', {}).get('holdout') or 8)
+    sweeps = [sw for k, sw in enumerate(cap.sweeps) if hold > 1 and k % hold == 0] or cap.sweeps
+    sweeps = [sweeps[i] for i in sorted(set(np.linspace(0, len(sweeps) - 1, min(limit, len(sweeps)))
+                                            .round().astype(int).tolist()))] if sweeps else []
+    rows = []
+    model = rec.scene_model(lidar=True)
+    for sw in sweeps:
+        P, inten, _ = sw.load()
+        tgt = LD.beam_targets(rec.lidar_spec, P, inten)
+        out = LD.render_sweep(model.gaussians_at, rec.lidar_spec, sw.T, sw.t - rec.lidar_spec.period_s)
+        rows.append(dict({'sweep': sw.name, 't': round(sw.t, 4)}, **LD.compare_sweep(rec.lidar_spec, out, tgt)))
+    keys = ('range_median_abs_m', 'range_mean_abs_m', 'range_within_10cm', 'drop_accuracy', 'intensity_mean_abs')
+    mean = {'sweeps': len(rows)}
+    for k in keys:
+        v = [r[k] for r in rows if r.get(k) is not None]
+        mean[k] = round(float(np.mean(v)), 4) if v else None
+    for k in ('returns_recorded', 'returns_rendered', 'only_recorded', 'only_rendered'):
+        mean[k] = int(sum(r[k] for r in rows))
+    return {'what': 'held-out lidar sweeps rendered at their recorded poses against the recording, beam by beam '
+                    '(columns with a recorded return only)', 'mean': mean, 'sweeps': rows}
