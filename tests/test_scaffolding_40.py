@@ -125,10 +125,12 @@ def test_study_service_and_job_spec_fields(tmp_path, fake_carla):
 
 
 # ------------------------------------------------------------------------------------------- the CLI
-def test_lazy_commands_not_in_this_build(capsys):
+def test_lazy_commands_not_in_this_build(capsys, monkeypatch):
     from falcon_autonomy import cli
+    # a planted entry, so the test does not depend on which 4.0 workstreams have landed
+    monkeypatch.setitem(cli.LAZY, 'levelk', ('core.no_such_module_40', 'main_levelk', 'a missing command'))
     assert cli.main(['levelk', 'check']) == 2 and 'failed: levelk is not in this build' in capsys.readouterr().err
-    assert cli.main(['dashcam', 'ingest', 'x']) == 2
+    assert cli.run_lazy('dashcam ingest', 'core.no_such_module_40', 'main_ingest', ['ingest', 'x']) == 2
     assert 'failed: dashcam ingest is not in this build' in capsys.readouterr().err
     assert cli.run_lazy('x', 'core.rules', 'no_such_main', []) == 2
     assert cli.run_lazy('rules', 'core.rules', 'main_rules', ['list']) == 0
