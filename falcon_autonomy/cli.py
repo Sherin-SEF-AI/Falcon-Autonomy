@@ -375,7 +375,7 @@ def parser() -> argparse.ArgumentParser:
                                       'docs/world-model-training.md)')
     sub.add_parser('sweep', help='a scenario parameter sweep (see docs/cli.md)')
     sub.add_parser('search', help='a rare-case search over a scenario\'s parameters (see docs/cli.md)')
-    sub.add_parser('failrate', help='a scenario\'s failure rate with a 95 % interval: falcon failrate run|show|check '
+    sub.add_parser('failrate', help='a scenario\'s failure rate with a 95 %% interval: falcon failrate run|show|check '
                                     '(see docs/failure-rate.md)')
     sub.add_parser('coverage', help='coverage of the operating domain: falcon coverage show|fill PROJECT (see '
                                     'docs/odd-coverage.md)')
