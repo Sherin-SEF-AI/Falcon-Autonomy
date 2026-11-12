@@ -275,7 +275,23 @@
   demand. The assistant's defaults in core.settings now carry the Claude provider's keys and `mcp_bridge`, the same
   values `assistant.service` has used; `hil_can` carries `confirmed`.
 
-<!-- 4.0 wave 2: entries of the branches still building go above this line when they merge. -->
+- **Level-k road users in the neural closed loop** (`core/recon/levelk_actors.py`, `core/recon/closedloop.py`;
+  `falcon recon closedloop … --actors levelk [--levelk-params] [--levelk-mode]`, Replay ▸ reconstruction ▸ *Level-k road
+  users*): a dynamic reconstruction's tracked road users start from their logged states and decide their accelerations
+  and lateral offsets every step against the policy's ego and each other, keeping their logged appearance; each episode
+  writes `levelk.json`. On synthetic reconstructions over five seeds a level-1 two-wheeler creeps across in front of an
+  ego that gives way and waits for one that keeps 9 m/s; from 40 m it inches into a 2.0–2.25 s gap, predicting that the
+  ego will yield. Not measured on a real reconstruction.
+- **Level-k calibrated on your dashcam near-misses** (`core/levelk_nearmiss.py`; `falcon levelk calibrate
+  --from-nearmiss INGEST_DIR [--kind …]`): α, λ, desired speed and gap acceptance per kind with Wald intervals stated
+  as optimistic and the monocular depth scale propagated. Planted α 0.6, λ 6, v_des 9, t_gap 2 are recovered within
+  their intervals on synthetic tracks; through the near-miss smoother the estimates are biased (stated in
+  docs/levelk.md). The result is a traffic profile's `behaviour.levelk` block, marked private: the assistant, the
+  cluster and the cloud refuse it and any profile it is loaded into.
+- **Worlds ▸ traffic profile ▸ Behaviour model** (`ui/pages/worlds.py`): CARLA's traffic manager or level-k, with k, λ
+  and α per kind and *Load calibrated parameters…*, each change one undoable edit.
+- Fixed: `core.trafficgraph` accepts set-valued observed plans and an optional lapse, with finite Hessians.
+
 
 - **4.0 scaffolding** (`cli.py`, `pyproject.toml`, `core/settings.py`, `core/project.py`, `schemas/project.schema.json`,
   `core/jobs.py`, `sim/service.py`, `assistant/keystore.py`, `assistant/tools/{cluster,cloud,formal,introspect}.py`,

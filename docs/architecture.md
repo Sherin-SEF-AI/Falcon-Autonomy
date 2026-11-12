@@ -63,7 +63,8 @@ Two more kinds of process exist since 4.0, each optional:
   `lens_raster.py` (fisheye rendering by cube faces or through the lens model), `closedloop.py` (`NeuralSim`: a policy
   driving through a reconstruction, writing ordinary run folders; road users from an `ActorController`) and
   `dashcam_tracks.py` (a near-miss ingest's tracks carried into a dashcam reconstruction's world frame by frame,
-  A_recon = C_recon · E_nearmiss⁻¹ · A_nearmiss).
+  A_recon = C_recon · E_nearmiss⁻¹ · A_nearmiss), and `levelk_actors.py` (an `ActorController` whose road users are level-k agents
+  deciding against the policy's ego). `core/levelk_nearmiss.py` calibrates level-k on a near-miss ingest's tracks.
 
 ## A job's life
 

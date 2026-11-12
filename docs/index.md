@@ -126,9 +126,10 @@ A run whose profile's handedness differs from the map's lanes is refused before 
 
 **Level-k traffic** (4.0): a profile's vehicles can be driven by game-theoretic road users instead of CARLA's traffic
 manager — each best-responds to what it predicts the others will do a level below its own, so a two-wheeler inches
-into a stream that leaves it no gap until a driver yields, without a script. It is set in the project file
-(`behaviour: {"model": "levelk", "levelk": {kind: {k, lambda, alpha}}}` in a traffic profile); the Worlds page has no
-control for it yet. The same model can drive a scenario actor (`"driver": "levelk"`) and adversaries; `falcon levelk`
+into a stream that leaves it no gap until a driver yields, without a script. Choose it in the traffic profile's
+*Behaviour model* (CARLA traffic manager or Level-k), with k, λ and α per kind, or *Load calibrated parameters…* from
+`falcon levelk calibrate --from-nearmiss` (fitted on your own near-miss tracks; such a profile is private). The same
+model can drive a scenario actor (`"driver": "levelk"`) and adversaries; `falcon levelk`
 simulates, checks and calibrates it without CARLA ([level-k traffic](levelk.md)).
 
 Limits, stated where weather is chosen: **CARLA's lidar and radar ignore weather** (no loss of range in rain or
@@ -387,7 +388,9 @@ learned as actors in their box frames (turning wheels, deforming pedestrians) in
 when the source has one; fisheye views render by cube faces or through the lens model. *Drive a policy here* runs a
 policy in closed loop through the reconstruction: each episode is an ordinary run folder that the rules, STL and
 criticality read, and it ends where the ego leaves the trust envelope measured for the reconstruction (3 m by
-default). A first cut, tested on synthetic scenes only ([reconstruction](reconstruction.md#moving-actors-a-neural-lidar-fisheyes-and-closed-loop-4d)).
+default). Its road users replay their logged tracks, or with *Level-k road users* decide against the policy's ego
+(a two-wheeler inches into a gap it predicts the ego will leave). A first cut, tested on synthetic scenes only
+([reconstruction](reconstruction.md#moving-actors-a-neural-lidar-fisheyes-and-closed-loop-4d)).
 
 **Near-misses** (4.0): *Ingest* reads a folder of your own dashcam clips — RT-DETRv2 with Falcon's ByteTrack,
 ranges from the flat ground fused with Depth Anything V2, your car's motion from its GPS and visual odometry — and
@@ -480,7 +483,6 @@ search this manual, point at a control on a page ("show me") — listed with the
 [tool reference](assistant-tools.md). Runs are never deleted: the trash tool moves them into the workspace's `trash/`
 folder with a manifest, and they can be restored. Anything derived from your own dashcam footage is never read.
 
-<!-- 4.0 wave 2: the features of the branches still building are added to their pages above when they merge. -->
 
 ## The CARLA server
 
