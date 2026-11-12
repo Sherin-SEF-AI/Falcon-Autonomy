@@ -718,3 +718,19 @@ def test_carla_three_metre_offset_acceptance(tmp_path):
     recon, ref = spec.split(',', 1)
     res = evaluate_command(recon, [f'falcon:{ref}'], allow_other_world=False)
     assert res
+
+
+@pytest.mark.cuda
+def test_actor_state_loads_onto_the_gpu(tmp_path):
+    """A dynamic reconstruction loaded on CUDA (scene.Recon.load: torch.load(map_location=cuda)) — the state's tensors
+    are on the GPU, and ActorModel.from_state must bring them to the host before numpy (found on a real run: TypeError
+    "can't convert cuda:0 device type tensor to numpy")."""
+    if not torch.cuda.is_available():
+        pytest.skip('no CUDA device')
+    a = textured_car(car_track(), n=200)
+    path = tmp_path / 'actors.pt'
+    torch.save([a.state()], path)
+    states = torch.load(path, map_location='cuda', weights_only=True)
+    b = A.ActorModel.from_state(states[0], device='cuda')
+    assert b.p['means'].is_cuda and b.p['means'].shape == a.p['means'].shape
+    assert torch.allclose(b.p['means'].cpu(), a.p['means'].detach().cpu())

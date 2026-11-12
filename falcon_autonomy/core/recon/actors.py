@@ -542,8 +542,11 @@ class ActorModel:
         tr = Track.from_doc(d['track'])
         p = d['p']
         nb = int((d['part'] < 0).sum())
-        a = cls(tr, p['means'][:nb].numpy(), np.exp(p['log_scales'][:nb].numpy()), p['quats'][:nb].numpy(),
-                1 / (1 + np.exp(-p['opacity_logits'][:nb].numpy())), p['sh_dc'][:nb].numpy() * SH_C0 + 0.5, device,
+
+        def host(k):                                   # the state may be loaded onto the GPU (torch.load map_location)
+            return p[k][:nb].detach().cpu().numpy()
+        a = cls(tr, host('means'), np.exp(host('log_scales')), host('quats'),
+                1 / (1 + np.exp(-host('opacity_logits'))), host('sh_dc') * SH_C0 + 0.5, device,
                 wheels=bool(d['wheels']), deform='deform' in d)
         with torch.no_grad():
             for k, v in p.items():
