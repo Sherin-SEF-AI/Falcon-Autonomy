@@ -145,23 +145,45 @@ def strict_schema(schema, path: str = '$'):
     return out, ''
 
 
+MAX_STRICT = 20          # the Messages API refuses a request with more strict tools than this (measured: a 400 naming
+#                          the limit, "Too many strict tools (115). The maximum number of strict tools supported is 20")
+
+
+def _strict_rank(name: str) -> tuple:
+    """Which tools keep strict mode when more than MAX_STRICT could: the act tools (they change the project or queue
+    work) before the read tools, each in name order — a function of the tool set alone, so the same set gives the same
+    bytes every step and the prompt cache holds."""
+    try:
+        from .tool_api import REGISTRY
+        tier = REGISTRY[name].tier if name in REGISTRY else 'read'
+    except Exception:                          # noqa: BLE001 (the registry is optional here)
+        tier = 'read'
+    return (0 if tier != 'read' else 1, name)
+
+
 def tool_defs(tools: list) -> tuple:
     """OpenAI-format tool schemas as the Messages API takes them, sorted by name (the same bytes every step, so the
-    prompt cache holds), each with eager_input_streaming, and strict when its schema can be: (defs, {name: why not
-    strict})."""
-    defs, loose = [], {}
+    prompt cache holds), each with eager_input_streaming, and strict when its schema can be — on at most MAX_STRICT
+    tools per request (the API's limit; act tools first, _strict_rank). The others are sent with their full schema and
+    Falcon validates their inputs before running anything, as it does for every tool: (defs, {name: why not strict})."""
+    rows, loose = [], {}
     for t in tools or []:
         fn = t.get('function') if isinstance(t, dict) and 'function' in t else t
         name = fn.get('name')
         params = fn.get('parameters') or fn.get('input_schema') or {'type': 'object', 'properties': {}}
-        d = {'name': name, 'description': fn.get('description') or '', 'eager_input_streaming': True}
         sv, why = strict_schema(params)
-        if sv is not None:
+        rows.append((name, fn.get('description') or '', params, sv, why))
+    eligible = sorted((r[0] for r in rows if r[3] is not None), key=_strict_rank)
+    strict = set(eligible[:MAX_STRICT])
+    defs = []
+    for name, desc, params, sv, why in rows:
+        d = {'name': name, 'description': desc, 'eager_input_streaming': True}
+        if name in strict:
             d['input_schema'] = sv
             d['strict'] = True
         else:
             d['input_schema'] = copy.deepcopy(params)
-            loose[name] = why
+            loose[name] = why if sv is None else f'the API allows {MAX_STRICT} strict tools per request'
         defs.append(d)
     defs.sort(key=lambda d: d['name'])
     return defs, loose

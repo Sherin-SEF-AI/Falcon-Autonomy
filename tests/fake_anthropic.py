@@ -183,6 +183,12 @@ class FakeAnthropic:
                 if not self._authorised():
                     return self._json(401, {'type': 'error', 'error': {'type': 'authentication_error',
                                                                        'message': 'invalid x-api-key'}})
+                n_strict = sum(1 for t in (body or {}).get('tools') or [] if isinstance(t, dict) and t.get('strict'))
+                if n_strict > 20:                               # the real API's limit (measured against it)
+                    return self._json(400, {'type': 'error', 'error': {
+                        'type': 'invalid_request_error',
+                        'message': f'Too many strict tools ({n_strict}). The maximum number of strict tools supported '
+                                   'is 20. Try reducing the number of tools marked as strict.'}})
                 with srv.lock:
                     resp = srv.script.pop(0) if srv.script else error(500, 'api_error', 'no scripted answer')
                 if 'blocks' not in resp:

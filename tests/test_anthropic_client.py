@@ -421,3 +421,22 @@ def test_service_provider_routing_prices_and_ready(tmp_path, srv):
     with pytest.raises(PR.ProviderError) as ei:
         svc.quick('x')
     assert ei.value.kind == 'refusal' and 'cyber' in str(ei.value)
+
+
+def test_at_most_twenty_strict_tools_act_tools_first():
+    """The Messages API refuses more than 20 strict tools in one request (found against the real API: a 400 for 115);
+    with Falcon's whole registry only 20 are strict, act tools first, and the bytes do not depend on input order."""
+    import json as _json
+    from falcon_autonomy.assistant import tools  # noqa: F401 (registers them)
+    from falcon_autonomy.assistant.tool_api import REGISTRY, schemas
+    allt = schemas()
+    defs, loose = C.tool_defs(allt)
+    strict = [d['name'] for d in defs if d.get('strict')]
+    assert len(strict) == C.MAX_STRICT == 20 and len(defs) == len(allt)
+    acts = sorted(n for n in strict if REGISTRY[n].tier != 'read')
+    eligible_acts = sorted(n for n, t in REGISTRY.items() if t.tier != 'read' and n in {d['name'] for d in defs}
+                           and C.strict_schema((REGISTRY[n].params or {}))[0] is not None)
+    assert acts == eligible_acts[:len(acts)]                         # act tools take the slots first, by name
+    assert any('20 strict tools' in why for why in loose.values())
+    again, _ = C.tool_defs(list(reversed(allt)))
+    assert _json.dumps(defs, sort_keys=True) == _json.dumps(again, sort_keys=True)
