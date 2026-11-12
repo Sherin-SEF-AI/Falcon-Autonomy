@@ -385,7 +385,10 @@ def calibrate_nearmiss(folder: str, out_dir: str = '', kinds=None, steps: int = 
         est = cal['estimates']
         at_bound = [k for k in TG.FREE if _at_bound(k, est[k])]
         if at_bound:
-            # a parameter on its bound has no meaningful curvature: the others' intervals with it held there
+            # a parameter on its bound has no meaningful curvature: the others' intervals with it held there (the
+            # softplus bounds λ, v_des and t_gap only from below, so an estimate can run past its upper bound: held AT it)
+            est = {k: (min(max(v, LK.PARAM_BOUNDS[k][0]), LK.PARAM_BOUNDS[k][1]) if k in at_bound else v)
+                   for k, v in est.items()}
             cal = TG.calibrate(samples, init=est, steps=max(int(steps) // 3, 40), lapse=LAPSE,
                                fixed={k: est[k] for k in at_bound})
             est = cal['estimates']

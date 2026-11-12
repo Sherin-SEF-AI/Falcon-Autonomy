@@ -296,3 +296,15 @@ def test_the_assistant_never_sees_calibrated_parameters(calibrated, project):
         ctx.service.shutdown(grace_s=10.0)
     with pytest.raises(ToolError, match='private'):
         guard(os.path.join(calibrated['out'], 'calibration.json'))
+
+
+def test_z_of_survives_an_estimate_past_its_upper_bound():
+    """A refit started from an estimate the softplus let run far past its upper bound (seen on a synthetic CARLA
+    clip: λ or v_des more than ~709 above its floor overflowed expm1) starts at the bound instead of raising."""
+    import torch
+    from falcon_autonomy.core import levelk as LK
+    from falcon_autonomy.core import trafficgraph as TG
+    z = TG.z_of({'alpha': 0.7, 'lam': 5.0e3, 'v_des': 1.0e4, 't_gap': 3.0})
+    th = {k: float(v) for k, v in TG.theta_of(torch.tensor(z, dtype=torch.float64)).items()}
+    assert abs(th['lam'] - LK.PARAM_BOUNDS['lam'][1]) < 1e-6 and abs(th['v_des'] - LK.PARAM_BOUNDS['v_des'][1]) < 1e-6
+    assert abs(th['t_gap'] - 3.0) < 1e-9 and abs(th['alpha'] - 0.7) < 1e-9

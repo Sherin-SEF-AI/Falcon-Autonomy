@@ -124,12 +124,17 @@ def theta_of(z):
 
 
 def z_of(theta: dict):
-    def isp(y):                                    # inverse softplus
-        return math.log(math.expm1(max(y, 1e-6)))
+    """The unconstrained z of θ, each value first clamped into its PARAM_BOUNDS (an estimate the softplus let run past
+    its upper bound starts a refit at that bound)."""
+    def isp(y):                                    # inverse softplus, stable: y + log(1 − e^−y) (no expm1 overflow)
+        y = max(y, 1e-6)
+        return y + math.log(-math.expm1(-y))
     a = min(max(float(theta['alpha']), 1e-4), 1 - 1e-4)
-    lo = {k: LK.PARAM_BOUNDS[k][0] for k in FREE}
-    return [math.log(a / (1 - a)), isp(float(theta['lam']) - lo['lam']), isp(float(theta['v_des']) - lo['v_des']),
-            isp(float(theta['t_gap']) - lo['t_gap'])]
+    b = {k: LK.PARAM_BOUNDS[k] for k in FREE}
+
+    def off(k):                                    # the value above its floor, within its bounds
+        return min(max(float(theta[k]), b[k][0]), b[k][1]) - b[k][0]
+    return [math.log(a / (1 - a)), isp(off('lam')), isp(off('v_des')), isp(off('t_gap'))]
 
 
 def _batches(samples: list, dtype):
