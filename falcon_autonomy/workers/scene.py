@@ -312,7 +312,7 @@ def spawn_traffic(w, world, lib, spawns, order, rng, prof: dict) -> list:
         order.remove(k)
         w.own(a)
         if lk is not None:                                # level-k traffic: not on the traffic manager
-            lk.add(a, kind, classes.get(kind), labels.get(kind))
+            lk.add(a, kind, classes.get(kind), labels.get(kind), transform=spawns[k])   # not get_transform(): the origin until a tick
             placed.append((a, kind))
             continue
         a.set_autopilot(True, w.tm.get_port())

@@ -52,15 +52,18 @@ class LevelKTraffic:
         self.renewed = 0
         self.stopped_dead_end = set()
 
-    def add(self, a, kind: str, cls=None, label=None):
-        """Take a just-spawned vehicle: physics off, its lane path from its waypoint."""
+    def add(self, a, kind: str, cls=None, label=None, transform=None):
+        """Take a just-spawned vehicle: physics off, its lane path from its waypoint. `transform` is where it was
+        spawned: a real server reports a just-spawned actor at the origin until the next tick (measured on 0.9.16: every
+        level-k vehicle's path was built at the waypoint nearest (0, 0) and they all ended stacked there), so the caller
+        passes the spawn point it used; get_transform() is only the fallback."""
         from .director import lane_path
         if cls is not None:
             from ..core import assets as AS
             if not hasattr(self.w, 'subclass'):
                 self.w.subclass = {}
             self.w.subclass[a.id] = label or (AS.CLASSES.get(cls) or {}).get('label') or cls
-        tr = a.get_transform()
+        tr = transform if transform is not None else a.get_transform()
         wp = self.map.get_waypoint(tr.location)
         a.set_simulate_physics(False)
         typ = LK.agent_type(cls or kind)

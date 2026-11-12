@@ -346,6 +346,36 @@ def test_levelk_background_traffic(project, svc, tmp_path):
     assert len(moving) and (np.hypot(moving[:, 13], moving[:, 14]) > 0.5).any()    # their velocity, not CARLA's 0
 
 
+
 def test_cli_levelk_entry():
     import falcon_autonomy.cli as cli
     assert cli.main(['levelk', '--help']) == 0
+
+
+def test_levelk_vehicle_paths_start_at_their_spawn_points(fake_module, monkeypatch):
+    """A real 0.9.16 server reports a just-spawned actor at the origin until the next tick (found on a real server: every
+    level-k vehicle's lane path was built at the road nearest (0, 0) and they all ended stacked there with zero speed).
+    LevelKTraffic.add takes the spawn point the caller used; get_transform() is only the fallback."""
+    import types
+    from falcon_autonomy.workers.levelk_traffic import LevelKTraffic
+    monkeypatch.setenv('FAKE_CARLA_SPAWN_AT_ORIGIN', '1')
+    carla = fake_module
+    client = carla.Client('127.0.0.1', 2000)
+    world = client.load_world('Town10HD_Opt')
+    sps = [sp for sp in world.get_map().get_spawn_points()
+           if abs(sp.location.x) + abs(sp.location.y) > 30.0][:3]           # well away from the origin
+    assert len(sps) == 3
+    bp = list(world.get_blueprint_library().filter('vehicle.*'))[0]
+    w = types.SimpleNamespace(carla=carla, client=client, cfg={'fps': 20.0, 'seed': 0}, note=lambda *a: None)
+    lk = LevelKTraffic(w, world, {'behaviour': {'model': 'levelk', 'levelk': {'car': {'k': 1}}}})
+    rows = []
+    for sp in sps:
+        a = world.try_spawn_actor(bp, sp)
+        assert a is not None and abs(a.get_transform().location.x) < 1e-6   # the fake reports the origin, as CARLA does
+        rows.append((sp, lk.add(a, 'car', transform=sp)))
+    for sp, r in rows:
+        assert abs(r['x'] - sp.location.x) < 1e-6 and abs(r['y'] - sp.location.y) < 1e-6
+        x0, y0, _ = (float(q) for q in r['lk'].at(r['s'], 0.0))
+        assert ((x0 - sp.location.x) ** 2 + (y0 - sp.location.y) ** 2) ** 0.5 < 3.0   # its path starts where it is
+    starts = {(round(r['x']), round(r['y'])) for _, r in rows}
+    assert len(starts) == 3                                                           # not stacked on one spot
