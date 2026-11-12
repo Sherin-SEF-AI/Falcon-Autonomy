@@ -432,11 +432,38 @@ def test_at_most_twenty_strict_tools_act_tools_first():
     allt = schemas()
     defs, loose = C.tool_defs(allt)
     strict = [d['name'] for d in defs if d.get('strict')]
-    assert len(strict) == C.MAX_STRICT == 20 and len(defs) == len(allt)
-    acts = sorted(n for n in strict if REGISTRY[n].tier != 'read')
-    eligible_acts = sorted(n for n, t in REGISTRY.items() if t.tier != 'read' and n in {d['name'] for d in defs}
-                           and C.strict_schema((REGISTRY[n].params or {}))[0] is not None)
-    assert acts == eligible_acts[:len(acts)]                         # act tools take the slots first, by name
+    assert 0 < len(strict) <= C.MAX_STRICT == 20 and len(defs) == len(allt)
+    assert any(REGISTRY[n].tier != 'read' for n in strict)          # act tools are considered first
+    assert sum(C.optional_count(d['input_schema']) for d in defs if d.get('strict')) <= C.MAX_OPTIONAL
     assert any('20 strict tools' in why for why in loose.values())
+    assert sum(len(_json.dumps(d['input_schema'], separators=(',', ':'))) for d in defs if d.get('strict')) \
+        <= C.MAX_STRICT_BYTES
     again, _ = C.tool_defs(list(reversed(allt)))
     assert _json.dumps(defs, sort_keys=True) == _json.dumps(again, sort_keys=True)
+
+
+def test_strict_tools_stay_within_the_optional_parameter_limit():
+    """The second strict limit, found against the real API (a 400: 55 optional parameters, limit 24): the strict tools
+    chosen from Falcon's whole registry carry at most 24 optional parameters between them."""
+    from falcon_autonomy.assistant import tools  # noqa: F401 (registers them)
+    from falcon_autonomy.assistant.tool_api import schemas
+    defs, _ = C.tool_defs(schemas())
+    strict = [d for d in defs if d.get('strict')]
+    assert 0 < len(strict) <= C.MAX_STRICT
+    assert sum(C.optional_count(d['input_schema']) for d in strict) <= C.MAX_OPTIONAL == 24
+
+
+def test_a_strict_limit_refusal_is_sent_again_without_strict(srv, monkeypatch):
+    """A strict-mode limit the API states only when it refuses: the step goes again with no tool strict, once, and
+    strict stays off for the client's session."""
+    monkeypatch.setattr(C, 'MAX_OPTIONAL', 10_000)                 # pretend Falcon did not know the 24 limit
+    srv.push(reply([text('Done.')]))
+    tools = [fn_tool(f'runs_t{i}', {'type': 'object', 'properties': {f'p{j}': {'type': 'string'} for j in range(5)}})
+             for i in range(6)]                                    # 6 strict tools x 5 optional = 30 > 24
+    cl = client(srv)
+    res = cl.chat([{'role': 'user', 'content': 'hi'}], OPUS, tools=tools)
+    assert res.content == 'Done.' and cl.no_strict is True
+    reqs = srv.messages()
+    assert len(reqs) == 2
+    assert sum(1 for t in reqs[0]['body']['tools'] if t.get('strict')) == 6       # refused by the fake (30 optional)
+    assert not any(t.get('strict') for t in reqs[1]['body']['tools'])           # sent again, none strict

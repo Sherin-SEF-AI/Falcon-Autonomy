@@ -189,6 +189,14 @@ class FakeAnthropic:
                         'type': 'invalid_request_error',
                         'message': f'Too many strict tools ({n_strict}). The maximum number of strict tools supported '
                                    'is 20. Try reducing the number of tools marked as strict.'}})
+                n_opt = sum(_optional(t.get('input_schema')) for t in (body or {}).get('tools') or []
+                            if isinstance(t, dict) and t.get('strict'))
+                if n_opt > 24:                                  # the real API's second strict limit (measured)
+                    return self._json(400, {'type': 'error', 'error': {
+                        'type': 'invalid_request_error',
+                        'message': f'Schemas contains too many optional parameters ({n_opt}), which would make grammar '
+                                   'compilation inefficient. Reduce the number of optional parameters in your tool '
+                                   'schemas (limit: 24).'}})
                 with srv.lock:
                     resp = srv.script.pop(0) if srv.script else error(500, 'api_error', 'no scripted answer')
                 if 'blocks' not in resp:
@@ -281,3 +289,16 @@ class FakeAnthropic:
         if self.httpd is not None:
             self.httpd.shutdown()
             self.httpd.server_close()
+
+
+def _optional(schema) -> int:
+    """Optional parameters of a schema, nested ones included (what the real API sums over a request's strict tools)."""
+    n = 0
+    if isinstance(schema, dict):
+        props = schema.get('properties') or {}
+        req = set(schema.get('required') or ())
+        n += sum(1 for k in props if k not in req) + sum(_optional(v) for v in props.values())
+        for k in ('items', 'anyOf', 'oneOf', 'allOf'):
+            v = schema.get(k)
+            n += sum(_optional(x) for x in (v if isinstance(v, list) else [v] if v is not None else []))
+    return n

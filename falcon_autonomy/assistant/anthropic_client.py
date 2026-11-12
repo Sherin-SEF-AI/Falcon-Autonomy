@@ -147,6 +147,31 @@ def strict_schema(schema, path: str = '$'):
 
 MAX_STRICT = 20          # the Messages API refuses a request with more strict tools than this (measured: a 400 naming
 #                          the limit, "Too many strict tools (115). The maximum number of strict tools supported is 20")
+MAX_OPTIONAL = 24        # … and with more optional parameters summed over its strict tools (measured: "Schemas contains
+#                          too many optional parameters (55) … (limit: 24)"): each optional property grows the grammar
+MAX_STRICT_BYTES = 4000  # … and a compiled-grammar size it does not state ("The compiled grammar is too large"):
+#                          measured 2026-11-12 on Falcon's own strict tools with claude-sonnet-5-5, 4,594 bytes of
+#                          strict schema JSON passed and 4,725 were refused; 4,000 keeps a margin (grammar size is not
+#                          exactly proportional to JSON bytes, so the no-strict resend below stays the backstop)
+STRICT_LIMIT_WORDS = ('strict tool', 'optional parameters', 'grammar')   # a 400 naming a strict-mode limit (as measured)
+
+
+def optional_count(schema) -> int:
+    """Optional parameters of a (strict) schema: properties not in their object's `required`, nested ones included."""
+    n = 0
+    if isinstance(schema, dict):
+        props = schema.get('properties') or {}
+        req = set(schema.get('required') or ())
+        n += sum(1 for k in props if k not in req)
+        for v in props.values():
+            n += optional_count(v)
+        for k in ('items', 'anyOf', 'oneOf', 'allOf'):
+            v = schema.get(k)
+            for x in (v if isinstance(v, list) else [v] if v is not None else []):
+                n += optional_count(x)
+        for v in (schema.get('$defs') or schema.get('definitions') or {}).values():
+            n += optional_count(v)
+    return n
 
 
 def _strict_rank(name: str) -> tuple:
@@ -161,11 +186,14 @@ def _strict_rank(name: str) -> tuple:
     return (0 if tier != 'read' else 1, name)
 
 
-def tool_defs(tools: list) -> tuple:
+def tool_defs(tools: list, strict: bool = True) -> tuple:
     """OpenAI-format tool schemas as the Messages API takes them, sorted by name (the same bytes every step, so the
-    prompt cache holds), each with eager_input_streaming, and strict when its schema can be — on at most MAX_STRICT
-    tools per request (the API's limit; act tools first, _strict_rank). The others are sent with their full schema and
-    Falcon validates their inputs before running anything, as it does for every tool: (defs, {name: why not strict})."""
+    prompt cache holds), each with eager_input_streaming, and strict when its schema can be — within the API's limits
+    per request: at most MAX_STRICT strict tools whose optional parameters sum to at most MAX_OPTIONAL, chosen greedily
+    in _strict_rank order (act tools first) under a schema-size budget for the grammar (MAX_STRICT_BYTES), so the
+    choice depends on the tool set alone. `strict=False` sends none
+    strict. The others are sent with their full schema and Falcon validates their inputs before running anything, as
+    it does for every tool: (defs, {name: why not strict})."""
     rows, loose = [], {}
     for t in tools or []:
         fn = t.get('function') if isinstance(t, dict) and 'function' in t else t
@@ -173,17 +201,28 @@ def tool_defs(tools: list) -> tuple:
         params = fn.get('parameters') or fn.get('input_schema') or {'type': 'object', 'properties': {}}
         sv, why = strict_schema(params)
         rows.append((name, fn.get('description') or '', params, sv, why))
-    eligible = sorted((r[0] for r in rows if r[3] is not None), key=_strict_rank)
-    strict = set(eligible[:MAX_STRICT])
+    chosen, optional, size = set(), 0, 0
+    if strict:
+        sv_of = {r[0]: r[3] for r in rows}
+        for name in sorted((r[0] for r in rows if r[3] is not None), key=_strict_rank):
+            n = optional_count(sv_of[name])
+            b = len(json.dumps(sv_of[name], separators=(',', ':')))
+            if len(chosen) < MAX_STRICT and optional + n <= MAX_OPTIONAL and size + b <= MAX_STRICT_BYTES:
+                chosen.add(name)
+                optional += n
+                size += b
     defs = []
     for name, desc, params, sv, why in rows:
         d = {'name': name, 'description': desc, 'eager_input_streaming': True}
-        if name in strict:
+        if name in chosen:
             d['input_schema'] = sv
             d['strict'] = True
         else:
             d['input_schema'] = copy.deepcopy(params)
-            loose[name] = why if sv is None else f'the API allows {MAX_STRICT} strict tools per request'
+            loose[name] = why if sv is None else (
+                'strict mode is off for this session (the API refused a strict-mode limit)' if not strict else
+                f'the API allows {MAX_STRICT} strict tools, {MAX_OPTIONAL} optional parameters and a grammar of about '
+                f'{MAX_STRICT_BYTES} schema bytes per request')
         defs.append(d)
     defs.sort(key=lambda d: d['name'])
     return defs, loose
@@ -307,6 +346,7 @@ class AnthropicClient:
         self.on_retry = None                   # on_retry(status, wait_s, attempt)
         self.on_limits = None                  # (the Claude API's limits are not paced from headers here)
         self.loose_tools: dict = {}            # the last request's tools sent without strict, and why
+        self.no_strict = False                # set when the API refused a strict-mode limit: none strict after
 
     # ------------------------------------------------------------------ the SDK
     def _sdk(self):
@@ -386,7 +426,7 @@ class AnthropicClient:
         if system:
             params['system'] = system
         if tools:
-            defs, self.loose_tools = tool_defs(tools)
+            defs, self.loose_tools = tool_defs(tools, strict=not self.no_strict)
             params['tools'] = defs
             choice = {'type': 'none' if tool_choice == 'none' else 'auto'}
             if parallel_tool_calls is False:
@@ -424,7 +464,21 @@ class AnthropicClient:
                         raise
                     json_fails[0] += 1          # unparseable tool input: no tool_use id to answer, so ask again
         try:
-            res = self._with_retries(once, cancel)
+            try:
+                res = self._with_retries(once, cancel)
+            except ProviderError as e:
+                # a limit of strict tool use the API states only when it refuses (two measured so far: 20 strict tools,
+                # 24 optional parameters): send the step again with no tool strict, and keep strict off this session
+                if not (tools and not self.no_strict and e.kind == 'bad_request'
+                        and any(w in str(e).lower() for w in STRICT_LIMIT_WORDS)):
+                    raise
+                self._record(purpose, model, body, e.status or e.kind, attempts=attempts[0], request_id=e.request_id)
+                self.no_strict = True
+                params = self.request(messages, model, tools, tool_choice, parallel_tool_calls, max_completion_tokens,
+                                      extra)
+                body = json.dumps({k: v for k, v in params.items() if k != 'betas'}, ensure_ascii=False,
+                                  sort_keys=True, separators=(',', ':')).encode('utf-8')
+                res = self._with_retries(once, cancel)
         except ProviderError as e:
             if e.kind == 'tool_json':
                 e = ProviderError('tool_use_failed', 'Claude wrote tool input that could not be read, and asking '
