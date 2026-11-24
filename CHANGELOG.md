@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### 4.1
+
+Eight features, each with a command, assistant tools, a section in the window and a page in docs/. All of them were
+tested on the fake CARLA only: none has yet run on a real server, a real device or a real ROS 2 stack.
+
+- **Runtime monitors** (`falcon monitor gen|check|deploy|bench|show|list`, Hardware ▸ Runtime monitors;
+  docs/runtime-monitors.md). A rule set's rules or an STL formula compiled into a self-contained package for the
+  vehicle computer: a standard-library Python evaluator, an rclpy node with an editable topic mapping, a systemd user
+  unit and a manifest with each rule's formula hash. `check RUN` replays a recorded run through the generated module
+  and requires every sample's robustness to equal the offline checker's exactly. Bounded look-ahead delays a verdict by
+  its horizon; unbounded future operators are refused. A GSN Solution can bind a monitor (amber when the rule's formula
+  changed since generation). Deployment and the node ran against fakes only.
+- **Latency in the loop** (`falcon latency profile|run|budget|show`, Hardware ▸ Latency budget;
+  docs/latency-loop.md). A latency distribution from a HIL session, on-device profiling, a file or a seeded synthetic
+  one; a run config's optional `latency` block applies each control that much later (whole steps, held in between) in
+  scenario drives, the learning environment and stack runs — without the block runs are byte-identical. `budget`
+  bisects the largest latency at which each scenario still passes and lists those that fail only when the computer is
+  late. Not yet in adversary, live or neural closed-loop runs.
+- **Two-speed failure search** (`falcon prescreen run|show|screen|scenarios|bench`, Rare cases ▸ Two-speed search;
+  docs/two-speed-search.md). A batched kinematic simulator mirroring the director's kinematic mode (same lane
+  follower, same criticality formula, one straight road) rates hundreds to about 1,300 parameter sets a second on the
+  CPU, and CARLA confirms only the most promising. A stated share of each round is random controls, from which the
+  rank correlation and a false-negative bound are reported; below a rank correlation of 0.5 the screen is declared not
+  trusted and a plain search takes over. 14 of the 15 built-in scenarios; criticality objectives only.
+- **Release gate** (`falcon gate run|show|plan`, Reports ▸ Release gate; docs/release-gate.md). The old and the new
+  stack or model run the same scenarios with the same seeds; the gate stops as soon as it can say better, worse, no
+  difference within a margin, or can't tell at the budget, with confidence that holds at every look (a mixture
+  sequential test of the discordant pairs, empirical-Bernstein confidence sequences). It lists what the new version
+  newly fails. CI mode gains a `release` gate, the safety case an evidence kind `gate`.
+- **Fault tolerance campaigns** (`falcon faulttol models|run|show`, Stack testing ▸ Fault tolerance;
+  docs/fault-tolerance.md). Twelve graded fault models with one severity each in a physical unit (camera yaw, pitch and
+  roll misalignment, lidar yaw drift and sector dropout, clock offset, dirty lens, frozen and dropped frames, noise,
+  exposure, GNSS bias); per sensor and fault the failing severity is bracketed by bisection. Offline on recorded runs
+  or in closed loop (lidar, GNSS, dirty lens and noise only). The result is a tolerance table, the most fragile
+  sensor, and the calibration and sync accuracy the tolerances imply. GSN evidence kind `faulttol`.
+- **Regulation test packs** (`falcon regpack list|show|run|report|export`, Reports ▸ Regulation packs;
+  docs/regulation-packs.md). UN R157 ALKS up to 60 km/h, Euro NCAP AEB Car-to-Car 2023, Euro NCAP Lane Support (data
+  only: no case runs yet) and an ISO 34502 coverage checklist. Every document value carries its document, clause and
+  whether it was read in the text; unverified values are flagged everywhere. A simulation pre-check, not a
+  type-approval or a rating. The R157 pack cannot yet return "passed" (the five-minute lane keeping case does not fit
+  the scenario runner's 400 m route). GSN evidence kind `regpack`.
+- **Moments** (`falcon moments index|search|show|stats`, Replay ▸ Moments; docs/moments.md). Every recorded run,
+  imported log and near-miss ranking indexed by the events in it (cut-ins, hard braking, close passes, crossings,
+  near-misses, collisions, faults …). Plain-word queries are understood by a fixed local vocabulary with no model; the
+  filter is shown back and unknown words are listed. A hit opens at its time, becomes a scenario, or goes into a drive
+  set. Dashcam-derived runs are indexed locally and only counted for the assistant.
+- **Overnight campaign** (`falcon campaign new|approve|run|status|stop|brief|list`, Loop ▸ Overnight campaign;
+  docs/campaign.md). A goal and budgets (GPU-hours, deadline, jobs, disk), approved once with the whole scope shown; a
+  hard accountant independent of any model refuses or cancels anything past a budget; every decision is logged with its
+  reason; the result is a one-page brief. Rule-based planner in the window and the assistant tool.
+- **Assistant**: 17 tools added (146 in all).
+
 ### 4.0
 
 - **A new look: the test bench** (`ui/theme.py`, `ui/frame.py`, `ui/widgets.py`, `ui/motion.py`, `ui/applybar.py`;

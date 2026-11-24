@@ -66,6 +66,14 @@ Two more kinds of process exist since 4.0, each optional:
   A_recon = C_recon · E_nearmiss⁻¹ · A_nearmiss), and `levelk_actors.py` (an `ActorController` whose road users are level-k agents
   deciding against the policy's ego). `core/levelk_nearmiss.py` calibrates level-k on a near-miss ingest's tracks.
 
+### Added in 4.1
+`core/monitorgen.py` (with `core/monitor_runtime.py` and `core/monitor_node.py`, copied verbatim into monitor packages:
+they stay standard-library only and import nothing of Falcon), `core/latencyloop.py` (the `latency` block in drive, gym
+and stack configs; the delay line lives in the Director), `core/fastsim.py`, `core/releasegate.py` (results under
+`gates/<name>/`), `core/faulttol.py`, `core/regpacks.py`, `core/moments.py` (`moments/moments.sqlite`),
+`core/campaign.py`; their window sections `ui/{monitor,latency,prescreen,gate,faulttol,regpack,moments,campaign}_tab.py`
+and tools `assistant/tools/{monitors,screening,robustness,moments}.py`.
+
 ## A job's life
 
 1. A page (or a CLI command) builds a config with `core` (e.g. `core.drive.drive_config`) and hands it to

@@ -451,6 +451,20 @@ fail the build. A failure rate or falsification run on the cluster or a cloud bu
 qualified tool in the sense of ISO 26262-8: the case is evidence for a safety team, not a certification argument
 ([safety case](gsn.md)).
 
+### Added in 4.1
+Eight features, each a section on an existing page and a command; all tested on the fake CARLA only so far.
+
+| Where | What | Page |
+|---|---|---|
+| Hardware ▸ Runtime monitors | the rules compiled into a monitor for the vehicle computer, checked equal to the offline checker | [runtime monitors](runtime-monitors.md) |
+| Hardware ▸ Latency budget | measured compute latency fed back into the simulation; the largest latency each scenario tolerates | [latency in the loop](latency-loop.md) |
+| Rare cases ▸ Two-speed search | a fast kinematic simulator screens, CARLA confirms, the fidelity gap is reported | [two-speed search](two-speed-search.md) |
+| Reports ▸ Release gate | two versions on the same scenarios and seeds: better, worse, no difference, or can't tell yet | [release gate](release-gate.md) |
+| Stack testing ▸ Fault tolerance | graded sensor faults and calibration drift; a tolerance table per sensor | [fault tolerance](fault-tolerance.md) |
+| Reports ▸ Regulation packs | UN R157, Euro NCAP and ISO 34502 as simulation pre-checks, every value with its source | [regulation packs](regulation-packs.md) |
+| Replay ▸ Moments | every run searched for what happened, in plain words, locally | [moments](moments.md) |
+| Loop ▸ Overnight campaign | a goal and a budget approved once; a morning brief | [overnight campaign](campaign.md) |
+
 ### Settings
 Where CARLA and its Python are; Falcon's ports, the server's memory cap and quality; the render budget; the theme;
 whether place-name search may use the network; your name in a team workspace (Team). Stored in

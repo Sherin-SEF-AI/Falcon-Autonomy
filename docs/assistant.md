@@ -136,7 +136,8 @@ mode the model can ask to be resumed when a job it queued finishes (`plan_wait_j
 
 ## Tools on demand, and the per-minute token limit
 
-Falcon's 129 tools ([the list](assistant-tools.md)) are in eleven groups whose compact schemas weigh, in tokens
+Falcon's 146 tools (the figures below were measured at 129, before 4.1 added 17: analysis +2, runs +2,
+research +7, formal +6 — about 14,600 in all now) ([the list](assistant-tools.md)) are in eleven groups whose compact schemas weigh, in tokens
 (characters / 4), about: project 3,000 (25 tools), jobs 3,200 (29), analysis 950 (11), lab 860 (7: hardware in the
 loop, deployment, CI mode, log replay, adversarial traffic, experiments, VLM evaluation), research 1,850 (16: the
 planner benchmark and its results, a dashcam incident made a scenario, ablations, the experiment registry, outputs for
