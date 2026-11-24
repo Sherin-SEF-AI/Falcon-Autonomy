@@ -102,6 +102,8 @@ DEFAULTS = {
     'hil_can': {'interfaces_allowed': ['vcan*'],   # CAN interfaces Falcon may open (patterns); real ones added by hand
                 'confirmed': {}},                   # adapter -> {statement, at}: confirmed as a bench network
     'hil_ptp': {'interface': '', 'clock_source': 'auto'},   # PTP on this NIC, or an NTP-style fallback (recorded)
+    # 4.1 moments
+    'moments_auto_index': False,         # after every finished run, queue the index of its moments (core.moments)
 }
 
 
@@ -125,6 +127,10 @@ EXPLAIN = {
                     '(docs/stack-testing.md)'),
     'free_gpu_for_jobs': ('Settings ▸ Falcon\'s server ▸ GPU jobs', 'stop Falcon\'s idle server before a training or '
                           'other GPU job: an idle 0.9.16 server holds about 6 GB of video memory'),
+    # 4.1 moments
+    'moments_auto_index': ('settings.json (moments_auto_index)', 'after every finished run, queue a small CPU job '
+                           'that reads its events into the workspace\'s moment index (falcon moments index does it '
+                           'on demand); off by default: indexing reads the whole run again'),
     'lineage_auto_index': ('settings.json (lineage_auto_index)', 'after every finished run, queue the index of its '
                            'frames into the workspace\'s content store; off by default because the store hard-links '
                            'the frames, which makes the run\'s own files read-only (falcon lineage index does it on '
