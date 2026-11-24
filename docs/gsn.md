@@ -58,6 +58,8 @@ this and names what is wrong.
 | `rules` | `rules/<check>` | `rules.json` ([traffic rules](traffic-rules.md)) |
 | `lineage` | any file (a dataset's `data.json`, a model); a training folder `training/<id>` | the file itself; a training folder's `model.onnx` (its `data.json` when it has no model), a `model.json`'s registered model |
 | `monitor` | `monitors/<name>` — a runtime monitor package ([runtime monitors](runtime-monitors.md)) | `manifest.json` |
+| `faulttol` | `faulttol/<campaign>` | `faulttol.json` ([fault tolerance](fault-tolerance.md)): claim a `field`, e.g. `tolerance.<sensor>.<fault>.tolerated >= 0.5` |
+| `regpack` | `regpacks/<result>` | `regpack.json` ([regulation packs](regulation-packs.md)): claim the `verdict` (equals `passed`) or a `field` such as `score.share`; a simulation pre-check, not an approval |
 
 | claim `measure` | on | holds when |
 |---|---|---|

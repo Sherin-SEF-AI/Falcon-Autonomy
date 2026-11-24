@@ -35,6 +35,9 @@ Kinds (KINDS) and their source:
 - gsn          a workspace's living safety case (safety/gsn.json; core.gsn, `falcon gsn export`): the argument drawn
                in GSN with each node's status as verified now, the evidence with its pinned hashes and claims, the
                recent events
+- regpack      a regulation pack result's folder (regpack.json; core.regpacks, `falcon regpack run`): the disclaimer
+               (a simulation pre-check, not an approval or a rating), the verdict or score, each case with its
+               clause and result, the values not verified in the document's text, the sources and limits
 
 Colours: before / first series blue (#2a78d6 light, #3987e5 dark), after / second orange (#eb6834, #d95926) — checked
 for colour-vision deficiency (ΔE ≥ 24 protan) — and the two also differ by mark shape (circle, square) and are named
@@ -52,7 +55,7 @@ from .paths import tilde
 
 REPORT_SCHEMA = 'falcon.report/1'
 KINDS = ('iteration', 'evaluation', 'dataset', 'study', 'leaderboard', 'rules', 'rootcause', 'vlm', 'deploy', 'ci',
-         'gsn')
+         'gsn', 'regpack')
 
 CSS = """
 :root{--bg:#fcfcfb;--panel:#f3f2ef;--ink:#0b0b0b;--ink2:#52514e;--muted:#6f6e69;--hair:#e1e0d9;--grid:#dcdad3;
@@ -706,7 +709,8 @@ def report_rules(src: str) -> Page:
 BUILDERS = {'iteration': report_iteration, 'evaluation': report_evaluation, 'dataset': report_dataset,
             'study': report_study, 'leaderboard': report_leaderboard, 'rules': report_rules,
             'rootcause': lambda src: _rootcause(src), 'vlm': lambda src: _vlm(src),
-            'deploy': lambda src: _deploy(src), 'ci': lambda src: _ci(src), 'gsn': lambda src: _gsn(src)}
+            'deploy': lambda src: _deploy(src), 'ci': lambda src: _ci(src), 'gsn': lambda src: _gsn(src),
+            'regpack': lambda src: _regpack(src)}
 
 
 def _rootcause(src: str) -> Page:
@@ -726,6 +730,11 @@ def _deploy(src: str) -> Page:
 
 def _ci(src: str) -> Page:
     from .ci import report
+    return report(src)
+
+
+def _regpack(src: str) -> Page:
+    from .regpacks import report
     return report(src)
 
 
@@ -835,6 +844,9 @@ def sources(ws: str) -> dict:
     for d in sorted(_listdir(os.path.join(ws, 'ci')), reverse=True):               # `falcon ci run --out <ws>/ci/…`
         if os.path.isfile(os.path.join(ws, 'ci', d, 'ci-results.json')):
             out['ci'].append((d, os.path.join(ws, 'ci', d)))
+    for d in sorted(_listdir(os.path.join(ws, 'regpacks')), reverse=True):         # `falcon regpack run` results
+        if os.path.isfile(os.path.join(ws, 'regpacks', d, 'regpack.json')):
+            out['regpack'].append((d, os.path.join(ws, 'regpacks', d)))
     if os.path.isfile(os.path.join(ws, 'safety', 'gsn.json')):                       # the living safety case
         out['gsn'].append(('safety case', os.path.join(ws, 'safety', 'gsn.json')))
     return out

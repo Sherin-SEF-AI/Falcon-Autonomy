@@ -28,6 +28,10 @@ Kinds (FAULTS):
 * multipath       {jump_m, period_s} — GNSS fixes offset by jump_m metres in a seeded direction, a new direction (and a
                     new offset) every period_s seconds (multipath jumps; heuristic model).
 * dropout         {} — a sensor delivers nothing (an IMU or GNSS receiver, a camera, a lidar going silent).
+* extrinsic_drift {deg: [roll, pitch, yaw]} — a lidar turned on its mount while the stack keeps the planned
+                    calibration: its points are delivered in the turned sensor's frame (an exact rotation of the
+                    cloud; what the turned sensor would newly see or lose at the edge of its field is not modelled).
+* bias            {north_m, east_m} — GNSS fixes offset by a constant vector (a datum or antenna-offset error).
 
 Where they act: the image faults in recorded drives and stack runs; sector_loss, packet_drop, multipath and dropout on
 the data a stack (workers.stack) and the hardware in the loop (workers.hil) receive — not in a recorded drive's files.
@@ -48,14 +52,14 @@ import numpy as np
 
 FAULTS = ('mount_rotation', 'mount_translation', 'clock_offset', 'drop', 'freeze', 'noise', 'dirt', 'rain', 'glare',
           'rolling_shutter', 'compression', 'motion_blur', 'occlusion', 'sector_loss', 'packet_drop', 'multipath',
-          'dropout')
+          'dropout', 'extrinsic_drift', 'bias')
 IMAGE_FAULTS = ('noise', 'dirt', 'rain', 'glare', 'rolling_shutter', 'compression', 'occlusion')
-LIDAR_ONLY = ('sector_loss', 'packet_drop')
-GNSS_ONLY = ('multipath',)
-STREAM_FAULTS = ('sector_loss', 'packet_drop', 'multipath', 'dropout')   # act on a stack's or a device's data only
+LIDAR_ONLY = ('sector_loss', 'packet_drop', 'extrinsic_drift')
+GNSS_ONLY = ('multipath', 'bias')
+STREAM_FAULTS = ('sector_loss', 'packet_drop', 'multipath', 'dropout', 'extrinsic_drift', 'bias')   # act on a stack's or a device's data only
 SPAWN_TIME = ('mount_rotation', 'mount_translation', 'clock_offset', 'motion_blur')
 TIMED = ('drop', 'freeze', 'noise', 'dirt', 'rain', 'glare', 'rolling_shutter', 'compression', 'occlusion',
-         'sector_loss', 'packet_drop', 'multipath', 'dropout')
+         'sector_loss', 'packet_drop', 'multipath', 'dropout', 'extrinsic_drift', 'bias')
 CAMERA_ONLY = IMAGE_FAULTS + ('motion_blur',)
 CAMERAS = ('camera.pinhole', 'camera.fisheye')
 LIMITS = {'deg': 30.0, 'm': 2.0, 'ms': 1000.0, 'rate': 0.9, 'cover': 0.5, 'sigma': 50.0, 'readout_ms': 100.0}
@@ -85,6 +89,11 @@ def validate(faults: list) -> list:
                     out.append(f'sector_loss: {key} (degrees, −360…360) is needed')
         if k == 'multipath' and (not 0 < float(f.get('jump_m', 5.0)) <= 100 or float(f.get('period_s', 2.0)) <= 0):
             out.append('multipath: jump_m in (0, 100] m and period_s > 0')
+        if k == 'bias' and not all(isinstance(f.get(key, 0.0), (int, float)) and abs(f.get(key, 0.0)) <= 100
+                                   for key in ('north_m', 'east_m')):
+            out.append('bias: north_m and east_m within ±100 m')
+        if k == 'extrinsic_drift' and 'deg' not in f:
+            out.append('extrinsic_drift: deg [roll, pitch, yaw] is needed')
         if k == 'compression' and not 1 <= int(f.get('quality', 0)) <= 100:
             out.append('compression: quality must be 1–100')
         if ('onset_s' in f or 'until_s' in f) and k in SPAWN_TIME:
@@ -313,11 +322,18 @@ def silenced(faults: list, sim_t: float) -> bool:
 
 
 def apply_points(points: np.ndarray, faults: list, sim_t: float, rng) -> np.ndarray:
-    """A lidar's points (N × ≥ 3 in its frame, CARLA axes) with the sector_loss and packet_drop faults acting at sim_t
-    applied (packet_drop draws one 360-value mask from rng per call: one per sweep)."""
+    """A lidar's points (N × ≥ 3 in its frame, CARLA axes) with the extrinsic_drift, sector_loss and packet_drop
+    faults acting at sim_t applied (the drift first: the lost sector is the turned sensor's own; packet_drop draws one
+    360-value mask from rng per call: one per sweep)."""
     P = np.asarray(points)
-    act = active_of(faults, sim_t, ('sector_loss', 'packet_drop'))
+    act = active_of(faults, sim_t, ('sector_loss', 'packet_drop', 'extrinsic_drift'))
     if not act or not len(P):
+        return P
+    for f in act:
+        if f['kind'] == 'extrinsic_drift':
+            P = rotate_points(P, f['deg'])
+    act = [f for f in act if f['kind'] != 'extrinsic_drift']
+    if not act:
         return P
     az = (np.degrees(np.arctan2(P[:, 1], P[:, 0])) + 360.0) % 360.0
     keep = np.ones(len(P), bool)
@@ -332,9 +348,29 @@ def apply_points(points: np.ndarray, faults: list, sim_t: float, rng) -> np.ndar
     return P[keep]
 
 
+def mount_rotation_matrix(deg) -> np.ndarray:
+    """The 3 × 3 rotation vehicle <- sensor of a mount turned by deg = [roll, pitch, yaw] (CARLA's convention and axes:
+    x forward, y right, z up; yaw about z, positive clockwise seen from above — the same matrix as carla.Transform's)."""
+    r, p, y = (math.radians(float(v)) for v in deg)
+    cy, sy, cr, sr, cp, sp = math.cos(y), math.sin(y), math.cos(r), math.sin(r), math.cos(p), math.sin(p)
+    return np.array([[cp * cy, cy * sp * sr - sy * cr, -cy * sp * cr - sy * sr],
+                     [sy * cp, sy * sp * sr + cy * cr, -sy * sp * cr + cy * sr],
+                     [sp, -cp * sr, cp * cr]])
+
+
+def rotate_points(points: np.ndarray, deg) -> np.ndarray:
+    """Points as a sensor turned by deg = [roll, pitch, yaw] on its mount delivers them: p' = Rᵀ p (a point straight
+    ahead of the vehicle appears at azimuth −yaw in the turned sensor's frame). Other columns are kept."""
+    P = np.array(points, copy=True)
+    if len(P):
+        P[:, :3] = (P[:, :3].astype(np.float64) @ mount_rotation_matrix(deg)).astype(P.dtype)
+    return P
+
+
 def gnss_offset(faults: list, sim_t: float, seed: int, sid: str = '') -> tuple:
     """(north, east) metres a multipath fault adds to a fix at sim_t: jump_m in a direction drawn per period from a
-    generator seeded by (seed, sensor, period index) — the same at every call for the same time."""
+    generator seeded by (seed, sensor, period index) — the same at every call for the same time; plus a bias fault's
+    constant offset."""
     import zlib
     n = e = 0.0
     for f in active_of(faults, sim_t, ('multipath',)):
@@ -344,5 +380,8 @@ def gnss_offset(faults: list, sim_t: float, seed: int, sid: str = '') -> tuple:
         r = float(f.get('jump_m', 5.0)) * g.uniform(0.5, 1.0)
         n += r * math.cos(ang)
         e += r * math.sin(ang)
+    for f in active_of(faults, sim_t, ('bias',)):
+        n += float(f.get('north_m', 0.0))
+        e += float(f.get('east_m', 0.0))
     return n, e
 
