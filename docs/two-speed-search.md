@@ -187,15 +187,28 @@ above; the plain search that took over started from the failures already confirm
 (its critical region elsewhere) ρ was −0.13 to −0.87 after the second round, the screen was judged not trusted in
 every seed, and the plain search took the remaining 12 runs (tested).
 
-**The fake CARLA** (the real director on the fake's road; `lead_brake`, failure at criticality ≥ 0.75, which about
-TWO_FAKE_SHARE of uniform parameter sets reach by the cheap model; 16 runs in rounds of 4; scenario seed 11, search
-seeds 0–7; all failures counted):
+**The fake CARLA** (the real scenario director on the fake's road; all failures counted; 16 runs in rounds of 4
+with one control each; scenario seed 11; 4,000 screened plus 500 refined; 2026-11-24). Two settings, by how rare a
+failure is under the cheap model over the feasible parameters:
 
-| method | seeds with a failure | failures found (per seed) |
-|---|---|---|
-TWO_FAKE_ROWS
+| scenario, failure at | share failing | search seeds | method | seeds with a failure | failures found (per seed) |
+|---|---|---|---|---|---|
+| `cut_in`, criticality ≥ 0.7 | 0.4 % | 0–5 | two-speed | 6 of 6 | 7–12 |
+| | | | Bayesian optimisation, probability of failure | 3 of 6 | 0–2 |
+| | | | random | 0 of 6 | 0 |
+| `lead_brake`, criticality ≥ 0.75 | 2.7 % | 0–7 | two-speed | 8 of 8 | 12 |
+| | | | Bayesian optimisation, probability of failure | 8 of 8 | 2–7 |
+| | | | random | 2 of 8 | 0–3 |
 
-TWO_FAKE_NOTE
+Read honestly. Where failures are rare (`cut_in`) the two-speed search found them in every seed and plain search in
+half; where they are less rare (`lead_brake`) Bayesian optimisation also found one in every seed, and the gain is in
+how many: every one of the 12 selected runs failed, in every seed. The 4 random controls of each search never failed,
+so the false-negative bound of each search was "0 of 4 dropped controls failed, at most 53 %" — four controls say
+almost nothing, as the section above warns. The screen was judged trusted in all 14 searches (ρ 0.62–0.97). An
+earlier run of the `cut_in` rows judged trust from 8 pairs (the default then): two of the six seeds were judged
+*not trusted* with ρ below 0.5 at 8 pairs — their final ρ was 0.72 and 0.76 — and fell back to plain search (they
+still found 5 and 7 failures). That is why the default is now 12 pairs. The fake has the director's kinematics and
+no more: this is the best case for the fast simulator, not a result about a real CARLA server.
 
 ## Outputs
 
