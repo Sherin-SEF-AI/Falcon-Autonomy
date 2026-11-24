@@ -75,6 +75,7 @@ class ReportsPage(Page):
         sec.add(self.info)
         v.addWidget(sec)
         self.gsn = optional_tab(v, 'ui.gsn_tab', 'GsnTab', 'Safety case (GSN)', self)   # 4.0, in progress
+        self.gate = optional_tab(v, 'ui.gate_tab', 'GateTab', 'Release gate', self)   # 4.1 (core.releasegate)
         v.addStretch(1)
         win.bridge.finished.connect(self._finished)
         self.refresh()

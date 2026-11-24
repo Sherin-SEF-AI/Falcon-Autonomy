@@ -294,6 +294,7 @@ class RareCasesPage(Page):
         lv.addWidget(self.rates)
         lv.addWidget(self.coverage)
         self.falsify = optional_tab(lv, 'ui.falsify_tab', 'FalsifyTab', 'Falsify', self)   # STL (4.0, in progress)
+        self.prescreen = optional_tab(lv, 'ui.prescreen_tab', 'PrescreenTab', 'Two-speed search', self)   # 4.1
         lv.addStretch(1)
         split.addWidget(scroll(left))
         right = QWidget()

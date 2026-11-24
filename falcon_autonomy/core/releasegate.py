@@ -193,7 +193,8 @@ def analyse(fail_a, fail_b, value_a, value_b, alpha: float = 0.05, margin: float
     """The gate's analysis of n finished pairs (module doc): {'verdict', 'decided_at' (the trial at which the first
     verdict held, None for cant_tell), 'n', 'discordant': {b_only, a_only, n, theta, interval, log_e}, 'risk':
     {estimate, lower, upper}, 'value': {estimate, lower, upper}, 'path': the bounds after every trial, …}. The
-    verdict is the first that held along the trials — looking after every trial — not only the last one's."""
+    verdict is the first that held along the trials — looking after every trial — not only the last one's;
+    'decided_by' says which bound gave it: 'discordant' (θ's interval), 'risk' or 'value'."""
     if primary not in PRIMARY:
         raise GateError(f'primary: one of {", ".join(PRIMARY)}')
     fa, fb = np.asarray(fail_a, dtype=bool), np.asarray(fail_b, dtype=bool)
@@ -215,18 +216,19 @@ def analyse(fail_a, fail_b, value_a, value_b, alpha: float = 0.05, margin: float
             cur = (max(cur[0], lo), min(cur[1], hi))
         th_lo[i], th_hi[i] = cur
     lo_p, hi_p = (r_lo, r_hi) if primary == 'failure' else (v_lo, v_hi)
-    verdict, at = 'cant_tell', None
+    verdict, at, by = 'cant_tell', None, None
+    bound = 'risk' if primary == 'failure' else 'value'
     for i in range(max(int(min_trials), 1) - 1, n):
         worse = lo_p[i] > 0 or (primary == 'failure' and th_lo[i] > 0.5)
         better = hi_p[i] < 0 or (primary == 'failure' and th_hi[i] < 0.5)
         if worse:
-            verdict = 'worse'
+            verdict, by = 'worse', bound if lo_p[i] > 0 else 'discordant'
         elif better:
-            verdict = 'better'
+            verdict, by = 'better', bound if hi_p[i] < 0 else 'discordant'
         elif -margin < lo_p[i] and hi_p[i] < margin:
-            verdict = 'equivalent'
+            verdict, by = 'equivalent', bound
         elif non_inferiority is not None and hi_p[i] < non_inferiority:
-            verdict = 'non_inferior'
+            verdict, by = 'non_inferior', bound
         if verdict != 'cant_tell':
             at = i + 1
             break
@@ -234,7 +236,8 @@ def analyse(fail_a, fail_b, value_a, value_b, alpha: float = 0.05, margin: float
 
     def last(arr, default):
         return float(arr[k]) if n else default
-    out = {'verdict': verdict, 'word': WORDS[verdict], 'decided_at': at, 'n': n, 'alpha': alpha, 'primary': primary,
+    out = {'verdict': verdict, 'word': WORDS[verdict], 'decided_at': at, 'decided_by': by, 'n': n, 'alpha': alpha,
+           'primary': primary,
            'margin': margin, 'non_inferiority': non_inferiority,
            'within_margin': bool(n and -margin < lo_p[k] and hi_p[k] < margin),
            'failures': {'a': int(fa[:k + 1].sum()) if n else 0, 'b': int(fb[:k + 1].sum()) if n else 0},
@@ -507,7 +510,7 @@ class Gate:
                'scope': 'holds for the tested scenario distribution only: ' +
                         ', '.join(str(s.get('id')) for s in self.scenarios) + ' with their declared parameter '
                         'distributions, this world, rig and motion',
-               **{k: an[k] for k in ('decided_at', 'n', 'alpha', 'primary', 'margin', 'non_inferiority',
+               **{k: an[k] for k in ('decided_at', 'decided_by', 'n', 'alpha', 'primary', 'margin', 'non_inferiority',
                                      'within_margin', 'failures', 'discordant', 'risk', 'value', 'path')}}
         doc.update(self.meta)
         return doc
@@ -574,7 +577,7 @@ def headline(d: dict) -> str:
              (f' after {d["decided_at"]} paired trials' if d.get('decided_at') else
               f' at the budget of {d["budget"]} paired trials ({d["trials_run"]} run)') +
              (' (the difference is inside the margin)' if d['verdict'] in ('better', 'worse') and d['within_margin']
-              else ''),
+              else '') + (', shown by the discordant pairs' if d.get('decided_by') == 'discordant' else ''),
              f'failures: A {d["failures"]["a"]}, B {d["failures"]["b"]} of {d["trials_used"]}; discordant pairs '
              f'{dc["n"]} ({dc["b_only"]} B only, {dc["a_only"]} A only), θ in [{dc["interval"][0]:.3f}, '
              f'{dc["interval"][1]:.3f}]',

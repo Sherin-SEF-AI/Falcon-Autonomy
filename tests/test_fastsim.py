@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from conftest import FAKE
+from test_gui import qapp  # noqa: F401 (the GUI tests' application)
 
 from falcon_autonomy.core import criticality as CR
 from falcon_autonomy.core import fastsim as F
@@ -542,3 +543,99 @@ def test_the_assistant_tools(ws):
         assert r['carla_runs'] == 4 and r['state'] == 'finished' and r['trust'] == 'not judged yet'
     finally:
         c.service.shutdown(grace_s=10.0)
+
+
+@pytest.mark.gui
+def test_the_two_speed_section_offscreen(qapp, tmp_path):
+    from PyQt6.QtWidgets import QComboBox, QDoubleSpinBox, QSpinBox
+    from falcon_autonomy.ui.prescreen_tab import PrescreenTab, Scatter
+    ws = str(tmp_path / 'ws')
+    os.makedirs(ws)
+    submitted = []
+
+    class Q:
+        def submit(self, spec):
+            submitted.append(spec)
+            return NS(state='queued', summary=lambda: 'queued')
+    win = NS(project=NS(path=str(tmp_path / 'p.falcon.json'), dirty=False, item=lambda sec, i: None),
+             workspace=lambda: ws, queue=Q(), fake_carla=FAKE, save=lambda: True)
+    thr, seed, count = QDoubleSpinBox(), QSpinBox(), QComboBox()
+    thr.setValue(0.6)
+    seed.setValue(3)
+    count.addItem('All', 'all')
+    loads = []
+    page = NS(win=win, scenarios=lambda: [(k, SC.builtin(k)) for k in ('lead_brake', 'unprotected_turn', 'cut_in')],
+              threshold=thr, seed=seed, count=count, load=lambda: loads.append(1))
+    tab = PrescreenTab(page)
+    assert tab.start_btn.isEnabled() and not tab.why.text() and tab.start_btn.property('role') == 'primary'
+    # the budget split: 40 runs in rounds of 8 with 20 % controls = 5 rounds × 2 controls
+    assert tab.split_counts() == (10, 30) and '30 selected by the screen, 10 random controls' in tab.split.text()
+    tab.controls.setValue(0)
+    assert tab.split_counts() == (0, 40)
+    tab.controls.setValue(20)
+    tab.budget.setValue(12)
+    assert tab.split_counts() == (3, 9)                         # 8 → 2 controls, 4 → 1
+    # a scenario the fast simulator cannot run: the reason shows, nothing is queued
+    tab.scenario.setCurrentIndex(tab.scenario.findData('unprotected_turn'))
+    assert 'cannot run this scenario' in tab.why.text() and not tab.start_btn.isEnabled()
+    tab.start()
+    assert submitted == [] and 'Not queued' in tab.state.text()
+    tab.scenario.setCurrentIndex(tab.scenario.findData('lead_brake'))
+    tab.start()
+    argv = submitted[-1].argv
+    assert argv[3:6] == ['prescreen', 'run', win.project.path] and argv[argv.index('--budget') + 1] == '12'
+    assert argv[argv.index('--name') + 1] == 'search-lead_brake' and argv[argv.index('--threshold') + 1] == '0.6'
+    assert argv[argv.index('--controls') + 1] == '0.2' and argv[argv.index('--count') + 1] == 'all'
+    assert argv[argv.index('--seed') + 1] == '3' and '--world' not in argv and '--rig' not in argv
+    assert argv[argv.index('--fake-carla') + 1] == FAKE and submitted[-1].resumable
+    assert tab.sweep.isVisibleTo(tab) and tab.timer.isActive()
+    # a result on disk: the scatter, the correlation with its word and colour, the failures; then the job ends
+    high, lo = _planted(0)
+    ts = F.TwoSpeed(high.space, lo, 0.5, 0, screen=1500, refine=0)
+    res = F.run_two_speed(ts, lambda ps: [high(p) for p in ps], 12, 6)
+    ok = ts.pairs
+    doc = {'schema': F.PRESCREEN_SCHEMA, 'study': 'search-lead_brake', 'state': 'running', 'threshold': 0.5,
+           'budget': 12, 'spent': 12, 'screened': 1500, 'throughput': {'per_s': 800.0, 'device': 'cpu'},
+           'trust': ts.trust(), 'fidelity': ts.fidelity(), 'fallback': None,
+           'pairs': [{'low': p['low'], 'high': p['high'], 'role': p['role'], 'round': p['round'],
+                      'predicted': p['predicted'], 'values': p['params'], 'run': f'/r/{i:02d}'}
+                     for i, p in enumerate(ok)],
+           'failures': [{'value': h['value'], 'low': h['low'], 'role': h['role'], 'values': h['params'],
+                         'run': f'/r/f{i}'} for i, h in enumerate(res['failures'])]}
+    os.makedirs(tab.study_dir())
+    with open(os.path.join(tab.study_dir(), 'prescreen.json'), 'w') as fh:
+        json.dump(doc, fh)
+    tab.poll()
+    assert tab.sweep.frac == 1.0 and len(tab.scatter.pairs) == 12 and tab.scatter.trust == ts.trust()
+    assert tab.scatter.knots and tab.scatter.rho == pytest.approx(doc['fidelity']['spearman'])
+    assert tab.s_rho.value.text() == f'{doc["fidelity"]["spearman"]:+.2f}'
+    assert f'{ts.trust()} · 12 pairs' in tab.s_rho.sub.text()
+    assert tab.s_runs.value.text() == '12' and '1,500 screened' in tab.s_runs.sub.text() and 'Clopper' in tab.s_fn.toolTip()
+    assert tab.failures.topLevelItemCount() == len(res['failures']) > 0
+    assert tab.failures.topLevelItem(0).text(2) == 'selected by the screen'
+    assert f'The screen is {ts.trust()}' in tab.state.text() and loads == []
+    tab.resize(700, 1100)
+    tab.grab()                                                   # the scatter paints (dots, rings, the fit, labels)
+    sc = Scatter()
+    sc.grab()                                                    # and its empty state
+    tab.job.state = 'done'
+    tab.poll()
+    assert not tab.timer.isActive() and not tab.sweep.isVisibleTo(tab) and loads == [1]
+    # a fallback is said in words; the trust word carries its colour
+    doc.update(trust='not trusted', fallback={'method': 'bayes-pof', 'from_run': 8, 'why': 'Spearman 0.10 below 0.5',
+                                              'runs': 4})
+    with open(os.path.join(tab.study_dir(), 'prescreen.json'), 'w') as fh:
+        json.dump(doc, fh)
+    tab.load()
+    assert 'Fell back to a plain search (bayes-pof) after 8 runs' in tab.state.text()
+    from falcon_autonomy.ui.theme import THEME
+    assert THEME.status('critical') in tab.s_rho.sub.styleSheet()
+    tab.shutdown()
+
+
+@pytest.mark.gui
+def test_the_rare_cases_page_has_the_section():
+    import inspect
+    from falcon_autonomy.ui.pages import rarecases
+    src = inspect.getsource(rarecases)
+    assert "optional_tab(lv, 'ui.prescreen_tab', 'PrescreenTab', 'Two-speed search', self)" in src

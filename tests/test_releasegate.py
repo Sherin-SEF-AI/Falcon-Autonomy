@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from conftest import FAKE
+from test_gui import qapp  # noqa: F401 (the GUI tests' application)
 
 from falcon_autonomy.core import releasegate as G
 from falcon_autonomy.core import scenarios as SC
@@ -140,6 +141,7 @@ def test_analyse_reports_the_bounds_the_margins_and_the_secondary_outcome():
     fb[::4] = True                                                  # B fails every fourth trial, A never
     an = G.analyse(fa, fb, np.full(n, 0.2), np.where(fb, 1.0, 0.2))
     assert an['verdict'] == 'worse' and an['word'] == 'worse' and an['decided_at'] == 33    # the 9th discordant pair
+    assert an['decided_by'] == 'discordant'
     assert an['discordant'] == dict(an['discordant'], b_only=9, a_only=0, n=9, theta=1.0)
     assert an['discordant']['interval'][0] > 0.5 and an['failures'] == {'a': 0, 'b': 9}
     assert an['risk']['lower'] < an['risk']['estimate'] < an['risk']['upper'] and an['risk']['alpha'] == 0.025
@@ -149,6 +151,7 @@ def test_analyse_reports_the_bounds_the_margins_and_the_secondary_outcome():
     # the value as the primary outcome: B is more critical by 0.3 in every pair
     an = G.analyse(fa, fa, np.full(n, 0.2), np.full(n, 0.5), primary='value')
     assert an['verdict'] == 'worse' and an['value']['lower'] > 0 and an['risk']['alpha'] == 0.05
+    assert an['decided_by'] == 'value'
     an = G.analyse(fa, fa, np.full(n, 0.5), np.full(n, 0.2), primary='value')
     assert an['verdict'] == 'better'
     # no difference at all: equivalent once the interval is inside the margin; not before; non-inferiority sooner
@@ -373,6 +376,21 @@ def test_the_command_on_the_fake_carla(proj):
     r = _cli('show', proj.path, '--name', 'same', '--gate', '--fail-on', 'worse,cant_tell')
     assert r.returncode == 1 and 'CAN\'T TELL YET at the budget of 4' in r.stdout
     assert _cli('show', proj.path, '--name', 'same', '--json').returncode == 0
+    # two drivers that differ: on the fake, CARLA's autopilot stops well short of a stalled vehicle where the lane
+    # follower comes close (criticality ≥ 0.5) — the gate stops early with its verdict, well inside the budget
+    r = _cli('run', proj.path, '--name', 'drivers', '--a', 'follower', '--b', 'autopilot', '--scenario',
+             'stalled_vehicle', '--failure', 'value', '--threshold', '0.5', '--budget', '40', '--batch', '8',
+             '--fake-carla', FAKE, '--gate')
+    assert r.returncode == 0, r.stdout + r.stderr
+    d = G.read_gate(G.gate_dir(proj.workspace, 'drivers'))
+    assert d['verdict'] == 'better' and d['state'] == 'finished' and d['trials_run'] == 16 < d['budget']
+    assert d['decided_by'] == 'discordant' and d['discordant']['a_only'] >= 9 and d['discordant']['b_only'] == 0
+    assert len(d['newly_passing']) == d['discordant']['a_only'] and d['newly_failing'] == []
+    for x in d['newly_passing']:
+        assert x['value_a'] >= 0.5 > x['value_b'] and os.path.isfile(os.path.join(x['a'], 'run.json'))
+        assert json.load(open(os.path.join(x['b'], 'stack.json')))['driver'] == 'autopilot'
+    assert d['value']['estimate'] < -0.3 and 'BETTER after' in r.stdout     # the value's mean agrees (its band is
+    assert d['value']['upper'] > 0                                          # still wide after 9 trials, and says so)
     r = _cli('plan', '--p-a', '0.1', '--p-b', '0.5', '--trials', '100', '--reps', '200')
     assert r.returncode == 0 and json.loads(r.stdout)['worse'] > 0.8
 
@@ -384,7 +402,7 @@ def test_the_assistant_tools(proj):
     c = TOOLS.context(proj.path, FAKE)
     try:
         r = call(c, 'formal_gate_show', {})
-        assert [g['name'] for g in r['gates']] == ['same'] and r['gates'][0]['verdict'] == 'cant_tell'
+        assert [(g['name'], g['verdict']) for g in r['gates']] == [('drivers', 'better'), ('same', 'cant_tell')]
         r = call(c, 'formal_gate_show', {'name': 'same'})
         assert r['word'] == 'can\'t tell yet' and r['trials_run'] == 4 and r['versions'] == {'a': 'follower',
                                                                                               'b': 'follower'}
@@ -413,3 +431,105 @@ def test_the_assistant_tools(proj):
         assert r['newly_failing'][0]['run_b'] == os.path.basename(d['newly_failing'][0]['b'])
     finally:
         c.service.shutdown(grace_s=10.0)
+
+
+@pytest.mark.gui
+def test_the_release_gate_section_offscreen(qapp, tmp_path):
+    from types import SimpleNamespace as NS
+    from PyQt6.QtCore import Qt
+    from falcon_autonomy.ui.gate_tab import Band, GateTab
+    from falcon_autonomy.ui.theme import THEME
+    ws = str(tmp_path / 'ws')
+    os.makedirs(ws)
+    submitted, shown = [], []
+
+    class Q:
+        def submit(self, spec):
+            submitted.append(spec)
+            return NS(state='queued', summary=lambda: 'queued')
+    doc = {'models': [{'id': 'det-1', 'kind': 'detector'}, {'id': 'det-2', 'kind': 'detector'}], 'scenarios': [],
+           'worlds': [{'id': 'world-town10', 'name': 'Town10'}], 'rigs': [{'id': 'rig-default', 'name': 'Rig'}]}
+    data = NS(show_run=lambda p: shown.append(('run', p)), compare_runs=lambda ps: shown.append(('pair', ps)))
+    win = NS(project=NS(path=str(tmp_path / 'p.falcon.json'), dirty=False, doc=doc), workspace=lambda: ws,
+             queue=Q(), fake_carla=FAKE, save=lambda: True, go=lambda key: data)
+    tab = GateTab(NS(win=win))
+    assert tab.a.currentText() == 'follower' and tab.b.currentText() == 'autopilot'
+    assert [tab.a.itemText(i) for i in range(tab.a.count())] == ['follower', 'autopilot', 'model:det-1',
+                                                                 'model:det-2']
+    assert tab.selected() == ['lead_brake', 'cut_in'] and tab.start_btn.isEnabled()
+    assert tab.start_btn.property('role') == 'primary'
+    # what cannot be queued says why
+    tab.b.setEditText('model:det-2')
+    assert 'Both versions must be' in tab.why.text() and not tab.start_btn.isEnabled()
+    tab.a.setEditText('model:det-9')
+    assert 'No model' in tab.why.text()
+    tab.a.setEditText('stack:missing.json')
+    assert 'no suite file' in tab.why.text()
+    tab.a.setEditText('follower')
+    tab.b.setEditText('autopilot')
+    for i in range(tab.scenarios.count()):
+        tab.scenarios.item(i).setCheckState(Qt.CheckState.Unchecked)
+    assert 'at least one scenario' in tab.why.text()
+    tab.start()
+    assert submitted == [] and 'Not queued' in tab.state.text()
+    tab.scenarios.item(0).setCheckState(Qt.CheckState.Checked)
+    tab.name.setText('rel 1')
+    tab.check()
+    assert 'name' in tab.why.text()
+    tab.name.setText('rel-1')
+    tab.budget.setValue(96)
+    tab.margin.setValue(0.2)
+    tab.check()
+    assert tab.start_btn.isEnabled()
+    tab.start()
+    argv = submitted[-1].argv
+    assert argv[3:6] == ['gate', 'run', win.project.path] and argv[argv.index('--name') + 1] == 'rel-1'
+    assert argv[argv.index('--a') + 1] == 'follower' and argv[argv.index('--b') + 1] == 'autopilot'
+    assert argv[argv.index('--scenario') + 1] == 'lead_brake' and argv.count('--scenario') == 1
+    assert argv[argv.index('--budget') + 1] == '96' and argv[argv.index('--margin') + 1] == '0.2'
+    assert argv[argv.index('--world') + 1] == 'world-town10' and argv[argv.index('--fake-carla') + 1] == FAKE
+    assert '--on' not in argv and submitted[-1].resumable and tab.timer.isActive() and tab.sweep.isVisibleTo(tab)
+    # a running gate on disk, then its verdict: the word with its colour, the band, the newly failing list
+    a = Side('a', lambda t: False)
+    b = Side('b', lambda t: t['i'] % 4 == 0)
+    g = G.Gate(tab.gate_dir(), a, b, [SC.builtin('lead_brake')], budget=96, margin=0.2,
+               meta={'versions': {'a': {'label': 'follower'}, 'b': {'label': 'autopilot'}}})
+    part = g.result(G.read_trials(tab.gate_dir()), 'running')
+    g.write(part)
+    tab.poll()
+    assert tab.s_verdict.value.text() == 'can\'t tell yet' and 'still running' in tab.s_verdict.sub.text()
+    d = g.run()
+    tab.poll()
+    assert d['verdict'] == 'worse' and tab.s_verdict.value.text() == 'worse'
+    assert THEME.status('critical') in tab.s_verdict.value.styleSheet()
+    assert tab.s_trials.value.text() == str(d['trials_used']) and '9 discordant' in tab.s_trials.sub.text()
+    assert tab.band.lo == d['path']['risk_lower'] and tab.band.decided == d['decided_at'] and tab.band.margin == 0.2
+    assert tab.band.by == 'discordant' and 'θ in [' in tab.s_diff.sub.text()
+    assert tab.changes.topLevelItemCount() == 9 and tab.changes.topLevelItem(0).text(0) == 'newly fails'
+    assert 'tested scenario distribution only' in tab.scope.text()
+    assert tab.sweep.frac == pytest.approx(d['trials_run'] / 96)
+    tab.changes.setCurrentItem(tab.changes.topLevelItem(0))
+    tab.browse('b')
+    tab.compare()
+    x = d['newly_failing'][0]
+    assert shown == [('run', x['b']), ('pair', [x['a'], x['b']])]
+    tab.resize(760, 1200)
+    tab.grab()                                                   # the band paints: bounds, zero, margin, the mark
+    Band().grab()                                                # and its empty state
+    tab.job.state = 'done'
+    tab.poll()
+    assert not tab.timer.isActive() and not tab.sweep.isVisibleTo(tab)
+    # an equivalent gate reads in the good tone; the value as the primary outcome draws its band
+    G.Gate(G.gate_dir(ws, 'same'), Side('a', lambda t: False, lambda t: 0.3), Side('b', lambda t: False,
+                                                                                  lambda t: 0.3),
+           [SC.builtin('lead_brake')], budget=96, margin=0.2, primary='value').run()
+    tab.name.setText('same')
+    tab.load()
+    assert tab.s_verdict.value.text() == 'no difference within the margin' and tab.changes.topLevelItemCount() == 0
+    assert THEME.status('good') in tab.s_verdict.value.styleSheet() and tab.band.what == 'value'
+    assert 'inside the margin' in tab.s_diff.sub.text()
+    tab.grab()
+    tab.shutdown()
+    import inspect
+    from falcon_autonomy.ui.pages import reports
+    assert "optional_tab(v, 'ui.gate_tab', 'GateTab', 'Release gate', self)" in inspect.getsource(reports)
