@@ -11,8 +11,9 @@ the ego's lane, y to its right as CARLA's frame has it):
   1.8 m of its route (points every 2 m, 50 m ahead, from the route point nearest the ego — the 1 m and 2 m steps are
   kept), integrated by director.kin_step's speed law (Director.ACCEL, Director.BRAKE). Its constants are read from
   those classes, not copied. On a straight road the ego does not steer. `driver="idm"` replaces the follower by the
-  intelligent driver model (core.levelk.idm, clipped to [−BRAKE, ACCEL]) on the same lead — a stated driver model for
-  a stack that cannot run outside CARLA; it is a different driver, and the fidelity report says how well it ranks.
+  intelligent driver model (core.levelk.idm's formula and constants, clipped to [−BRAKE, ACCEL]) on the same lead — a
+  stated driver model for a stack that cannot run outside CARLA; it is a different driver, and the fidelity report
+  says how well it ranks.
 - every scenario vehicle follows its path as the director drives it: the set speed ramping at the action's rate (a
   stand-in within its class's top speed and acceleration, core.assets), director.follow's speed controller and pure
   pursuit (look-ahead max(4 m, 0.8 s · v)) through the kinematic bicycle of kin_step, a lane change moving the path's
@@ -27,6 +28,12 @@ the ego's lane, y to its right as CARLA's frame has it):
   has no TTC; an actor outside the ego's swept corridor has no DRAC; only the samples that can hold the minimum
   distance are measured exactly). One approximation: a PET above PET_MAX_S (6 s) is taken as absent, which changes
   the criticality by less than 0.9 · exp(−6) ≈ 0.002.
+
+What is reused and what is mirrored: core.criticality's functions and core.search's optimisers and Gaussian process
+are called as they are; the controllers' constants are read from Director and LaneFollower. director.kin_step and
+director.follow act on one CARLA actor each, and core.trafficgraph.bicycle_rollout takes its controls for the whole
+horizon (open loop) — neither can step a batch in closed loop — so their arithmetic is written out here for arrays
+and checked against the real LaneFollower.act and director.follow, step for step, in tests/test_fastsim.py.
 
 What it does not have (LIMITS): the map (one straight lane of LANE_WIDTH_M with one lane each side; a scenario
 that needs a junction, the opposite lanes or a speed breaker is refused by name — unsupported()); the vehicles'
@@ -274,6 +281,14 @@ def _controller_constants() -> dict:
             'gap_s': float(lf.gap_s), 'min_gap': float(lf.min_gap)}
 
 
+def idm_accel(B, v, v_des, gap, dv, a_max: float):
+    """core.levelk.idm for the rollout's array library (the same formula and constants); gap inf: no lead."""
+    from . import levelk as LK
+    s_star = LK.S0 + B.mx(v * LK.IDM_T + v * dv / (2.0 * math.sqrt(a_max * LK.IDM_B)), 0.0)
+    free = 1.0 - (B.mx(v, 0.0) / B.mx(v_des, 0.1)) ** 4
+    return a_max * (free - B.where(gap < math.inf, (s_star / B.mx(gap, 0.1)) ** 2, 0.0))
+
+
 def rollout(scn: dict, values: dict, n: int, fps: float = 20.0, driver: str = 'follower', device: str = 'cpu',
             lane_width: float = LANE_WIDTH_M, ego_size=NOMINAL_EGO_M, rht: bool = True) -> dict:
     """Run n parameter sets of a scenario at once. values: {parameter: an (n,) array, or one value for all (a choice
@@ -456,12 +471,7 @@ def rollout(scn: dict, values: dict, n: int, fps: float = 20.0, driver: str = 'f
             st['yaw'], st['v'] = yaw2, v1
         # ---- the ego (director.drive_ego + LaneFollower.act + kin_step; straight road: no steering)
         if driver == 'idm':
-            from . import levelk as LK
-            gap = B.mx(lead_d, 0.1)
-            dv = ev - lead_v
-            s_star = LK.S0 + B.mx(ev * LK.IDM_T + ev * dv / (2.0 * math.sqrt(K['accel'] * LK.IDM_B)), 0.0)
-            free = 1.0 - (B.mx(ev, 0.0) / B.mx(cruise, 0.1)) ** 4
-            acc = K['accel'] * (free - B.where(lead_d < math.inf, (s_star / gap) ** 2, 0.0))
+            acc = idm_accel(B, ev, cruise, lead_d, ev - lead_v, K['accel'])
             ev = B.mx(ev + B.mn(B.mx(acc, -K['brake']), K['accel']) * dt, 0.0)
         else:
             safe = K['min_gap'] + K['gap_s'] * ev
@@ -736,7 +746,7 @@ class TwoSpeed:
     reports their CARLA values (None: the run failed). Deterministic in (space, seed, the pairs told)."""
 
     def __init__(self, space, low, threshold: float = 0.5, seed: int = 0, screen: int = 10000, refine: int = 2000,
-                 control_fraction: float = 0.2, min_spearman: float = 0.5, min_pairs: int = 8,
+                 control_fraction: float = 0.2, min_spearman: float = 0.5, min_pairs: int = 12,
                  optimiser: str = 'cem'):
         self.space = S.normalise_space(space)
         self.dim = len(self.space)
@@ -977,7 +987,7 @@ def read_prescreen(study_dir: str) -> dict | None:
 
 
 def run_study(study, budget: int, batch: int = 8, threshold: float = 0.5, screen: int = 10000, refine: int = 2000,
-              control_fraction: float = 0.2, min_spearman: float = 0.5, min_pairs: int = 8,
+              control_fraction: float = 0.2, min_spearman: float = 0.5, min_pairs: int = 12,
               fallback: str = 'bayes-pof', driver: str = 'follower', device: str = 'cpu', retrust: bool = False,
               progress=None, log=None) -> dict:
     """The two-speed search of a sim.studio.Study (its objective: the criticality): resumes from the study's finished
@@ -1177,7 +1187,7 @@ def main_prescreen(argv) -> int:
                                                                'controls (default 0.2: 20 %%)')
     r.add_argument('--min-spearman', type=float, default=0.5, help='below this rank correlation the screen is not '
                                                                    'trusted and a plain search takes over')
-    r.add_argument('--min-pairs', type=int, default=8, help='confirmed pairs before trust is judged')
+    r.add_argument('--min-pairs', type=int, default=12, help='confirmed pairs before trust is judged')
     r.add_argument('--fallback', default='bayes-pof', choices=('bayes', 'bayes-pof', 'cmaes', 'cem', 'adaptive',
                                                                'random'))
     r.add_argument('--retrust', action='store_true', help='judge trust again on a study that fell back')

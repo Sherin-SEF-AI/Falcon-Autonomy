@@ -279,7 +279,7 @@ def test_versions_and_trials(tmp_path):
     assert argv[argv.index('--on') + 1] == 'cluster' and argv[-2:] == ['--fake-carla', '/fake']
 
 
-# ================================================================================================ CI and the safety case
+# ============================================================================================ CI and the safety case
 def _finished_gate(tmp_path, name, b_fails):
     d = G.Gate(str(tmp_path / name), Side('a', lambda t: False), Side('b', b_fails), SCN, budget=96, margin=0.2).run()
     return str(tmp_path / name), d
@@ -393,6 +393,46 @@ def test_the_command_on_the_fake_carla(proj):
     assert d['value']['upper'] > 0                                          # still wide after 9 trials, and says so)
     r = _cli('plan', '--p-a', '0.1', '--p-b', '0.5', '--trials', '100', '--reps', '200')
     assert r.returncode == 0 and json.loads(r.stdout)['worse'] > 0.8
+
+
+def test_two_detectors_score_the_same_recorded_run(tmp_path):
+    """Models as versions: each trial's scenario is driven once (with the rig's labels) and both detectors score
+    that run — here the synthetic detector and a weaker registration of it."""
+    from falcon_autonomy.core.project import Project
+    p = Project.new('Gate models')
+    rig = p.doc['rigs'][0]
+    rig['sensors'] = rig['sensors'][:1]
+    rig['sensors'][0].update(width=160, height=90, labels=['boxes2d'])
+    syn = {'name': 'Synthetic', 'kind': 'detector', 'runtime': 'python', 'licence': 'GPL-3.0-or-later',
+           'entry': 'falcon_autonomy.plugins.synthetic_detector:SyntheticDetector'}
+    p.doc['models'] = [dict(syn, id='det-old', params={'h50': 6.0, 'h_scale': 1.5}),
+                       dict(syn, id='det-new', params={'h50': 60.0, 'h_scale': 1.5},      # needs ten times the height
+                            options={'version': 2}),
+                       dict(syn, id='det-same', params={'h50': 9.0, 'h_scale': 1.5})]
+    p.save(str(tmp_path / 'm.falcon.json'))
+    # two plug-in registrations that differ only in their params share a fingerprint: refused, not compared blindly
+    r = _cli('run', p.path, '--name', 'det', '--a', 'model:det-old', '--b', 'model:det-same', '--scenario',
+             'lead_brake', '--fake-carla', FAKE)
+    assert r.returncode == 2 and 'same fingerprint' in r.stdout
+    r = _cli('run', p.path, '--name', 'det', '--a', 'model:det-old', '--b', 'model:nope', '--scenario', 'lead_brake',
+             '--fake-carla', FAKE)
+    assert r.returncode == 2 and 'no model' in r.stdout
+    r = _cli('run', p.path, '--name', 'det', '--a', 'model:det-old', '--b', 'model:det-new', '--scenario',
+             'lead_brake', '--budget', '2', '--batch', '2', '--fps', '10', '--threshold', '0.8', '--fake-carla', FAKE)
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = G.gate_dir(p.workspace, 'det')
+    d = G.read_gate(out)
+    assert d['trials_run'] == 2 and d['versions']['b'] == {'kind': 'model', 'label': 'model:det-new',
+                                                           'model': 'det-new', 'suite': None}
+    assert d['failure'] == 'value' and d['verdict'] == 'cant_tell'
+    trials = G.read_trials(out)
+    for t in trials:
+        assert t['a']['run'] == t['b']['run'] and os.path.isfile(os.path.join(t['a']['run'], 'run.json'))
+        assert 0.0 <= t['a']['value'] <= t['b']['value'] <= 1.0             # the weaker detector misses no less
+        assert t['a']['failed'] == (t['a']['value'] >= 0.8) and t['b']['failed'] == (t['b']['value'] >= 0.8)
+    assert any(t['b']['value'] > t['a']['value'] for t in trials)
+    runs = os.path.join(p.workspace, 'studies', 'gate-det-lead_brake', 'runs')
+    assert len(os.listdir(runs)) == 2                                        # driven once per trial, scored twice
 
 
 def test_the_assistant_tools(proj):

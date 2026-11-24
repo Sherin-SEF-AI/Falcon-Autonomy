@@ -185,6 +185,12 @@ def test_placements_walkers_props_and_the_constants_come_from_the_classes():
     b = F.rollout(SC.builtin('lead_brake'), {'speed': 50.0, 'gap': 14.0, 'decel': 8.0, 'brake_at': 2.5}, 1,
                   driver='idm')
     assert b['driver'] == 'idm' and not np.allclose(a['ego'], b['ego'])
+    from falcon_autonomy.core import levelk as LK                 # the IDM is core.levelk's, for arrays
+    rng = np.random.default_rng(0)
+    v, vd, gap, dv = rng.uniform(0, 20, 50), rng.uniform(5, 20, 50), rng.uniform(0.5, 60, 50), rng.uniform(-5, 5, 50)
+    assert np.allclose(F.idm_accel(F.backend('cpu'), v, vd, gap, dv, 3.0), LK.idm(v, vd, gap, dv, 3.0))
+    free = F.idm_accel(F.backend('cpu'), v, vd, np.full(50, np.inf), dv, 3.0)
+    assert np.allclose(free, 3.0 * (1.0 - (v / vd) ** 4))
     with pytest.raises(ValueError, match='driver'):
         F.rollout(SC.builtin('lead_brake'), {'speed': 50.0, 'gap': 14.0, 'decel': 8.0, 'brake_at': 2.5}, 1,
                   driver='human')
@@ -610,7 +616,8 @@ def test_the_two_speed_section_offscreen(qapp, tmp_path):
     assert tab.scatter.knots and tab.scatter.rho == pytest.approx(doc['fidelity']['spearman'])
     assert tab.s_rho.value.text() == f'{doc["fidelity"]["spearman"]:+.2f}'
     assert f'{ts.trust()} · 12 pairs' in tab.s_rho.sub.text()
-    assert tab.s_runs.value.text() == '12' and '1,500 screened' in tab.s_runs.sub.text() and 'Clopper' in tab.s_fn.toolTip()
+    assert tab.s_runs.value.text() == '12' and '1,500 screened' in tab.s_runs.sub.text()
+    assert 'Clopper' in tab.s_fn.toolTip()
     assert tab.failures.topLevelItemCount() == len(res['failures']) > 0
     assert tab.failures.topLevelItem(0).text(2) == 'selected by the screen'
     assert f'The screen is {ts.trust()}' in tab.state.text() and loads == []

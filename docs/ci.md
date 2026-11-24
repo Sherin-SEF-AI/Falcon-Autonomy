@@ -145,6 +145,7 @@ only where documented (a regression gate with no baseline, unless `on_missing_ba
 | `latency` | percentile budgets (`p50_ms`, `p90_ms`, `p95_ms`, `p99_ms`, `max_ms`, `mean_ms`): a ROS 2 stack's control wait through the bridge (every step of every run, from `frames.jsonl`), a policy's decision time (`act()`), a model's inference per frame (`p50`, `p90`, `p99`, `mean`) — this machine's, under its load | all |
 | `max_missed_deadlines` | missed control deadlines summed over the runs | stack |
 | `gsn` | the workspace's living safety case once this run is bound in: no top goal red (`fail_on: amber`: nor amber); `goals: [G1, …]` judges only those; `path` names a `safety/gsn.json` other than the project's (below) | all |
+| `release` | a [release gate](release-gate.md) between two versions that `falcon gate run` made earlier in the job (`path`: its folder or `gate.json`, relative to the config): fails when its verdict is one of `fail_on` (default `[worse]`; add `cant_tell` to require an answer); an error when there is no finished gate there | all |
 
 **How an interval judges a limit** (`rule`):
 

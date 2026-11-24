@@ -387,7 +387,9 @@ class StackSide:
 class ModelSide:
     """One detector version: the trial's scenario is recorded once (a sim.studio.Study whose drives both versions
     share: the cache key does not hold the model) and scored by this model (core.milsearch's perception failure);
-    failed: the value reached the threshold."""
+    failed: the value reached the threshold. A model is told apart by its fingerprint (core.loop.model_fingerprint:
+    its file's SHA-256; for a plug-in its registration without the params) — main_gate refuses two versions with the
+    same one."""
 
     def __init__(self, svc, project, version: dict, gate_dir: str, name: str, scenarios: list, world: str,
                  rig: str, fps: float, seed: int, threshold: float):
@@ -801,6 +803,10 @@ def main_gate(argv) -> int:
         else:
             sa = ModelSide(svc, proj, va, out, a.name, scns, world, rig, a.fps, a.seed, a.threshold)
             sb = ModelSide(svc, proj, vb, out, a.name, scns, world, rig, a.fps, a.seed, a.threshold)
+            if any(sa.studies[k].okey == sb.studies[k].okey for k in sa.studies):
+                raise GateError(f'{va["label"]} and {vb["label"]} have the same fingerprint (the same model file, or '
+                                'two plug-in registrations that differ only in their params): their scores cannot be '
+                                'told apart, so there is nothing to compare')
         meta = {'name': a.name, 'versions': {'a': {k: va.get(k) for k in ('kind', 'label', 'model', 'suite')},
                                              'b': {k: vb.get(k) for k in ('kind', 'label', 'model', 'suite')}},
                 'world': world, 'rig': rig, 'fps': a.fps, 'motion': a.motion, 'where': a.on,
