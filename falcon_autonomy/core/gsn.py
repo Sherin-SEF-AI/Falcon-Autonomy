@@ -38,6 +38,11 @@ result must show:
                   disagree are red
     (no claim)    the hash alone
 
+A runtime monitor (kind monitor; ref a package folder of `falcon monitor gen`, core.monitorgen) binds its manifest's
+hash; with no claim it is green when the latest equivalence check of that manifest agreed with the offline checker,
+red when it disagreed, and amber when a monitored rule's formula has changed since the monitor was generated, the
+package's files changed, or no check has been made yet.
+
 Where it ran. Binding a failrate or falsify result also records where its runs were made (where_ran): on this machine,
 on the cluster (each node's name and how many runs, the pools, the kinds and every job's global id, from the `node`
 block of each run's run.json) or on a cloud burst (the provider, the burst's id, the GPU, the approved estimate's id
@@ -94,7 +99,7 @@ LINKS = ('SupportedBy', 'InContextOf')
 SUPPORTERS = ('Goal', 'Strategy')
 SUPPORTED = ('Goal', 'Strategy', 'Solution', 'AwayGoal')
 CONTEXTS = ('Context', 'Assumption', 'Justification')
-KINDS = ('failrate', 'suite', 'ci', 'falsify', 'rules', 'lineage')
+KINDS = ('failrate', 'suite', 'ci', 'falsify', 'rules', 'lineage', 'monitor')
 MEASURES = ('failure_rate', 'pass_rate', 'min_robustness', 'falsified_runs', 'violations_per_km', 'verdict', 'field',
             'data_root')
 NO_LIMIT = ('verdict', 'data_root')            # measures that compare no number with a limit
@@ -315,7 +320,7 @@ def latest_ci(workspace: str, name: str) -> str | None:
 
 
 RESULT_FILE = {'failrate': 'failure-rate.json', 'suite': 'results.jsonl', 'ci': 'ci-results.json',
-               'falsify': 'falsify.json', 'rules': 'rules.json'}
+               'falsify': 'falsify.json', 'rules': 'rules.json', 'monitor': 'manifest.json'}
 
 
 def resolve(workspace: str, ev: dict, overrides: dict | None = None) -> tuple:
@@ -731,6 +736,9 @@ def check_evidence(workspace: str, ev: dict, overrides: dict | None = None) -> d
             return dict(out, status='amber', why=why)
     if ev['kind'] == 'lineage' and not claim:
         return dict(out, status='green', why='the pinned hash matches', claim=None)
+    if ev['kind'] == 'monitor' and not claim:               # a runtime monitor: its rules' formulas now, its check
+        from .monitorgen import gsn_evidence
+        return dict(out, claim=None, **gsn_evidence(p))
     if claim.get('measure') == 'data_root':
         c = data_root_claim(workspace, p, claim)
     else:

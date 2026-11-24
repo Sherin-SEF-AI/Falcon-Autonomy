@@ -161,6 +161,10 @@ class Director:
         self.ego_control = None           # the control drive_ego applied for the coming tick (None: not driving it)
         self.external = set()             # actor ids driven from outside (workers/adversary.py's learned traffic)
         self.ego_filter = None            # f(control, observation) -> control: a stack's degraded mode (workers.stack)
+        self.latency = None               # core.latencyloop.DelayLine when the config has a `latency` block (opt-in)
+        if cfg.get('latency'):
+            from ..core.latencyloop import DelayLine
+            self.latency = DelayLine(cfg['latency'], self.dt, int(cfg.get('seed', 0)))
         self.attached_only = False        # attach(): a run without a scenario; only actors added during it
         self.added = []                   # actors added during the run (trigger rules): {id, kind, t, carla_id}
         self.extra_timeline = []          # timeline entries added during the run
@@ -1008,6 +1012,8 @@ class Director:
         u = self.policy.act(obs)
         if self.ego_filter is not None:
             u = self.ego_filter(dict(u), obs)
+        if self.latency is not None:      # the computed control reaches the vehicle late (core.latencyloop)
+            u = self.latency.step(u)
         self.ego_control = dict(u)
         if self.kinematic:
             self.kin_step(self.ego, u)
@@ -1059,6 +1065,7 @@ class Director:
                 **({'added': self.added, 'fired_added': self.fired_added} if self.added else {}),
                 **({'brake_lights': self.light_events} if self.light_events else {}),
                 **({'perturb': self.perturb} if self.perturb else {}),
+                **({'latency': self.latency.report()} if self.latency is not None else {}),
                 **({'levelk': {'actors': sorted(k for k, v in self.actors.items() if v.get('levelk') is not None),
                                'decisions': self.levelk.decisions}} if self.levelk is not None else {})}
 

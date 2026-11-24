@@ -319,6 +319,8 @@ class Stack(Worker):
                     director.step(i / fps)
                 if replay is not None:
                     u = replay[i]
+                if driver == 'ros2' and director is not None and director.latency is not None:
+                    u = director.latency.step(u)         # opt-in (config `latency`): the stack's control acts late
                 if driver in ('ros2', 'replay'):
                     self.apply(carla, u, kinematic)
                 t0 = time.monotonic()

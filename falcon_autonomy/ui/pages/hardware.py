@@ -28,7 +28,7 @@ from ...core.paths import tilde
 from ...core.project import ProjectError
 from .. import tasks
 from ..theme import THEME
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll, set_enabled
+from ..widgets import Form, KeyValues, Page, Section, button, label, optional_tab, scroll, set_enabled
 
 SIZES = {'1280 × 720': (1280, 720), '960 × 540': (960, 540), '640 × 360': (640, 360), '320 × 180': (320, 180)}
 PLACE_SLOT = {'host': 0, 'cross': 1, 'device': 2}           # the validated categorical palette's first three slots
@@ -164,6 +164,8 @@ class HardwarePage(Page):
         pv.addWidget(self._can_section())
         pv.addWidget(self._clock_section())
         pv.addStretch(1)
+        self.monitors = optional_tab(pv, 'ui.monitor_tab', 'MonitorTab', 'Runtime monitors', self)   # 4.1
+        self.latency = optional_tab(pv, 'ui.latency_tab', 'LatencyTab', 'Latency budget', self)      # 4.1
         split.addWidget(scroll(panel))
         split.addWidget(right)
         split.setSizes([420, 900])
