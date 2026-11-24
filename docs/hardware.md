@@ -16,6 +16,11 @@ model](#the-chassis-model), [the camera as a V4L2 device](#the-camera-as-a-v4l2-
 [clocks: PTP and the NTP-style fallback](#clocks-ptp-and-the-ntp-style-fallback) and [setting up the
 interfaces](#setting-up-the-interfaces) below.
 
+Two more sections of the page work without a session: **Runtime monitors** — the traffic rules compiled into an
+online monitor for the vehicle computer, checked sample by sample against the offline checker
+([runtime monitors](runtime-monitors.md)) — and **Latency budget** — measured latency fed back into closed-loop
+simulation, and the largest latency at which each scenario still passes ([latency in the loop](latency-loop.md)).
+
 ## How it runs
 
 Three processes, each in the Python that has what it needs:

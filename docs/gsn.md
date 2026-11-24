@@ -57,6 +57,7 @@ this and names what is wrong.
 | `falsify` | `studies/<falsification study>` | `falsify.json` ([falsification](falsification.md)) |
 | `rules` | `rules/<check>` | `rules.json` ([traffic rules](traffic-rules.md)) |
 | `lineage` | any file (a dataset's `data.json`, a model); a training folder `training/<id>` | the file itself; a training folder's `model.onnx` (its `data.json` when it has no model), a `model.json`'s registered model |
+| `monitor` | `monitors/<name>` — a runtime monitor package ([runtime monitors](runtime-monitors.md)) | `manifest.json` |
 
 | claim `measure` | on | holds when |
 |---|---|---|
@@ -69,6 +70,7 @@ this and names what is wrong.
 | `field` | any JSON | the number at the dotted `path` compared by `op` (`<=` `<` `>=` `>` `==`) with `limit`, or equal to `equals` (e.g. a lineage file's Merkle root) |
 | `data_root` | lineage (a trained model) | the model names exactly the data bound in `data` (below) |
 | (none) | any | the pinned hash alone |
+| (none) | monitor | the generated monitor equalled the offline checker in its latest equivalence check (green); red when that check disagreed; amber when a monitored rule's formula has changed since the monitor was generated, the package's files changed, or no check has been made on this manifest |
 
 **Binding** resolves the ref to its file, pins the file's SHA-256 and the time. An `@latest` alias pins its current
 target too, but follows the newest result afterwards: that is what makes the case *living*.

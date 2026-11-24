@@ -796,6 +796,8 @@ class Gym(Worker):
         world, carla = self.world, self.carla
         d, ego = ep['director'], ep['ego']
         d.step(ep['k'] * self.dt)
+        if d.latency is not None:             # opt-in (config `latency`): the action acts late (core.latencyloop)
+            u = d.latency.step(u)
         if d.kinematic:
             d.kin_step(ego, u)
         else:
