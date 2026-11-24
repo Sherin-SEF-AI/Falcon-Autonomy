@@ -5,7 +5,8 @@ where something fails. By default that something is driving: the objective is th
 [criticality](methods.md#criticality). With a registered detector it can be **perception**: each evaluation runs the
 scenario with the labelled rig, runs the model on the recorded frames and scores how badly the model saw the objects
 that matter. Code: `falcon_autonomy/core/milsearch.py` (its docstring is the reference), `sim/studio.py` (the study),
-`core/search.py` (the searchers).
+`core/search.py` (the searchers). A [two-speed search](two-speed-search.md) screens the parameters with a fast
+kinematic simulator first and confirms only the most promising in CARLA.
 
 ## Objectives
 

@@ -25,7 +25,8 @@ result must show:
     min_robustness  a falsification study's best (lowest) ρ ≥ limit (core.stlobjective; e.g. 0: not falsified)
     falsified_runs  its falsified runs ≤ limit
     violations_per_km  a rule check's violations per km ≤ limit (core.rules)
-    verdict       a CI run's verdict equals `equals` (default "passed")
+    verdict       a CI run's verdict equals `equals` (default "passed"); for a release gate (kind gate: a
+                  gates/<name> folder's gate.json, core.releasegate) e.g. equals "equivalent" or "better"
     field         any number of the result's JSON at a dotted `path`, compared by `op` (<=, <, >=, >, ==) with limit
                   (or equal to `equals`) — e.g. a lineage file's Merkle root
     data_root     a trained model's data (kind lineage; ref the training folder or its model.onnx): the ONNX file's
@@ -103,7 +104,7 @@ LINKS = ('SupportedBy', 'InContextOf')
 SUPPORTERS = ('Goal', 'Strategy')
 SUPPORTED = ('Goal', 'Strategy', 'Solution', 'AwayGoal')
 CONTEXTS = ('Context', 'Assumption', 'Justification')
-KINDS = ('failrate', 'suite', 'ci', 'falsify', 'rules', 'lineage', 'monitor', 'faulttol', 'regpack')
+KINDS = ('failrate', 'suite', 'ci', 'falsify', 'rules', 'lineage', 'monitor', 'faulttol', 'regpack', 'gate')
 MEASURES = ('failure_rate', 'pass_rate', 'min_robustness', 'falsified_runs', 'violations_per_km', 'verdict', 'field',
             'data_root')
 NO_LIMIT = ('verdict', 'data_root')            # measures that compare no number with a limit
@@ -325,7 +326,7 @@ def latest_ci(workspace: str, name: str) -> str | None:
 
 RESULT_FILE = {'failrate': 'failure-rate.json', 'suite': 'results.jsonl', 'ci': 'ci-results.json',
                'falsify': 'falsify.json', 'rules': 'rules.json', 'monitor': 'manifest.json',
-               'faulttol': 'faulttol.json', 'regpack': 'regpack.json'}
+               'faulttol': 'faulttol.json', 'regpack': 'regpack.json', 'gate': 'gate.json'}
 
 
 def resolve(workspace: str, ev: dict, overrides: dict | None = None) -> tuple:
@@ -883,6 +884,9 @@ def evidence_candidates(workspace: str) -> dict:
         for s in ls(folder):                           # 4.1: fault tolerance campaigns, regulation pack results
             if os.path.isfile(os.path.join(workspace, folder, s, name)):
                 out[kind].append(f'{folder}/{s}')
+    for s in ls('gates'):                              # release gates between two versions (core.releasegate)
+        if os.path.isfile(os.path.join(workspace, 'gates', s, 'gate.json')):
+            out['gate'].append(f'gates/{s}')
     for t in ls('training'):                           # trained models that name their data (core.lineage)
         d = os.path.join(workspace, 'training', t)
         if os.path.isfile(os.path.join(d, 'model.onnx')):

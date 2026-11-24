@@ -55,6 +55,7 @@ this and names what is wrong.
 | `suite` | `suites/<suite>` | `results.jsonl` ([stack testing](stack-testing.md#suites)) |
 | `ci` | `ci/<run>`, or the alias **`ci:<name>@latest`** — the newest CI run of that config name under `<workspace>/ci/` | `ci-results.json` |
 | `falsify` | `studies/<falsification study>` | `falsify.json` ([falsification](falsification.md)) |
+| `gate` | `gates/<name>` | `gate.json` ([release gate](release-gate.md)): claim `verdict` with `equals` (`equivalent`, `better`, …) or a `field` such as `risk.upper` |
 | `rules` | `rules/<check>` | `rules.json` ([traffic rules](traffic-rules.md)) |
 | `lineage` | any file (a dataset's `data.json`, a model); a training folder `training/<id>` | the file itself; a training folder's `model.onnx` (its `data.json` when it has no model), a `model.json`'s registered model |
 | `monitor` | `monitors/<name>` — a runtime monitor package ([runtime monitors](runtime-monitors.md)) | `manifest.json` |
