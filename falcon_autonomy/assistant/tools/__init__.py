@@ -27,6 +27,7 @@ from . import analysis, jobs, knowledge, lab, project, research, runs, system, u
 from . import failures  # noqa: F401,E402 (failure modes, triage, bisect: registers them)
 from . import autopilot  # noqa: F401,E402 (the research autopilot and its studies: registers them)
 from . import cloud, cluster, formal, introspect  # noqa: F401,E402 (4.0: their tools and their SHORT entries)
+from . import monitors, moments, robustness, screening  # noqa: F401,E402 (4.1: their tools and their SHORT entries)
 from ._compact import compact_registry
 
 compact_registry(REGISTRY)          # what the model is sent: one-line descriptions, short argument texts (_compact)

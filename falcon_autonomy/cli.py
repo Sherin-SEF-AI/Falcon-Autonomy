@@ -69,6 +69,12 @@
     falcon gsn …        the living GSN safety case              falcon introspect attention|intervene|audit
     falcon levelk calibrate|simulate|check   level-k traffic    falcon dashcam ingest|nearmiss   near-miss mining
 
+4.1 (loaded the same way):
+    falcon monitor …    runtime monitors generated from rules   falcon latency …     latency in the loop
+    falcon prescreen …  two-speed failure search                falcon gate …        release gate between two models
+    falcon faulttol …   sensor fault tolerance campaigns        falcon regpack …     regulation test packs
+    falcon moments …    search every run for what happened      falcon campaign …    overnight campaign, morning brief
+
 Exit codes: 0 ok; otherwise the worker's code (falcon_autonomy.core.protocol: 2 failed, 3 cancelled, 4 server lost,
 5 no server, 6 refused, 7 no carla) or 2 for a usage error. docs/cli.md is the reference.
 """
@@ -461,6 +467,21 @@ LAZY = {
     'introspect': ('core.introspect', 'main_introspect', 'attention, interventions and bias audits of driving '
                                                          'policies: falcon introspect attention|intervene|audit'),
     'levelk': ('core.levelk', 'main_levelk', 'level-k game-theoretic traffic: falcon levelk calibrate|simulate|check'),
+    # 4.1
+    'monitor': ('core.monitorgen', 'main_monitor', 'runtime safety monitors generated from the rules: falcon monitor …'),
+    'latency': ('core.latencyloop', 'main_latency', 'measured compute latency fed back into the simulation: '
+                                                    'falcon latency …'),
+    'prescreen': ('core.fastsim', 'main_prescreen', 'two-speed failure search, a fast simulator screening for CARLA: '
+                                                    'falcon prescreen …'),
+    'gate': ('core.releasegate', 'main_gate', 'the release gate between two model versions: falcon gate …'),
+    'faulttol': ('core.faulttol', 'main_faulttol', 'sensor fault and calibration-drift tolerance campaigns: '
+                                                   'falcon faulttol …'),
+    'regpack': ('core.regpacks', 'main_regpack', 'regulation test packs (UN R157, Euro NCAP, ISO 34502): '
+                                                 'falcon regpack …'),
+    'moments': ('core.moments', 'main_moments', 'what happened in every run, searched in plain words: '
+                                                'falcon moments …'),
+    'campaign': ('core.campaign', 'main_campaign', 'an overnight campaign with a goal, a budget and a morning brief: '
+                                                   'falcon campaign …'),
 }
 # `falcon dashcam ingest|nearmiss …` (4.0): core.dashcam_ingest.main_ingest gets ['ingest'|'nearmiss', …]
 DASHCAM_LAZY = ('ingest', 'nearmiss')
