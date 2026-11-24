@@ -22,7 +22,7 @@ from ...core import stackbridge as SB
 from ...core.jobs import FINAL, JobSpec
 from ...core.paths import tilde
 from ...core.provenance import read_json, write_json
-from ..widgets import Form, KeyValues, Page, Section, button, label, scroll
+from ..widgets import Form, KeyValues, Page, Section, button, label, optional_tab, scroll
 
 DRIVERS = (('ros2', 'ROS 2 stack (Falcon\'s bridge)'), ('follower', 'Falcon\'s lane follower (baseline)'),
            ('autopilot', 'CARLA\'s autopilot (baseline)'))
@@ -253,6 +253,7 @@ class StackPage(Page):
         row.addWidget(button('Open the report', self.open_report))
         row.addStretch(1)
         rv.addLayout(row)
+        self.faulttol = optional_tab(rv, 'ui.faulttol_tab', 'FaultTolTab', 'Fault tolerance', self)   # 4.1
         split.addWidget(right)
         split.setSizes([460, 820])
         self.timer = QTimer(self)

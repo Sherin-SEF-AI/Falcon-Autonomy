@@ -20,7 +20,7 @@ from ..widgets import KeyValues, Page, PlaceholderTree, Section, button, label, 
 KIND_TITLES = {'iteration': 'Loop iteration', 'evaluation': 'Model evaluation', 'dataset': 'Dataset coverage',
                'study': 'Rare-case study', 'leaderboard': 'Leaderboard result', 'rules': 'Traffic-rule check',
                'rootcause': 'Root cause', 'vlm': 'VLM explanations', 'deploy': 'Deployment (TensorRT)',
-               'ci': 'CI run', 'gsn': 'Safety case (GSN)'}
+               'ci': 'CI run', 'gsn': 'Safety case (GSN)', 'regpack': 'Regulation pack (pre-check)'}
 PAPER_TITLES = {'experiment': 'Experiment (ablation or sim + real)', 'evaluation': 'Model evaluation',
                 'comparison': 'Comparison of two evaluations', 'datacard': 'Data card of an export'}
 
@@ -75,6 +75,7 @@ class ReportsPage(Page):
         sec.add(self.info)
         v.addWidget(sec)
         self.gsn = optional_tab(v, 'ui.gsn_tab', 'GsnTab', 'Safety case (GSN)', self)   # 4.0, in progress
+        self.regpacks = optional_tab(v, 'ui.regpack_tab', 'RegPackTab', 'Regulation packs', self)   # 4.1
         v.addStretch(1)
         win.bridge.finished.connect(self._finished)
         self.refresh()

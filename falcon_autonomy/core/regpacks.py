@@ -627,7 +627,7 @@ def _pack_iso() -> dict:
             ('perception-blind-spot', 'blind spot: peripheral vehicles, road structure, road shape', '4.2.2',
              ['jaywalker_behind_bus', 'bus_pulling_out'], 'partial', 'occlusion by vehicles only'),
             ('perception-connectivity', 'connectivity disturbance: sensors, environment, transmitter', '4.2.3',
-             ['core.v2x message loss'], 'partial', 'V2X loss only; no digital-map error'),
+             ['core.v2x (V2X messages)'], 'partial', 'V2X messages only; no digital-map error'),
             ('control-body-road', 'vehicle body input: road shape (slopes, curvature)', '4.3.1', [], 'gap',
              'no scenario varies slope or curvature'),
             ('control-body-wind', 'vehicle body input: natural phenomena (cross, tail and head wind)', '4.3.1', [],

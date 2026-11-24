@@ -102,6 +102,8 @@ DEFAULTS = {
     'hil_can': {'interfaces_allowed': ['vcan*'],   # CAN interfaces Falcon may open (patterns); real ones added by hand
                 'confirmed': {}},                   # adapter -> {statement, at}: confirmed as a bench network
     'hil_ptp': {'interface': '', 'clock_source': 'auto'},   # PTP on this NIC, or an NTP-style fallback (recorded)
+    # 4.1 fault tolerance
+    'faulttol_requirements': {},         # fault model -> the severity the system must tolerate (core.faulttol)
 }
 
 
@@ -177,6 +179,10 @@ EXPLAIN = {
                 'network, not a vehicle, each with the statement and its time (falcon hil can confirm|revoke)'),
     'hil_ptp': ('Settings ▸ Hardware', 'the network interface for PTP time sync, and the clock '
                 'source (auto: PTP when available, else an NTP-style fallback; both recorded)'),
+    # 4.1 fault tolerance
+    'faulttol_requirements': ('Stack testing ▸ Fault tolerance ▸ Requirement', 'per fault model, the severity the '
+                              'system must tolerate (degrees, ms, a share …); the tolerance table is judged against '
+                              'it'),
 }
 PRIVATE_SETTINGS = ('recent_projects', 'hil_device', 'cloud_llm', 'cluster')
 
