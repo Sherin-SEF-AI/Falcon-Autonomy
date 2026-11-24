@@ -137,6 +137,9 @@ class SettingsPage(Page):
         b.addStretch(1)
         v.addLayout(b)
         v.addStretch(1)
+        from ..applybar import ApplyBar                  # rises at the foot while fields differ from the applied
+        self.apply_bar = ApplyBar(self, self.apply, exclude=(self.theme, self.motion))
+        self.layout().addWidget(self.apply_bar)
 
     # ------------------------------------------------------------------ the assistant (docs/assistant.md)
     def _assistant_section(self, v):
@@ -458,3 +461,5 @@ class SettingsPage(Page):
         for p in self.win.pages:
             if p is not self:
                 p.refresh()
+        if hasattr(self, 'apply_bar'):
+            self.apply_bar.snapshot()

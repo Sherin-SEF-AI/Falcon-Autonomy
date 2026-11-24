@@ -1,7 +1,8 @@
 """Reports ▸ Safety case (GSN): the workspace's living safety case (core.gsn; docs/gsn.md) drawn in Goal Structuring
-Notation, each node coloured by its status as verified now — green (its evidence holds), amber (missing or changed
-evidence: re-bind to accept it), red (a claim violated: a bound broken), grey (undeveloped) — with the status
-propagated up as AND. Clicking a node shows its text, status and why, and a Solution's evidence: the result it is
+Notation, each node marked by its status as verified now, in words and colour — met (blue: its evidence holds), evidence
+changed (amber: missing or changed evidence, re-bind to accept it), not met (orange: a claim violated, a bound broken),
+undeveloped (grey) — with the status propagated up as AND. Verify now draws the argument in level by level; the
+selected node wears a slow amber ring. Clicking a node shows its text, status and why, and a Solution's evidence: the result it is
 bound to, the claim, the pinned SHA-256 and when it was bound. Re-bind pins the result's current hash (undoable here:
 Undo puts the previous evidence back); Verify now re-verifies and logs it (safety/gsn-events.jsonl); a new safety case
 starts from the ISO 26262 or ISO 21448 SOTIF template; Export writes the self-contained HTML report (core.reports) or
@@ -12,16 +13,23 @@ import copy
 import json
 import os
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
+from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QVariantAnimation
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF, QUndoCommand, QUndoStack
 from PyQt6.QtWidgets import (QComboBox, QFileDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsScene,
                              QGraphicsTextItem, QGraphicsView, QHBoxLayout, QVBoxLayout, QWidget)
 
 from ..core import gsn as G
-from .theme import STATUS, THEME
+from . import motion
+from .theme import THEME, mono
 from .widgets import KeyValues, button, label
 
-COLOUR = {'green': STATUS['good'], 'amber': STATUS['warning'], 'red': STATUS['critical'], 'grey': '#9a9993'}
+TONE = {'green': 'good', 'amber': 'warning', 'red': 'critical'}
+WORD = {'green': 'met', 'amber': 'evidence changed', 'red': 'not met', 'grey': 'undeveloped'}
+
+
+def colour(status: str | None) -> QColor:
+    """A status's mark colour on this theme (grey and none: the muted ink)."""
+    return QColor(THEME.status(TONE[status]) if status in TONE else THEME.tok['muted'])
 TEMPLATE_TITLES = (('sotif', 'ISO 21448 SOTIF'), ('iso26262', 'ISO 26262 functional safety'), ('blank', 'Blank'))
 
 
@@ -41,30 +49,35 @@ def _shape(t: str, r: QRectF) -> QPainterPath:
 
 
 class NodeItem(QGraphicsPathItem):
+    """A node: its shape on the surface colour, outlined in its status colour; its id and status word in mono (the
+    word, not the colour alone, carries the status), then its text."""
+
     def __init__(self, tab, n: dict, rect: QRectF, status: str | None):
         super().__init__(_shape(n['type'], rect))
         self.tab, self.node_id = tab, n['id']
-        col = QColor(COLOUR.get(status, THEME.tok['muted'])) if status else QColor(THEME.tok['muted'])
-        fill = QColor(col)
-        fill.setAlpha(70 if status else 25)
-        self.setBrush(QBrush(fill))
-        self.setPen(QPen(col, 2.0 if status else 1.2))
+        col = colour(status)
+        self.setBrush(QBrush(QColor(THEME.tok['raised'])))
+        self.setPen(QPen(col, 1.6 if status in TONE else 1.0))
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(f'{n["id"]} ({n["type"]}): {status or "no status"}')
+        word = WORD.get(status, 'no status') if status else 'no status'
+        self.setToolTip(f'{n["id"]} ({n["type"]}): {word}')
         txt = QGraphicsTextItem(self)
         txt.setDefaultTextColor(QColor(THEME.tok['ink']))
-        f = QFont()
-        f.setPointSizeF(8.0)
+        f = QFont('IBM Plex Sans')
+        f.setPixelSize(11)
         txt.setFont(f)
-        txt.setTextWidth(rect.width() - 16)
-        head = f'<b>{n["id"]}</b>' + (f' · {status}' if status else '')
+        pad = 18 if n['type'] in ('Solution', 'Assumption', 'Justification', 'Strategy') else 10
+        txt.setTextWidth(rect.width() - 2 * pad)
+        mf = mono(10).family()
+        head = (f'<span style="font-family:\'{mf}\'; font-weight:600">{n["id"]}</span>'
+                + (f' <span style="font-family:\'{mf}\'; color:{col.name()}">{word.upper()}</span>' if status else ''))
         body = (n.get('text') or '')[:150]
         txt.setHtml(f'{head}<br>{body.replace("<", "&lt;")}')
-        txt.setPos(rect.x() + 8, rect.y() + 4)
+        txt.setPos(rect.x() + pad, rect.y() + 4)
         if n['type'] in ('Assumption', 'Justification'):
             tag = QGraphicsTextItem(n['type'][0], self)
-            tag.setDefaultTextColor(QColor(THEME.tok['ink']))
+            tag.setDefaultTextColor(QColor(THEME.tok['muted']))
             tag.setPos(rect.right() - 16, rect.bottom() - 20)
 
     def mousePressEvent(self, ev):                                # noqa: N802
@@ -109,9 +122,9 @@ class GsnTab(QWidget):
         self.undo = QUndoStack(self)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(label('The argument in GSN, each node coloured by its evidence as verified now: green holds, '
-                          'amber missing or changed (re-bind to accept), red a claim violated, grey undeveloped; '
-                          'a goal is as good as its worst support. Falcon is not a qualified tool (ISO 26262-8 §11): '
+        v.addWidget(label('The argument in GSN, each node marked by its evidence as verified now: met (it holds), '
+                          'evidence changed (missing or changed: re-bind to accept), not met (a claim violated), '
+                          'undeveloped; a goal is as good as its worst support. Falcon is not a qualified tool (ISO 26262-8 §11): '
                           'this is evidence to assess, not a certification argument.', muted=True, wrap=True))
         row = QHBoxLayout()
         self.template = QComboBox()
@@ -141,6 +154,15 @@ class GsnTab(QWidget):
         v.addWidget(self.info)
         self.undo.canUndoChanged.connect(self.undo_btn.setEnabled)
         self.undo_btn.setEnabled(False)
+        self.ring = None                                          # the selected node's pulsing outline
+        self.ring_anim = QVariantAnimation(self)
+        self.ring_anim.setStartValue(0.0)
+        self.ring_anim.setEndValue(1.0)
+        self.ring_anim.setDuration(1800)
+        self.ring_anim.setLoopCount(-1)
+        self.ring_anim.valueChanged.connect(self._ring_tick)
+        self.reveal = motion.Driver(self.view.viewport(), 900, QEasingCurve.Type.Linear)
+        self.reveal.anim.valueChanged.connect(self._reveal_tick)
         self.reload()
 
     def workspace(self) -> str:
@@ -174,9 +196,9 @@ class GsnTab(QWidget):
             return
         self.new_btn.setEnabled(False)
         self.draw()
-        tops = ', '.join(f'{g} {s}' for g, s in self.ver['top'].items())
+        tops = ', '.join(f'{g} {WORD.get(s, s)}' for g, s in self.ver['top'].items())
         self.state.setText(f'{self.doc.get("title")}: top goals {tops}; ' + ', '.join(
-            f'{k} {n}' for k, n in self.ver['counts'].items() if n) + f' — {G.gsn_path(ws)}')
+            f'{n} {WORD.get(k, k)}' for k, n in self.ver['counts'].items() if n) + f' — {G.gsn_path(ws)}')
         if self.selected:
             self.select(self.selected)
         else:
@@ -187,24 +209,46 @@ class GsnTab(QWidget):
         st = self.ver['nodes'] if self.ver else {}
         by = {n['id']: n for n in self.doc['nodes']}
         self.items = {}
+        self.ring = None
+        self.ring_anim.stop()
         for ln in self.doc['links']:
             if ln['from'] not in lay or ln['to'] not in lay:
                 continue
             x0, y0, w0, h0 = lay[ln['from']]
             x1, y1, w1, _ = lay[ln['to']]
-            pen = QPen(QColor(THEME.tok['ink2']), 1.2)
+            pen = QPen(QColor(THEME.tok['strong']), 1.2)
             if ln['kind'] == 'InContextOf':
                 pen.setStyle(Qt.PenStyle.DashLine)
             a, b = QPointF(x0 + w0 / 2, y0 + h0), QPointF(x1 + w1 / 2, y1)
             self.scene.addLine(a.x(), a.y(), b.x(), b.y(), pen)
             head = QPolygonF([b, QPointF(b.x() - 5, b.y() - 9), QPointF(b.x() + 5, b.y() - 9), b])
-            self.scene.addPolygon(head, pen, QBrush(QColor(THEME.tok['ink2'])) if ln['kind'] == 'SupportedBy'
-                                  else QBrush(QColor(THEME.tok['panel'])))
+            self.scene.addPolygon(head, pen, QBrush(QColor(THEME.tok['strong'])) if ln['kind'] == 'SupportedBy'
+                                  else QBrush(QColor(THEME.tok['base'])))
         for nid, (x, y, w, h) in lay.items():
             it = NodeItem(self, by[nid], QRectF(x, y, w, h), (st.get(nid) or {}).get('status'))
             self.scene.addItem(it)
             self.items[nid] = it
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-10, -10, 10, 10))
+        self.view.setBackgroundBrush(QBrush(QColor(THEME.tok['base'])))
+
+    def _reveal_tick(self, v):
+        """Level by level from the top goal down: each row of nodes (and the lines into it) fades in in turn."""
+        rows = sorted({round(it.pos().y() + it.boundingRect().top()) for it in self.scene.items()
+                       if isinstance(it, NodeItem)})
+        n = max(len(rows), 1)
+        for it in self.scene.items():
+            if it.parentItem() is not None:
+                continue
+            y = it.boundingRect().top() + it.pos().y()
+            k = sum(1 for r in rows if r <= y + 1) - 1
+            k = max(k, 0)
+            it.setOpacity(min(max((float(v) * (n + 1) - k), 0.0), 1.0))
+
+    def _ring_tick(self, v):
+        if self.ring is not None:
+            c = QColor(THEME.tok['accent'])
+            c.setAlphaF(0.2 + 0.6 * (1 - abs(float(v) - 0.5) * 2))
+            self.ring.setBrush(QBrush(c))
 
     def select(self, nid: str):
         if self.doc is None:
@@ -215,12 +259,26 @@ class GsnTab(QWidget):
             self.selected = None
             return
         self.selected = nid
+        it = getattr(self, 'items', {}).get(nid)
+        if it is not None:
+            if self.ring is None or self.ring.scene() is not self.scene:
+                self.ring = QGraphicsPathItem()             # a band around the node, under it: only its outer
+                self.ring.setPen(QPen(Qt.PenStyle.NoPen))   # half shows
+                self.ring.setZValue(-1)
+                self.scene.addItem(self.ring)
+            from PyQt6.QtGui import QPainterPathStroker
+            st = QPainterPathStroker()
+            st.setWidth(8)
+            self.ring.setPath(st.createStroke(it.path()))
+            self.ring.setBrush(QBrush(QColor(THEME.tok['accent'])))
+            if motion.enabled():
+                self.ring_anim.start()
         r = (self.ver or {}).get('nodes', {}).get(nid) or {}
         ev = n.get('evidence') or {}
         self.info.set('Node', nid)
         self.info.set('Type', n['type'])
         self.info.set('Text', n.get('text') or '')
-        self.info.set('Status', r.get('status') or '—')
+        self.info.set('Status', WORD.get(r.get('status'), r.get('status')) if r.get('status') else '—')
         self.info.set('Why', r.get('why') or '')
         self.info.set('Evidence', f'{ev.get("kind")}: {ev.get("ref")} → {r.get("path") or ev.get("path") or "—"}'
                       if ev else '—')
@@ -253,6 +311,9 @@ class GsnTab(QWidget):
             self.state.setText(str(e))
             return
         self.reload()
+        if motion.enabled() and self.isVisible():                 # the verified argument draws in from the top goal
+            self._reveal_tick(0.0)
+            self.reveal.start()
 
     def rebind(self):
         if self.doc is None or not self.selected:

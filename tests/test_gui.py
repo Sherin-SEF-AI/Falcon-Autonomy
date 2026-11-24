@@ -240,7 +240,7 @@ def test_jobs_panel_rows(window, qapp, project):
     job = window.queue.jobs[-1]
     it = dock.items[job.id]
     prog = dock.tree.itemWidget(it, dock.PROGRESS)
-    assert not prog.bar.isTextVisible()
+    assert prog.bar.height() == 3                    # a hairline progress line, no text in it
     assert pump(qapp, lambda: job.state == 'running', 60), job.log
     assert it.text(dock.STATUS) == 'Running'
     assert pump(qapp, lambda: it.text(dock.ELAPSED) not in ('', '0 s'), 30)       # ticks on its own

@@ -12,7 +12,7 @@ import json
 import os
 import sys
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
+from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QMessageBox, QSpinBox,
                              QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
@@ -20,7 +20,8 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, 
 from ...core import scenarios as SC
 from ...core import search as S
 from ...core.jobs import FINAL, JobSpec
-from ..theme import SEQ, STATUS, THEME
+from .. import motion
+from ..theme import THEME, heat_color, mono
 from ..widgets import Form, KeyValues, Page, Section, button, label, optional_tab, scroll, set_enabled
 
 METHODS = (('bayes', 'Bayesian optimisation'),
@@ -33,73 +34,129 @@ WEATHER = (('fog_density', 'Fog'), ('sun_altitude_angle', 'Sun altitude'), ('pre
 
 
 class Curve(QWidget):
-    """Best criticality so far (line) and failures found (steps) against evaluations."""
+    """The worst criticality found so far (a line) over evaluations, a dot per evaluation (orange when it is a failure)
+    and the failure threshold dashed. New evaluations draw in along the line as they arrive; hover reads a dot."""
 
     def __init__(self):
         super().__init__()
         self.values = []
         self.threshold = 0.5
-        self.setMinimumHeight(160)
+        self.shown_from = 0                 # evaluations already drawn before the latest arrivals
+        self.hover = -1
+        self.setMinimumHeight(170)
+        self.setMouseTracking(True)
+        self.draw = motion.Driver(self)
 
     def set_values(self, values, threshold):
-        self.values, self.threshold = list(values), threshold
+        values = list(values)
+        grew = len(values) > len(self.values) and values[:len(self.values)] == self.values
+        self.shown_from = len(self.values) if grew else 0
+        changed = values != self.values or threshold != self.threshold
+        self.values, self.threshold = values, threshold
+        if changed and values:
+            self.draw.start()
         self.update()
 
-    def paintEvent(self, ev):
+    def _geom(self):
+        return 40.0, 12.0, self.width() - 56.0, self.height() - 40.0
+
+    def _x(self, i, x0, w):
+        return x0 + w * i / max(len(self.values) - 1, 1)
+
+    def mouseMoveEvent(self, ev):                               # noqa: N802
+        n = len(self.values)
+        if not n:
+            return
+        x0, _y0, w, _h = self._geom()
+        i = int(round((ev.position().x() - x0) / max(w, 1) * max(n - 1, 1)))
+        i = min(max(i, 0), n - 1)
+        if i != self.hover:
+            self.hover = i
+            v = self.values[i]
+            best = max(self.values[:i + 1])
+            self.setToolTip(f'evaluation {i + 1}: {v:.3f}' + (' (a failure)' if v >= self.threshold else '')
+                            + f'\nworst so far {best:.3f}')
+            self.update()
+
+    def leaveEvent(self, _ev):                                  # noqa: N802
+        self.hover = -1
+        self.update()
+
+    def paintEvent(self, ev):                                   # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.fillRect(self.rect(), QColor(THEME.tok['panel']))
         n = len(self.values)
         if n == 0:
             p.setPen(QColor(THEME.tok['muted']))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, 'No evaluations yet')
             return
-        x0, y0, w, h = 40, 10, self.width() - 60, self.height() - 34
-        fails = 0
-        best = 0.0
-        bpts, fpts = [], []
+        x0, y0, w, h = self._geom()
+
+        def Y(v):
+            return y0 + h * (1 - min(max(v, 0.0), 1.0))
+        p.setFont(mono(10))
+        for t in (0.0, 0.5, 1.0):                               # recessive grid, labelled in mono
+            p.setPen(QPen(QColor(THEME.tok['soft']), 1))
+            p.drawLine(QPointF(x0, Y(t)), QPointF(x0 + w, Y(t)))
+            p.setPen(QColor(THEME.tok['off']))
+            p.drawText(QRectF(0, Y(t) - 8, x0 - 8, 16), int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+                       f'{t:.1f}')
+        fail = QColor(THEME.status('critical'))
+        p.setPen(QPen(fail, 1, Qt.PenStyle.DashLine))
+        p.drawLine(QPointF(x0, Y(self.threshold)), QPointF(x0 + w, Y(self.threshold)))
+        p.setPen(fail)
+        p.drawText(QRectF(x0 + w - 160, Y(self.threshold) + 3, 158, 14),
+                   int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), f'failure ≥ {self.threshold:.2f}')
+        # how far the line has drawn: the old evaluations at once, the new ones along the driver
+        upto = self.shown_from + (n - self.shown_from) * self.draw.value if n > 1 else n
+        best, pts = 0.0, []
         for i, v in enumerate(self.values):
             best = max(best, v)
-            fails += v >= self.threshold
-            bpts.append((i, best))
-            fpts.append((i, fails))
-        fmax = max(fails, 1)
-
-        def X(i):
-            return x0 + w * i / max(n - 1, 1)
-        p.setPen(QColor(THEME.tok['grid2']))
-        p.drawRect(QRectF(x0, y0, w, h))
-        ty = y0 + h * (1 - self.threshold)
-        p.setPen(QPen(QColor(STATUS['serious']), 1, Qt.PenStyle.DashLine))
-        p.drawLine(QPointF(x0, ty), QPointF(x0 + w, ty))
-        p.setPen(QPen(QColor(SEQ[7]), 2))
-        for (a, va), (b, vb) in zip(bpts, bpts[1:]):
-            p.drawLine(QPointF(X(a), y0 + h * (1 - va)), QPointF(X(b), y0 + h * (1 - vb)))
-        p.setPen(QPen(QColor(STATUS['critical']), 1.5))
-        for (a, fa), (b, fb) in zip(fpts, fpts[1:]):
-            p.drawLine(QPointF(X(a), y0 + h * (1 - fa / fmax)), QPointF(X(b), y0 + h * (1 - fa / fmax)))
-            p.drawLine(QPointF(X(b), y0 + h * (1 - fa / fmax)), QPointF(X(b), y0 + h * (1 - fb / fmax)))
+            pts.append(QPointF(self._x(i, x0, w), Y(best)))
+        ink = QColor(THEME.tok['ink'])
+        p.setPen(QPen(ink, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        last = min(int(upto), n - 1)
+        for i in range(1, last + 1):                            # a step line: the worst so far only ever rises
+            a, b = pts[i - 1], pts[i]
+            p.drawLine(a, QPointF(b.x(), a.y()))
+            p.drawLine(QPointF(b.x(), a.y()), b)
+        if last < n - 1 and upto > last:                        # the segment being drawn
+            a, b = pts[last], pts[last + 1]
+            f = upto - last
+            p.drawLine(a, QPointF(a.x() + (b.x() - a.x()) * f, a.y()))
+        p.setPen(Qt.PenStyle.NoPen)
+        for i, v in enumerate(self.values[:last + 1]):
+            c = fail if v >= self.threshold else QColor(THEME.tok['muted'])
+            r = 3.5 if i != self.hover else 5.0
+            p.setBrush(QColor(THEME.tok['base']))
+            p.drawEllipse(QPointF(self._x(i, x0, w), Y(v)), r + 1.5, r + 1.5)   # a surface ring keeps dots apart
+            p.setBrush(c)
+            p.drawEllipse(QPointF(self._x(i, x0, w), Y(v)), r, r)
+        fails = sum(v >= self.threshold for v in self.values)
         p.setPen(QColor(THEME.tok['muted']))
-        p.drawText(QPointF(x0, self.height() - 6), f'evaluations (0–{n}) · blue: best criticality (0–1) · red: '
-                                                   f'failures found (0–{fails}) · dashed: the failure threshold')
+        p.setFont(mono(11))
+        p.drawText(QPointF(x0, self.height() - 8), f'evaluations 1–{n} · line: worst criticality so far · '
+                                                   f'dots: each evaluation, {fails} at or over the threshold')
 
 
 class Heatmap(QWidget):
-    """The failure region: per cell of two parameters, the share of evaluations over the threshold (colour) and
-    how many (number)."""
+    """The failure region over two parameters: per cell, how many evaluations failed (fill, on the amber ramp) and how
+    many ran (number). Cells fill in one after another when the map changes."""
 
     def __init__(self):
         super().__init__()
         self.grid = None
         self.setMinimumHeight(220)
+        self.fill = motion.Driver(self, 600, QEasingCurve.Type.Linear)
 
     def set_grid(self, grid):
+        if grid != self.grid and grid:
+            self.fill.start()
         self.grid = grid
         self.update()
 
-    def paintEvent(self, ev):
+    def paintEvent(self, ev):                                   # noqa: N802
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(THEME.tok['panel']))
         g = self.grid
         if not g:
             p.setPen(QColor(THEME.tok['muted']))
@@ -108,22 +165,30 @@ class Heatmap(QWidget):
         count, share = g['count'], g.get('failure_share')
         ny, nx = len(count), len(count[0]) if count else 0
         x0, y0, w, h = 60, 10, self.width() - 80, self.height() - 40
+        cells = max(nx * ny, 1)
+        p.setFont(mono(11))
         for j in range(ny):
             for i in range(nx):
                 n = count[j][i]
-                r = QRectF(x0 + w * i / nx, y0 + h * (1 - (j + 1) / ny), w / nx, h / ny)
-                if not n:
-                    p.fillRect(r, QColor(THEME.tok['raised']))
+                r = QRectF(x0 + w * i / nx, y0 + h * (1 - (j + 1) / ny), w / nx, h / ny).adjusted(1, 1, -1, -1)
+                k = (ny - 1 - j) * nx + i                       # top-left first, row by row
+                t = min(max((self.fill.value * (cells + 6) - k) / 6, 0.0), 1.0)
+                if t <= 0:
                     continue
-                f = (share[j][i] if share and share[j][i] is not None else 0.0)
-                col = QColor(STATUS['critical'])
-                col.setAlphaF(0.15 + 0.85 * f)
-                p.fillRect(r, col)
-                p.setPen(QColor(THEME.tok['ink']))
-                p.drawText(r, Qt.AlignmentFlag.AlignCenter, str(n))
+                f = (share[j][i] if share and share[j][i] is not None else 0.0) if n else 0.0
+                failed = int(round(f * n)) if n else 0
+                fill, text = heat_color(failed)
+                if not n:
+                    fill = QColor(THEME.tok['raised'])
+                fill.setAlphaF(fill.alphaF() * t)
+                p.fillRect(r, fill)
+                if n:
+                    text.setAlphaF(t)
+                    p.setPen(text)
+                    p.drawText(r, Qt.AlignmentFlag.AlignCenter, str(n))
         p.setPen(QColor(THEME.tok['muted']))
-        p.drawText(QPointF(x0, self.height() - 8), f'{g.get("x", "")} →   (colour: share of counted failures — '
-                                                   'avoidable only when RSS counting is on; number: evaluations)')
+        p.drawText(QPointF(x0, self.height() - 8), f'{g.get("x", "")} →   fill: failures counted in the cell '
+                                                   '(none · 1 · 2 · 3+); number: evaluations')
         p.save()
         p.translate(14, y0 + h)
         p.rotate(-90)
@@ -216,6 +281,8 @@ class RareCasesPage(Page):
         b.addWidget(self.start_btn)
         b.addStretch(1)
         sec.add(b)
+        self.sweep = motion.Sweep()                   # the running search's evaluations, sweeping while it runs
+        sec.add(self.sweep)
         self.state = KeyValues(('State',))
         sec.add(self.state)
         lv.addWidget(sec)
@@ -231,7 +298,7 @@ class RareCasesPage(Page):
         split.addWidget(scroll(left))
         right = QWidget()
         rv = QVBoxLayout(right)
-        rv.addWidget(label('How the search went', h=True))
+        rv.addWidget(label('Worst criticality found so far', h=True))
         self.curve = Curve()
         rv.addWidget(self.curve)
         rv.addWidget(label('Failing cases, most critical first', h=True))
@@ -353,6 +420,9 @@ class RareCasesPage(Page):
         if self.job is not None and self.job.state not in FINAL:
             self.state.set('State', self.job.summary())
             self.load()
+            self.sweep.set(len(self.history) / max(self.budget.value(), 1))
+        elif self.sweep.isVisible():
+            self.sweep.set(None)
         if hasattr(self, 'rates'):
             self.rates.poll()
 
@@ -366,6 +436,10 @@ class RareCasesPage(Page):
     def load(self):
         rows = self.rows()
         thr = self.threshold.value()
+        key = (self.study(), thr)
+        before = getattr(self, '_shown', None)
+        fresh = set() if before is None or before[0] != key else {r['run'] for r in rows} - before[1]
+        self._shown = (key, {r['run'] for r in rows})
         self.curve.set_values([r.get('objective', 0.0) for r in rows], thr)
         self.failures.clear()
         hist = [{'params': r['values'], 'value': r.get('objective', 0.0), 'i': k, 'run': r['run'],
@@ -393,6 +467,8 @@ class RareCasesPage(Page):
                                                'label it)'))
             it.setData(0, 256, h)
             self.failures.addTopLevelItem(it)
+            if h['run'] in fresh:                         # a failure that just arrived eases in
+                motion.flash_item(it, self.failures.columnCount())
         self.n_counted = len(counted)
         what = {'criticality': 'criticality', 'perception': 'perception failure',
                 'both': 'perception failure and criticality'}[self.objective.currentData() or 'criticality']

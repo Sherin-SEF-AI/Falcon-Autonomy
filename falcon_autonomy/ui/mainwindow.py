@@ -6,10 +6,10 @@ from __future__ import annotations
 import os
 
 from PyQt6.QtCore import QProcess, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QColor, QIcon, QKeySequence, QUndoCommand, QUndoStack
+from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QIcon, QKeySequence, QUndoCommand, QUndoStack
 from PyQt6.QtWidgets import (QApplication, QDialog, QDockWidget, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
                              QListWidgetItem, QMainWindow, QMenuBar, QMessageBox, QPlainTextEdit,
-                             QProgressBar, QSizePolicy, QStackedWidget, QTabWidget, QToolButton, QTreeWidget, QTreeWidgetItem,
+                             QSizePolicy, QStackedWidget, QTabWidget, QToolButton, QTreeWidget, QTreeWidgetItem,
                              QVBoxLayout, QWidget)
 
 from .. import APP_NAME, __version__
@@ -26,7 +26,7 @@ from . import icons, tasks
 from .qtjobs import JobsBridge, QProcessLauncher, node_text, node_tip
 from .notify import Notifier
 from .frame import COUNT_ROLE, ICON_ROLE
-from .theme import STATUS, THEME, mono, sans
+from .theme import STATUS, THEME, mono
 from .widgets import PlaceholderTree, set_enabled, tidy
 
 
@@ -68,28 +68,26 @@ class EditCommand(QUndoCommand):
 
 
 class _JobProgress(QWidget):
-    """A job's progress in its row: a thin bar centred in the cell (its own text off: a 3 px bar cannot hold it) and
-    the percentage beside it."""
+    """A job's progress in its row: a 3 px line centred in the cell (a band sweeps along it while the job runs, so a
+    job between reports still reads as alive) and the percentage beside it in mono."""
 
     def __init__(self):
         super().__init__()
+        from .motion import Sweep
         h = QHBoxLayout(self)
         h.setContentsMargins(4, 0, 6, 0)
         h.setSpacing(8)
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 1000)
-        self.bar.setTextVisible(False)
-        self.bar.setProperty('inline', True)
+        self.bar = Sweep()
         self.pct = QLabel()
         self.pct.setProperty('muted', True)
-        self.pct.setMinimumWidth(34)
+        self.pct.setProperty('mono', True)
+        self.pct.setMinimumWidth(38)
         self.pct.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         h.addWidget(self.bar, 1, Qt.AlignmentFlag.AlignVCenter)
         h.addWidget(self.pct)
 
-    def set(self, fraction: float, shown: bool):
-        self.bar.setValue(int(1000 * fraction))
-        self.bar.setVisible(shown)
+    def set(self, fraction: float, shown: bool, live: bool = False):
+        self.bar.set(fraction if shown else None, live)
         self.pct.setText(f'{100 * fraction:.0f} %' if shown else '')
 
 
@@ -248,7 +246,8 @@ class JobsDock(QWidget):
             self.tree.setColumnHidden(self.NODE, False)
         it.setToolTip(self.STATUS, job.summary())
         self.tree.itemWidget(it, self.PROGRESS).set(job.progress, st in (RUNNING, WAITING) or
-                                                      (st in FINAL and st != 'done' and job.progress > 0))
+                                                      (st in FINAL and st != 'done' and job.progress > 0),
+                                                      live=st == RUNNING)
         self._times(it, job)
         if st in FINAL:
             self.tree.itemWidget(it, self.ACTIONS).finished(st == 'failed')
@@ -618,7 +617,7 @@ class MainWindow(QMainWindow):
         side = QWidget()
         side.setObjectName('side')
         side.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        side.setFixedWidth(212)
+        side.setFixedWidth(216)
         sv = QVBoxLayout(side)
         sv.setContentsMargins(0, 4, 0, 0)
         sv.setSpacing(0)
@@ -701,9 +700,11 @@ class MainWindow(QMainWindow):
             if group:
                 hd = QListWidgetItem(group.upper())
                 hd.setFlags(Qt.ItemFlag.NoItemFlags)
-                hd.setFont(sans(11, 600))
+                f = mono(11, 600)
+                f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 110)
+                hd.setFont(f)
                 hd.setSizeHint(QSize(0, 30))
-                hd.setForeground(QBrush(THEME.color('muted')))
+                hd.setForeground(QBrush(THEME.color('off')))
                 self.nav.addItem(hd)
             elif self.nav.count():
                 sp = QListWidgetItem('')
@@ -800,9 +801,13 @@ class MainWindow(QMainWindow):
         if on:
             from .assistant_dock import place
             place(self)                                  # docked when there is room beside the pages, else floating
+        was = self.assistant_dock.isVisible()
         self.assistant_dock.setVisible(on)
         if on:
             self.assistant_dock.raise_()
+            if not was:                                  # the panel slides in from the right edge
+                from . import motion
+                QTimer.singleShot(0, lambda: motion.slide_in(self.assistant_panel, dx=48, ms=motion.BASE + 20))
             self.assistant_panel.refresh_state()
             if focus:
                 self.assistant_panel.composer.setFocus()

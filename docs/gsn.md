@@ -15,7 +15,7 @@ its Solution red, the red propagates to the top goal, and a CI gate can fail the
 
 | where | what |
 |---|---|
-| Reports ▸ *Safety case (GSN)* | the argument drawn in GSN shapes, each node coloured by its status as verified now; click a node for its text, status, why and evidence (result, claim, pinned SHA-256, when bound); *New from the template*, *Verify now*, *Re-bind* (undoable: *Undo* puts the previous evidence back), *Export HTML…* / *Export SVG…* |
+| Reports ▸ *Safety case (GSN)* | the argument drawn in GSN shapes, each node marked by its status as verified now, in a word and a colour (met blue, evidence changed amber, not met orange, undeveloped grey); *Verify now* draws it in level by level; click a node for its text, status, why and evidence (result, claim, pinned SHA-256, when bound); *New from the template*, *Verify now*, *Re-bind* (undoable: *Undo* puts the previous evidence back), *Export HTML…* / *Export SVG…* |
 | `falcon gsn new --project P [--template sotif\|iso26262\|blank] [--bind] [--force]` | start from a template; `--bind` pins every result it points at |
 | `falcon gsn show --project P [--json]` | the tree with each node's status and why |
 | `falcon gsn bind --project P NODE [--kind K --ref REF] [--measure M --bound B --conf C --limit L --data REF \| --claim JSON] [--unbind]` | bind or re-bind (keeping the claim when none is given) |

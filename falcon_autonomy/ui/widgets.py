@@ -27,6 +27,9 @@ def label(text='', *, muted=False, small=False, title=False, mono=False, h=False
         if v:
             lb.setProperty(k, True)
     lb.setWordWrap(wrap)
+    if h and not small:                              # a sub-heading: small capitals, like a section's name
+        from .theme import caps
+        caps(lb)
     if sel:
         lb.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     return lb
@@ -195,8 +198,8 @@ def set_enabled(w: QWidget, ok: bool, why: str = '', tip: str = ''):
 
 
 class Section(QFrame):
-    """A titled card of a page: a heading, an optional note (one line, the rest behind *more*), then content. A
-    section inside another is drawn as a divided block of its card, not a card of its own."""
+    """A titled block of a page: a hairline above, its name in small capitals, an optional note (one line, the rest
+    behind *more*), then content. A section inside another is divided from it by a fainter line."""
 
     def __init__(self, title: str, note: str = '', parent=None):
         super().__init__(parent)
@@ -204,9 +207,12 @@ class Section(QFrame):
         self.setObjectName('section')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 13, 16, 15)
+        v.setContentsMargins(2, 10, 2, 14)
         v.setSpacing(8)
-        v.addWidget(label(title, title=True))
+        from .theme import caps
+        self.heading = label(title)
+        self.heading.setProperty('sect', True)
+        v.addWidget(caps(self.heading))
         self.note = None
         if note:
             self.note = Note(note)
@@ -224,12 +230,12 @@ class Section(QFrame):
 
 
 class Meter(QWidget):
-    """A thin usage bar (used / total): accent while there is room, amber past 80 %, red past 95 %."""
+    """A thin usage bar (used / total): ink while there is room, amber past 80 %, orange past 95 %."""
 
     def __init__(self, width: int = 0, parent=None):
         super().__init__(parent)
         self.frac = 0.0
-        self.setFixedHeight(6)
+        self.setFixedHeight(5)
         if width:
             self.setFixedWidth(width)
 
@@ -243,12 +249,13 @@ class Meter(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
         r = QRectF(self.rect()).adjusted(0, 1, 0, -1)
-        p.setBrush(QColor(THEME.tok['raised'] if THEME.name == 'dark' else THEME.tok['hair']))
-        p.drawRoundedRect(r, 2, 2)
+        p.setBrush(QColor(THEME.tok['soft']))
+        p.drawRoundedRect(r, 1, 1)
         if self.frac > 0:
-            c = STATUS['critical'] if self.frac > 0.95 else STATUS['warning'] if self.frac > 0.8 else THEME.tok['accent']
+            c = THEME.status('critical') if self.frac > 0.95 else THEME.status('warning') if self.frac > 0.8 \
+                else THEME.tok['ink2']
             p.setBrush(QColor(c))
-            p.drawRoundedRect(QRectF(r.left(), r.top(), max(r.height(), r.width() * self.frac), r.height()), 2, 2)
+            p.drawRoundedRect(QRectF(r.left(), r.top(), max(r.height(), r.width() * self.frac), r.height()), 1, 1)
 
 
 class Stat(QFrame):
@@ -260,10 +267,12 @@ class Stat(QFrame):
         self.setObjectName('kpi')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 12, 16, 13)
-        v.setSpacing(3)
+        v.setContentsMargins(14, 6, 14, 7)
+        v.setSpacing(2)
+        from .theme import caps
         self.caption = label(caption.upper())
         self.caption.setProperty('cap', True)
+        caps(self.caption)
         v.addWidget(self.caption)
         row = QHBoxLayout()
         row.setSpacing(5)

@@ -32,12 +32,17 @@ its simulator — an adapter tested on a fake, not yet on a real 0.10 server ([b
   and Settings and Help, each with its count beside it (worlds, rigs, your scenarios, recorded runs, models). Ctrl+0
   goes Home, Ctrl+1 … Ctrl+9 to the next nine pages; the rest by the command palette.
 - **Page header**: every page opens with its title, what it is for, and its next-step chips (the assistant's
-  suggestions for that page). Its sections are cards; numbers are in a monospaced face, right-aligned in tables; one
-  blue button per area is the main action; green, amber and red mean a state (ready, a warning, a failure) and
-  nothing else.
-- **Motion**: a page crossfades in, the navigator's selection slides to it, a page's cards fade in the first time it
-  opens, a status dot pulses while something is under way, a button eases into its hover colour — each 120–260 ms,
-  and none delays a click. Settings ▸ Appearance ▸ Motion ▸ **Reduce motion** turns them all off.
+  suggestions for that page). Its sections are divided by hairlines and named in small capitals; numbers are in a
+  monospaced face, right-aligned in tables. Amber marks the one main action of an area and anything that needs you;
+  blue means met, finished or healthy and orange failed or not met — each beside its word, never colour alone.
+- **Motion** (only where something is live or new): a page crossfades in, the navigator's selection slides to it, a
+  page's sections fade in the first time it opens, a status dot pulses while something is under way, a running job's
+  progress line carries a sweeping band, a new failing case eases in with a brief amber wash, the Rare cases chart
+  draws its line in as evaluations arrive and the failure map fills cell by cell, Verify now draws the safety case in
+  level by level and rings the selected node, the Assistant panel slides in, Settings raises a bar at its foot while
+  changes are not applied (Discard or Apply; changed fields wear an amber edge), and a button eases into its hover
+  colour — transitions 120–400 ms, the draw-in and the wash up to 1.2 s, and none delays a click. Settings ▸
+  Appearance ▸ Motion ▸ **Reduce motion** turns them all off.
 - **Jobs and Log** (bottom): every long action — queued, waiting (and why), running with its progress and ETA,
   finished — and what every job and the app said. The panel stays out of the way until a job starts, and opens
   then; the **Jobs** badge in the status bar (or Ctrl+J) shows or hides it, and says how many jobs run and wait. The ✕

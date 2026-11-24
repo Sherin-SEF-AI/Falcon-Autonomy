@@ -1,7 +1,9 @@
-"""Motion: short animations that say where something went or what is alive — a page crossfade, the navigator's
-selection sliding to the new page, a page's cards fading in the first time it opens, a pulsing dot while something
-runs, a button's colour easing on hover. Each is 120–260 ms and never delays input: the new page is live while the old
-one fades over it.
+"""Motion: short animations that say where something went, what is alive or what is new — a page crossfade, the
+navigator's selection sliding to the new page, a page's sections fading in the first time it opens, a pulsing dot while
+something runs, a sweep along a running job's progress line, a new result row easing in with a brief amber wash, a
+chart's line drawing in as results arrive, a heat map's cells filling one after another, a panel sliding in, a bar
+rising when there are changes to apply, and a button's colour easing on hover. Each transition is 120–400 ms (the
+draw-in and the row wash up to 1.2 s) and never delays input.
 
 Off with Settings ▸ Appearance ▸ Reduce motion, or FALCON_REDUCE_MOTION=1 (the test suite sets it). Nothing here
 puts an opacity effect on a widget holding an OpenGL view (a graphics effect on a QOpenGLWidget's parent breaks its
@@ -15,6 +17,7 @@ from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QLabel, QPushButton, QWidget
 
 FAST, BASE, SLOW = 120, 200, 260
+DRAW, WASH = 700, 1200
 _enabled = os.environ.get('FALCON_REDUCE_MOTION', '').lower() not in ('1', 'true', 'yes')
 
 
@@ -203,3 +206,141 @@ def install(app):
     if _hover is None:
         _hover = HoverEase(app)
     return _hover
+
+
+class Driver(QObject):
+    """A 0 → 1 clock for a widget that animates its own painting (a line drawing in, cells filling): start() runs it
+    and calls the widget's update() each frame; value is 1 at once when motion is off."""
+
+    def __init__(self, widget: QWidget, ms: int = DRAW, curve=QEasingCurve.Type.OutCubic):
+        super().__init__(widget)
+        self.w = widget
+        self.value = 1.0
+        self.anim = QVariantAnimation(self)
+        self.anim.setDuration(ms)
+        self.anim.setStartValue(0.0)
+        self.anim.setEndValue(1.0)
+        self.anim.setEasingCurve(curve)
+        self.anim.valueChanged.connect(self._tick)
+
+    def start(self):
+        if not _enabled or not self.w.isVisible():
+            self.value = 1.0
+            self.w.update()
+            return
+        self.anim.stop()
+        self.value = 0.0
+        self.anim.start()
+
+    def running(self) -> bool:
+        return self.anim.state() == QVariantAnimation.State.Running
+
+    def _tick(self, v):
+        self.value = float(v)
+        self.w.update()
+
+
+class Sweep(QWidget):
+    """A job's progress as a 3 px line: the done share in amber and, while it runs, a lighter band sweeping along the
+    done part (the work is alive even between updates). set(None) hides it."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.frac = 0.0
+        self.live = False
+        self.t = 0.0
+        self.setFixedHeight(3)
+        self.anim = QVariantAnimation(self)
+        self.anim.setStartValue(0.0)
+        self.anim.setEndValue(1.0)
+        self.anim.setDuration(1600)
+        self.anim.setLoopCount(-1)
+        self.anim.valueChanged.connect(self._tick)
+        self.hide()
+
+    def set(self, frac, live: bool = True):
+        if frac is None:
+            self.anim.stop()
+            self.hide()
+            return
+        self.frac = min(max(float(frac), 0.0), 1.0)
+        self.live = bool(live)
+        self.show()
+        if self.live and _enabled:
+            if self.anim.state() != QVariantAnimation.State.Running:
+                self.anim.start()
+        else:
+            self.anim.stop()
+            self.t = 0.0
+        self.update()
+
+    def _tick(self, v):
+        self.t = float(v)
+        self.update()
+
+    def paintEvent(self, _ev):                                  # noqa: N802
+        from PyQt6.QtGui import QLinearGradient
+        from .theme import THEME
+        p = QPainter(self)
+        r = QRectF(self.rect())
+        p.fillRect(r, QColor(THEME.tok['soft']))
+        done = QRectF(r.left(), r.top(), r.width() * self.frac, r.height())
+        p.fillRect(done, QColor(THEME.tok['accent']))
+        if self.live and self.t > 0 and done.width() > 8:
+            band = max(40.0, done.width() * 0.25)
+            x = done.left() - band + (done.width() + band) * self.t
+            g = QLinearGradient(x, 0, x + band, 0)
+            hi = QColor(THEME.tok['accent_hover'])
+            clear = QColor(hi)
+            clear.setAlphaF(0.0)
+            g.setColorAt(0.0, clear)
+            g.setColorAt(0.5, hi)
+            g.setColorAt(1.0, clear)
+            p.setClipRect(done)
+            p.fillRect(QRectF(x, r.top(), band, r.height()), g)
+
+
+def flash_item(item, columns: int, ms: int = WASH):
+    """A new row of a tree eases in: an amber wash on its background that fades to nothing (a fresh result)."""
+    if not _enabled or item is None:
+        return None
+    from PyQt6.QtGui import QBrush
+    from .theme import THEME
+    tree = item.treeWidget()
+    if tree is None:
+        return None
+    base = QColor(THEME.tok['accent_soft'])
+    a = QVariantAnimation(tree)
+    a.setDuration(ms)
+    a.setStartValue(1.0)
+    a.setEndValue(0.0)
+    a.setEasingCurve(QEasingCurve.Type.InQuad)
+
+    def tick(v):
+        try:
+            c = QColor(base)
+            c.setAlphaF(float(v))
+            for k in range(columns):
+                item.setBackground(k, QBrush(c) if v > 0.01 else QBrush())
+        except RuntimeError:                                    # the row was cleared under the animation
+            a.stop()
+    a.valueChanged.connect(tick)
+    a.finished.connect(lambda: tick(0.0))
+    a.start(QVariantAnimation.DeletionPolicy.DeleteWhenStopped)
+    return a
+
+
+def slide_in(w: QWidget, dx: int = 0, dy: int = 0, ms: int = BASE):
+    """Move a widget into its place from (dx, dy) away (a panel or a bar arriving); call after it is laid out and
+    shown. Skipped when motion is off or for a widget holding an OpenGL view."""
+    if not _enabled or _has_gl(w) or not w.isVisible():
+        return None
+    from PyQt6.QtCore import QPoint
+    end = w.pos()
+    a = QPropertyAnimation(w, b'pos', w)
+    a.setDuration(ms)
+    a.setStartValue(end + QPoint(dx, dy))
+    a.setEndValue(end)
+    a.setEasingCurve(QEasingCurve.Type.OutCubic)
+    a.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+    return a

@@ -10,10 +10,12 @@ the [roadmap](docs/roadmap.md). The app shows only pages that do what they say.
 
 ## What works (2.3.0)
 
-- **The app shell** (PyQt6): a lab-console look — a top bar with the project, the command search (Ctrl+K) and the
-  server, a page navigator with counts, one header for every page, sections as cards, monospaced numbers and colour
-  only for state — Jobs and Log docks, undo and redo for every project edit, dark and light themes, short animations
-  (off with Reduce motion), a status bar with the CARLA server, the GPU and memory.
+- **The app shell** (PyQt6): a test-bench look — a top bar with the project, the command search (Ctrl+K) and the
+  server, a page navigator with counts, one header for every page, sections divided by hairlines and named in small
+  capitals, monospaced numbers, amber only for the main action and for what needs you, blue for met and orange for
+  failed (each with its word) — Jobs and Log docks, undo and redo for every project edit, dark and light themes, short
+  animations where something is live or new (off with Reduce motion), a status bar with the CARLA server, the GPU and
+  memory.
 - **The project file**: JSON with a [published schema](falcon_autonomy/schemas/project.schema.json), a format
   version and migrations ([format reference](docs/project-format.md)). Large data lives in a workspace folder beside
   it, indexed by a local SQLite catalogue.

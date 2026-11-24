@@ -321,23 +321,23 @@ def test_the_reports_tab_offscreen(qapp, tmp_path):
     doc = _doc(CP)
     G.save(ws, doc)
     tab.reload()
-    assert 'top goals G1 grey' in tab.state.text() and set(tab.items) == {n['id'] for n in doc['nodes']}
+    assert 'top goals G1 undeveloped' in tab.state.text() and set(tab.items) == {n['id'] for n in doc['nodes']}
     d = G.load(ws)
     G.bind(ws, d, 'Sn1', 'ci', 'ci:aeb@latest', CP)
     G.bind(ws, d, 'Sn2', 'suite', 'suites/smoke', CP)
     G.save(ws, d)
     tab.verify_now()
-    assert 'top goals G1 green' in tab.state.text()
+    assert 'top goals G1 met' in tab.state.text()
     _suite(ws, 'smoke', [True] * 40 + [False])                 # the suite changed: Sn2 amber
     tab.reload()
-    assert 'G1 amber' in tab.state.text()
+    assert 'G1 evidence changed' in tab.state.text()
     tab.select('Sn2')
-    assert tab.rebind_btn.isEnabled() and tab.info.vals['Status'].text() == 'amber'
+    assert tab.rebind_btn.isEnabled() and tab.info.vals['Status'].text() == 'evidence changed'
     old = G.node(G.load(ws), 'Sn2')['evidence']['sha256']
     tab.rebind()                                                 # pins the new result: 1 of 41, upper > 0.1: red
-    assert G.node(G.load(ws), 'Sn2')['evidence']['sha256'] != old and 'G1 red' in tab.state.text()
+    assert G.node(G.load(ws), 'Sn2')['evidence']['sha256'] != old and 'G1 not met' in tab.state.text()
     tab.undo.undo()                                              # the previous evidence is back
-    assert G.node(G.load(ws), 'Sn2')['evidence']['sha256'] == old and 'G1 amber' in tab.state.text()
+    assert G.node(G.load(ws), 'Sn2')['evidence']['sha256'] == old and 'G1 evidence changed' in tab.state.text()
     out = tab.export_to(str(tmp_path / 'x.svg'))
     assert open(out).read().startswith('<svg')
     tab.grab()

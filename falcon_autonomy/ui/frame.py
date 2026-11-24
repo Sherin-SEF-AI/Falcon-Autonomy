@@ -30,11 +30,11 @@ class TopBar(QWidget):
         self.win = win
         self.setObjectName('topBar')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setFixedHeight(46)
+        self.setFixedHeight(48)
         h = QHBoxLayout(self)
         h.setContentsMargins(14, 0, 12, 0)
         h.setSpacing(10)
-        self.logo = motion.Dot(THEME.tok['accent'], 10)
+        self.logo = motion.Dot(THEME.tok['accent'], 8)
         h.addWidget(self.logo)
         brand = QLabel('FALCON')
         brand.setObjectName('brand')
@@ -57,7 +57,7 @@ class TopBar(QWidget):
         self.search.setObjectName('searchBox')
         self.search.setIcon(icons.icon('search', 14, THEME.tok['muted']))
         self.search.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.search.setText('  Search pages, runs and commands…')
+        self.search.setText('  Search pages, runs and commands      Ctrl K')
         self.search.setToolTip('The command palette (Ctrl+K): every page and action by name')
         self.search.setMinimumWidth(220)
         self.search.setMaximumWidth(460)
@@ -70,6 +70,7 @@ class TopBar(QWidget):
         h.addWidget(self.server)
         self.assistant = QPushButton('Assistant')
         self.assistant.setIcon(icons.icon('sparkle', 14, THEME.tok['accent_hi']))
+        self.assistant.setProperty('role', 'ghost')
         self.assistant.setToolTip('Show or hide the Assistant panel (Ctrl+Shift+A)')
         self.assistant.clicked.connect(lambda: win.show_assistant(not win.assistant_dock.isVisible(), focus=True))
         h.addWidget(self.assistant)
@@ -109,7 +110,7 @@ class _Chip(QFrame):
         self.text.setObjectName('chipText')
         h.addWidget(self.dot)
         h.addWidget(self.text)
-        self.setFixedHeight(28)
+        self.setFixedHeight(26)
 
     def mouseReleaseEvent(self, ev):                            # noqa: N802
         if ev.button() == Qt.MouseButton.LeftButton:
@@ -117,7 +118,7 @@ class _Chip(QFrame):
 
 
 class _NavDelegate(QStyledItemDelegate):
-    """A navigator row: its icon (accent when selected), its name, and its count on the right in mono."""
+    """A navigator row: its icon (ink when selected), its name, and its count on the right in mono."""
 
     def paint(self, p: QPainter, opt: QStyleOptionViewItem, index):
         sel = bool(opt.state & QStyle.StateFlag.State_Selected)
@@ -127,7 +128,7 @@ class _NavDelegate(QStyledItemDelegate):
             return
         o = QStyleOptionViewItem(opt)
         self.initStyleOption(o, index)
-        o.icon = icons.icon(name, 16, THEME.tok['accent_hi'] if sel else THEME.tok['muted'])
+        o.icon = icons.icon(name, 16, THEME.tok['ink'] if sel else THEME.tok['off'])
         o.state &= ~QStyle.StateFlag.State_HasFocus
         if sel:
             o.font.setWeight(600)
@@ -137,7 +138,7 @@ class _NavDelegate(QStyledItemDelegate):
         if n not in (None, ''):
             p.save()
             p.setFont(mono(11))
-            p.setPen(QColor(THEME.tok['ink2'] if sel else THEME.tok['muted']))
+            p.setPen(QColor(THEME.tok['ink2'] if sel else THEME.tok['off']))
             p.drawText(opt.rect.adjusted(0, 0, -12, 0), int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
                        str(n))
             p.restore()
@@ -195,11 +196,11 @@ class NavList(QListWidget):
             p = QPainter(self.viewport())
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(THEME.tok['accent_soft']))
+            p.setBrush(QColor(THEME.tok['nav_sel']))
             r = self.pill.adjusted(0, 1, 0, -1)
-            p.drawRoundedRect(r, 6, 6)
+            p.drawRoundedRect(r, 4, 4)
             p.setBrush(QColor(THEME.tok['accent']))
-            p.drawRoundedRect(QRectF(r.left(), r.top() + 7, 3, r.height() - 14), 1.5, 1.5)
+            p.drawRect(QRectF(r.left(), r.top() + 8, 2, r.height() - 16))
             p.end()
         super().paintEvent(ev)
 
@@ -213,8 +214,8 @@ class PageHeader(QWidget):
         self.setObjectName('pageHeader')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         v = QVBoxLayout(self)
-        v.setContentsMargins(24, 16, 24, 10)
-        v.setSpacing(3)
+        v.setContentsMargins(24, 14, 24, 10)
+        v.setSpacing(2)
         self.title = QLabel()
         self.title.setObjectName('pageTitle')
         v.addWidget(self.title)

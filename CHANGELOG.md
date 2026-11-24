@@ -4,6 +4,20 @@
 
 ### 4.0
 
+- **A new look: the test bench** (`ui/theme.py`, `ui/frame.py`, `ui/widgets.py`, `ui/motion.py`, `ui/applybar.py`;
+  designed first as option A of three directions). Warm graphite with hairlines in place of boxed cards, section
+  names in small capitals, IBM Plex Mono for numbers, captions and table headers, 4 px corners. Amber
+  (`#E8B04A`) is the main action and what needs you; status is blue for met, finished or healthy and orange for
+  failed or not met (they also differ in lightness, and every mark carries its word); a paper light theme with the
+  same roles. Rare cases' chart is one measure on one axis now — the worst criticality so far as a step line, each
+  evaluation a dot (orange at or over the threshold), the threshold dashed and labelled, hover reads a dot — and the
+  failure map is an amber count ramp (text dark on the bright steps). The safety case marks nodes by word as well as
+  colour (met, evidence changed, not met, undeveloped). Motion only where something is live or new: a sweep along
+  running jobs' progress lines and the running search, a new failing case's amber wash, the chart drawing in, the map
+  filling cell by cell, the safety case drawing in level by level with a slow ring on the selected node, the Assistant
+  panel sliding in, and Settings' apply bar (N changes not applied · Discard · Apply; changed fields edged in amber).
+  All of it off with Reduce motion. Replay keeps one amber button (Replay with the changes).
+
 - **Two CARLA backends** (`sim/backends.py`, `sim/server.py`, `sim/service.py`, `workers/compat.py`,
   `resources/carla/blueprints-carla-ue5.json`, `ui/settings_backend.py`, Settings ▸ Simulator, `falcon backend
   list|check|probe`; docs/backends.md): CARLA 0.9.16 (UE 4.26) stays the default and changes nothing — its server
