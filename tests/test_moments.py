@@ -39,7 +39,7 @@ def write_run(ws, name, ego_x, actors=(), dur=8.0, weather=None, extra=None, set
     frames, rows = [], []
     for k, t in enumerate(ts):
         v = (ex(t + 1e-3) - ex(t - 1e-3)) / 2e-3
-        f = {'step': k, 'sim_t': t, 'ego': {'x': ex(t), 'y': 0.0, 'yaw': 0.0}, 'speed_mps': v}
+        f = {'step': k, 'sim_t': t, 'ego': {'x': ex(t), 'y': 0.0, 'yaw': 0.0}, 'speed_mps': v, 'files': {}, 'frame': k}
         if lights:
             f['traffic_light'] = lights(t, ex(t))
         frames.append(f)
@@ -170,7 +170,7 @@ def test_oncoming_low_ttc_collision_and_near_miss(tmp_path):
 def test_faults_mrm_and_a_red_light(tmp_path):
     ws = str(tmp_path)
     d = write_run(ws, 'fault', 8.0, extra={
-        'faults_applied': {'cam_front': {'planned': [{'kind': 'blackout', 'onset_s': 2.0, 'duration_s': 1.0}],
+        'faults_applied': {'cam_front': {'planned': [{'kind': 'blackout', 'onset_s': 2.0, 'until_s': 3.0}],
                                          'frames': 20}},
         'mrm': {'onset_s': 2.0, 'passed': True, 'measured': {'standstill_s': 6.0, 'max_decel_mps2': 2.5}}})
     f = one(d, 'sensor_fault')

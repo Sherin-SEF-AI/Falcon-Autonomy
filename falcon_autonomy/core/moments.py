@@ -28,7 +28,7 @@ therefore short (CUT_GAP_MAX_M, LEAD_RANGE_M) and the limit is stated in the man
 Moment types (TYPES) and what each needs — every threshold is a named constant below with where it comes from:
 
     cut_in, cut_out            a same-direction vehicle entering / leaving the corridor ahead from / to the side
-    hard_brake_ego             the ego's deceleration at or over HARD_BRAKE_MPS2 (the actor ahead named when there is one)
+    hard_brake_ego             the ego's deceleration at or over HARD_BRAKE_MPS2 (the actor ahead named, if any)
     hard_brake_lead            the same for a vehicle ahead in the corridor
     close_pass                 an actor alongside (the boxes overlap along the heading) closer than CLOSE_PASS_M
     overtake                   the ego passing a moving same-direction vehicle, or being passed (numbers.by)
@@ -265,10 +265,11 @@ def _given_moments(run: dict, span_s: float) -> list:
                 yield from faults(x, sensor)
     seen = set()
     for sensor, f in faults(run.get('faults_applied')):
-        t0 = next((float(f[k]) for k in ('onset_s', 'start_s', 't_s', 'at_s') if isinstance(f.get(k), (int, float))),
-                  0.0)
-        dur = next((float(f[k]) for k in ('duration_s', 'for_s') if isinstance(f.get(k), (int, float))), None)
-        t1 = min(span_s, t0 + dur) if dur is not None else span_s
+        # core.faults: a timed fault acts in [onset_s, until_s) (a freeze in [from_s, to_s)); else the whole run
+        num = lambda *ks: next((float(f[k]) for k in ks if isinstance(f.get(k), (int, float))), None)   # noqa: E731
+        t0 = num('onset_s', 'from_s', 'start_s') or 0.0
+        end, dur = num('until_s', 'to_s'), num('duration_s')
+        t1 = min(span_s, end) if end is not None else (min(span_s, t0 + dur) if dur is not None else span_s)
         what = str(f.get('kind') or f.get('type') or f.get('fault') or 'fault')
         key = (sensor, what, round(t0, 2))
         if key in seen or t0 > span_s:
@@ -312,7 +313,7 @@ def scene_from_run(run_dir: str, xodr: str | None = None) -> Scene:
     if tr.map.has_lanes or tr.given:
         try:
             sig = R.signals(tr)
-        except Exception as e:                    # noqa: BLE001 (a map that cannot be read: the map moments are left out)
+        except Exception as e:                    # noqa: BLE001 (a map that cannot be read: its moments are left out)
             sig = {}
             sc.notes.append(f'map signals not computed ({type(e).__name__}): lane, junction and light moments left out')
         for k in ('on_lane', 'in_junction', 'on_breaker', 'tl_red', 'tl_distance_m', 'ped_on_crossing'):
@@ -447,7 +448,8 @@ def extract(sc: Scene) -> list:
 
     def add(typ, i0, i1, ts, cls=None, aid=None, **kw):
         m = {'type': typ, 't0': round(float(ts[i0]), 3), 't1': round(float(ts[i1]), 3),
-             'actors': [cls] if cls else [], 'actor_ids': [aid] if aid is not None else [], 'side': kw.pop('side', None),
+             'actors': [cls] if cls else [], 'actor_ids': [aid] if aid is not None else [],
+             'side': kw.pop('side', None),
              'min_ttc_s': _fin(kw.pop('min_ttc', None)), 'gap_m': _fin(kw.pop('gap', None), 2),
              'rel_speed_kmh': _fin(kw.pop('rel_kmh', None), 1), 'ego_speed_kmh': _fin(kw.pop('ego_kmh', None), 1),
              'decel_mps2': _fin(kw.pop('decel', None), 2), 'numbers': {k: v for k, v in kw.items() if v is not None}}
@@ -929,7 +931,8 @@ def _rx(p):
 
 _S = r'[\s-]+'
 TYPE_PHRASES = [
-    ('cut_out', _rx(rf'cut(?:s|ting)?{_S}out|cut[\s-]?out|(?:pulls?|moves?|swerves?){_S}out{_S}of{_S}(?:the{_S}|our{_S}|my{_S})?(?:lane|way)')),
+    ('cut_out', _rx(rf'cut(?:s|ting)?{_S}out|cut[\s-]?out|(?:pulls?|moves?|swerves?){_S}out{_S}of{_S}'
+                    rf'(?:the{_S}|our{_S}|my{_S})?(?:lane|way)')),
     ('close_pass', _rx(rf'close{_S}pass(?:es|ing)?|pass(?:es|ing|ed)?{_S}(?:too{_S}|very{_S})?close(?:ly)?|'
                        rf'(?:squeez(?:es|ing|e)|brush(?:es|ing)?|scrap(?:es|ing|e)){_S}(?:past|by)')),
     ('oncoming_in_lane', _rx(rf'on[\s-]?coming|head[\s-]?on')),
@@ -937,11 +940,13 @@ TYPE_PHRASES = [
                                 rf'{_S}(?:a{_S}|the{_S})?red(?:{_S}(?:lights?|signals?))?|red{_S}(?:light|signal)'
                                 rf'(?:{_S}(?:violations?|jump(?:ing)?))?|signal{_S}jump(?:ing)?')),
     ('low_ttc', _rx(rf'low{_S}(?:ttc|time{_S}to{_S}collision)')),
-    ('high_decel_needed', _rx(rf'(?:high|large){_S}(?:required{_S})?(?:drac|decel(?:eration)?(?:{_S}(?:needed|required))?)|'
+    ('high_decel_needed', _rx(rf'(?:high|large){_S}(?:required{_S})?(?:drac|decel(?:eration)?'
+                              rf'(?:{_S}(?:needed|required))?)|'
                               rf'drac|required{_S}decel(?:eration)?')),
     ('near_miss', _rx(rf'near[\s-]?miss(?:es)?|close{_S}calls?|narrow(?:ly)?{_S}(?:miss(?:es|ed)?|escapes?)')),
     ('lane_departure', _rx(rf'lane{_S}departures?|(?:leav(?:es|ing|e)|left|departs?|drift(?:s|ing)?{_S}out{_S}of|'
-                           rf'r[ua]ns?{_S}off|goes{_S}off){_S}(?:the{_S}|its{_S}|our{_S})?(?:lane|road)|off[\s-]?road')),
+                           rf'r[ua]ns?{_S}off|goes{_S}off){_S}(?:the{_S}|its{_S}|our{_S})?(?:lane|road)|'
+                           rf'off[\s-]?road')),
     ('sensor_fault', _rx(rf'(?:sensor|camera|lidar|radar|gnss|gps|imu){_S}(?:faults?|failures?|drop[\s-]?outs?|'
                          rf'blackouts?)|faults?(?:{_S}(?:active|injected|injection))?|calibration{_S}drift')),
     ('mrm', _rx(rf'mrm|minimal{_S}risk(?:{_S}(?:manoeuvres?|maneuvers?|condition))?|safe{_S}stop|'
@@ -965,7 +970,8 @@ SOURCE_PHRASES = [('log', _rx(rf'(?:imported{_S})?logs?|real{_S}(?:drives?|logs?
                   ('run', _rx(r'simulat(?:ion|ed)(?:\s+runs?)?|sim(?:\s+runs?)?'))]
 _NUM = re.compile(
     r'(?:(?P<field>ttc|time[\s-]+to[\s-]+collision|gap|distance|headway|ego[\s-]+speed|relative[\s-]+speed|'
-    r'closing[\s-]+speed|rel[\s-]+speed|speed|decel(?:eration)?|braking|severity|duration|fog|rain)\s*(?:is|of|was)?\s*)?'
+    r'closing[\s-]+speed|rel[\s-]+speed|speed|decel(?:eration)?|braking|severity|duration|fog|rain)'
+    r'\s*(?:is|of|was)?\s*)?'
     r'(?P<op>under|below|less[\s-]+than|slower[\s-]+than|shorter[\s-]+than|<=|<|within|at[\s-]+most|up[\s-]+to|over|'
     r'above|more[\s-]+than|greater[\s-]+than|faster[\s-]+than|longer[\s-]+than|>=|>|at[\s-]+least|=)\s*'
     r'(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>km/?h|kmph|kph|m/s(?:\^?2|²)|m/s|seconds?|secs?|s|metres?|meters?|m)?(?![\w/])',
@@ -1428,7 +1434,8 @@ def drive_set_edit(doc: dict, workspace: str, name: str, hits: list):
 def describe(m: dict) -> str:
     who = '+'.join(m['actors']) or '—'
     ttc = f'{m["min_ttc_s"]:.2f} s' if m.get('min_ttc_s') is not None else '—'
-    return (f'{m["id"]:12} {m["type"]:19} {who:14} {(m.get("side") or "—"):5} TTC {ttc:7} sev {m.get("severity") or 0:.2f}'
+    return (f'{m["id"]:12} {m["type"]:19} {who:14} {(m.get("side") or "—"):5} TTC {ttc:7} '
+            f'sev {m.get("severity") or 0:.2f}'
             f'  {m["t0"]:7.2f}–{m["t1"]:<7.2f} {"(private) " if m.get("private") else ""}{m.get("rel")}')
 
 

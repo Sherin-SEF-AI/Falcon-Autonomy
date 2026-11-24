@@ -18,7 +18,7 @@ from ...core.jobs import FINAL, JobSpec
 from ...core.project import Edit
 from .. import icons, tasks
 from ..theme import STATUS, THEME
-from ..widgets import KeyValues, Page, Section, button, label, scroll, set_enabled
+from ..widgets import KeyValues, Page, Section, button, label, optional_tab, scroll, set_enabled
 from .home import StatusPanel
 
 
@@ -186,6 +186,7 @@ class LoopPage(Page):
         self.tabs.addTab(self._loop_tab(), 'Loop')
         self.status = StatusPanel(win)
         self.tabs.addTab(self.status, 'Status')
+        self.campaign = optional_tab(self.tabs, 'ui.campaign_tab', 'CampaignTab', 'Overnight campaign', self)   # 4.1
         win.bridge.finished.connect(self._job_finished)
         self.refresh()
 

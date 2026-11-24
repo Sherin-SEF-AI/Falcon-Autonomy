@@ -2,8 +2,8 @@
 Falcon's own commands). docs/campaign.md is the manual.
 
 A campaign is a layer on top of what exists — the research autopilot (core.autoresearch: ablations with a power
-analysis), failure modes (core.failclusters), root cause (core.rootcause), moments (core.moments), failure rate,
-search, sweep and falsification — not a second autopilot: it decides WHICH of those studies to run next within a
+analysis), failure modes (core.failclusters), root cause (core.rootcause), moments (core.moments), failure rate and
+rare-case search — not a second autopilot: it decides WHICH of those studies to run next within a
 budget, runs each as the command the pages and the CLI already run, reads its result, and writes down every decision.
 
     new(workspace, goal, budget, kinds, …) -> record     a draft with its plan and costs (nothing runs)
@@ -38,7 +38,7 @@ utilisation. Estimates are the median duration of finished jobs of the same kind
 Planning. Deterministic (planner 'playbook'): candidates() builds, from the workspace only, a fixed playbook of
 hypotheses, each with the study that would test it — failure modes, the goal's conditions as moments, the root
 cause of the newest evaluations, the ablations core.autoresearch.suggestions offers (ranked up when their
-conditions are the goal's), a failure-rate study of a project scenario the goal names — ordered by a prior that is
+conditions are the goal's), a failure-rate study and a rare-case search of a project scenario the goal names — ordered by a prior that is
 a stated heuristic (PRIORS). With an assistant provider (planner 'assistant') the model is shown the candidates
 (public facts only) and returns their order; it cannot add a study: anything else it asks for becomes a "needs you"
 item. An unreadable reply falls back to the playbook's order, and the log says so.
@@ -84,13 +84,10 @@ KINDS = {
                  'typical_s': 3600.0, 'history': ('failrate',)},
     'search': {'about': 'a rare-case search over a scenario\'s parameters (falcon search)', 'gpu': True,
                'typical_s': 2400.0, 'history': ('search', 'study')},
-    'sweep': {'about': 'a parameter sweep of a scenario (falcon sweep)', 'gpu': True, 'typical_s': 2400.0,
-              'history': ('sweep', 'study')},
-    'falsify': {'about': 'a search for a run violating a requirement (falcon falsify run)', 'gpu': True,
-                'typical_s': 2400.0, 'history': ('falsify',)},
-    'evaluate': {'about': 'a model evaluated on a dataset (falcon evaluate)', 'gpu': True, 'typical_s': 900.0,
-                 'history': ('evaluate', 'evaluation')},
 }
+# Not kinds (yet): sweep, falsify and evaluate. The playbook has no rule that could plan one from a goal alone (a
+# sweep needs its grid, a falsification its requirement, an evaluation its model and dataset), and a kind that can be
+# ticked but never planned would promise what a campaign cannot do.
 DEFAULT_KINDS = ('clusters', 'moments', 'rootcause', 'ablation')
 # never done unattended, whatever was approved: queued as "needs you"
 OUTSIDE = {'cloud': 'any cloud spend needs its own priced approval (falcon cloud)',
@@ -100,7 +97,7 @@ OUTSIDE = {'cloud': 'any cloud spend needs its own priced approval (falcon cloud
            'settings': 'settings are the user\'s', 'push': 'nothing is pushed anywhere'}
 # the playbook's order (heuristic): what is cheap and descriptive first, then the controlled comparison, then the
 # long simulator studies
-PRIORS = {'clusters': 0.9, 'moments': 0.8, 'rootcause': 0.7, 'ablation': 0.5, 'failrate': 0.4}
+PRIORS = {'clusters': 0.9, 'moments': 0.8, 'rootcause': 0.7, 'ablation': 0.5, 'failrate': 0.4, 'search': 0.35}
 GOAL_BONUS = 0.15              # an ablation whose conditions are the goal's ranks this much higher (heuristic)
 DEFAULT_BUDGET = {'gpu_hours': 2.0, 'deadline': None, 'max_jobs': 8, 'disk_gb': 20.0}
 MIN_FREE_GB = 1.0              # no job starts with less free space than this on the workspace's disk (heuristic)
@@ -256,7 +253,8 @@ class Accountant:
             s = xs[len(xs) // 2] if len(xs) % 2 else 0.5 * (xs[len(xs) // 2 - 1] + xs[len(xs) // 2])
             src = f'measured: the median of {len(xs)} finished job(s) of this kind in the job history'
         elif given_s:
-            s, src = float(given_s), 'the study\'s own estimate (its drives at this machine\'s measured or typical rate)'
+            s = float(given_s)
+            src = 'the study\'s own estimate (its drives at this machine\'s measured or typical rate)'
         else:
             s, src = float(k['typical_s']), 'typical, not measured: no finished job of this kind in the job history yet'
         return {'seconds': round(s, 1), 'gpu_seconds': round(s, 1) if k['gpu'] else 0.0, 'source': src, 'n': len(xs)}
@@ -417,6 +415,11 @@ def candidates(workspace: str, rec: dict, project=None) -> list:
                             'title': f'Failure rate of {sid}',
                             'argv': ['failrate', 'run', proj_path, '--scenario', sid, '--name', f'{cid}-fr-{sid}'],
                             'why': 'the goal names this manoeuvre and the project has its scenario'})
+                out.append({'key': f'search:{sid}', 'kind': 'search', 'prior': PRIORS['search'],
+                            'hypothesis': f'There are parameter values of the scenario {sid} that make it fail.',
+                            'title': f'Rare-case search of {sid}',
+                            'argv': ['search', proj_path, '--scenario', sid, '--name', f'{cid}-search-{sid}'],
+                            'why': 'the goal names this manoeuvre: the search looks for its failing cases'})
     out.sort(key=lambda c: (-c['prior'], c['key']))
     return out
 
@@ -450,11 +453,12 @@ def _model_order(cands: list, rec: dict, complete) -> tuple:
     return ranked, extra, f'ordered by the assistant ({len(order)} key(s) in its reply)'
 
 
-def plan(workspace: str, rec: dict, project=None, complete=None, at_approval: bool = True) -> list:
+def plan(workspace: str, rec: dict, project=None, complete=None, at_approval: bool = True, write: bool = True) -> list:
     """Add the candidates not yet in the record: allowed kinds become planned studies (with estimates), the others
-    "needs you" items. Returns the log rows it wrote."""
+    "needs you" items. Returns the log rows it wrote (write False: none is written — a preview)."""
     acc = accountant(workspace, rec)
     rows = []
+    log = globals()['log'] if write else (lambda *a, **k: {})
     cands = candidates(workspace, rec, project)
     known = {s['key'] for s in rec['studies']} | {n.get('key') for n in rec['needs_you']}
     cands = [c for c in cands if c['key'] not in known]
@@ -486,7 +490,8 @@ def plan(workspace: str, rec: dict, project=None, complete=None, at_approval: bo
     for c in cands:
         if c['kind'] not in rec['scope']['kinds']:
             rec['needs_you'].append({'key': c['key'], 'what': f'{c["title"]} ({c["kind"]})',
-                                     'why': f'the study kind {c["kind"]!r} is not in the approved scope', 'time': utc()})
+                                     'why': f'the study kind {c["kind"]!r} is not in the approved scope',
+                                     'time': utc()})
             rows.append(log(workspace, rec['id'], 'needs_you', f'{c["kind"]} is not an approved study kind',
                             what=c['title']))
             continue
@@ -494,7 +499,8 @@ def plan(workspace: str, rec: dict, project=None, complete=None, at_approval: bo
         if c['est']['gpu_seconds'] / 3600.0 > float(b['gpu_hours']):
             rec['needs_you'].append({'key': c['key'], 'what': c['title'],
                                      'why': f'its estimate ({c["est"]["gpu_seconds"] / 3600.0:.2f} GPU-hours) alone '
-                                            f'exceeds the campaign\'s {float(b["gpu_hours"]):g} GPU-hours', 'time': utc()})
+                                            f'exceeds the campaign\'s {float(b["gpu_hours"]):g} GPU-hours',
+                                     'time': utc()})
             rows.append(log(workspace, rec['id'], 'needs_you', 'the estimate alone exceeds the GPU budget',
                             what=c['title']))
             continue
@@ -515,8 +521,10 @@ def plan(workspace: str, rec: dict, project=None, complete=None, at_approval: bo
 
 
 def new(workspace: str, goal: str, budget: dict | None = None, kinds=DEFAULT_KINDS, cid: str = '',
-        project_path: str = '', project=None, planner: str = 'playbook', complete=None, now: float | None = None) -> dict:
-    """A draft campaign with its plan (nothing runs): the record, written."""
+        project_path: str = '', project=None, planner: str = 'playbook', complete=None, now: float | None = None,
+        write: bool = True) -> dict:
+    """A draft campaign with its plan (nothing runs): the record, written (write False: only returned — what an
+    approval card previews before anything exists)."""
     goal = str(goal or '').strip()
     if len(goal) < 8:
         raise CampaignError('state the goal in a sentence (what should be found out)')
@@ -550,9 +558,11 @@ def new(workspace: str, goal: str, budget: dict | None = None, kinds=DEFAULT_KIN
            'scope': {'kinds': kinds, 'project': os.path.abspath(project_path) if project_path else ''},
            'approval': None, 'scope_sha256': None, 'hypotheses': [], 'studies': [], 'needs_you': [],
            'started': None, 'finished': None, 'stopped': None, 'answer': None}
-    log(workspace, cid, 'new', 'the campaign was drafted', goal=goal, budget=b, kinds=kinds, planner=planner)
-    plan(workspace, rec, project, complete, at_approval=True)
-    save(workspace, rec)
+    if write:
+        log(workspace, cid, 'new', 'the campaign was drafted', goal=goal, budget=b, kinds=kinds, planner=planner)
+    plan(workspace, rec, project, complete, at_approval=True, write=write)
+    if write:
+        save(workspace, rec)
     return rec
 
 
@@ -565,7 +575,8 @@ def approval_text(rec: dict) -> str:
     """The whole scope and budget, as the one approval shows it."""
     b = rec['budget']
     lines = [f'Campaign {rec["id"]}: {rec["goal"]}', '',
-             f'Budget: {b["gpu_hours"]:g} GPU-hours · deadline {b["deadline"] or "none"} · at most {b["max_jobs"]} jobs '
+             f'Budget: {b["gpu_hours"]:g} GPU-hours · deadline {b["deadline"] or "none"} · '
+             f'at most {b["max_jobs"]} jobs '
              f'· {b["disk_gb"]:g} GB of disk',
              f'Allowed study kinds: {", ".join(rec["scope"]["kinds"])}',
              f'Planner: {rec["planner"]}' + (' (the model orders the candidates below; it cannot add a study)'
@@ -616,6 +627,17 @@ def detached_command(workspace: str, cid: str) -> str:
     cmd = ['systemd-run', '--user', '--collect', f'--unit=falcon-campaign-{cid}', '-p', 'MemoryMax=6G', sys.executable,
            '-m', 'falcon_autonomy', 'campaign', 'run', workspace, cid]
     return ' '.join(shlex.quote(c) for c in cmd)
+
+
+def runner_job_spec(workspace: str, cid: str, fake_carla: str = ''):
+    """The runner as a job of the app's queue (`falcon campaign run WORKSPACE ID`): the Jobs dock shows it, and
+    cancelling it there ends the runner, which cancels its own job first (run()'s last step). It takes no lock and no
+    GPU itself: its studies' commands take what they need."""
+    from .jobs import JobSpec
+    argv = [sys.executable, '-m', 'falcon_autonomy', 'campaign', 'run', workspace, cid]
+    if fake_carla:
+        argv += ['--fake-carla', fake_carla]
+    return JobSpec('campaign', f'Campaign {cid}', argv, memory_gb=1.0, resumable=True, meta={'campaign_runner': cid})
 
 
 # ================================================================================================ results
@@ -704,7 +726,7 @@ def triage(workspace: str, rec: dict, study: dict, project=None) -> dict:
             'numbers': {'verdict': v, 'diff': c0.get('diff'), 'ci': [c0.get('ci_low'), c0.get('ci_high')],
                         'p_adjusted': c0.get('p_adjusted'), 'runs': r.get('runs')},
             'links': [R.study_dir(workspace, sid)]}
-    # failrate, search, sweep, falsify, evaluate: the study's own folder, read generically
+    # failrate, search: the study's own folder, read generically
     name = next((study['argv'][i + 1] for i, a in enumerate(study.get('argv') or ()) if a in ('--name', '--study')), '')
     d = os.path.join(workspace, 'studies', name) if name else ''
     doc = next((x for x in (_read(os.path.join(d, f)) for f in ('failrate.json', 'estimate.json', 'study.json'))
@@ -746,7 +768,7 @@ class QueueIO:
     def submit(self, cid: str, study: dict) -> dict:
         from .jobs import JobSpec
         argv = list(study['argv'])
-        if self.fake_carla and study['kind'] in ('failrate', 'search', 'sweep', 'falsify'):
+        if self.fake_carla and study['kind'] in ('failrate', 'search'):
             argv += ['--fake-carla', self.fake_carla]
         spec = JobSpec(f'campaign-{study["kind"]}', f'Campaign {cid} · {study["id"]} {study["title"]}',
                        [sys.executable, '-m', 'falcon_autonomy'] + argv, memory_gb=1.5,
@@ -783,7 +805,8 @@ class QueueIO:
 
 def _check_runnable(workspace: str, rec: dict):
     if not rec.get('approval'):
-        raise CampaignError(f'campaign {rec["id"]} is not approved: `falcon campaign approve` shows its scope and budget')
+        raise CampaignError(f'campaign {rec["id"]} is not approved: `falcon campaign approve` shows its scope and '
+                            'budget')
     from . import autoresearch as R
     if rec['approval'].get('how') not in R.APPROVED_HOW:
         raise CampaignError('the stored approval is not one the user gave')
@@ -1140,7 +1163,8 @@ def brief_markdown(workspace: str, rec: dict) -> str:
     L += ['', '## Budget', '', '| | Used | Given |', '|---|---|---|',
           f'| GPU-hours | {u["gpu_hours"]:.2f} | {float(b["gpu_hours"]):g} |',
           f'| Jobs | {u["jobs"]} | {b["max_jobs"]} |', f'| Disk (GB) | {u["disk_gb"]:.2f} | {float(b["disk_gb"]):g} |',
-          f'| Time | {rec.get("started") or "—"} → {rec.get("finished") or "—"} | until {b["deadline"] or "no deadline"} |',
+          f'| Time | {rec.get("started") or "—"} → {rec.get("finished") or "—"} | '
+          f'until {b["deadline"] or "no deadline"} |',
           '', f'Stopped because: {(rec.get("stopped") or {}).get("why") or "it is still running"}.',
           '', '## Needs you', '']
     L += [f'- {n["what"]} — {n["why"]}' for n in rec['needs_you']] or ['- Nothing.']

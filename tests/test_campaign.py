@@ -413,6 +413,32 @@ def test_what_is_outside_the_scope_is_not_done_but_listed(ws):
     assert io.submitted == ['s1'] and st['studies'][1]['state'] == 'refused'
 
 
+def test_simulator_studies_are_planned_only_for_a_project_scenario_the_goal_names(ws, tmp_path):
+    class Proj:
+        doc = {'scenarios': [{'id': 'autorickshaw_cut_in'}, {'id': 'lead_brake'}]}
+    pp = str(tmp_path / 'p.falcon.json')
+    goal = 'Find how often the auto cuts in dangerously at night'
+    rec = C.new(ws, goal, cid='sim', kinds=['moments', 'failrate', 'search'], project_path=pp, project=Proj(), now=T0,
+                budget={'gpu_hours': 3.0})
+    assert [(s['kind'], s['est']['gpu_seconds']) for s in rec['studies']] == [('moments', 0.0), ('failrate', 3600.0),
+                                                                              ('search', 2400.0)]
+    assert rec['studies'][1]['argv'] == ['failrate', 'run', pp, '--scenario', 'autorickshaw_cut_in', '--name',
+                                         'sim-fr-autorickshaw_cut_in']
+    assert rec['studies'][2]['argv'][:4] == ['search', pp, '--scenario', 'autorickshaw_cut_in']
+    assert set(C.KINDS) == {'clusters', 'moments', 'rootcause', 'ablation', 'failrate', 'search'}
+    C.approve(ws, 'sim', {'how': 'approved'})
+    io = FakeIO(ws, durations={'failrate': 3600.0, 'search': 2400.0})
+    st = C.run(ws, 'sim', io, sleep=io.advance, poll_s=600.0)
+    assert io.submitted == ['s1', 's2', 's3'] and st['used']['gpu_hours'] == pytest.approx(1.6667, abs=1e-3)
+    assert 'its folder holds the result' in st['studies'][1]['result'] and st['answer']['confidence'] == 'none'
+    # without a project, or a scenario the project does not have, nothing of the kind is planned
+    rec = C.new(ws, goal, cid='noproj', kinds=['failrate', 'search'], now=T0)
+    assert rec['studies'] == []
+    rec = C.new(ws, 'Find why a cow standing in the lane is hit', cid='other', kinds=['failrate'], project_path=pp,
+                project=Proj(), now=T0)
+    assert rec['studies'] == []
+
+
 def test_a_fake_provider_orders_the_candidates_and_cannot_add_anything(ws):
     seen = []
 

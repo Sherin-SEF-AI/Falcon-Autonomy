@@ -220,6 +220,7 @@ class ReplayPage(Page):
         self.recon = ReconPanel(self)          # the log's own appearance, reconstructed (core.recon)
         lv.addWidget(self.recon)
         self.nearmiss = optional_tab(lv, 'ui.dashcam_ingest', 'NearMissTab', 'Near-misses', self)   # 4.0, in progress
+        self.moments = optional_tab(lv, 'ui.moments_tab', 'MomentsTab', 'Moments', self)   # 4.1
         lv.addStretch(1)
         split.addWidget(scroll(left))
 
