@@ -17,7 +17,9 @@ A CI config (CONFIG_SCHEMA, falcon.ci/1; YAML or JSON; CONFIG_JSON_SCHEMA is its
             number, judged with its interval), regressions (none against the baseline by a paired bootstrap),
             rule_violations (a budget per km, core.rules), latency (percentile budgets: a ROS 2 stack's control wait,
             a policy's decision time, a model's inference time), max_missed_deadlines (ROS 2 stacks), gsn (the
-            workspace's living safety case, core.gsn: no top goal red once this run is bound in)
+            workspace's living safety case, core.gsn: no top goal red once this run is bound in), release (a
+            release gate between two versions that `falcon gate run` made before this run, core.releasegate: fails
+            when its verdict is one of fail_on, default worse; an error when there is no finished gate at path)
   flaky     retries, allowed only when the mode is not deterministic, and recorded
 
 How an interval judges a limit (`rule`): "demonstrate" passes only when the whole 95 % interval is on the good side
@@ -153,7 +155,10 @@ CONFIG_JSON_SCHEMA = {
             'max_missed_deadlines': {'type': 'integer', 'minimum': 0},
             'gsn': {'type': 'object', 'additionalProperties': False, 'properties': {
                 'path': _PATHS, 'goals': {'type': 'array', 'items': {'type': 'string'}},
-                'fail_on': {'enum': ['red', 'amber']}}}}},
+                'fail_on': {'enum': ['red', 'amber']}}},
+            'release': {'type': 'object', 'required': ['path'], 'additionalProperties': False, 'properties': {
+                'path': _PATHS, 'fail_on': {'type': 'array', 'minItems': 1, 'items': {
+                    'enum': ['better', 'worse', 'equivalent', 'non_inferior', 'cant_tell']}}}}}},
         'flaky': {'type': 'object', 'additionalProperties': False, 'properties': {
             'retries': {'type': 'integer', 'minimum': 0, 'maximum': 5}, 'count_as': {'enum': ['pass', 'fail']}}},
         'outputs': {'type': 'object', 'additionalProperties': False, 'properties': {
@@ -1165,6 +1170,11 @@ def evaluate_gates(cfg: dict, subj: dict, summary: dict, comparison: dict | None
         lim = int(gates['max_missed_deadlines'])
         out.append(_gate('missed_deadlines', f'missed control deadlines ≤ {lim}', 'passed' if n <= lim else 'failed',
                          f'{n} over {len(recs)} runs', f'≤ {lim}', 'total'))
+    if gates.get('release'):                       # a release gate's verdict (core.releasegate; the path is relative
+        from .releasegate import ci_gate          # to the config's folder)
+        g = ci_gate(gates['release'], cfg.get('config_dir') or '')
+        out.append(_gate('release', 'release gate (B against A)', g['status'], g['measured'], g['limit'],
+                         'core.releasegate (anytime-valid)', g['detail']))
     return out
 
 
