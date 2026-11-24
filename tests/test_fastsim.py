@@ -511,3 +511,34 @@ def test_the_commands(ws):
     argv = F.prescreen_argv(p.path, 'cut_in', 'search-cut_in', 4, 4, 0.5, 0, 'world-town10', 'rig-default',
                             fake_carla=FAKE)
     assert argv[:3] == ['prescreen', 'run', p.path] and '--on' not in argv and argv[-2:] == ['--fake-carla', FAKE]
+
+
+def test_the_assistant_tools(ws):
+    from falcon_autonomy.assistant import tools as TOOLS
+    from falcon_autonomy.assistant.tool_api import REGISTRY, call
+    assert REGISTRY['research_prescreen_run'].tier == 'act' and REGISTRY['research_prescreen_show'].tier == 'read'
+    c = TOOLS.context(ws['project'].path, FAKE)
+    try:
+        r = call(c, 'research_prescreen_show', {})
+        assert 'lead_brake' in r['covered'] and 'junction' in r['refused']['unprotected_turn']
+        r = call(c, 'research_prescreen_show', {'scenario': 'lead_brake', 'failures': 2})    # the study made above
+        assert r['study'] == 'search-lead_brake' and r['trust'] == 'trusted' and r['carla_runs'] == 11
+        assert r['pairs'] == 11 and r['spearman'] > 0.6 and r['false_negative']['dropped_controls'] >= 0
+        assert len(r['failures']) <= 2 and all(f['run'].startswith('studies/search-lead_brake/runs/')
+                                               for f in r['failures'])
+        assert 'screen, never a result' in r['limits'] and len(json.dumps(r)) < 4000
+        assert 'no two-speed result' in call(c, 'research_prescreen_show', {'scenario': 'stray_cattle'})['error']
+        assert 'cannot run unprotected_turn' in call(c, 'research_prescreen_run',
+                                                     {'scenario': 'unprotected_turn'})['error']
+        t = REGISTRY['research_prescreen_run']
+        args = {'scenario': 'stray_cattle', 'budget': 4, 'batch': 4, 'screen': 300, 'count': 'all'}
+        assert 'prescreen run' in t.preview(c, **args) and '--screen 300' in t.preview(c, **args)
+        assert '4 ×' in t.estimate(c, **args)['what'] and 'cheap candidates' in t.estimate(c, **args)['what']
+        r = call(c, 'research_prescreen_run', args)
+        assert r['study'] == 'search-stray_cattle' and 'prescreen run' in r['command']
+        w = call(c, 'jobs_wait', {'jobs': [r['job']], 'timeout_s': 200})
+        assert w['finished'] == [r['job']] and w['jobs'][0]['state'] == 'done', w
+        r = call(c, 'research_prescreen_show', {'scenario': 'stray_cattle'})
+        assert r['carla_runs'] == 4 and r['state'] == 'finished' and r['trust'] == 'not judged yet'
+    finally:
+        c.service.shutdown(grace_s=10.0)

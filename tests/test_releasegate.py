@@ -375,3 +375,41 @@ def test_the_command_on_the_fake_carla(proj):
     assert _cli('show', proj.path, '--name', 'same', '--json').returncode == 0
     r = _cli('plan', '--p-a', '0.1', '--p-b', '0.5', '--trials', '100', '--reps', '200')
     assert r.returncode == 0 and json.loads(r.stdout)['worse'] > 0.8
+
+
+def test_the_assistant_tools(proj):
+    from falcon_autonomy.assistant import tools as TOOLS
+    from falcon_autonomy.assistant.tool_api import REGISTRY, call
+    assert REGISTRY['formal_gate_run'].tier == 'act' and REGISTRY['formal_gate_show'].tier == 'read'
+    c = TOOLS.context(proj.path, FAKE)
+    try:
+        r = call(c, 'formal_gate_show', {})
+        assert [g['name'] for g in r['gates']] == ['same'] and r['gates'][0]['verdict'] == 'cant_tell'
+        r = call(c, 'formal_gate_show', {'name': 'same'})
+        assert r['word'] == 'can\'t tell yet' and r['trials_run'] == 4 and r['versions'] == {'a': 'follower',
+                                                                                              'b': 'follower'}
+        assert r['risk_difference']['lower'] < 0 < r['risk_difference']['upper'] and 'only' in r['scope']
+        assert 'no gate' in call(c, 'formal_gate_show', {'name': 'nope'})['error']
+        assert 'by path' in call(c, 'formal_gate_show', {'name': '../x'})['error']
+        bad = {'name': 'g', 'a': 'follower', 'b': 'model:m', 'scenarios': ['lead_brake']}
+        assert 'both versions must be' in call(c, 'formal_gate_run', bad)['error']
+        assert 'no suite file' in call(c, 'formal_gate_run', dict(bad, b='new-stack.json'))['error']
+        t = REGISTRY['formal_gate_run']
+        args = {'name': 'tool', 'a': 'follower', 'b': 'follower', 'scenarios': ['stalled_vehicle'], 'budget': 2,
+                'batch': 2, 'margin': 0.2}
+        assert 'gate run' in t.preview(c, **args) and '--margin 0.2' in t.preview(c, **args)
+        assert 'at most 2 paired trials (2 run(s) each' in t.estimate(c, **args)['what']
+        r = call(c, 'formal_gate_run', args)
+        assert r['gate'] == 'tool' and 'gate run' in r['command']
+        w = call(c, 'jobs_wait', {'jobs': [r['job']], 'timeout_s': 200})
+        assert w['finished'] == [r['job']] and w['jobs'][0]['state'] == 'done', w
+        r = call(c, 'formal_gate_show', {'name': 'tool'})
+        assert r['state'] == 'finished' and r['trials_run'] == 2 and r['verdict'] == 'cant_tell'
+        # a newly failing row names its pair of runs; a run outside the workspace only by its folder name
+        d = G.Gate(G.gate_dir(proj.workspace, 'planted'), Side('a', lambda t: False), Side('b', lambda t: True),
+                   SCN).run()
+        r = call(c, 'formal_gate_show', {'name': 'planted', 'rows': 3})
+        assert r['verdict'] == 'worse' and len(r['newly_failing']) == 3 and r['newly_failing_total'] == 9
+        assert r['newly_failing'][0]['run_b'] == os.path.basename(d['newly_failing'][0]['b'])
+    finally:
+        c.service.shutdown(grace_s=10.0)
