@@ -342,7 +342,7 @@ class Stack(Worker):
                     act = {k: v for k, v in act.items() if v}
                     if act:
                         rec['faults'] = act
-                if cfg.get('mrm') is not None and director is not None:
+                if (cfg.get('mrm') is not None or cfg.get('record_lane_offset')) and director is not None:
                     rec.update(self.lane_offset(director, ego_doc))
                 data = None
                 if sensors:

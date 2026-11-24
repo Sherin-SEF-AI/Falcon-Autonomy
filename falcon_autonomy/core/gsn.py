@@ -37,6 +37,10 @@ result must show:
                   and the data's files (data.sha256), so a changed model or changed data is amber; roots that
                   disagree are red
     (no claim)    the hash alone
+  A fault tolerance campaign (kind faulttol, core.faulttol: faulttol.json) is claimed by `field`, e.g. path
+  tolerance.<sensor>.<fault>.tolerated >= a required severity; a regulation pack result (kind regpack, core.regpacks:
+  regpack.json) by `verdict` (equals "passed") or by `field` (e.g. score.share >= a limit). Neither is a type-approval
+  or a rating: the claim binds what the simulation pre-check showed.
 
 Where it ran. Binding a failrate or falsify result also records where its runs were made (where_ran): on this machine,
 on the cluster (each node's name and how many runs, the pools, the kinds and every job's global id, from the `node`
@@ -94,7 +98,7 @@ LINKS = ('SupportedBy', 'InContextOf')
 SUPPORTERS = ('Goal', 'Strategy')
 SUPPORTED = ('Goal', 'Strategy', 'Solution', 'AwayGoal')
 CONTEXTS = ('Context', 'Assumption', 'Justification')
-KINDS = ('failrate', 'suite', 'ci', 'falsify', 'rules', 'lineage')
+KINDS = ('failrate', 'suite', 'ci', 'falsify', 'rules', 'lineage', 'faulttol', 'regpack')
 MEASURES = ('failure_rate', 'pass_rate', 'min_robustness', 'falsified_runs', 'violations_per_km', 'verdict', 'field',
             'data_root')
 NO_LIMIT = ('verdict', 'data_root')            # measures that compare no number with a limit
@@ -315,7 +319,8 @@ def latest_ci(workspace: str, name: str) -> str | None:
 
 
 RESULT_FILE = {'failrate': 'failure-rate.json', 'suite': 'results.jsonl', 'ci': 'ci-results.json',
-               'falsify': 'falsify.json', 'rules': 'rules.json'}
+               'falsify': 'falsify.json', 'rules': 'rules.json', 'faulttol': 'faulttol.json',
+               'regpack': 'regpack.json'}
 
 
 def resolve(workspace: str, ev: dict, overrides: dict | None = None) -> tuple:
@@ -866,6 +871,10 @@ def evidence_candidates(workspace: str) -> dict:
     for s in ls('rules'):
         if os.path.isfile(os.path.join(workspace, 'rules', s, 'rules.json')):
             out['rules'].append(f'rules/{s}')
+    for folder, kind, name in (('faulttol', 'faulttol', 'faulttol.json'), ('regpacks', 'regpack', 'regpack.json')):
+        for s in ls(folder):                           # 4.1: fault tolerance campaigns, regulation pack results
+            if os.path.isfile(os.path.join(workspace, folder, s, name)):
+                out[kind].append(f'{folder}/{s}')
     for t in ls('training'):                           # trained models that name their data (core.lineage)
         d = os.path.join(workspace, 'training', t)
         if os.path.isfile(os.path.join(d, 'model.onnx')):
