@@ -148,7 +148,11 @@ or world made from the dashcam footage never leaves this machine: the reason sho
 `falcon failrate run` as a job and
 shows the probability per encounter with its interval, the rate per exposure unit, the effective failures, the runs,
 the reasons for a refusal or a warning, and what plain Monte Carlo would have needed. Each scenario, objective (and
-model), weather searched, rate and judge has its own study, `studies/rate-<scenario>…`.
+model), weather searched, rate and judge has its own study, `studies/rate-<scenario>…`. Since 4.2 an *Estimated on*
+chip says the estimate's fidelity (`core.failrate.fidelity_of`: the file's `fidelity` when it records one, else
+`core.fidelity.combine` over its final runs' `run.json`): a probability measured on the fake simulator shows the tool
+works, not how often a real stack fails. `failure-rate.json` itself does not record it yet (its writer,
+`sim/estimate.py`, is outside this change); the chip reads the runs.
 
 ```sh
 falcon failrate run PROJECT --scenario lead_brake [--name N] [--stage-size 100] [--final 200] [--max-stages 6] \

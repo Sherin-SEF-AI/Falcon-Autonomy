@@ -181,6 +181,9 @@ def test_a_perception_search_scores_resumes_and_rescores(mil):
     out = st.search('random', 2, 2, 0.8)
     rows = st.results()
     assert len(rows) == 2 and len(out['history']) == 2 and out['objective']['kind'] == 'perception'
+    # 4.2: each row and the search's summary say how real its runs were (core.fidelity; the fake here)
+    assert out['fidelity'] == 'fake' and [r['fidelity'] for r in rows] == ['fake', 'fake']
+    assert json.load(open(os.path.join(st.dir, 'search-random.json')))['fidelity'] == 'fake'
     for r in rows:
         assert r['objective_key'] == st.okey and r['objective_kind'] == 'perception'
         assert r['objective'] == r['perception']['value'] and 0.0 <= r['objective'] <= 1.0

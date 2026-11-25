@@ -603,6 +603,18 @@ class Sampler:
         return s
 
 
+def fidelity_of(res: dict | None) -> str:
+    """An estimate's fidelity (core.fidelity): its top-level "fidelity" when it records one, else
+    core.fidelity.combine over its final runs' run.json files (unknown when they do not say). The estimate is a
+    probability for the simulator it ran on — a fake or a kinematic one says nothing of a real stack."""
+    from . import fidelity as FD
+    if not isinstance(res, dict):
+        return 'unknown'
+    if isinstance(res.get('fidelity'), str) and res['fidelity'] in FD.LEVELS:
+        return res['fidelity']
+    return FD.combine(FD.of_run(r['run']) for r in res.get('final_runs') or () if r.get('run'))
+
+
 def run(sampler: Sampler, objective, batch: int = 0) -> dict:
     """Drive a sampler to the end with objective(list of params) -> list of values (or (value, fail) pairs);
     returns result()."""

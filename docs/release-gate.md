@@ -23,6 +23,31 @@ runs as the answer allows.
 | [the safety case](gsn.md) | evidence kind `gate` (`gates/<name>`): claim `{measure: verdict, equals: equivalent}` or a `field` such as `risk.upper < 0.05`; bound by hash like every result |
 | the assistant | `formal_gate_run` (act), `formal_gate_show` (read) ([assistant tools](assistant-tools.md)) |
 
+Since 4.2 the section also shows each version's **fidelity** as a chip (A, B: `core.fidelity`, from its trials'
+runs), a critical callout when the gate refused a verdict or a version's trials mix levels (below), the scope as one
+line ("the verdict holds for the tested scenario distribution only") with the whole sentence behind *Details*, and on
+each newly failing row the pair's fidelity, short mono run ids (a click copies the whole path), and **Compare in
+Replay** — both runs of the pair on the Replay page (its `compare_runs`, when this build's Replay page has it; else
+the button is off and its tooltip says why; *Compare the pair* still shows them on the Data page). A row selected
+makes its B run the window's active run; its context menu has *Send to ▸*. The intro prose is three badges with the
+text behind *Details*.
+
+## Fidelity: no verdict across simulators
+
+Every trial records both sides' level (`a.fidelity`, `b.fidelity` in `trials.jsonl`; a run's `run.json`
+provenance, `unknown` for a run written before 4.2). `gate.json` keeps each version's (`fidelity_by_version`,
+`core.fidelity.combine` over its trials) and the gate's (`fidelity`).
+
+| case | what the gate does |
+|---|---|
+| both versions at one level (both CARLA, both the fake …) | the verdict as usual |
+| the versions at different levels that are not like for like (`core.fidelity.comparable`: a fake or kinematic side against a real one, CARLA against CARLA UE5) | **no verdict**: `verdict: refused`, word "no verdict: different fidelity", `refused` says why, and the gate stops after the batch that showed it instead of spending its budget. `falcon gate show` prints NO VERDICT; with `--gate` it exits 1 whatever `--fail-on` says; CI's release gate is an error; the safety case's claim on the verdict is not met |
+| a version whose own trials mix levels (`mixed`) | the verdict is kept and flagged: `fidelity_note` ("Mixed fidelity: version A's trials mix …"), shown in the critical colour beside a *Mixed fidelity* chip — the pairs pool runs of different fidelity; re-run on one simulator to confirm it |
+| one side does not record its level (`unknown`) | compared, with the reason in `fidelity_note` |
+
+Tested with planted versions (`tests/test_releasegate.py`, `tests/test_ui42_studies.py`) and on the fake CARLA
+(both sides `fake`).
+
 ## Versions
 
 | spelling | the version |
@@ -155,8 +180,8 @@ discordant at all.
 
 | file | holds |
 |---|---|
-| `gate.json` | `falcon.gate/1`: the verdict and its word, `decided_at` and `decided_by`, the trials run and used, the design (scenarios, seed, α, margin, primary), the versions, failures under A and B, the discordant pairs with θ's interval, the risk and value differences with their bounds, `path` (every bound after every trial — the band), `newly_failing` and `newly_passing` (trial, scenario, seed, parameter values, the value under A and B, **the two run folders**), `skipped`, `scope` |
-| `trials.jsonl` | one line per finished pair |
+| `gate.json` | `falcon.gate/1`: the verdict and its word, `decided_at` and `decided_by`, the trials run and used, the design (scenarios, seed, α, margin, primary), the versions, failures under A and B, the discordant pairs with θ's interval, the risk and value differences with their bounds, `path` (every bound after every trial — the band), `newly_failing` and `newly_passing` (trial, scenario, seed, parameter values, the value under A and B, **the two run folders**), `skipped`, `scope`; since 4.2 `fidelity`, `fidelity_by_version`, `refused` and `fidelity_note` |
+| `trials.jsonl` | one line per finished pair (each side with its `fidelity` since 4.2) |
 | `gate.md` | the same as a report section: the verdict, the bounds table over the trials, the newly failing and newly passing scenarios with their run pairs |
 | `runs/a/<key>/`, `runs/b/<key>/` | the stack runs of each side (`stack.json`, `run.json`, `frames.jsonl`, `trajectories.json`): browsable, replayable (`falcon stack replay`) and comparable on the Data page |
 | `studies/gate-<name>-<scenario>/` | for models: the recorded drives both versions scored |

@@ -108,6 +108,11 @@ Two planners:
 - `falcon campaign status WS ID`, `stop`, `brief`, `list`.
 - In the window, *Loop ▸ Overnight campaign*: the goal, the budget fields, the scope checklist, **Preview**,
   **Approve and start**, then the budget meters, the decision log and the brief. The runner is a job in the Jobs dock.
+  Since 4.2 the preview is compact: the scope and budget as key-value badges (GPU-h, until, jobs, disk, kinds,
+  planner, the planned studies with their estimated time and GPU-hours, needs-you), the planned studies as a table
+  (each one's hypothesis and the estimate's source in tooltips) and the approval's whole text — exactly what the one
+  approval shows — behind *Details*; what is never done unattended is one line with its list behind *Details*. The
+  campaign's fidelity is a chip beside its state.
 - A desktop notification is sent when it finishes (the same path as the cloud alerts; never in a headless session).
 
 ## The brief
@@ -121,7 +126,10 @@ One page: the goal; the answer in two sentences and its confidence —
 | low | only an association in the data recorded so far; nothing was tested |
 | none | no study produced evidence for or against |
 
-— then what was tried (study, cost, result), what was ruled out, studies planned but not run and why, the evidence
+— its **fidelity** (4.2: `core.fidelity.combine` over the studies' results, each result recording what it read — a
+search's or failure-rate study's summary, else its rows' runs; the moments matched; a root-cause file; `unknown` when
+the files do not say) — then what was tried (study, cost, fidelity, result), what was ruled out, studies planned but
+not run and why, the evidence
 (paths to the studies' folders and the decision log), budget used against given, the needs-you items and one
 recommended next step chosen by rule.
 

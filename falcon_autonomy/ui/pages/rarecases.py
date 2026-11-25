@@ -5,7 +5,12 @@ objective is the run's criticality, a registered model's perception failure on t
 (core.milsearch: model-in-the-loop), or both; weather fields can be searched beside the scenario's parameters. "Why
 did this fail?" attributes a failing case to its factors by re-runs (core.rootcause) as a job and shows the table.
 Below the search, learned adversarial traffic (ui.adversary_panel, core.adversary): its training, its evaluation and
-the failures it found, as cases with their replay."""
+the failures it found, as cases with their replay.
+
+4.2: the study's fidelity (core.fidelity over its runs) as a chip beside the curve and the failing cases, each case's
+own in its row; a case row selects its run (with its seed and scenario) as the window's active one and has *Send to ▸*.
+The page registers the Send-to target *Rare cases*: a run sent here preselects its scenario, seed, world and rig and
+offers a failure-rate estimate or a search of its variations — nothing starts until one is clicked."""
 from __future__ import annotations
 
 import json
@@ -22,7 +27,9 @@ from ...core import search as S
 from ...core.jobs import FINAL, JobSpec
 from .. import motion
 from ..theme import THEME, heat_color, mono
-from ..widgets import Form, KeyValues, Page, Section, button, label, optional_tab, scroll, set_enabled
+from ..study_bits import Badges, FidelitySlot, link_runs
+from ..widgets import (Details, Form, KeyValues, Page, Section, action_callout, button, fidelity_item, label,
+                       optional_tab, scroll, set_enabled, short_id)
 
 METHODS = (('bayes', 'Bayesian optimisation'),
            ('bayes-pof', 'Bayesian optimisation, probability of failure (maps the region)'), ('cmaes', 'CMA-ES'),
@@ -209,11 +216,23 @@ class RareCasesPage(Page):
         h.addWidget(split)
         left = QWidget()
         lv = QVBoxLayout(left)
-        sec = Section('Search', 'Each evaluation runs the scenario in CARLA with the parameters the method asks for. '
-                                'The objective: the run\'s criticality (1 for a collision), or a model\'s perception '
-                                'failure on the scenario\'s actors (the run is recorded with the rig\'s labels, then '
-                                'the model runs on its frames — under the GPU lock for a GPU model), or both. A search '
-                                'resumes where it stopped, and starts from the sweeps of the same study.')
+        self.from_run = None                         # the callout of a run sent here (ui.context)
+        self.left_v = lv
+        sec = Section('Search')
+        self.intro = Badges()
+        self.intro.set([('Each evaluation', 'one CARLA run', 'the scenario run with the parameters the method asks '
+                         'for'),
+                        ('Objective', 'criticality, perception or both', 'criticality: 1 for a collision; perception: '
+                         'a model\'s failure on the scenario\'s actors'),
+                        ('Resumes', 'where it stopped', 'and starts from the sweeps of the same study')])
+        sec.add(self.intro)
+        sec.add(Details('Each evaluation runs the scenario in CARLA with the parameters the method asks for. The '
+                        'objective: the run\'s criticality (1 for a collision), or a model\'s perception failure on '
+                        'the scenario\'s actors (the run is recorded with the rig\'s labels, then the model runs on '
+                        'its frames — under the GPU lock for a GPU model), or both. A search resumes where it '
+                        'stopped, and starts from the sweeps of the same study. The study\'s fidelity chip says what '
+                        'simulator its runs came from (core.fidelity): a result on the fake simulator shows the tool '
+                        'works, not how a driver behaves.'))
         f = Form()
         self.scenario = QComboBox()
         self.scenario.currentIndexChanged.connect(lambda _: self.load())
@@ -299,13 +318,18 @@ class RareCasesPage(Page):
         split.addWidget(scroll(left))
         right = QWidget()
         rv = QVBoxLayout(right)
-        rv.addWidget(label('Worst criticality found so far', h=True))
+        ch = QHBoxLayout()
+        ch.addWidget(label('Worst criticality found so far', h=True))
+        ch.addStretch(1)
+        self.fid = FidelitySlot('Runs')
+        ch.addWidget(self.fid)
+        rv.addLayout(ch)
         self.curve = Curve()
         rv.addWidget(self.curve)
         rv.addWidget(label('Failing cases, most critical first', h=True))
         self.failures = QTreeWidget()
         self.failures.setHeaderLabels(['#', 'Objective', 'Criticality', 'Perception failure', 'RSS', 'Values',
-                                       'Run'])
+                                       'Run', 'Fidelity'])
         self.failures.setRootIsDecorated(False)
         self.failures.setMinimumHeight(160)
         from ..assistant_dock import add_ask_menu
@@ -313,6 +337,8 @@ class RareCasesPage(Page):
                                                               'run': it.data(0, 256).get('run') or ''})
                      if it.data(0, 256) else None)
         rv.addWidget(self.failures)
+        link_runs(self.failures, win, self._case_run, exclude='rarecases',
+                  actions=lambda it: [('Replay the case', self.replay), ('Browse its run', self.browse)])
         fb = QHBoxLayout()
         fb.addWidget(button('Replay the selected case', self.replay))
         fb.addWidget(button('Export it as OpenSCENARIO…', self.export_case))
@@ -340,7 +366,15 @@ class RareCasesPage(Page):
         self.why_job = None
         self.why_view = None
         self._why_dir = ''
+        self._levels: dict = {}                      # run -> fidelity level (read once per run)
         win.bridge.finished.connect(self.finished)
+        try:
+            from ..context import register_target
+            register_target(win, 'rarecases', 'Rare cases', self.take_run,
+                            'Preselect the run\'s scenario and seed for a failure-rate estimate or a search of its '
+                            'variations (nothing starts until you choose)')
+        except (ImportError, AttributeError):
+            pass
         self.refresh()
 
     def scenarios(self):
@@ -447,8 +481,12 @@ class RareCasesPage(Page):
                  'criticality': r.get('criticality', r.get('objective')),
                  'perception': (r.get('perception') or {}).get('value'), 'kind': r.get('objective_kind',
                                                                                          'criticality'),
-                 'rss': r.get('rss')}
+                 'rss': r.get('rss'), 'fidelity': self._level(r)}
                 for k, r in enumerate(rows)]
+        from ...core import fidelity as FD
+        lv = FD.combine(h['fidelity'] for h in hist)
+        self.fid.set(lv, 'Mixed fidelity: this study pools runs of different simulators; compare with care.'
+                     if lv == 'mixed' else '', 'critical' if lv == 'mixed' else '')
         self.history = hist
         # the counted failures (objective ≥ threshold) first, then the failures the objective does not count (their
         # criticality reached it, their RSS label is not avoidable), each with its label and why
@@ -463,7 +501,10 @@ class RareCasesPage(Page):
                                   if h['criticality'] is not None else '—',
                                   f'{h["perception"]:.3f}' if h['perception'] is not None else '—', tag,
                                   ', '.join(f'{k}={v:.3g}' if isinstance(v, float) else f'{k}={v}'
-                                            for k, v in sorted(h['params'].items())), os.path.basename(h['run'])])
+                                            for k, v in sorted(h['params'].items())),
+                                  short_id(os.path.basename(h['run'])), ''])
+            fidelity_item(it, 7, h['fidelity'])
+            it.setToolTip(6, h['run'])
             it.setToolTip(4, rss.get('reason', 'no RSS label (a run from before RSS labels: re-run the search to '
                                                'label it)'))
             it.setData(0, 256, h)
@@ -510,6 +551,87 @@ class RareCasesPage(Page):
     def selected(self):
         it = self.failures.currentItem()
         return it.data(0, 256) if it is not None else None
+
+    def _level(self, r: dict) -> str:
+        """A results.jsonl row's fidelity (sim.studio.row_fidelity), read from its run.json once per run."""
+        run = r.get('run') or ''
+        if run not in self._levels:
+            from ...sim.studio import row_fidelity
+            self._levels[run] = row_fidelity(r)
+        return self._levels[run]
+
+    def _case_run(self, it):
+        h = it.data(0, 256) if it is not None else None
+        if not h:
+            return ''
+        return {'run': h['run'], 'seed': self.seed.value(), 'scenario': self.scenario.currentData() or ''}
+
+    # ------------------------------------------------------------------ a run sent here (ui.context)
+    def take_run(self, run: str):
+        """The Send-to target: this page, the run's scenario, seed, world and rig chosen, and a callout offering a
+        failure-rate estimate or a search of its variations. Nothing starts here."""
+        if hasattr(self.win, 'go'):
+            self.win.go('rarecases')
+        return self.preselect(run)
+
+    def preselect(self, run: str) -> dict:
+        from ...core import runindex as RI
+        e = RI.summarise(run) or {}
+        sid, seed = e.get('scenario'), e.get('seed')
+        got = []
+        k = self.scenario.findData(sid) if sid else -1
+        if k >= 0:
+            self.scenario.setCurrentIndex(k)
+            got.append(f'scenario {self.scenario.currentText()}')
+        if isinstance(seed, int):
+            self.seed.setValue(int(seed))
+            got.append(f'seed {seed}')
+        for combo, key in ((self.world, 'world'), (self.rig, 'rig')):
+            j = combo.findData(e.get(key)) if e.get(key) else -1
+            if j >= 0:
+                combo.setCurrentIndex(j)
+                got.append(f'{key} {combo.currentText()}')
+        name = short_id(os.path.basename(str(run).rstrip(os.sep)), 12)
+        if k < 0:
+            text = (f'Run {name}: its scenario ({sid or "none recorded"}) is not one of this project\'s, so nothing '
+                    'was preselected.')
+            acts = []
+        else:
+            text = f'From run {name}: ' + ', '.join(got) + '. Nothing runs until you choose.'
+            acts = [('Estimate its failure rate', self._start_rate, 'Failure rate ▸ Estimate, with this scenario '
+                                                                    'and seed (a job)'),
+                    ('Search its variations', self.start, 'Search, with this scenario and seed (a job)')]
+        if self.from_run is not None:
+            self.from_run.hide()
+            self.from_run.deleteLater()
+        self.from_run = self._run_callout(text, 'accent' if k >= 0 else 'warning', acts)
+        self.left_v.insertWidget(0, self.from_run)
+        self.from_run.show()
+        if hasattr(self.win, 'context'):
+            self.win.context.set(run=run, **({'seed': seed} if isinstance(seed, int) else {}),
+                                 **({'scenario': sid} if sid else {}))
+        return {'scenario': sid if k >= 0 else None, 'seed': seed, 'run': run}
+
+    @staticmethod
+    def _run_callout(text, tone, acts):
+        """The callout of a run sent here: its sentence, then its actions on a row under it (the column is narrow;
+        ui.widgets.action_callout puts them beside the text)."""
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(4)
+        c = action_callout(text, tone)
+        v.addWidget(c)
+        box.label = c.label
+        box.buttons = [button(a[0], a[1], tip=a[2] if len(a) > 2 else '') for a in acts]
+        if box.buttons:
+            from ..widgets import flow_row
+            v.addWidget(flow_row(*box.buttons))
+        return box
+
+    def _start_rate(self):
+        if hasattr(self, 'rates'):
+            self.rates.start()
 
     def replay(self):
         from ...core.drive import run_dir_name, scenario_config

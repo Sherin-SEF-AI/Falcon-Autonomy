@@ -86,7 +86,14 @@ Plain words are turned into a filter by a fixed vocabulary — the scenario chec
 - **where and when**: from the left / right, at night / dusk / low sun / daytime, in rain / wet / cloudy / clear /
   fog, at a junction, at a speed breaker, in a log / simulation;
 - **numbers**: "TTC under 1.5 s", "gap below 10 m", "above 40 km/h", "faster than 10 m/s", "deceleration at least
-  4 m/s2" — a number with a unit and no name is taken by its unit (km/h: the ego's speed; s: TTC; m: gap).
+  4 m/s2" — a number with a unit and no name is taken by its unit (km/h: the ego's speed; s: TTC; m: gap); a bound
+  written after the number also reads ("TTC 1.2 s or less", "gap 5 m or more");
+- **time to collision** (or TTC) is always a TTC condition, never the collision type (fixed in 4.2: "time to
+  collision under 1.5 s" used to add *type collision*): with a bound it is that bound, with a bare number after it
+  ("time to collision 1.5 s") at most that number, and with no number at all *min TTC < 1.5 s* (the low-TTC
+  threshold) — the understood line says which;
+- **fidelity** (4.2): "in CARLA", "on the fake simulator", "UE5", "neural render", "kinematic screen" require runs of
+  that level (`core.fidelity`); `--fidelity LEVEL` and the section's *Fidelity* box do the same.
 
 The filter is always shown back (`understood as: …`) and every word outside the vocabulary is listed
 (`not understood: …`) — never dropped silently. Moment types and numeric constraints are **required** of a hit; the
@@ -106,9 +113,18 @@ falcon moments search my.falcon.json --type cut_in --actor two_wheeler --night -
   ([dashcam](dashcam.md)): the moment's window of recorded tracks, the parametric fit, `scenario.json` (a replay),
   `variations.json` (ranges around the extracted values, for `falcon search`) and `moment.xosc` (OpenSCENARIO 1.2) in
   `<workspace>/moments/scenarios/NAME/`.
-- In the window, **Replay ▸ Moments**: the query box, the understood line, the hits with a severity meter;
-  double-click opens the run on the Data page at that time; *Make a scenario…* and *Drive set…* (the runs of the full
-  matches as one undoable drive set).
+- In the window, **Replay ▸ Moments**: the query box, the *Fidelity* box, the understood line, the hits with a
+  severity meter and their run's fidelity; double-click (or *Open*) opens the run on the Data page at that time;
+  *Open in Replay* shows it on the Replay page when that page can load a run in this build (an imported log loads
+  there; otherwise the note says so); *Make a scenario…* and *Drive set…* (the runs of the full matches as one
+  undoable drive set). Selecting a hit makes its run the window's active run; its context menu has *Send to ▸*.
+- **Send to ▸ Moments** from any run row (4.2): the Replay page opens, the run is indexed if it is not yet (in the
+  background, the same code as `falcon moments index --run`), and its moments are listed in time order;
+  *Show all* goes back to the search.
+
+Every indexed source records its **fidelity** (`runs.fidelity` in the store: a run folder's `run.json` level —
+`unknown` before 4.2 —, `recorded` for an imported log or a near-miss ranking); every hit carries it. A store
+written before 4.2 gains the column when it is opened, filled from the runs' `run.json` (no run is read again).
 
 ## Exposure
 

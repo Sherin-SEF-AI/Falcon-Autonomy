@@ -11,7 +11,10 @@ the page above (its folder is in the list).
 
 Runs on (ui.placement): this machine, the cluster or one of its pools — the drives then run on the cluster's nodes
 (`--on`), the study itself here. A scenario or world made from the dashcam footage never leaves this machine: the
-reason shows under the choice and the study is not queued."""
+reason shows under the choice and the study is not queued.
+
+4.2: the study's fidelity (core.fidelity over its runs) is a chip beside its numbers and each run's in its row; a run
+row selects its run as the window's active one and has *Send to ▸*."""
 from __future__ import annotations
 
 import json
@@ -27,8 +30,9 @@ from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QHBoxLayout, QPlainTextE
 from ..core import stlobjective as SO
 from ..core.jobs import FINAL, JobSpec
 from .placement import PlacementCombo
+from .study_bits import FidelitySlot, link_runs
 from .theme import STATUS, THEME
-from .widgets import Form, KeyValues, button, label
+from .widgets import Form, KeyValues, button, fidelity_item, label
 
 METHODS = (('cmaes', 'CMA-ES'), ('cem', 'Cross-entropy method'), ('bayes', 'Bayesian optimisation'),
            ('adaptive', 'Adaptive sampling'), ('random', 'Random (baseline)'))
@@ -162,11 +166,15 @@ class FalsifyTab(QWidget):
         v.addLayout(b)
         self.kv = KeyValues(('State', 'Best ρ', 'Falsified', 'Near misses', 'Unknown'))
         v.addWidget(self.kv)
+        self.fid = FidelitySlot('Runs')
+        v.addWidget(self.fid)
         self.runs = QTreeWidget()
-        self.runs.setHeaderLabels(['ρ', 'Verdict', 'Decided at (s)', 'Values', 'Run'])
+        self.runs.setHeaderLabels(['ρ', 'Verdict', 'Decided at (s)', 'Values', 'Run', 'Fidelity'])
         self.runs.setRootIsDecorated(False)
         self.runs.setMinimumHeight(140)
         self.runs.currentItemChanged.connect(lambda it, _p: self.show_trace(it))
+        link_runs(self.runs, self.win, lambda it: ((it.data(0, 256) or {}).get('run') or '') if it else '',
+                  exclude='rarecases')
         v.addWidget(self.runs)
         self.trace = Trace()
         v.addWidget(self.trace)
@@ -392,6 +400,12 @@ class FalsifyTab(QWidget):
                                                      if s['missing_signals'] else ''))
         cur = self.runs.currentItem().data(0, 256).get('key') if self.runs.currentItem() is not None else None
         self.runs.clear()
+        from ..core import fidelity as FD
+        from ..sim.studio import row_fidelity
+        levels = {r.get('run'): row_fidelity(r) for r in rows}
+        lv = FD.combine(levels.values())
+        self.fid.set(lv, 'Mixed fidelity: these runs come from simulators of different fidelity.' if lv == 'mixed'
+                     else '', 'critical' if lv == 'mixed' else '')
         ordered = sorted(rows, key=lambda r: (math.isnan(SO.fnum(r['stl'].get('rho'))), SO.fnum(r['stl'].get('rho'))
                                               if not math.isnan(SO.fnum(r['stl'].get('rho'))) else 0.0))
         for r in ordered:
@@ -403,7 +417,8 @@ class FalsifyTab(QWidget):
                                   f'{st["worst_t"]:.2f}', ', '.join(f'{k}={v:.3g}' if isinstance(v, float) else
                                                                     f'{k}={v}' for k, v in sorted(
                                                                         (r.get('values') or {}).items())),
-                                  os.path.basename(r.get('run') or '')])
+                                  os.path.basename(r.get('run') or ''), ''])
+            fidelity_item(it, 5, levels.get(r.get('run'), 'unknown'))
             tone = {'falsified': 'critical', 'near miss': 'warning'}.get(verdict)
             if tone:
                 it.setForeground(1, QColor(STATUS[tone]))

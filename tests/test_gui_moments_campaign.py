@@ -93,7 +93,8 @@ def test_campaign_tab_previews_asks_once_and_shows_the_brief(window, qapp, tmp_p
         cb.setChecked(k == 'moments')
     text = tab.preview()
     assert 'Budget: 0.5 GPU-hours' in text and 'at most 3 jobs' in text and 's1 [moments]' in text
-    assert tab.card.isVisibleTo(tab) and tab.card.toPlainText() == text
+    assert tab.card_details.isVisibleTo(tab) and tab.card.toPlainText() == text   # 4.2: the whole text in Details
+    assert tab.scope_badges.isVisibleTo(tab) and 'GPU-h  0.5' in tab.scope_badges.texts()
     assert not os.path.exists(os.path.join(ws, 'campaigns'))                       # a preview writes nothing
     asked = []
     tab.confirm = lambda t: asked.append(t) or False

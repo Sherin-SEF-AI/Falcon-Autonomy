@@ -130,9 +130,10 @@ def research_prescreen_show(ctx, scenario='', coverage=False, failures=10):
         why = F.unsupported(scn)
         raise ToolError(f'no two-speed result for {scn["id"]} yet' + (f' (and the fast simulator cannot run it: {why})'
                                                                      if why else ': research_prescreen_run'))
-    f = d['fidelity']
+    f = d['gap']
     fn = f['false_negative']
     return {'study': name, 'state': d.get('state'), 'carla_runs': d['spent'], 'budget': d['budget'],
+            'fidelity': d.get('fidelity'), 'screen_fidelity': d.get('screen_fidelity'),
             'screened': d['screened'], 'throughput_per_s': (d.get('throughput') or {}).get('per_s'),
             'threshold': d['threshold'], 'trust': d['trust'],
             'spearman': C.rounded(f['spearman'], 3), 'spearman_controls': C.rounded(f['spearman_controls'], 3),
@@ -144,7 +145,7 @@ def research_prescreen_show(ctx, scenario='', coverage=False, failures=10):
             'failures': [{'value': C.rounded(x['value'], 3), 'cheap': C.rounded(x['low'], 3), 'role': x['role'],
                           'values': {k: C.rounded(v, 3) if isinstance(v, float) else v
                                      for k, v in x['values'].items()},
-                          'run': _rid(ctx, x.get('run'))}
+                          'run': _rid(ctx, x.get('run')), 'fidelity': x.get('fidelity')}
                          for x in (d.get('failures') or [])[:int(failures)]],
             'failures_total': len(d.get('failures') or []), 'limits': d.get('limits')}
 
@@ -242,6 +243,7 @@ def formal_gate_show(ctx, name='', rows=10):
             d = G.read_gate(os.path.join(base, n))
             if d:
                 out.append({'name': n, 'verdict': d['verdict'], 'state': d.get('state'), 'trials': d['trials_used'],
+                            'fidelity': d.get('fidelity'),
                             'a': (d.get('versions') or {}).get('a', {}).get('label'),
                             'b': (d.get('versions') or {}).get('b', {}).get('label')})
         return {'gates': out}
@@ -268,4 +270,6 @@ def formal_gate_show(ctx, name='', rows=10):
             'value_difference': {k: C.rounded(d['value'][k], 4) for k in ('estimate', 'lower', 'upper')},
             'newly_failing': [row(x) for x in d['newly_failing'][:n]], 'newly_failing_total': len(d['newly_failing']),
             'newly_passing': [row(x) for x in d['newly_passing'][:n]], 'newly_passing_total': len(d['newly_passing']),
-            'skipped': len(d.get('skipped') or ()), 'scope': d['scope']}
+            'skipped': len(d.get('skipped') or ()), 'scope': d['scope'],
+            'fidelity': d.get('fidelity'), 'fidelity_by_version': d.get('fidelity_by_version'),
+            'fidelity_note': d.get('fidelity_note') or None}

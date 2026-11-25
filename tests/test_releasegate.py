@@ -363,6 +363,7 @@ def test_the_command_on_the_fake_carla(proj):
     d = G.read_gate(out)
     assert d['verdict'] == 'cant_tell' and d['trials_run'] == 4 and d['discordant']['n'] == 0
     assert d['versions']['a']['label'] == 'follower' and d['failure'] == 'criteria' and d['where'] == 'local'
+    assert d['fidelity_by_version'] == {'a': 'fake', 'b': 'fake'} and d['fidelity'] == 'fake' and not d['refused']
     trials = G.read_trials(out)
     assert [t['scenario'] for t in trials] == ['lead_brake', 'cut_in'] * 2
     for t in trials:
@@ -573,3 +574,53 @@ def test_the_release_gate_section_offscreen(qapp, tmp_path):
     import inspect
     from falcon_autonomy.ui.pages import reports
     assert "optional_tab(v, 'ui.gate_tab', 'GateTab', 'Release gate', self)" in inspect.getsource(reports)
+
+
+# ================================================================================================ fidelity (4.2)
+class LevelSide(Side):
+    """A planted version whose runs record a fidelity level (a callable of the trial)."""
+
+    def __init__(self, tag, fails, level):
+        super().__init__(tag, fails)
+        self.level = level
+
+    def run(self, trials):
+        return [dict(r, fidelity=self.level(t)) for r, t in zip(super().run(trials), trials)]
+
+
+def test_a_gate_refuses_a_verdict_across_fidelity_and_flags_mixed_trials(tmp_path, proj):
+    # A on real CARLA, B on the fake: B "fails more", but that is the simulators' difference — no verdict, and the
+    # gate stops after its first batch instead of spending the budget
+    a = LevelSide('a', lambda t: False, lambda t: 'carla')
+    b = LevelSide('b', lambda t: t['i'] % 2 == 0, lambda t: 'fake')
+    d = _gate(tmp_path / 'r', a, b).run()
+    assert d['verdict'] == 'refused' and d['word'] == 'no verdict: different fidelity' and d['state'] == 'finished'
+    assert d['trials_run'] == 8 and a.asked == list(range(8)) and d['decided_at'] is None
+    assert d['fidelity_by_version'] == {'a': 'carla', 'b': 'fake'} and d['fidelity'] == 'mixed'
+    assert 'CARLA vs Fake simulator' in d['refused'] and 'not the versions' in d['refused']
+    trials = G.read_trials(str(tmp_path / 'r' / 'g'))
+    assert all(t['a']['fidelity'] == 'carla' and t['b']['fidelity'] == 'fake' for t in trials)
+    assert 'NO VERDICT' in G.headline(d) and '**No verdict.**' in open(tmp_path / 'r' / 'g' / 'gate.md').read()
+    assert G.ci_gate({'path': str(tmp_path / 'r' / 'g')})['status'] == 'error'
+    assert G.TONES['refused'] == 'critical' and 'refused' in G.VERDICTS
+    # the same on the command line: show says so, and as a CI gate it fails whatever --fail-on says
+    G.Gate(G.gate_dir(proj.workspace, 'fid'), LevelSide('a', lambda t: False, lambda t: 'carla'),
+           LevelSide('b', lambda t: t['i'] % 2 == 0, lambda t: 'fake'), SCN).run()
+    r = _cli('show', proj.path, '--name', 'fid')
+    assert r.returncode == 0 and 'NO VERDICT' in r.stdout and 'different fidelity' in r.stdout
+    assert _cli('show', proj.path, '--name', 'fid', '--gate', '--fail-on', 'worse').returncode == 1
+    # mixed within each version but like for like in every pair: the verdict stands, flagged
+    lv = lambda t: 'fake' if t['i'] % 2 else 'carla'                     # noqa: E731
+    d = _gate(tmp_path / 'm', LevelSide('a', lambda t: False, lv),
+              LevelSide('b', lambda t: t['values'].get('gap', 99) < 22 or t['i'] % 5 == 0, lv)).run()
+    assert d['verdict'] == 'worse' and d['fidelity_by_version'] == {'a': 'mixed', 'b': 'mixed'}
+    assert d['fidelity_note'].startswith('Mixed fidelity: version A') and 'Mixed fidelity' in G.headline(d)
+    # unknown on one side (a run from before 4.2): compared, with the reason said
+    d = _gate(tmp_path / 'u', LevelSide('a', lambda t: False, lambda t: 'unknown'),
+              LevelSide('b', lambda t: t['i'] % 3 == 0, lambda t: 'carla')).run()
+    assert d['verdict'] == 'worse' and 'does not record its fidelity' in d['fidelity_note'] and not d['refused']
+    # the checker on its own
+    same = [{'a': {'fidelity': 'fake'}, 'b': {'fidelity': 'fake'}}]
+    assert G.fidelity_check(same) == {'a': 'fake', 'b': 'fake', 'gate': 'fake', 'refused': '', 'note': '',
+                                      'tone': ''}
+    assert G.fidelity_check([{'a': {'fidelity': 'carla'}, 'b': {'fidelity': 'carla-ue5'}}])['refused']

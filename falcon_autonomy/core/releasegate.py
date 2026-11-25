@@ -76,6 +76,14 @@ the version's; in physics motion or with traffic it also holds run-to-run noise,
 pair with a side that did not finish is not a trial: it is listed under "skipped" with the reason and not run again
 (which assumes that not finishing is unrelated to the outcome).
 
+FIDELITY (core.fidelity, 4.2). Every run records how real it was (carla, fake …); each trial keeps both sides'
+levels, and gate.json records each version's (`fidelity_by_version`, core.fidelity.combine over its trials) and the
+gate's (`fidelity`). Two versions whose levels are not like for like (core.fidelity.comparable: a fake or kinematic
+side against a real one, CARLA against CARLA UE5) get NO verdict: the gate stops with verdict "refused" and says why
+(`refused`) — the difference it would measure is the simulators', not the versions'. A version whose own trials mix
+levels ("mixed") still gets its verdict, flagged with `fidelity_note`: the pairs pool runs of different fidelity.
+A side that does not record its level (a run from before 4.2: unknown) is compared, with the reason said.
+
 Outputs in <workspace>/gates/<name>/: gate.json (GATE_SCHEMA: the verdict, the bounds after every trial, the trials
 used, the newly failing and newly passing scenarios each with its pair of runs), trials.jsonl (one line per finished
 pair), gate.md (the same as a report section), runs/a|b/<key>/ (stack versions) or drives/ (model versions).
@@ -90,11 +98,15 @@ import time
 
 import numpy as np
 
+from . import fidelity as FD
+
 GATE_SCHEMA = 'falcon.gate/1'
-VERDICTS = ('better', 'worse', 'equivalent', 'non_inferior', 'cant_tell')
+VERDICTS = ('better', 'worse', 'equivalent', 'non_inferior', 'cant_tell', 'refused')
 WORDS = {'better': 'better', 'worse': 'worse', 'equivalent': 'no difference within the margin',
-         'non_inferior': 'not worse within the margin', 'cant_tell': 'can\'t tell yet'}
-TONES = {'better': 'good', 'worse': 'critical', 'equivalent': 'good', 'non_inferior': 'good', 'cant_tell': 'warning'}
+         'non_inferior': 'not worse within the margin', 'cant_tell': 'can\'t tell yet',
+         'refused': 'no verdict: different fidelity'}
+TONES = {'better': 'good', 'worse': 'critical', 'equivalent': 'good', 'non_inferior': 'good', 'cant_tell': 'warning',
+         'refused': 'critical'}
 BET_CAP = 0.5                      # c: the largest bet (recalled tuning; any value below 1 keeps the coverage)
 PRIMARY = ('failure', 'value')
 FAILURE = ('criteria', 'value')
@@ -380,7 +392,7 @@ class StackSide:
             failed = (value >= self.threshold) if self.failure == 'value' else (row.get('passed') is False)
             out.append({'ok': True, 'run': cfg['out'], 'failed': bool(failed), 'value': min(max(value, 0.0), 1.0),
                         'passed': row.get('passed'), 'collision': row.get('collision'),
-                        'min_ttc_s': row.get('min_ttc_s')})
+                        'min_ttc_s': row.get('min_ttc_s'), 'fidelity': FD.of_doc(run)})
         return out
 
 
@@ -422,9 +434,10 @@ class ModelSide:
                     out[k] = {'ok': False, 'run': (r or {}).get('run'), 'error': (r or {}).get('error') or
                               'the run did not finish'}
                 else:
+                    from ..sim.studio import row_fidelity
                     v = float(r['objective'])
                     out[k] = {'ok': True, 'run': r['run'], 'failed': v >= self.threshold,
-                              'value': min(max(v, 0.0), 1.0)}
+                              'value': min(max(v, 0.0), 1.0), 'fidelity': row_fidelity(r)}
         return out
 
 
@@ -456,6 +469,45 @@ def read_trials(d: str) -> list:
     except OSError:
         pass
     return [rows[k] for k in sorted(rows)]
+
+
+def trial_fidelity(side: dict) -> str:
+    """One side of a trial's fidelity level: what it recorded, else its run's run.json (unknown when silent)."""
+    lv = (side or {}).get('fidelity')
+    if isinstance(lv, str) and lv in FD.LEVELS:
+        return lv
+    run = (side or {}).get('run')
+    return FD.of_run(run) if run else 'unknown'
+
+
+def fidelity_check(trials: list) -> dict:
+    """Whether the two versions' trials are like for like (module doc): {'a', 'b' (each version's level), 'gate'
+    (the levels combined), 'refused' (the reason no verdict may be given, '' when one may), 'note' (a sentence the
+    verdict carries: mixed levels, or a side that does not say), 'tone'}."""
+    la = [trial_fidelity(t['a']) for t in trials]
+    lb = [trial_fidelity(t['b']) for t in trials]
+    fa, fb = FD.combine(la), FD.combine(lb)
+    out = {'a': fa, 'b': fb, 'gate': FD.combine([fa, fb]), 'refused': '', 'note': '', 'tone': ''}
+    if not trials:
+        return out
+    mixed = [(s, sorted({x for x in lv if x != 'unknown'})) for s, f, lv in (('A', fa, la), ('B', fb, lb))
+             if f == 'mixed']
+    if mixed:
+        out['note'] = ('Mixed fidelity: ' + '; '.join(f'version {s}\'s trials mix {", ".join(FD.label(x) for x in xs)}'
+                                                      for s, xs in mixed) +
+                       '. The verdict pools runs of different fidelity: read it with care, and re-run on one '
+                       'simulator to confirm it.')
+        out['tone'] = 'critical'
+        return out
+    ok, why = FD.comparable(fa, fb)
+    if not ok:
+        out['refused'] = (f'{why}. Version A ran on {FD.label(fa)}, version B on {FD.label(fb)}: the difference '
+                          'would be the simulators\', not the versions\'. Run both on the same simulator.')
+        out['tone'] = 'critical'
+    elif why:
+        out['note'] = f'Fidelity: {why}; the verdict assumes both ran on the same simulator.'
+        out['tone'] = 'warning'
+    return out
 
 
 def changes(trials: list, upto: int | None = None) -> tuple:
@@ -503,11 +555,16 @@ class Gate:
         an = analyse([t['a']['failed'] for t in trials], [t['b']['failed'] for t in trials],
                      [t['a']['value'] for t in trials], [t['b']['value'] for t in trials], self.alpha, self.margin,
                      self.ni, self.primary, self.min_trials)
+        fid = fidelity_check(trials)
+        if fid['refused']:                              # not like for like: no verdict (module doc)
+            an = dict(an, verdict='refused', word=WORDS['refused'], decided_at=None, decided_by='fidelity')
         used = an['decided_at'] or len(trials)
         nf, np_ = changes(trials, used)
         doc = {'schema': GATE_SCHEMA, 'state': state, 'updated': utc_now(), 'design': self.design(),
                'budget': self.budget, 'batch': self.batch, 'trials_run': len(trials), 'trials_used': used,
-               'verdict': an['verdict'], 'word': an['word'],
+               'verdict': an['verdict'], 'word': an['word'], 'fidelity': fid['gate'],
+               'fidelity_by_version': {'a': fid['a'], 'b': fid['b']}, 'refused': fid['refused'],
+               'fidelity_note': fid['note'],
                'newly_failing': nf, 'newly_passing': np_, 'skipped': skipped or [],
                'scope': 'holds for the tested scenario distribution only: ' +
                         ', '.join(str(s.get('id')) for s in self.scenarios) + ' with their declared parameter '
@@ -552,6 +609,8 @@ class Gate:
                     row = {'i': tr['i'], 'scenario': tr['scenario'].get('id'), 'seed': tr['seed'],
                            'values': tr['values'], 'a': {k: v for k, v in a.items() if k != 'ok'},
                            'b': {k: v for k, v in b.items() if k != 'ok'}}
+                    for side in (row['a'], row['b']):
+                        side['fidelity'] = trial_fidelity(side)
                     fh.write(json.dumps(row) + '\n')
                     trials.append(row)
                     got += 1
@@ -559,7 +618,7 @@ class Gate:
             self.write(doc)
             log(f'{len(trials)} pairs: {doc["failures"]["a"]} failed under A, {doc["failures"]["b"]} under B, '
                 f'{doc["discordant"]["n"]} discordant; Δ in [{doc["risk"]["lower"]:+.3f}, '
-                f'{doc["risk"]["upper"]:+.3f}]: {doc["word"]}')
+                f'{doc["risk"]["upper"]:+.3f}]: {doc["word"]}' + (f' — {doc["refused"]}' if doc['refused'] else ''))
             if progress:
                 progress(len(trials), self.budget)
             if not got and len(skipped) >= 2 * self.batch and not trials:
@@ -575,6 +634,11 @@ def headline(d: dict) -> str:
     r, v, dc = d['risk'], d['value'], d['discordant']
     a, b = (d.get('versions') or {}).get('a', {}).get('label', 'A'), (d.get('versions') or {}).get('b', {}).get(
         'label', 'B')
+    fv = d.get('fidelity_by_version') or {}
+    if d['verdict'] == 'refused':
+        return '\n'.join([f'B ({b}) against A ({a}): NO VERDICT — the versions ran at different fidelity',
+                          d.get('refused') or '', f'{d["trials_run"]} paired trials were run; nothing is concluded '
+                                                  'from them.', d['scope']])
     lines = [f'B ({b}) against A ({a}): {d["word"].upper()}' +
              (f' after {d["decided_at"]} paired trials' if d.get('decided_at') else
               f' at the budget of {d["budget"]} paired trials ({d["trials_run"]} run)') +
@@ -588,6 +652,10 @@ def headline(d: dict) -> str:
              f'valid at every look',
              f'newly failing under B: {len(d["newly_failing"])}; newly passing: {len(d["newly_passing"])}',
              d['scope']]
+    if fv:
+        lines.append(f'fidelity: A {FD.label(fv.get("a"))}, B {FD.label(fv.get("b"))}')
+    if d.get('fidelity_note'):
+        lines.append(d['fidelity_note'])
     return '\n'.join(lines)
 
 
@@ -595,7 +663,15 @@ def markdown(d: dict, max_rows: int = 40) -> str:
     """gate.md: the verdict, the bounds over the trials and the newly failing / passing scenarios with their run
     pairs (a report section; also what CI's summary takes)."""
     vs = d.get('versions') or {}
-    out = [f'## Release gate: {d["word"]}', '',
+    fv = d.get('fidelity_by_version') or {}
+    out = [f'## Release gate: {d["word"]}', '']
+    if d['verdict'] == 'refused':
+        out += [f'**No verdict.** {d.get("refused")}', '']
+    if d.get('fidelity_note'):
+        out += [f'**{d["fidelity_note"]}**', '']
+    if fv:
+        out += [f'Fidelity: A {FD.label(fv.get("a"))}, B {FD.label(fv.get("b"))}.', '']
+    out += [
            f'B `{(vs.get("b") or {}).get("label", "B")}` against A `{(vs.get("a") or {}).get("label", "A")}`, '
            f'{d["trials_used"]} paired trials used ({d["trials_run"]} run, budget {d["budget"]}); primary outcome: '
            f'{d["primary"]}; α = {d["alpha"]:g}; margin ±{d["margin"]:g}' +
@@ -656,6 +732,8 @@ def ci_gate(spec: dict, base: str = '') -> dict:
         return {'status': 'error', 'measured': d.get('word', ''), 'limit': limit,
                 'detail': 'the gate has not finished'}
     r = d['risk']
+    if d['verdict'] == 'refused':
+        return {'status': 'error', 'measured': d['word'], 'limit': limit, 'detail': d.get('refused') or ''}
     return {'status': 'failed' if d['verdict'] in fail_on else 'passed', 'measured': d['word'], 'limit': limit,
             'detail': f'{d["trials_used"]} paired trials; risk difference in [{r["lower"]:+.3f}, {r["upper"]:+.3f}]; '
                       f'{len(d["newly_failing"])} newly failing'}
@@ -742,6 +820,8 @@ def main_gate(argv) -> int:
 
     def code(d):
         bad = [v.strip() for v in a.fail_on.split(',') if v.strip()]
+        if a.gate and d.get('state') == 'finished' and d['verdict'] == 'refused':
+            return 1                                    # no verdict: a CI gate must not pass on it
         return 1 if a.gate and d.get('state') == 'finished' and d['verdict'] in bad else P.OK
 
     if a.cmd == 'plan':
@@ -825,6 +905,9 @@ def main_gate(argv) -> int:
     svc.shutdown()
     for line in headline(d).splitlines():
         em.log(line)
+    if d['verdict'] == 'refused':
+        print(f'refused: {d["refused"]}', flush=True)
     em.result('ok', summary={'verdict': d['verdict'], 'word': d['word'], 'trials': d['trials_used'],
+                             'fidelity': d.get('fidelity_by_version'),
                              'newly_failing': len(d['newly_failing']), 'seconds': round(time.time() - t0, 1)})
     return code(d)

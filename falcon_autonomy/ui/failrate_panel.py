@@ -11,6 +11,9 @@
   stated rule on its runs, with how many of its cells are untested; a chosen entry's cells listed with their runs,
   bounds and the failure-rate estimates there; and an action that adds a scenario per empty or under-sampled cell to
   the project (undoable) and queues a rare-case search (or a sweep) of each.
+
+4.2: the estimate's fidelity (core.failrate.fidelity_of: what its runs' run.json say) is a chip beside its numbers —
+a probability measured on the fake simulator says the tool works, not how often a real stack fails.
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ from ..core import failrate as FR
 from ..core import oddcoverage as OC
 from ..core.jobs import FINAL, JobSpec
 from .placement import PlacementCombo
+from .study_bits import FidelitySlot
 from .widgets import Form, KeyValues, Section, Stat, button, callout, label
 
 JUDGES = (('objective', 'The search\'s objective ≥ the threshold'), ('checks', 'The scenario\'s pass criteria'),
@@ -112,6 +116,8 @@ class FailureRateSection(Section):
             self.tiles[k] = t
             tiles.addWidget(t, i // 2, i % 2)
         self.add(tiles)
+        self.fid = FidelitySlot('Estimated on')
+        self.add(self.fid)
         self.notice = callout('', 'warning')
         self.notice.hide()
         self.add(self.notice)
@@ -208,6 +214,9 @@ class FailureRateSection(Section):
         for t in self.tiles.values():
             t.set('—')
         self.notice.hide()
+        lv = FR.fidelity_of(res) if res else 'unknown'
+        self.fid.set(lv, 'Mixed fidelity: the final runs pool simulators of different fidelity.' if lv == 'mixed'
+                     else '', 'critical' if lv == 'mixed' else '')
         if res is None:
             if not busy:
                 self.kv.set('State', 'no estimate for this scenario and objective yet')
