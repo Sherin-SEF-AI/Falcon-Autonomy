@@ -241,9 +241,11 @@ class Page:
         except (OSError, ValueError) as e:
             raise ReportError(f'cannot read {path}: {e}') from None
         self.read[os.path.abspath(path)] = PV.sha256_file(path)
-        if isinstance(d, dict) and (d.get('fidelity') or (d.get('provenance') or {}).get('fidelity')):
+        if isinstance(d, dict):                    # its fidelity when it records one (a level, not another record)
             from . import fidelity as F
-            self.levels.append(F.of_doc(d))
+            lv = d.get('fidelity') or (d.get('provenance') or {}).get('fidelity')
+            if isinstance(lv, str) and lv in F.LEVELS:
+                self.levels.append(lv)
         return d
 
     def jsonl(self, path: str) -> list:

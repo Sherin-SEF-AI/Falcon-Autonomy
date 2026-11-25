@@ -774,10 +774,18 @@ def evidence_fidelity(d) -> tuple:
     from . import fidelity as F
     if isinstance(d, dict):
         src = d.get('source_fidelity')
-        return F.of_doc(d), (src if src in F.LEVELS else '')
+        return level_of(d), (src if isinstance(src, str) and src in F.LEVELS else '')
     if isinstance(d, list):
-        return F.combine(F.of_doc(r) for r in d if isinstance(r, dict)), ''
+        return F.combine(level_of(r) for r in d if isinstance(r, dict)), ''
     return 'unknown', ''
+
+
+def level_of(d: dict) -> str:
+    """core.fidelity.of_doc, but a `fidelity` that is not a level (a two-speed study's record of its screen is a dict)
+    reads as unknown instead of failing."""
+    from . import fidelity as F
+    lv = d.get('fidelity') or (d.get('provenance') or {}).get('fidelity')
+    return lv if isinstance(lv, str) and lv in F.LEVELS else 'unknown'
 
 
 def not_real_why(level: str, source: str = '') -> str:
