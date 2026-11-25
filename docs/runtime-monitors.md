@@ -11,10 +11,11 @@ package), `core/monitor_node.py` (the rclpy node, copied verbatim); their docstr
 
 | where | what |
 |---|---|
-| Hardware ▸ *Runtime monitors* | a rule set, *Generate*; the package's rules with their equivalence status in a word and a colour — equal, differs, not checked, formula changed — the verdict delay and the formula hash; *Check against a run…*; the deploy commands as text |
+| Hardware ▸ *Runtime monitors* | a rule set, *Generate*; the package's rules with their equivalence status in a word and a colour — equal, differs, not checked, formula changed — the verdict delay and the formula hash; *Check against a run…* (the check wears the fidelity of the runs it replayed: `Recorded · of <level> runs`); the manifest's id short, click to copy; three commands, each with a **Copy** button — the dry run, the deploy and the rollback — and, behind *On the device*, the install commands. Falcon runs none of them |
 | `falcon monitor gen (--rules india\|generic\|FILE [--rule ID …] \| --stl FORMULA) (--out DIR \| --project P) [--name N] [--rate HZ]` | writes the package |
 | `falcon monitor check RUN… --monitor DIR [--xodr FILE] [--json]` | replays the runs through the generated module and compares with the offline checker; writes `DIR/equivalence.json`; exit 0 agree, 1 disagree, 2 failed |
-| `falcon monitor deploy DIR [--dry-run]` | copies the package to the device over SSH (the HIL device of your settings) and loads it once there; prints the `systemctl` commands and runs none of them |
+| `falcon monitor deploy DIR [--dry-run]` | copies the package to the device over SSH (the HIL device of your settings) and loads it once there, after keeping the version it replaces; prints the `systemctl` commands and runs none of them. `--dry-run` validates the package **here** (no SSH, no network) and prints exactly what would be copied and enabled; exit 2 when it is not deployable |
+| `falcon monitor rollback DIR [--dry-run]` | restores the version the last deploy replaced on the device and restarts its user unit if it is running (4.2); `--dry-run` prints what would be run there |
 | `falcon monitor bench (DIR \| --rules SET) [--steps N] [--json]` | the per-step cost on the machine it runs on |
 | `falcon monitor show DIR` · `falcon monitor list --project P` | a package's rules, hashes and status |
 | the assistant | `formal_monitor_gen`, `formal_monitor_check` ([assistant tools](assistant-tools.md)) |
@@ -126,6 +127,33 @@ runs `sudo`: it prints what you run on the device —
     systemctl --user enable --now falcon-monitor-<name>.service
     sudo loginctl enable-linger "$USER"     # only to keep it running without a login session; yours to run
 
+Before it copies, deploy keeps what is already on the device: if `~/falcon-monitor/<name>` exists it is copied to
+`~/falcon-monitor/.previous/<name>` (the copy replaces an older one there). Only one previous version is kept.
+
+### Dry run (4.2)
+
+`falcon monitor deploy DIR --dry-run` reaches no device and opens no connection. It checks, on this machine:
+
+| check | passes when |
+|---|---|
+| manifest | `falcon.monitor/1`, a valid name, and its `hash` is the hash of its own contents |
+| pinned files | every file the manifest pins is present with the manifest's SHA-256 |
+| mapping.json | the evaluator's own `SignalMapper` reads it (it is yours to edit: not pinned) |
+| rules.json | the package's own `falcon_monitor.py` loads it with as many rules as the manifest lists |
+| systemd unit | the unit is byte-for-byte the one `gen` writes for this name (a user unit, `WorkingDirectory` and `ExecStart` in `%h/falcon-monitor/<name>`, no root) |
+
+then prints the folder the current version would be kept in, every file it would copy with its size and the first 16
+hex digits of its SHA-256, and the commands that would enable the unit — and exits 2 (sending nothing) when a check
+fails.
+
+### Rollback (4.2)
+
+`falcon monitor rollback DIR` (DIR names the package, hence its name on the device) swaps `~/falcon-monitor/<name>`
+and `~/falcon-monitor/.previous/<name>` on the device — so a second rollback returns to the newer version —, loads the
+restored monitor once with the device's Python, and runs `systemctl --user try-restart falcon-monitor-<name>.service`:
+a user unit, no root, and `try-restart` restarts the unit only if it is running (it starts nothing that was stopped).
+It refuses when the device has no previous version (a deploy before 4.2 kept none). `--dry-run` prints the commands
+and sends nothing. Like deploy, SSH is used only when you run it.
 ## Measured
 
 The per-step cost of the generated monitor, **on the development machine that ran `falcon monitor bench`, not on the
@@ -149,7 +177,9 @@ numbers.
 ## Limits
 
 - **Deployment is tested with a fake transport only.** No device was reached in the tests; the SSH path is
-  `hil/deploy.py`'s, which the HIL deployment uses.
+  `hil/deploy.py`'s, which the HIL deployment uses. The keep-previous step and the rollback were tested on a fake SSH
+  layer that stands for the device's folders (tests/test_robustness42.py), not on a device: the shell commands they
+  send (`cp -a`, `mv`, `systemctl --user try-restart`) were not run on JetPack.
 - **The node was run against a fake rclpy** (plain classes standing in for the message types), not a ROS 2
   installation: message type names, QoS and the `byte` level of `DiagnosticStatus` follow ROS 2 Humble's interfaces
   as written from memory of them, not checked against an installation here.

@@ -6,7 +6,12 @@ selected node wears a slow amber ring. Clicking a node shows its text, status an
 bound to, the claim, the pinned SHA-256 and when it was bound. Re-bind pins the result's current hash (undoable here:
 Undo puts the previous evidence back); Verify now re-verifies and logs it (safety/gsn-events.jsonl); a new safety case
 starts from the ISO 26262 or ISO 21448 SOTIF template; Export writes the self-contained HTML report (core.reports) or
-an SVG."""
+an SVG.
+
+4.2: an evidence node names its result's fidelity (core.fidelity) — evidence from the fake simulator, the kinematic
+screen or mixed results verifies amber at best. attach() adds a result as a new Solution (the other sections' "Attach
+evidence", undoable here like a re-bind); offer_run() is Send to ▸ Reports: the run waits in a bar, preselected, and is
+attached only on the user's click."""
 from __future__ import annotations
 
 import copy
@@ -15,13 +20,13 @@ import os
 
 from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QVariantAnimation
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF, QUndoCommand, QUndoStack
-from PyQt6.QtWidgets import (QComboBox, QFileDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsScene,
+from PyQt6.QtWidgets import (QComboBox, QFileDialog, QFrame, QGraphicsItem, QGraphicsPathItem, QGraphicsScene,
                              QGraphicsTextItem, QGraphicsView, QHBoxLayout, QVBoxLayout, QWidget)
 
 from ..core import gsn as G
 from . import motion
 from .theme import THEME, mono
-from .widgets import KeyValues, button, label
+from .widgets import IdLabel, KeyValues, Note, button, fidelity_chip, label, short_id
 
 TONE = {'green': 'good', 'amber': 'warning', 'red': 'critical'}
 WORD = {'green': 'met', 'amber': 'evidence changed', 'red': 'not met', 'grey': 'undeveloped'}
@@ -52,7 +57,7 @@ class NodeItem(QGraphicsPathItem):
     """A node: its shape on the surface colour, outlined in its status colour; its id and status word in mono (the
     word, not the colour alone, carries the status), then its text."""
 
-    def __init__(self, tab, n: dict, rect: QRectF, status: str | None):
+    def __init__(self, tab, n: dict, rect: QRectF, status: str | None, fidelity: str = '', source: str = ''):
         super().__init__(_shape(n['type'], rect))
         self.tab, self.node_id = tab, n['id']
         col = colour(status)
@@ -72,6 +77,13 @@ class NodeItem(QGraphicsPathItem):
         mf = mono(10).family()
         head = (f'<span style="font-family:\'{mf}\'; font-weight:600">{n["id"]}</span>'
                 + (f' <span style="font-family:\'{mf}\'; color:{col.name()}">{word.upper()}</span>' if status else ''))
+        if fidelity and fidelity != 'unknown':                  # the evidence's fidelity, as a chip's word (4.2)
+            from ..core import fidelity as F
+            t = F.tone(source) if fidelity == 'recorded' and source else F.tone(fidelity)
+            fc = THEME.status(t) if t in TONE.values() else THEME.tok['accent' if t == 'accent' else 'muted']
+            what = F.label(fidelity) + (f' · of {F.label(source)} runs' if source and source != 'unknown' else '')
+            head += f'<br><span style="font-family:\'{mf}\'; font-size:9px; color:{fc}">◆ {what.upper()}</span>'
+            self.setToolTip(f'{n["id"]} ({n["type"]}): {word} — {what}: {F.sentence(fidelity)}')
         body = (n.get('text') or '')[:150]
         txt.setHtml(f'{head}<br>{body.replace("<", "&lt;")}')
         txt.setPos(rect.x() + pad, rect.y() + 4)
@@ -111,6 +123,41 @@ class RebindCommand(QUndoCommand):
         self._set(self.before, 'bind' if self.before else 'unbind')
 
 
+class AttachCommand(QUndoCommand):
+    """Attach a result as a new Solution (core.gsn.attach); undo removes the node and its link (core.gsn.detach)."""
+
+    def __init__(self, tab, kind: str, ref: str, claim: dict | None, text: str, parent: str = ''):
+        super().__init__(f'Attach {os.path.basename(ref.rstrip("/"))}')
+        self.tab, self.kind, self.ref, self.claim, self.text, self.parent = tab, kind, ref, claim, text, parent
+        self.nid, self.error = '', ''
+
+    def redo(self):
+        ws = self.tab.workspace()
+        doc = G.load(ws)
+        try:
+            self.nid = G.attach(ws, doc, self.kind, self.ref, copy.deepcopy(self.claim), self.text, self.parent)
+        except G.GSNError as e:
+            self.error = str(e)
+            return
+        G.save(ws, doc)
+        G.log_event(ws, 'attach', 'gui', node=self.nid, evidence=G.node(doc, self.nid).get('evidence'),
+                    gsn_sha256=G.doc_sha(doc))
+        self.tab.selected = self.nid
+        self.tab.reload()
+
+    def undo(self):
+        if not self.nid:
+            return
+        ws = self.tab.workspace()
+        doc = G.load(ws)
+        G.detach(doc, self.nid)
+        G.save(ws, doc)
+        G.log_event(ws, 'detach', 'gui', node=self.nid, gsn_sha256=G.doc_sha(doc))
+        if self.tab.selected == self.nid:
+            self.tab.selected = None
+        self.tab.reload()
+
+
 class GsnTab(QWidget):
     """The safety-case view (module doc). owner: the Reports page (owner.win the window)."""
 
@@ -122,10 +169,30 @@ class GsnTab(QWidget):
         self.undo = QUndoStack(self)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(label('The argument in GSN, each node marked by its evidence as verified now: met (it holds), '
-                          'evidence changed (missing or changed: re-bind to accept), not met (a claim violated), '
-                          'undeveloped; a goal is as good as its worst support. Falcon is not a qualified tool (ISO 26262-8 §11): '
-                          'this is evidence to assess, not a certification argument.', muted=True, wrap=True))
+        v.addWidget(Note('The argument in GSN, each node marked by its evidence as verified now: met (it holds), '
+                         'evidence changed (missing or changed: re-bind to accept; or evidence from the fake '
+                         'simulator, the kinematic screen or mixed results), not met (a claim violated), undeveloped; '
+                         'a goal is as good as its worst support. Falcon is not a qualified tool (ISO 26262-8 §11): '
+                         'this is evidence to assess, not a certification argument.'))
+        self.offer = QFrame()                                     # Send to ▸ Reports: a run waiting to be attached
+        self.offer.setProperty('card', True)
+        oh = QHBoxLayout(self.offer)
+        oh.setContentsMargins(10, 6, 6, 6)
+        oh.addWidget(label('Attach run', muted=True))
+        self.offer_id = IdLabel('', keep=10)
+        oh.addWidget(self.offer_id)
+        self.offer_chip = fidelity_chip('unknown')
+        oh.addWidget(self.offer_chip)
+        oh.addWidget(label('as evidence under', muted=True))
+        self.offer_parent = QComboBox()
+        oh.addWidget(self.offer_parent)
+        oh.addStretch(1)
+        self.offer_btn = button('Attach', self.attach_offered, tip='Add the run as a new Solution (undoable)')
+        oh.addWidget(self.offer_btn)
+        oh.addWidget(button('Dismiss', lambda: self.offer_run('')))
+        self.offer.setVisible(False)
+        self.offered = ''
+        v.addWidget(self.offer)
         row = QHBoxLayout()
         self.template = QComboBox()
         for k, t in TEMPLATE_TITLES:
@@ -149,8 +216,8 @@ class GsnTab(QWidget):
         self.view.setMinimumHeight(320)
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
         v.addWidget(self.view)
-        self.info = KeyValues(('Node', 'Type', 'Text', 'Status', 'Why', 'Evidence', 'Claim', 'Pinned', 'Ran',
-                               'Bound'))
+        self.info = KeyValues(('Node', 'Type', 'Text', 'Status', 'Why', 'Evidence', 'Fidelity', 'Claim', 'Pinned',
+                               'Ran', 'Bound'))
         v.addWidget(self.info)
         self.undo.canUndoChanged.connect(self.undo_btn.setEnabled)
         self.undo_btn.setEnabled(False)
@@ -163,7 +230,14 @@ class GsnTab(QWidget):
         self.ring_anim.valueChanged.connect(self._ring_tick)
         self.reveal = motion.Driver(self.view.viewport(), 900, QEasingCurve.Type.Linear)
         self.reveal.anim.valueChanged.connect(self._reveal_tick)
+        THEME.changed.connect(self._themed)          # a bound slot: the drawing follows the theme
         self.reload()
+
+    def _themed(self, _name):
+        if self.doc is not None:
+            self.draw()
+            if self.selected:
+                self.select(self.selected)
 
     def workspace(self) -> str:
         try:
@@ -225,7 +299,10 @@ class GsnTab(QWidget):
             self.scene.addPolygon(head, pen, QBrush(QColor(THEME.tok['strong'])) if ln['kind'] == 'SupportedBy'
                                   else QBrush(QColor(THEME.tok['base'])))
         for nid, (x, y, w, h) in lay.items():
-            it = NodeItem(self, by[nid], QRectF(x, y, w, h), (st.get(nid) or {}).get('status'))
+            r = st.get(nid) or {}
+            ev = bool(by[nid].get('evidence'))
+            it = NodeItem(self, by[nid], QRectF(x, y, w, h), r.get('status'), r.get('fidelity', '') if ev else '',
+                          r.get('source_fidelity', '') if ev else '')
             self.scene.addItem(it)
             self.items[nid] = it
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-10, -10, 10, 10))
@@ -282,9 +359,16 @@ class GsnTab(QWidget):
         self.info.set('Why', r.get('why') or '')
         self.info.set('Evidence', f'{ev.get("kind")}: {ev.get("ref")} → {r.get("path") or ev.get("path") or "—"}'
                       if ev else '—')
+        if ev and r.get('fidelity'):
+            from ..core import fidelity as F
+            src = r.get('source_fidelity')
+            self.info.set('Fidelity', F.label(r['fidelity']) + (f' (of {F.label(src)} runs)' if src else ''),
+                          tip=F.sentence(r['fidelity']))
+        else:
+            self.info.set('Fidelity', '—')
         self.info.set('Claim', json.dumps(ev.get('claim')) if ev else '—')
-        self.info.set('Pinned', ev.get('sha256') or '—', tip='\n'.join(f'{k}: {v}' for k, v in (
-            (ev.get('data') or {}).get('sha256') or {}).items()))
+        self.info.set('Pinned', short_id(ev.get('sha256') or '—', 12), tip='\n'.join(
+            [ev.get('sha256') or ''] + [f'{k}: {v}' for k, v in ((ev.get('data') or {}).get('sha256') or {}).items()]))
         w = ev.get('where')
         self.info.set('Ran', G.where_text(w) if w else '—', tip=', '.join((w or {}).get('gids') or ())[:2000])
         self.info.set('Bound', ev.get('bound_at') or '—')
@@ -329,6 +413,85 @@ class GsnTab(QWidget):
             self.state.setText(f'Not re-bound: {e}')
             return
         self.undo.push(RebindCommand(self, self.selected, before, after))
+
+    # ------------------------------------------------------------------ attach (4.2)
+    def ensure_case(self) -> bool:
+        """A safety case to attach to: the workspace's, or a new blank one (said in the state line)."""
+        ws = self.workspace()
+        if not ws:
+            self.state.setText('Save the project first: the safety case lives in its workspace.')
+            return False
+        if not os.path.isfile(G.gsn_path(ws)):
+            doc = G.template('blank', ws)
+            G.save(ws, doc)
+            G.log_event(ws, 'new', 'gui', template='blank', nodes=len(doc['nodes']), gsn_sha256=G.doc_sha(doc))
+            self.reload()
+        return True
+
+    def attach(self, kind: str, ref: str, claim: dict | None = None, text: str = '', parent: str = '') -> str:
+        """Add a result as a new Solution under `parent` (default: the selected Goal or Strategy, else the first top
+        goal) through the undo stack; returns its id ('' when refused — the reason is in the state line)."""
+        if not self.ensure_case():
+            return ''
+        if not parent and self.doc is not None and self.selected:
+            try:
+                if G.node(self.doc, self.selected)['type'] in G.SUPPORTERS:
+                    parent = self.selected
+            except G.GSNError:
+                pass
+        cmd = AttachCommand(self, kind, ref, claim, text, parent)
+        self.undo.push(cmd)
+        if cmd.error:
+            self.undo.undo()
+            self.state.setText(f'Not attached: {cmd.error}')
+            return ''
+        self.state.setText(f'Attached {ref} as {cmd.nid} (Undo removes it). ' + self.state.text())
+        it = getattr(self, 'items', {}).get(cmd.nid)
+        if it is not None:
+            self.view.ensureVisible(it)
+        return cmd.nid
+
+    def offer_run(self, run_path: str):
+        """Send to ▸ Reports: show the run, preselected, ready to attach on a click ('' hides the bar)."""
+        from ..core import fidelity as F
+        self.offered = run_path or ''
+        self.offer.setVisible(bool(self.offered))
+        if not self.offered:
+            return
+        self.offer_id.setText(self.offered)
+        lv = F.of_run(self.offered)
+        self.offer_chip.setText(F.label(lv))
+        self.offer_chip.setToolTip(F.sentence(lv))
+        self.offer_chip.setProperty('tone', F.tone(lv))
+        self.offer_chip.style().unpolish(self.offer_chip)
+        self.offer_chip.style().polish(self.offer_chip)
+        self.offer_parent.clear()
+        goals = [n for n in (self.doc or {}).get('nodes') or [] if n['type'] in G.SUPPORTERS]
+        for n in goals:
+            self.offer_parent.addItem(f'{n["id"]} · {(n.get("text") or "")[:40]}', n['id'])
+        if not goals:
+            self.offer_parent.addItem('G1 · a new blank safety case', '')
+        self.offer_btn.setFocus()
+
+    def attach_offered(self) -> str:
+        if not self.offered:
+            return ''
+        ws = self.workspace()
+        run = self.offered
+        ref = os.path.relpath(run, ws) if ws and os.path.abspath(run).startswith(os.path.abspath(ws) + os.sep) \
+            else os.path.abspath(run)
+        claim = None
+        try:
+            with open(os.path.join(run, 'run.json'), encoding='utf-8') as fh:
+                if (json.load(fh).get('scenario') or {}).get('passed') is not None:
+                    claim = {'measure': 'field', 'path': 'scenario.passed', 'equals': True}
+        except (OSError, ValueError):
+            pass
+        nid = self.attach('run', ref, claim, f'Run {os.path.basename(run.rstrip("/"))} passes its scenario'
+                          if claim else f'Run {os.path.basename(run.rstrip("/"))}', self.offer_parent.currentData())
+        if nid:
+            self.offer_run('')
+        return nid
 
     def export(self, kind: str):
         ws = self.workspace()

@@ -33,9 +33,15 @@ same numbers.
 *New report*: choose the kind and a source from the workspace (loop iterations, evaluations — the Models page's and
 the loop's before and after —, dataset specs and versions, studies, Leaderboard results) and *Make the report*: a job
 (`falcon report`) writes it into `workspace/reports/` with a time-stamped name. *Reports* lists them (newest first)
-with their title, kind, source and the number of files read; double-click (or *Open in the browser*) opens one;
+with their title, kind, fidelity, source and the number of files read; double-click (or *Open in the browser*) opens one;
 *Export to a folder…* copies the selected reports, which need nothing else. The Loop page's *Report…* makes the
 current iteration's report.
+
+**Fidelity (4.2).** A report's meta records `fidelity` — core.fidelity.combine of what the source documents it read
+record — when at least one records it; the list shows it beside each report (*Fake simulator*, *CARLA*, *Mixed
+fidelity* …) and says *not recorded* otherwise (sources written before 4.2, or results that are not simulation
+results). The page is also the *Send to ▸ Reports* target: a run sent here waits in the safety case section to be
+attached as evidence on a click.
 
 *Outputs for a paper* writes an experiment (an ablation or a mixed sim/real one), an evaluation, a comparison of two
 evaluations or an export's data card as LaTeX (booktabs) and CSV tables and PDF, PNG and SVG figures with their

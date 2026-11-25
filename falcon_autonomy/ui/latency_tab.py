@@ -7,7 +7,12 @@ profile was MEASURED (and on what) or is synthetic is said beside it. The table 
 (latency/<name>/latency-budget.json): per scenario case the largest latency at which it still passes, where it first
 fails, and its status in a word and a colour — late only (it fails only when the computer is late), fails anyway (with
 no latency at all), holds (no failure up to the swept maximum). "Find the budget" queues `falcon latency budget` for
-the chosen scenario: a constant latency in whole simulation steps, read against the selected profile."""
+the chosen scenario: a constant latency in whole simulation steps, read against the selected profile, on the world
+and rig chosen in the section (the fake simulator warns when that rig would take minutes per run there).
+
+4.2: the profile's line and the budget's method are compact (the caveats in the tooltip and behind Details); the
+budget wears its fidelity chip (core.fidelity: combined over its runs); a row's run (its run without latency) has
+Send to ▸ on a right click, and selecting the row makes it the active run."""
 from __future__ import annotations
 
 import os
@@ -22,7 +27,8 @@ from ..core.jobs import JobSpec
 from ..core.provenance import read_json
 from . import motion
 from .theme import THEME, mono
-from .widgets import button, flow_row, label
+from .robustkit import RigWorldPicker, run_menu, set_context_run
+from .widgets import Details, Note, button, fidelity_chip, flow_row, label
 
 COLUMNS = ('Case', 'Status', 'Budget', 'Fails from', 'Runs')
 
@@ -130,16 +136,18 @@ class LatencyTab(QWidget):
         self.doc = None
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(label('Simulation assumes the stack answers instantly. Here the control computed at a step is '
-                          'applied a latency later (rounded up to whole steps, held in between), and each scenario\'s '
-                          'budget is the largest latency at which it still passes.', muted=True, wrap=True))
+        v.addWidget(Note('Simulation assumes the stack answers instantly. Here the control computed at a step is '
+                         'applied a latency later (rounded up to whole steps, held in between), and each scenario\'s '
+                         'budget is the largest latency at which it still passes.'))
         self.profile = QComboBox()
         self.profile.currentIndexChanged.connect(lambda _i: self.show_profile())
         v.addWidget(flow_row(label('Profile'), self.profile, button('Refresh', self.refresh)))
         self.hist = Histogram()
         v.addWidget(self.hist)
-        self.profile_note = label('', muted=True, wrap=True)
+        self.profile_note = label('', muted=True, wrap=True, small=True)     # compact: measured? and the quantiles
         v.addWidget(self.profile_note)
+        self.where = RigWorldPicker(self.win, labels=True, what='every run of the budget records the rig')
+        v.addWidget(self.where)
         self.scenario = QComboBox()
         self.run_btn = button('Find the budget', self.start, role='primary',
                               tip='falcon latency budget --constant: sweep a constant latency in whole steps and '
@@ -147,17 +155,24 @@ class LatencyTab(QWidget):
         v.addWidget(flow_row(label('Scenario'), self.scenario, self.run_btn))
         self.budget = QComboBox()
         self.budget.currentIndexChanged.connect(lambda _i: self.show_budget())
-        v.addWidget(flow_row(label('Budget'), self.budget))
+        self.chip = fidelity_chip('unknown')
+        self.chip.setVisible(False)
+        v.addWidget(flow_row(label('Budget'), self.budget, self.chip))
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(list(COLUMNS))
         self.tree.setRootIsDecorated(False)
         self.tree.setMinimumHeight(140)
+        self.tree.currentItemChanged.connect(lambda it, _p: set_context_run(self.win, self.run_of(it)))
+        run_menu(self.win, self.tree, self.run_of)
         v.addWidget(self.tree)
         v.addWidget(label('Fail only when the computer is late', h=True))
         self.late = label('—', mono=True, wrap=True, sel=True)
         v.addWidget(self.late)
-        self.note = label('', muted=True, wrap=True)
+        self.note = label('', muted=True, wrap=True, small=True)
         v.addWidget(self.note)
+        self.method = Details('', 'How the budget is found')
+        self.method.setVisible(False)
+        v.addWidget(self.method)
         THEME.changed.connect(self._themed)          # a bound slot: let go when the tab is deleted
         self.refresh()
 
@@ -197,6 +212,7 @@ class LatencyTab(QWidget):
         if not self.scenario.count():
             for k, name in self.scenarios():
                 self.scenario.addItem(name, k)
+        self.where.refresh()
         self.show_profile()
         self.show_budget()
 
@@ -211,19 +227,31 @@ class LatencyTab(QWidget):
         self.hist.set(doc)
         if doc:
             s, src = doc['stats'], doc['source']
-            what = 'MEASURED' if doc.get('measured') else 'NOT MEASURED (synthetic or given)'
-            self.profile_note.setText(f'{what}: {src.get("kind")}, {src.get("device")}. {s["n"]} values; median '
-                                      f'{s["median"]:.2f} ms, p95 {s["p95"]:.2f} ms, p99 {s["p99"]:.2f} ms, max '
-                                      f'{s["max"]:.2f} ms. Consecutive latencies are drawn independently.')
+            what = 'MEASURED' if doc.get('measured') else 'NOT MEASURED'
+            self.profile_note.setText(f'{what} · {src.get("kind")} · n {s["n"]} · median {s["median"]:.2f} · p95 '
+                                      f'{s["p95"]:.2f} · p99 {s["p99"]:.2f} · max {s["max"]:.2f} ms')
+            self.profile_note.setToolTip(
+                ('Measured' if doc.get('measured') else 'Not measured (synthetic or given)') +
+                f' on {src.get("device")} ({src.get("kind")}). Consecutive latencies are drawn independently.')
         elif not p:
-            self.profile_note.setText('No profile selected. Make one with `falcon latency profile` from a HIL '
-                                      'session, a deployment\'s on-device profiling, a file or a synthetic '
-                                      'distribution.')
+            self.profile_note.setText('No profile selected: make one with `falcon latency profile`.')
+            self.profile_note.setToolTip('From a HIL session, a deployment\'s on-device profiling, a file or a '
+                                         'synthetic distribution.')
+
+    def run_of(self, it) -> str:
+        """A budget row's run without latency (its baseline), else its first tested run ('' when none)."""
+        r = it.data(0, 256) if it is not None else None
+        tested = (r or {}).get('tested') or []
+        base = next((t for t in tested if not t.get('x')), tested[0] if tested else None)
+        return (base or {}).get('run') or ''
 
     def show_budget(self, fresh: bool = False):
+        from ..core import fidelity as F
         self.tree.clear()
         p = self.budget.currentData()
         self.doc = None
+        self.chip.setVisible(False)
+        self.method.setVisible(False)
         if not p:
             self.late.setText('—')
             self.note.setText('No latency budget in this workspace yet.' if self.workspace()
@@ -241,6 +269,7 @@ class LatencyTab(QWidget):
             b = '—' if r['budget'] is None else f'{at_least}{r["budget"]:g} {u}'
             f = '—' if r['first_failure'] is None else f'{r["first_failure"]:g} {u}'
             it = QTreeWidgetItem([r['case'], w.upper(), b, f, str(r['runs'])])
+            it.setData(0, 256, r)
             it.setToolTip(0, r.get('name') or r['case'])
             tip = r.get('why', '')
             if r.get('over_budget_share') is not None:
@@ -255,12 +284,28 @@ class LatencyTab(QWidget):
         for c in range(len(COLUMNS)):
             self.tree.resizeColumnToContents(c)
         self.late.setText(', '.join(d['fails_only_when_late']) or 'none')
-        self.note.setText(f'{d["sweep"]} up to {d["grid_max"]:g} {u}; {d["quantisation"]}; {d["assumes"]}.')
+        lv = d.get('fidelity') or 'unknown'
+        self.chip.setText(F.label(lv))
+        self.chip.setToolTip(F.sentence(lv))
+        self.chip.setProperty('tone', F.tone(lv))
+        self.chip.setProperty('fidelity', lv)
+        self.chip.style().unpolish(self.chip)
+        self.chip.style().polish(self.chip)
+        self.chip.setVisible(True)
+        self.note.setText(f'{d["sweep"]} up to {d["grid_max"]:g} {u} · {d["runs"] if "runs" in d else "?"} runs')
+        self.note.setToolTip(f'{d["sweep"]} up to {d["grid_max"]:g} {u}; {d["quantisation"]}; {d["assumes"]}.')
+        self.method.set_text(f'{d["sweep"]} up to {d["grid_max"]:g} {u}; {d["quantisation"]}; {d["assumes"]}.'
+                             + (f' World {d["world"]}, rig {d["rig"]}.' if d.get('world') else ''))
+        self.method.setVisible(True)
 
     def argv(self) -> list:
         w = self.win
         key = self.scenario.currentData()
         argv = ['latency', 'budget', w.project.path, '--scenario', key, '--constant', '--name', f'latency-{key}']
+        if self.where.world():
+            argv += ['--world', self.where.world()]
+        if self.where.rig():
+            argv += ['--rig', self.where.rig()]
         if self.profile.currentData():
             argv += ['--profile', self.profile.currentData()]
         if getattr(w, 'fake_carla', ''):

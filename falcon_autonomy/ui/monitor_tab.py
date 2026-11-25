@@ -7,19 +7,27 @@ equivalence of the generated monitor and the offline checker, in a word and a co
 sample by sample), differs, not checked, formula changed (the rule was edited since: generate again) — its verdict
 delay and formula hash. "Check against a run…" replays a recorded run through the generated module. The deploy
 commands are shown as text: Falcon copies files over SSH only when you run `falcon monitor deploy` yourself, and never
-installs or starts anything on the device."""
+installs or starts anything on the device.
+
+4.2: three commands, each with a Copy button (ui.widgets.CommandBlock; Falcon runs none of them): the dry run
+(`--dry-run`: the package's files, unit and manifest validated here, what would be copied and enabled printed; no SSH),
+the deploy (it keeps the version it replaces on the device) and the rollback (`falcon monitor rollback`: the kept
+version restored, its user unit restarted only if it is running). The device-side install commands follow, also with
+Copy. The package's state is compact rows (status, check, manifest id — click to copy); the equivalence check wears
+the fidelity of the runs it replayed (core.fidelity: `recorded`, of their level)."""
 from __future__ import annotations
 
 import os
+import shlex
 
 from PyQt6.QtGui import QBrush, QColor
-from PyQt6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLineEdit, QPlainTextEdit, QTreeWidget,
-                             QTreeWidgetItem, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLineEdit, QTreeWidget, QTreeWidgetItem,
+                             QVBoxLayout, QWidget)
 
 from ..core import monitorgen as MG
 from . import motion
 from .theme import THEME, mono
-from .widgets import button, flow_row, label
+from .widgets import CommandBlock, Details, IdLabel, KeyValues, Note, button, fidelity_chip, flow_row, label
 
 COLUMNS = ('Rule', 'Equivalence', 'Delay', 'Formula hash')
 WORD = {'agreed': ('equal', 'good'), 'disagreed': ('differs', 'critical'), 'unchecked': ('not checked', ''),
@@ -36,10 +44,9 @@ class MonitorTab(QWidget):
         self.status = None
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(label('The rule that failed a run in simulation, watching the car: a rule set compiled into an '
-                          'online monitor (same formulas, same robustness). A verdict that looks ahead is delayed by '
-                          'its horizon. Deployment and the ROS 2 node are tested with fakes only.', muted=True,
-                          wrap=True))
+        v.addWidget(Note('The rule that failed a run in simulation, watching the car: a rule set compiled into an '
+                         'online monitor (same formulas, same robustness). A verdict that looks ahead is delayed by '
+                         'its horizon. Deployment and the ROS 2 node are tested with fakes only.'))
         self.ruleset = QComboBox()
         for k in ('india', 'generic'):
             self.ruleset.addItem(k, k)
@@ -59,14 +66,35 @@ class MonitorTab(QWidget):
         self.tree.setRootIsDecorated(False)
         self.tree.setMinimumHeight(170)
         v.addWidget(self.tree)
-        self.note = label('', muted=True, wrap=True)
+        self.note = label('', muted=True, wrap=True, small=True)
         v.addWidget(self.note)
+        self.facts = KeyValues()                             # compact: status, check, manifest, changed files
+        v.addWidget(self.facts)
+        row = QHBoxLayout()
+        row.addWidget(label('Manifest', muted=True))
+        self.manifest_id = IdLabel('', keep=8)
+        row.addWidget(self.manifest_id)
+        self.chip = fidelity_chip('unknown')
+        self.chip.setVisible(False)
+        row.addWidget(self.chip)
+        row.addStretch(1)
+        v.addLayout(row)
         v.addWidget(label('Deploy (you run these; nothing is run as root)', h=True))
-        self.commands = QPlainTextEdit()
-        self.commands.setReadOnly(True)
-        self.commands.setFont(mono(11))
-        self.commands.setFixedHeight(150)
-        v.addWidget(self.commands)
+        self.dry_cmd = CommandBlock('', 'Validates the package here (files, unit, manifest) and prints what would '
+                                        'be copied and enabled. No SSH, no network.')
+        self.deploy_cmd = CommandBlock('', 'Copies the package to the device over SSH with the Device settings; '
+                                           'keeps the version it replaces; installs and starts nothing.')
+        self.rollback_cmd = CommandBlock('', 'Restores the version the last deploy replaced and restarts the user '
+                                             'unit only if it is running (systemctl --user try-restart). Over SSH; '
+                                             'no root.')
+        for title, blk in (('Dry run (here, no SSH)', self.dry_cmd), ('Deploy', self.deploy_cmd),
+                           ('Roll back', self.rollback_cmd)):
+            v.addWidget(label(title, muted=True, small=True))
+            v.addWidget(blk)
+        self.device_cmd = CommandBlock('', 'Run on the device: installs and starts the user unit. The last line '
+                                           'needs root: run it yourself.')
+        self.device = Details(self.device_cmd, 'On the device (install and start the unit)')
+        v.addWidget(self.device)
         THEME.changed.connect(self._themed)          # a bound slot: let go when the tab is deleted
         self.refresh()
 
@@ -102,7 +130,7 @@ class MonitorTab(QWidget):
             self.status = None
             self.note.setText('No monitor package in this workspace yet: choose a rule set and Generate.'
                               if self.workspace() else 'Open a project to generate a monitor.')
-            self.commands.setPlainText('')
+            self.set_commands('')
             return
         try:
             st = self.status = MG.status(pkg)
@@ -125,14 +153,40 @@ class MonitorTab(QWidget):
             self.tree.resizeColumnToContents(c)
         word = WORD[st['status']][0]
         when = f', checked {st["checked_at"]}' if st['checked_at'] else ''
-        self.note.setText(f'{st["name"]}: {word}{when}. Manifest {st["hash"][:16]}. '
-                          + ('Files changed since it was generated: ' + ', '.join(st['changed_files']) + '. '
-                             if st['changed_files'] else '')
-                          + 'Edit mapping.json in the package to point the signals at your stack\'s topics.')
-        self.commands.setPlainText('\n'.join(
-            ['# on this machine (copies the package over SSH with the Device settings above; starts nothing):',
-             f'falcon monitor deploy {pkg}',
-             '# then on the device:'] + MG.install_commands(st['name'])))
+        self.note.setText(f'{st["name"]}: {word}{when}.')
+        self.note.setToolTip('Edit mapping.json in the package to point the signals at your stack\'s topics.')
+        self.facts.clear()
+        if st['changed_files']:
+            self.facts.set('Changed', ', '.join(st['changed_files']), tip='Files changed since it was generated: '
+                                                                         'generate it again')
+        self.facts.set('Signals', 'mapping.json (edit it for your stack\'s topics)',
+                       tip='Not pinned by the manifest: it is yours to edit')
+        self.manifest_id.setText(st['hash'])
+        lv = st.get('check_fidelity') or ''
+        self.chip.setVisible(bool(lv))
+        if lv:
+            from ..core import fidelity as F
+            self.chip.setText(f'{F.label("recorded")} · of {F.label(lv)} runs' if lv != 'unknown'
+                              else F.label('recorded'))
+            self.chip.setToolTip('The check replays recorded runs offline. ' + F.sentence(lv))
+            self.chip.setProperty('tone', F.tone(lv))
+            self.chip.style().unpolish(self.chip)
+            self.chip.style().polish(self.chip)
+        self.set_commands(pkg, st['name'])
+
+    def set_commands(self, pkg: str, name: str = ''):
+        """The dry-run, deploy and rollback commands of a package and the device's install commands ('' clears)."""
+        q = shlex.quote(pkg) if pkg else 'PKG'
+        self.dry_cmd.set_command(f'falcon monitor deploy {q} --dry-run', self.dry_cmd.toolTip())
+        self.deploy_cmd.set_command(f'falcon monitor deploy {q}', self.deploy_cmd.toolTip())
+        self.rollback_cmd.set_command(f'falcon monitor rollback {q}', self.rollback_cmd.toolTip())
+        for blk in (self.dry_cmd, self.deploy_cmd, self.rollback_cmd, self.device_cmd):
+            blk.copy_btn.setEnabled(bool(pkg))
+        self.device_cmd.set_command('\n'.join(MG.install_commands(name)) if name else '', self.device_cmd.toolTip())
+
+    def command_text(self) -> str:
+        """Every command shown, one per line (what the Copy buttons copy)."""
+        return '\n'.join(b.command for b in (self.dry_cmd, self.deploy_cmd, self.rollback_cmd, self.device_cmd))
 
     def generate(self):
         ws = self.workspace()

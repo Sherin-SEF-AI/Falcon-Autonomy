@@ -10,7 +10,7 @@ command); the delay line is held by `workers/director.py`; the docstrings are th
 
 | where | what |
 |---|---|
-| Hardware ▸ *Latency budget* | a latency profile's histogram (one axis in ms, the median and p99 marked, a tooltip per bar) with whether it was measured and on what; a budget's table — per scenario case the budget, where it first fails and its status (late only, fails anyway, holds); the cases that fail only when the computer is late; *Find the budget* queues the sweep |
+| Hardware ▸ *Latency budget* | a latency profile's histogram (one axis in ms, the median and p99 marked, a tooltip per bar) with one compact line — measured or not, its kind, n and the quantiles (on what device, and that consecutive latencies are drawn independently, in the tooltip); the world and rig of the sweep (*Where*: the project's, the active ones preselected; a warning when the fake simulator would take minutes per run on that rig); a budget's table with its fidelity chip — per scenario case the budget, where it first fails and its status (late only, fails anyway, holds); selecting a row makes its run without latency the active one, a right click sends it on (*Send to ▸*); the cases that fail only when the computer is late; the sweep's method and assumptions behind *Details*; *Find the budget* queues the sweep |
 | `falcon latency profile (--from-hil RUN [--measure M] \| --from-deploy DIR [--engine E] \| --from-file F \| --synthetic SPEC) (--out FILE \| --project P) [--name N] [--seed N]` | makes a profile |
 | `falcon latency run PROJECT --scenario K (--profile FILE [--scale S] \| --constant MS) [--mode pipeline\|serial] [--fps F] [--seed N]` | one scenario run with the latency, beside the same run without |
 | `falcon latency budget PROJECT --scenario K [--scenario K2 …] (--constant [--max-ms M] \| --profile FILE [--max-scale S --step D]) [--samples N] [--criterion auto\|passed\|criticality] [--threshold T] [--exhaustive] [--name N]` | the budget of each scenario case; writes `<workspace>/latency/<name>/latency-budget.json` and prints the table |
@@ -113,6 +113,8 @@ and fails from 900 ms; the bisection finds that in at most 7 runs instead of the
 and the run's criticality is higher at the larger latencies. These numbers describe the fake server's kinematic model and
 Falcon's built-in follower, **not a real vehicle or stack**; they show the mechanism, nothing more.
 
+A budget records `fidelity` (4.2): core.fidelity.combine over the runs it made (`fake` on the fake CARLA).
+
 ## Limits
 
 - **Step quantisation.** Every latency is rounded *up* to whole simulation steps: at 20 Hz, 1 ms and 50 ms are the
@@ -127,4 +129,7 @@ Falcon's built-in follower, **not a real vehicle or stack**; they show the mecha
   nothing of its own latency (no compensation).
 - A real ROS 2 stack under `falcon stack` already takes real time, which the synchronous simulation hides by waiting
   for it; the delay line adds a simulated latency on top, it does not measure the stack's own.
-- The tests use the fake CARLA; no real server was run for this feature.
+- The tests use the fake CARLA; no real server was run for this feature. On the fake, a large rig (the default
+  1280 × 720 camera with semantic labels) costs about 2.4 s per step to render (the fake ray-casts every pixel in
+  numpy, 1.2 s per 1280 × 720 frame measured), so a budget's dozens of runs take very long there: the tab says so and
+  suggests a small rig.

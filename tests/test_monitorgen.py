@@ -411,18 +411,19 @@ def test_deployment_on_a_fake_transport_never_runs_sudo_or_systemctl(bench, caps
     tr = _Transport()
     out = MG.deploy(pkg, transport=tr)
     assert out['remote_dir'] == '~/falcon-monitor/india' and out['selftest'] == 'falcon-monitor ok 12'
-    assert tr.commands[0] == 'mkdir -p "$HOME"/falcon-monitor/india'
+    assert tr.commands[0].startswith('if [ -d "$HOME"/falcon-monitor/india ]')      # keeps the version it replaces
+    assert tr.commands[1] == 'mkdir -p "$HOME"/falcon-monitor/india'
     assert {n for _d, n in tr.files} >= {'falcon_monitor.py', 'falcon_monitor_node.py', 'rules.json', 'mapping.json',
                                          'manifest.json', 'falcon-monitor-india.service'}
     assert all(d == '~/falcon-monitor/india' for d, _n in tr.files)
-    assert not any('sudo' in c or 'systemctl' in c for c in tr.commands) and len(tr.commands) == 2
+    assert not any('sudo' in c or 'systemctl' in c for c in tr.commands) and len(tr.commands) == 3
     assert any(c.startswith('systemctl --user enable --now falcon-monitor-india.service') for c in out['commands'])
     assert sum('sudo' in c for c in out['commands']) == 1 and out['commands'][-2].startswith('#')
     with pytest.raises(MG.MonitorGenError, match='did not load'):
         MG.deploy(pkg, transport=_Transport('Traceback: no module'))
     assert MG.main_monitor(['deploy', pkg, '--dry-run']) == 0
     text = capsys.readouterr().out
-    assert 'would copy' in text and 'Nothing was installed or started' in text and 'systemctl --user' in text
+    assert 'then copy' in text and 'Nothing was installed or started' in text and 'systemctl --user' in text
     # without a device in the settings the real transport refuses before anything is sent
     assert MG.main_monitor(['deploy', pkg]) == 2
     assert 'address is not set' in capsys.readouterr().err
@@ -579,9 +580,10 @@ def test_the_runtime_monitors_tab_offscreen(qapp, bench, tmp_path):
     rows = {tab.tree.topLevelItem(i).text(0): tab.tree.topLevelItem(i) for i in range(n)}
     assert rows['keep_left'].text(1) == 'NOT CHECKED' and rows['keep_left'].text(2) == '10 s'
     assert rows['keep_left'].text(3).startswith('stl-')
-    text = tab.commands.toPlainText()
+    text = tab.command_text()
     assert 'falcon monitor deploy' in text and 'systemctl --user enable --now falcon-monitor-india.service' in text
-    assert tab.commands.isReadOnly()
+    assert tab.dry_cmd.command.endswith('--dry-run') and tab.rollback_cmd.command.startswith('falcon monitor rollback')
+    assert tab.deploy_cmd.copy_btn.isEnabled()                       # text with a Copy button: Falcon runs none
     doc = tab.check_run(bench['run'])
     assert doc['agree']
     it = next(tab.tree.topLevelItem(i) for i in range(n) if tab.tree.topLevelItem(i).text(0) == 'speed_limit')

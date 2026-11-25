@@ -240,8 +240,14 @@ class Director:
         reasons = {}
         # the farthest actor ahead in the ego's direction: a start whose lane reaches it is preferred (actor_path
         # places an actor at the lane's end, and says so, when none does)
-        reach = max([float((a.get('place') or {}).get('ahead_m', 0.0)) for a in self.scn.get('actors') or []
-                     if (a.get('place') or {}).get('lane', 'ego') in ('ego', 'adjacent', 'line', 'kerb')] + [0.0])
+        reach = 0.0
+        for a in self.scn.get('actors') or []:
+            pl = a.get('place') or {}
+            if pl.get('lane', 'ego') in ('ego', 'adjacent', 'line', 'kerb'):
+                try:
+                    reach = max(reach, float(pl.get('ahead_m', 0.0)))
+                except (TypeError, ValueError):            # an unresolved parameter: not this choice's to judge
+                    pass
         fallback = None
         for k in list(order):
             wp = self.map.get_waypoint(spawns[k].location)

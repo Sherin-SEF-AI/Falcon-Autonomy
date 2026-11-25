@@ -1289,6 +1289,9 @@ def report(src: str):
     pg.h2('Verdict')
     sc = doc.get('score') or {}
     pairs = [('verdict', R.esc(doc['verdict'])), ('why', R.esc(doc.get('verdict_note', '')))]
+    if doc.get('fidelity'):                      # what produced the runs (core.fidelity, 4.2)
+        from . import fidelity as F
+        pairs.append(('fidelity', R.esc(f'{F.label(doc["fidelity"])}: {F.sentence(doc["fidelity"])}')))
     if doc['pack'] == 'ncap_aeb_c2c':
         for g, s in (sc.get('scenarios') or {}).items():
             pairs.append((g, R.esc(f'{s["points"]:.3f} of {s["of"]:g} points' if s['points'] is not None else
