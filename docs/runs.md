@@ -34,7 +34,7 @@ and fidelity chip, with *Send to ▸*.
 
 **Send to and the active run.** A run row's context menu (Browse, Home's recent runs) has *Send to ▸* every page
 that takes a run (Data, Replay, …). Choosing a run makes it the window's active run, with the seed, rig, scenario and
-world its run.json records (the pills in the top bar).
+world its run.json records (the pills in the page header).
 
 The summaries are cached in `<workspace>/runindex.json`, keyed by each run's path and the sizes and modification times
 of `run.json`, `frames.jsonl` and `odd-monitor.json`: a run is re-read only when one of them changed. The cache can be

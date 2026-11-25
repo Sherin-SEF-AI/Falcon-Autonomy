@@ -1,16 +1,16 @@
-"""The main window's frame: the top bar (the project, the active run/seed/rig/scenario/world as pills, the menus, the
-command search, the server and the Assistant), the navigator (its selection slides to the page chosen; each page's
-count beside it) and the page header every page shares (its title, what it is for, its next-step chips and the Focus
-button).
+"""The main window's frame: the top bar (the project, the menus, the command search, the server and the Assistant),
+the navigator (its selection slides to the page chosen; each page's count beside it) and the page header every page
+shares (its title, the active run/seed/rig/scenario/world as pills, the Focus button, what the page is for and its
+next-step chips).
 
-The top bar never overflows: the project's folder is elided in the middle (the whole path in its tooltip) and the
-context pills share what room is left — each pill's text is elided, and pills that do not fit at a readable width
-fold into a "+N" chip whose tooltip lists them."""
+The top bar never overflows: the project's folder is elided in the middle (the whole path in its tooltip). The context
+pills (owned by the top bar as TopBar.pills, shown in the header's title row) share the room right of the title — each
+pill's text is elided, and pills that do not fit at a readable width fold into a "+N" chip whose tooltip lists them."""
 from __future__ import annotations
 
 import os
 
-from PyQt6.QtCore import QEasingCurve, QRectF, QSize, Qt, QVariantAnimation
+from PyQt6.QtCore import QEasingCurve, QRectF, QSize, Qt, QTimer, QVariantAnimation
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLayout, QListWidget, QMenuBar, QPushButton, QSizePolicy,
                              QStyle, QStyledItemDelegate, QStyleOptionViewItem, QToolButton, QVBoxLayout, QWidget)
@@ -27,6 +27,10 @@ SERVER_LOOK = {                      # server state -> (status colour, pulsing)
     'ready': ('good', False), 'shared': ('good', False), 'external': ('good', False), 'fake': ('muted', False),
     'starting': ('warning', True), 'stopped': ('muted', False), 'crashed': ('critical', False),
 }
+
+
+SEARCH_TEXTS = ('  Search pages, runs and commands      Ctrl K', '  Search pages and runs    Ctrl K', '  Search    Ctrl K',
+                '  Search')
 
 
 class TopBar(QWidget):
@@ -56,8 +60,8 @@ class TopBar(QWidget):
         self.path.setObjectName('projectPath')
         self.path.setMinimumWidth(140)              # the folder stays readable; pills fold first
         h.addWidget(self.path, 1)
-        self.pills = ContextPills(win)
-        h.addWidget(self.pills)
+        self.pills = ContextPills(win)              # shown in the page header's title row (PageHeader.set_pills):
+        self.pills.hide()                           # the top bar has no room for readable pills at 1440 px
         h.addSpacing(6)
         h.addWidget(menubar)
         h.addSpacing(6)
@@ -65,7 +69,7 @@ class TopBar(QWidget):
         self.search.setObjectName('searchBox')
         self.search.setIcon(icons.icon('search', 14, THEME.tok['muted']))
         self.search.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.search.setText('  Search pages, runs and commands      Ctrl K')
+        self.search.setText(SEARCH_TEXTS[0])
         self.search.setToolTip('The command palette (Ctrl+K): every page and action by name')
         self.search.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.search.clicked.connect(lambda: win.show_palette())
@@ -87,6 +91,18 @@ class TopBar(QWidget):
         self.assistant.clicked.connect(lambda: win.show_assistant(not win.assistant_dock.isVisible(), focus=True))
         h.addWidget(self.assistant)
         THEME.changed.connect(lambda _n: self._retint())
+
+    def resizeEvent(self, ev):                                  # noqa: N802
+        super().resizeEvent(ev)
+        QTimer.singleShot(0, self._fit_search)
+
+    def _fit_search(self):
+        """The longest search wording that fits the box whole (never cut mid-word)."""
+        room = self.search.width() - self.search.iconSize().width() - 28
+        fm = self.search.fontMetrics()
+        text = next((t for t in SEARCH_TEXTS if fm.horizontalAdvance(t) <= room), SEARCH_TEXTS[-1])
+        if self.search.text() != text:
+            self.search.setText(text)
 
     def _retint(self):
         self.logo.set_color(THEME.tok['accent'])
@@ -165,8 +181,8 @@ class _Pill(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedHeight(24)
         h = QHBoxLayout(self)
-        h.setContentsMargins(8, 0, 2, 0)
-        h.setSpacing(2)
+        h.setContentsMargins(8, 0, 3, 0)
+        h.setSpacing(5)
         self.text = ElidedLabel()
         self.text.setObjectName('chipText')
         self.text.setMinimumWidth(0)
@@ -448,6 +464,8 @@ class PageHeader(QWidget):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(self.title)
+        row.addSpacing(16)
+        self.pill_slot = row                       # the window's context pills go here (set_pills), right-aligned
         row.addStretch(1)
         self.focus_btn = QToolButton()
         self.focus_btn.setObjectName('focusButton')
@@ -468,6 +486,12 @@ class PageHeader(QWidget):
         v.addLayout(self.chips)
         self.bars: dict = {}                      # page key -> its suggestion bar (shown while the page is)
         self.key = ''
+
+    def set_pills(self, pills: QWidget):
+        """The window's context pills (TopBar.pills) in the title row, between the title and the Focus button."""
+        i = self.pill_slot.indexOf(self.focus_btn)
+        self.pill_slot.insertWidget(i, pills, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.pill_slot.insertSpacing(i + 1, 8)
 
     def set_compact(self, on: bool):
         """Focus mode: the title alone; what the page is for and its chips come back on leaving."""

@@ -21,7 +21,7 @@ A response to a review of the 4.1 window. Everything was tested on the fake CARL
   scenarios open there.
 - **Connected pages.** Send to ▸ on a run's menu hands it to Data, Replay, Rare cases (scenario and seed preselected),
   Moments (indexed if needed), Fault tolerance (as offline input) or Reports (to attach as evidence); nothing starts
-  without a click. The top bar shows the active run, seed, rig, scenario and world as pills.
+  without a click. The page header shows the active run, seed, rig, scenario and world as pills.
 - **Flags with next steps.** Unverified regulation values and failed or missing fault-tolerance checks offer Jump to
   config, Attach evidence (undoable) and Run sensitivity check (the verdict re-judged at ±10 %, Falcon's band since no
   pack states one; fault tolerance also at both ends of the bracket). The document and clause show with each value.

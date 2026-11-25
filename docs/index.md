@@ -31,7 +31,7 @@ its simulator — an adapter tested on a fake, not yet on a real 0.10 server ([b
   Replay), **Improve** (Loop, Rare cases, Triage, Training, Models), **Ship** (Stack testing, Hardware, Reports) —
   and Settings and Help, each with its count beside it (worlds, rigs, your scenarios, recorded runs, models). Ctrl+0
   goes Home, Ctrl+1 … Ctrl+9 to the next nine pages; the rest by the command palette.
-- **Context pills** (top bar, after the project's folder): the run, seed, rig, scenario and world the pages are
+- **Context pills** (the page header's title row, beside the Focus button): the run, seed, rig, scenario and world the pages are
   working on, each with × to clear it; a click on the Run pill opens the run on Data. When room is short the folder is
   cut in the middle (full path in its tooltip) and pills that do not fit fold into +N.
 - **Focus mode** (View ▸ Focus mode, Ctrl+Shift+F, or the button at the right of the page header; Esc leaves): the open
@@ -480,7 +480,7 @@ other. Tested on the fake CARLA and offscreen only.
 | everywhere a run, chart or verdict is shown | a **fidelity** chip: CARLA, Fake simulator, Kinematic, Neural render, Recorded, Mixed fidelity or Fidelity unknown (runs before 4.2); a comparison across levels says it is not like for like, and a release gate refuses a verdict | [runs](runs.md) |
 | Replay ▸ Side by side | two runs on one time slider, the steps where they part marked and jumped to | [log replay](log-replay.md) |
 | a run's right-click menu ▸ Send to | hand the run to Data, Replay, Rare cases, Moments, Fault tolerance or Reports; nothing starts without a click | [runs](runs.md) |
-| top bar | the active run, seed, rig, scenario and world as pills; a click on the run opens it | — |
+| page header | the active run, seed, rig, scenario and world as pills; a click on the run opens it | — |
 | View ▸ Focus mode (Ctrl+Shift+F) | the page across the whole window, the smaller panes collapsed; Esc leaves | — |
 | Assistant | the tools each reply used, numbers from them underlined, run ids as links, a banner when no live model answers | [assistant](assistant.md) |
 | Regulation packs, Fault tolerance | each flag with Jump to config, Attach evidence and a ±10 % sensitivity check; world and rig pickers | [regulation packs](regulation-packs.md) |

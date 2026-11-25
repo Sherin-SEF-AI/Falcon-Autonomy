@@ -646,6 +646,7 @@ class MainWindow(QMainWindow):
         mv.setContentsMargins(0, 0, 0, 0)
         mv.setSpacing(0)
         self.header = PageHeader()
+        self.header.set_pills(self.top.pills)       # the context pills sit in the header's title row
         self.header.focus_btn.clicked.connect(lambda: self.set_focus_mode(not self.focus_mode))
         mv.addWidget(self.header)
         self.stack = QStackedWidget()
