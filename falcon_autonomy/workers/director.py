@@ -122,6 +122,24 @@ class Path:
         return float(self.w[int(np.clip(np.searchsorted(self.s, s), 0, len(self.w) - 1))])
 
 
+def walk(wp, d, backwards=False):
+    """(the waypoint d m along wp's lane — or against it —, the distance actually reached): the whole distance in one
+    step when the map has it, else step by step to where the lane ends (a map's road, the fake's 300 m straight)."""
+    if d <= 0:
+        return wp, 0.0
+    nxt = wp.previous(d) if backwards else wp.next(d)
+    if nxt:
+        return nxt[0], float(d)
+    cur, got = wp, 0.0
+    while got + STEP_M <= d:
+        nxt = cur.previous(STEP_M) if backwards else cur.next(STEP_M)
+        if not nxt:
+            break
+        cur = min(nxt, key=lambda n: abs(_wrap(n.transform.rotation.yaw - cur.transform.rotation.yaw)))
+        got += STEP_M
+    return cur, got
+
+
 def lane_path(wp, length, backwards=False):
     """The lane from wp, `length` m along its direction (or against it), straight-most through junctions."""
     pts, yaws, ws = [], [], []
@@ -177,6 +195,7 @@ class Director:
         self.levelk = None                # core.levelk.Controller of the actors with driver "levelk" (made on use)
         self.levelk_acts = {}             # actor key -> its level-k action for the coming tick
         self.levelk_seed = int(cfg.get('seed', 0))
+        self.placed_short = []            # actors placed nearer than their ahead_m: the lane ended (actor_path)
 
     # ------------------------------------------------------------------ lanes relative to the handedness
     def overtaking(self, wp):
@@ -219,15 +238,26 @@ class Director:
         needs = set(self.scn.get('needs') or [])
         route = self.scn.get('ego', {}).get('route', 'straight')
         reasons = {}
+        # the farthest actor ahead in the ego's direction: a start whose lane reaches it is preferred (actor_path
+        # places an actor at the lane's end, and says so, when none does)
+        reach = max([float((a.get('place') or {}).get('ahead_m', 0.0)) for a in self.scn.get('actors') or []
+                     if (a.get('place') or {}).get('lane', 'ego') in ('ego', 'adjacent', 'line', 'kerb')] + [0.0])
+        fallback = None
         for k in list(order):
             wp = self.map.get_waypoint(spawns[k].location)
             if wp is None or wp.is_junction:
                 continue
             ok, why = self.suits(wp, needs, route)
             if ok:
+                if reach > STRAIGHT_M * 0.8 and route != 'turn_across' and walk(wp, reach)[1] < reach - 0.5:
+                    fallback = fallback if fallback is not None else (k, wp)
+                    continue
                 order.remove(k)
                 return spawns[k], wp
             reasons[why] = reasons.get(why, 0) + 1
+        if fallback is not None:
+            order.remove(fallback[0])
+            return spawns[fallback[0]], fallback[1]
         raise Failed(f'no start on this map can host the scenario "{self.scn["name"]}" '
                      f'({", ".join(f"{n} starts: {r}" for r, n in reasons.items()) or "no spawn points"})')
 
@@ -312,10 +342,20 @@ class Director:
             base = self.oncoming(ego_wp)
         if base is None:
             raise Failed(f'actor {a["id"]}: the map has no {lane} lane here')
-        at = base.next(ahead)[0] if ahead > 0 else (base.previous(-ahead)[0] if ahead < 0 else base)
         if lane == 'opposite':
             # the oncoming lane: ahead_m is measured along the ego's direction, the actor drives its own lane's way
-            at = base.previous(ahead)[0] if ahead > 0 else base
+            at, got = walk(base, ahead, backwards=True) if ahead > 0 else (base, 0.0)
+        else:
+            at, got = walk(base, abs(ahead), backwards=ahead < 0)
+        want = abs(ahead) if lane != 'opposite' else max(ahead, 0.0)
+        if got < want - 0.5:                      # the lane ends first: placed at its end, said (not an IndexError)
+            self.placed_short.append({'actor': a['id'], 'lane': lane, 'ahead_m': round(ahead, 2),
+                                      'placed_m': round(got if ahead >= 0 else -got, 2)})
+            note = getattr(self.w, 'note', None)
+            if note is not None:
+                note(f'actor {a["id"]}: the {lane} lane ends {got:.0f} m from the ego\'s start, so it was placed there '
+                     f'instead of {abs(ahead):.0f} m {"ahead" if ahead >= 0 else "behind"}: the scenario\'s geometry '
+                     f'is not the one asked')
         ks = self.kerb_sign()
         half_w = at.lane_width / 2.0
         off = 0.0
@@ -1064,6 +1104,7 @@ class Director:
                                if v['actor'].id in (getattr(self.w, 'subclass', None) or {})},
                 **({'added': self.added, 'fired_added': self.fired_added} if self.added else {}),
                 **({'brake_lights': self.light_events} if self.light_events else {}),
+                **({'placed_short': self.placed_short} if self.placed_short else {}),
                 **({'perturb': self.perturb} if self.perturb else {}),
                 **({'latency': self.latency.report()} if self.latency is not None else {}),
                 **({'levelk': {'actors': sorted(k for k, v in self.actors.items() if v.get('levelk') is not None),

@@ -499,8 +499,10 @@ def budget(svc, project, scenarios: list, name: str, world: str, rig: str, *, pr
             row['budget_ms'] = {k: row['budget'] * profile['stats'][k] for k in ('median', 'p99', 'max')}
         rows.append(row)
     late = [r['case'] for r in rows if r['status'].startswith('fails only when late')]
-    doc = {'schema': BUDGET_SCHEMA, 'name': name, 'created': utc_now(), 'unit': unit, 'grid_step': gstep,
-           'grid_max': x_of(n), 'step_ms': dt_ms, 'mode': mode, 'seed': int(seed),
+    from . import fidelity as F
+    fid = F.combine(F.of_run(t['run']) for r in rows for t in r['tested'] if t.get('run'))
+    doc = {'schema': BUDGET_SCHEMA, 'fidelity': fid, 'name': name, 'created': utc_now(), 'unit': unit,
+           'grid_step': gstep, 'grid_max': x_of(n), 'step_ms': dt_ms, 'mode': mode, 'seed': int(seed),
            'criterion': {'kind': criterion, 'threshold': threshold}, 'exhaustive': bool(exhaustive),
            'world': world, 'rig': rig, 'sweep': 'constant latency' if constant else 'the profile\'s scale',
            'profile': None if constant else {k: profile.get(k) for k in ('name', 'sha256', 'measured', 'source',

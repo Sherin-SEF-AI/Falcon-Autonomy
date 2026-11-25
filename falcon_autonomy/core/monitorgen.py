@@ -5,6 +5,7 @@ monitor for the vehicle computer, so the rule that failed a run in simulation is
     falcon monitor gen (--rules india|generic|FILE [--rule ID ...] | --stl FORMULA) --out DIR | --project P [--name N]
     falcon monitor check RUN... --monitor DIR [--xodr FILE] [--json]      0 agree, 1 a disagreement, 2 failed
     falcon monitor deploy DIR [--dry-run]                                 copy to the device over SSH; prints commands
+    falcon monitor rollback DIR [--dry-run]                               restore the version the last deploy replaced
     falcon monitor bench (DIR | --rules SET) [--steps N]                  the per-step cost on THIS machine
     falcon monitor show DIR | falcon monitor list --project P
 
@@ -520,6 +521,9 @@ def check(pkg: str, runs: list, xodr: str | None = None, write: bool = True) -> 
                                                                             run=bad[0])}
     doc['rules'] = per
     doc['agree'] = bool(doc['runs']) and all(x['agree'] for x in doc['runs'])
+    from . import fidelity as F                     # an offline replay of recorded runs (4.2), theirs beside it
+    doc['fidelity'] = 'recorded'
+    doc['source_fidelity'] = F.combine(F.of_run(x['run']) for x in doc['runs'] if not x.get('error'))
     if write:
         write_json(os.path.join(pkg, 'equivalence.json'), doc)
     return doc
@@ -560,7 +564,8 @@ def status(pkg: str) -> dict:
     worst = min((x['status'] for x in rows), key=order.index)
     return {'name': man['name'], 'path': os.path.abspath(pkg), 'hash': man['hash'], 'created': man['created'],
             'status': worst, 'rules': rows, 'checked_at': (eq or {}).get('at') if fresh else None,
-            'changed_files': changed_files(pkg, man), 'source': man.get('source')}
+            'changed_files': changed_files(pkg, man), 'source': man.get('source'),
+            'check_fidelity': (eq or {}).get('source_fidelity') or 'unknown' if fresh else ''}
 
 
 def gsn_evidence(manifest_path: str) -> dict:
@@ -623,36 +628,159 @@ class SshTransport:
             raise HD.DeployError(f'copying {name} failed: {HD._clean(r.stderr or r.stdout, dev)}')
 
 
+def previous_dir(name: str) -> str:
+    """Where deploy keeps the version it replaces on the device (rollback swaps it back)."""
+    return f'{REMOTE_ROOT}/.previous/{name}'
+
+
+def _remote(path: str) -> str:
+    """A ~/… device path for a shell command: $HOME quoted apart, the rest shell-quoted."""
+    return '"$HOME"/' + shlex.quote(path[2:]) if path.startswith('~/') else shlex.quote(path)
+
+
+def validate_package(pkg: str) -> dict:
+    """Everything deploy needs, checked HERE without a device or a network (`deploy --dry-run`): the manifest
+    (schema, name, hash), every pinned file present with the manifest's SHA-256, mapping.json read by the evaluator's
+    own SignalMapper, rules.json loaded by the package's own falcon_monitor.py, and the systemd unit equal to the
+    one `gen` writes (its ExecStart and WorkingDirectory in the folder deploy copies to, no root, a user unit).
+    Returns {'ok', 'checks': [{'name', 'ok', 'detail'}], 'files': [{'name', 'bytes', 'sha256'}], 'name',
+    'remote_dir', 'previous_dir', 'unit', 'commands', 'manifest_hash'}."""
+    from .provenance import sha256_file
+    checks = []
+
+    def ck(name, ok, detail=''):
+        checks.append({'name': name, 'ok': bool(ok), 'detail': detail})
+        return ok
+    try:
+        man = read_manifest(pkg)
+    except MonitorGenError as e:
+        ck('manifest', False, str(e))
+        return {'ok': False, 'checks': checks, 'files': [], 'name': '', 'remote_dir': '', 'previous_dir': '',
+                'unit': '', 'commands': [], 'manifest_hash': ''}
+    name = str(man.get('name') or '')
+    ck('manifest', bool(_NAME.match(name)) and man.get('hash') == manifest_hash(man),
+       f'{SCHEMA}, name {name!r}, hash {str(man.get("hash"))[:16]}' if man.get('hash') == manifest_hash(man)
+       else 'the manifest\'s hash is not the hash of its contents: generate the package again')
+    bad = changed_files(pkg, man)
+    ck('pinned files', not bad, f'{len(man.get("files") or {})} files match the manifest\'s SHA-256' if not bad
+       else 'changed or missing since it was generated: ' + ', '.join(bad))
+    try:
+        with open(os.path.join(pkg, 'mapping.json'), encoding='utf-8') as fh:
+            mp = RT.SignalMapper(json.load(fh))
+        ck('mapping.json', True, f'{len(mp.entries)} signal(s) mapped (yours to edit; not pinned)')
+    except (OSError, ValueError, RT.MonitorError) as e:
+        ck('mapping.json', False, f'cannot be read by the monitor: {e}')
+    if not bad:
+        try:
+            mod, rd, _m = load_package(pkg)
+            n = len(mod.MonitorSet(rd).monitors)
+            ck('rules.json', n == len(man['rules']), f'the package\'s own evaluator loads {n} rule(s)')
+        except Exception as e:                                     # noqa: BLE001 (what the device would hit)
+            ck('rules.json', False, f'the package\'s evaluator cannot load it: {type(e).__name__}: {e}')
+    unit = man.get('unit') or f'falcon-monitor-{name}.service'
+    try:
+        with open(os.path.join(pkg, unit), encoding='utf-8') as fh:
+            text = fh.read()
+        want = f'%h/falcon-monitor/{name}'
+        ok = text == unit_text(name)
+        why = 'as gen writes it: a user unit, ' + f'WorkingDirectory {want}, no root' if ok else \
+            'differs from the unit gen writes for this name (generate again)'
+        if 'sudo' in text or 'User=root' in text:
+            ok, why = False, 'the unit asks for root'
+        ck('systemd unit', ok, f'{unit}: {why}')
+    except OSError as e:
+        ck('systemd unit', False, f'{unit} cannot be read: {e}')
+    files = []
+    for f in list(man.get('files') or {}) + ['mapping.json', 'manifest.json']:
+        fp = os.path.join(pkg, f)
+        if os.path.isfile(fp) and f not in [x['name'] for x in files]:
+            files.append({'name': f, 'bytes': os.path.getsize(fp), 'sha256': sha256_file(fp)})
+    rd = f'{REMOTE_ROOT}/{name}'
+    return {'ok': all(c['ok'] for c in checks), 'checks': checks, 'files': files, 'name': name, 'remote_dir': rd,
+            'previous_dir': previous_dir(name), 'unit': unit, 'commands': install_commands(name),
+            'manifest_hash': man.get('hash', '')}
+
+
 def deploy(pkg: str, transport=None, dev: dict | None = None, dry: bool = False) -> dict:
     """Copy the package to ~/falcon-monitor/<name> on the device and load it there once with the device's Python
-    (no ROS needed for that): {'remote_dir', 'copied', 'selftest', 'commands'}. Nothing is installed, enabled or
-    started, and nothing runs as root: `commands` is what the user runs there. dry: only the plan."""
+    (no ROS needed for that): {'remote_dir', 'copied', 'selftest', 'commands', 'previous'}. The version already
+    there (if any) is first kept in ~/falcon-monitor/.previous/<name> (rollback() restores it). Nothing is installed,
+    enabled or started, and nothing runs as root: `commands` is what the user runs there. dry: validate_package()
+    only — no SSH, no network."""
+    v = validate_package(pkg)
+    if dry:
+        return dict(v, files=[f['name'] for f in v['files']], file_info=v['files'], copied=[], selftest=None,
+                    dry_run=True, previous=None)
     man = read_manifest(pkg)
     bad = changed_files(pkg, man)
     if bad:
         raise MonitorGenError(f'{pkg}: changed since it was generated: {", ".join(bad)}')
     name = man['name']
-    rd = f'{REMOTE_ROOT}/{name}'
+    rd, prev = f'{REMOTE_ROOT}/{name}', previous_dir(name)
     files = [f for f in list(man['files']) + ['mapping.json', 'manifest.json']
              if os.path.isfile(os.path.join(pkg, f))]
-    out = {'remote_dir': rd, 'files': files, 'copied': [], 'selftest': None, 'commands': install_commands(name),
-           'dry_run': bool(dry)}
+    out = {'remote_dir': rd, 'previous_dir': prev, 'files': files, 'copied': [], 'selftest': None,
+           'commands': install_commands(name), 'dry_run': False, 'previous': None}
+    if transport is None:
+        transport = SshTransport(dev or {})
+    q, qp = _remote(rd), _remote(prev)
+    kept = transport.ssh(f'if [ -d {q} ]; then rm -rf {qp} && mkdir -p "$(dirname {qp})" && cp -a {q} {qp} && '
+                         f'echo falcon-kept; else echo falcon-none; fi')
+    out['previous'] = prev if 'falcon-kept' in (kept or '') else None
+    transport.ssh(f'mkdir -p {q}')
+    for f in files:
+        transport.put(os.path.join(pkg, f), rd, f)
+        out['copied'].append(f)
+    out['selftest'] = _selftest(transport, q, dev)
+    if 'falcon-monitor ok' not in out['selftest']:
+        raise MonitorGenError(f'the device\'s Python did not load the monitor: {out["selftest"][:200]}')
+    return out
+
+
+def _selftest(transport, quoted_dir: str, dev: dict | None) -> str:
+    py = shlex.quote(str((dev or {}).get('python') or 'python3'))
+    test = ('import falcon_monitor as m; s = m.MonitorSet(m.load_rules("rules.json")); '
+            'print("falcon-monitor ok", len(s.monitors))')
+    got = transport.ssh(f'cd {quoted_dir} && {py} -c {shlex.quote(test)}')
+    return got.strip().splitlines()[-1] if got and got.strip() else ''
+
+
+def rollback(pkg: str, transport=None, dev: dict | None = None, dry: bool = False) -> dict:
+    """Put back the version deploy kept on the device (4.2): ~/falcon-monitor/<name> and .previous/<name> are swapped
+    (so a second rollback returns to the newer one), the restored package is loaded once with the device's Python,
+    and the user unit is restarted with `systemctl --user try-restart` — which restarts it only if it is running and
+    starts nothing that was stopped; no root. Like deploy, SSH is used only when the user runs it. dry: the plan
+    only. Returns {'remote_dir', 'previous_dir', 'restored' (the restored manifest's hash, or ''), 'selftest',
+    'restart', 'commands'}."""
+    man = read_manifest(pkg)
+    name = man['name']
+    rd, prev = f'{REMOTE_ROOT}/{name}', previous_dir(name)
+    unit = man.get('unit') or f'falcon-monitor-{name}.service'
+    q, qp, qt = _remote(rd), _remote(prev), _remote(f'{REMOTE_ROOT}/.rollback-{name}')
+    swap = (f'[ -d {qp} ] || {{ echo falcon-no-previous; exit 0; }}; rm -rf {qt} && '
+            f'{{ [ -d {q} ] && mv {q} {qt} || true; }} && mv {qp} {q} && {{ [ -d {qt} ] && mv {qt} {qp} || true; }} '
+            f'&& echo falcon-swapped')
+    restart = f'systemctl --user try-restart {shlex.quote(unit)}'
+    out = {'remote_dir': rd, 'previous_dir': prev, 'unit': unit, 'restored': '', 'selftest': None, 'restart': None,
+           'dry_run': bool(dry), 'plan': [swap, f'cd {q} && <the device\'s python> -c <load the rules>', restart],
+           'commands': [f'systemctl --user status {unit}']}
     if dry:
         return out
     if transport is None:
         transport = SshTransport(dev or {})
-    quoted = '"$HOME"/' + shlex.quote(rd[2:])
-    transport.ssh(f'mkdir -p {quoted}')
-    for f in files:
-        transport.put(os.path.join(pkg, f), rd, f)
-        out['copied'].append(f)
-    py = shlex.quote(str((dev or {}).get('python') or 'python3'))
-    test = ('import falcon_monitor as m; s = m.MonitorSet(m.load_rules("rules.json")); '
-            'print("falcon-monitor ok", len(s.monitors))')
-    got = transport.ssh(f'cd {quoted} && {py} -c {shlex.quote(test)}')
-    out['selftest'] = got.strip().splitlines()[-1] if got.strip() else ''
+    got = transport.ssh(swap) or ''
+    if 'falcon-swapped' not in got:
+        raise MonitorGenError(f'nothing to roll back to: the device has no {prev} (deploy keeps the version it '
+                              'replaces from 4.2 on)')
+    try:
+        out['restored'] = json.loads(transport.ssh(f'cat {q}/manifest.json') or '{}').get('hash', '')
+    except ValueError:
+        out['restored'] = ''
+    out['selftest'] = _selftest(transport, q, dev)
     if 'falcon-monitor ok' not in out['selftest']:
-        raise MonitorGenError(f'the device\'s Python did not load the monitor: {out["selftest"][:200]}')
+        raise MonitorGenError(f'the restored monitor does not load on the device: {out["selftest"][:200]} (the '
+                              'newer one is kept in ' + prev + ': roll back again to return to it)')
+    out['restart'] = (transport.ssh(restart) or '').strip()
     return out
 
 
@@ -732,7 +860,12 @@ def main_monitor(argv) -> int:
     d = sub.add_parser('deploy', help='copy the package to the device over SSH (settings: the HIL device); prints '
                                       'the systemctl commands, runs none')
     d.add_argument('monitor')
-    d.add_argument('--dry-run', action='store_true', help='only say what would be copied and the commands')
+    d.add_argument('--dry-run', action='store_true', help='validate the package here (files, unit, manifest) and '
+                                                          'print what would be copied and enabled; no SSH')
+    rb = sub.add_parser('rollback', help='restore the version the last deploy replaced on the device and restart '
+                                         'its user unit if it is running (over SSH; no root)')
+    rb.add_argument('monitor')
+    rb.add_argument('--dry-run', action='store_true', help='print what would be run on the device; no SSH')
     b = sub.add_parser('bench', help='the monitor\'s per-step cost on this machine')
     b.add_argument('monitor', nargs='?', default='')
     b.add_argument('--rules', default='', help='a rule set instead of a package')
@@ -787,20 +920,44 @@ def main_monitor(argv) -> int:
                 print('the generated monitor equals the offline checker' if doc['agree'] else
                       'the generated monitor does NOT equal the offline checker')
             return 0 if doc['agree'] else 1
-        if a.action == 'deploy':
+        if a.action in ('deploy', 'rollback'):
             dev = None
             if not a.dry_run:
                 from .hil import device_settings
                 from .settings import Settings
                 dev = device_settings(Settings())
+            if a.action == 'rollback':
+                out = rollback(a.monitor, dev=dev, dry=a.dry_run)
+                if a.dry_run:
+                    print(f'would swap {out["remote_dir"]} and {out["previous_dir"]} on the device, load the '
+                          f'restored monitor once and restart {out["unit"]} if it is running:')
+                    for cmd in out['plan']:
+                        print('  ' + cmd)
+                    print('Nothing was run (dry run: no SSH).')
+                else:
+                    print(f'restored {out["previous_dir"]} as {out["remote_dir"]} (manifest '
+                          f'{(out["restored"] or "?")[:16]}); the device loaded it: {out["selftest"]}; '
+                          f'try-restart: {out["restart"] or "done (it restarts only a running unit)"}')
+                    print(f'The newer version is now in {out["previous_dir"]}: roll back again to return to it.')
+                return 0
             out = deploy(a.monitor, dev=dev, dry=a.dry_run)
             if a.dry_run:
-                print(f'would copy {len(out["files"])} files to {out["remote_dir"]} on the device: '
-                      + ', '.join(out['files']))
+                for c in out['checks']:
+                    print(f'  {"ok  " if c["ok"] else "FAIL"} {c["name"]}: {c["detail"]}')
+                if not out['ok']:
+                    print('not deployable as it is (nothing was sent: a dry run uses no SSH)')
+                    return 2
+                print(f'would keep the version on the device (if any) in {out["previous_dir"]}, then copy '
+                      f'{len(out["files"])} files to {out["remote_dir"]}:')
+                for f in out['file_info']:
+                    print(f'  {f["name"]:34s} {f["bytes"]:>8d} B  sha256 {f["sha256"][:16]}')
+                print('and load it once with the device\'s python3. Nothing would be installed, enabled or started; '
+                      'nothing was sent (dry run: no SSH).')
             else:
                 print(f'copied {len(out["copied"])} files to {out["remote_dir"]}; the device loaded the monitor: '
-                      f'{out["selftest"]}')
-            print('Nothing was installed or started. On the device, run:')
+                      f'{out["selftest"]}' + (f'; the version it replaced is kept in {out["previous"]}'
+                                              if out['previous'] else ''))
+            print('Nothing was installed or started. On the device, run (this enables the unit):')
             for cmd in out['commands']:
                 print('  ' + cmd)
             return 0
