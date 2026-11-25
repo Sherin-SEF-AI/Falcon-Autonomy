@@ -58,7 +58,9 @@ def test_a_failure_rate_estimated_on_the_cluster_records_where_it_ran(tmp_path, 
     assert all(len(g) == 20 for g in w['gids']) and w['pools'] == ['default'] and w['kinds'] == ['local']
     assert ev['sha256'] == G._sha(os.path.join(sd, 'failure-rate.json'))           # bound by hash like a local one
     v = G.verify(ws, doc)
-    assert v['nodes']['Sn1']['status'] == 'green' and v['nodes']['Sn1']['where'] == w
+    # 4.2: the estimate records its fidelity (the fake simulator here), so it verifies amber at best
+    assert v['nodes']['Sn1']['status'] == 'amber' and v['nodes']['Sn1']['where'] == w
+    assert 'not a real simulator' in json.dumps(v['nodes']['Sn1'])
     assert G.where_text(w).startswith('on the cluster (node-a ') and f'; {w["runs"]} jobs)' in G.where_text(w)
     # one of its runs made again elsewhere (its node block changed): amber until re-bound
     rows = [json.loads(x) for x in open(os.path.join(sd, 'results.jsonl'))]
@@ -69,7 +71,8 @@ def test_a_failure_rate_estimated_on_the_cluster_records_where_it_ran(tmp_path, 
     r = G.verify(ws, doc)['nodes']['Sn1']
     assert r['status'] == 'amber' and 'node-z 1' in r['why'] and 're-bind' in r['why']
     G.bind(ws, doc, 'Sn1', 'failrate', 'studies/rate-c')
-    assert G.verify(ws, doc)['nodes']['Sn1']['status'] == 'green'
+    r = G.verify(ws, doc)['nodes']['Sn1']                   # re-bound: only the fake-simulator amber remains
+    assert r['status'] == 'amber' and 'node-z' not in r['why'] and 'not a real simulator' in r['why']
     sotif = G.template('sotif', ws)
     texts = [n['text'] for n in sotif['nodes'] if (n.get('evidence') or {}).get('ref') == 'studies/rate-c']
     assert texts and 'on the cluster (node-a' in texts[0]
