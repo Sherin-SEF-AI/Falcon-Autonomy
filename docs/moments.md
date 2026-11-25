@@ -126,6 +126,10 @@ Every indexed source records its **fidelity** (`runs.fidelity` in the store: a r
 `unknown` before 4.2 —, `recorded` for an imported log or a near-miss ranking); every hit carries it. A store
 written before 4.2 gains the column when it is opened, filled from the runs' `run.json` (no run is read again).
 
+- In the **command palette** (Ctrl+K), a query the index understands (`cut-in ttc<1.5`, `pedestrian crossing`) lists
+  its five best full matches under *Moments*; Enter opens the run on Data at the moment's time (a log's moment: the
+  log on Replay). A query that means every moment (no recognised word) adds none; near-miss clips are not listed.
+
 ## Exposure
 
 `falcon moments stats WS [--by tod|weather|world|source]` prints how often each type occurs per hour of indexed

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QInputDialog, QLineEdit, QMessageBox
 
-from .widgets import Form, Section, button, label
+from .widgets import CommandBlock, Form, Section, button, label
 
 
 class HardwareSection(Section):
@@ -39,6 +39,9 @@ class HardwareSection(Section):
         self.add(b)
         self.confirmed = label('', muted=True, small=True, wrap=True, sel=True)
         self.add(self.confirmed)
+        self.add(CommandBlock('falcon hil setup', 'Prints the privileged commands (vcan, a CAN adapter, V4L2 loopback, '
+                                                  'PTP) and their undo; Hardware ▸ Setup commands shows them too. '
+                                                  'Falcon runs none.'))
         self.show_confirmed()
 
     def show_confirmed(self):

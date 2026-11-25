@@ -138,6 +138,17 @@ class CommandPalette(QDialog):
                 it.setToolTip(f'{title}: {e["title"]}' + (f' — {e["sub"]}' if e.get('sub') else ''))
                 self.list.addItem(it)
                 n += 1
+        from .search import moment_entries
+        hits = moment_entries(self.win, text) if text.strip() else []
+        for k, e in enumerate(hits):                   # what the moments index found for the query (core.moments)
+            it = QListWidgetItem(icons.icon(KINDS['moment'][1], 14), e['title'])
+            it.setData(Qt.ItemDataRole.UserRole, e)
+            if k == 0:
+                it.setData(GROUP_ROLE, KINDS['moment'][0])
+            it.setData(SUB_ROLE, e['sub'])
+            it.setToolTip(f'Moment: {e["title"]} — {e["sub"]} (opens the run at that time)')
+            self.list.addItem(it)
+            n += 1
         if text.strip() and getattr(self.win, 'assistant_panel', None) is not None and \
                 self.win.assistant.cfg()['enabled']:                    # the request itself, to the assistant
             q = text.strip()

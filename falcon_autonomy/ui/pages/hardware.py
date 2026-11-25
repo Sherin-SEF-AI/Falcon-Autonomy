@@ -163,6 +163,7 @@ class HardwarePage(Page):
         pv.addWidget(self._v4l2_section())
         pv.addWidget(self._can_section())
         pv.addWidget(self._clock_section())
+        pv.addWidget(self._setup_section())
         pv.addStretch(1)
         self.monitors = optional_tab(pv, 'ui.monitor_tab', 'MonitorTab', 'Runtime monitors', self)   # 4.1
         self.latency = optional_tab(pv, 'ui.latency_tab', 'LatencyTab', 'Latency budget', self)      # 4.1
@@ -445,6 +446,44 @@ class HardwarePage(Page):
         self.show_can_status()
         return sec
 
+    def _setup_section(self) -> QWidget:
+        """The privileged commands for vcan, a CAN adapter, the Orin's CAN, V4L2 loopback and PTP (hil.cli.setup_text,
+        what `falcon hil setup` prints), each block with Copy, and the undo beside them. Falcon runs none."""
+        from ..widgets import CommandBlock, Details
+        sec = Section('Setup commands', 'Falcon never runs these: each needs root, so copy the ones you want into a '
+                                        'terminal yourself (falcon hil setup prints the same).')
+        box = QWidget()
+        bv = QVBoxLayout(box)
+        bv.setContentsMargins(0, 0, 0, 0)
+        self.setup_cmd = CommandBlock('', 'vcan0, a USB-CAN adapter, the Orin\'s CAN, V4L2 loopback devices and PTP: '
+                                          'copy the lines you want; every part is optional')
+        self.setup_undo = CommandBlock('', 'Undo: removes vcan0 and unloads v4l2loopback')
+        bv.addWidget(label('Set up', h=True))
+        bv.addWidget(self.setup_cmd)
+        bv.addWidget(label('Undo', h=True))
+        bv.addWidget(self.setup_undo)
+        self.setup_details = Details(box, 'Show the commands')
+        self.setup_details.toggled.connect(lambda on: self.fill_setup() if on else None)
+        sec.add(self.setup_details)
+        self.fill_setup()
+        return sec
+
+    def fill_setup(self):
+        """The setup and undo commands for the CAN interface chosen (a real adapter's name, else can0)."""
+        import re
+        from ...hil.cli import setup_text
+        can = self.can_if.currentText().strip() if hasattr(self, 'can_if') else ''
+        if not re.match(r'^[A-Za-z0-9_.:-]{1,15}$', can) or can.startswith(('sim:', 'vcan')):
+            can = 'can0'
+        iface = (self.win.settings.get('hil_ptp') or {}).get('interface') or ''
+        try:
+            text = setup_text(can, iface)
+        except ValueError:
+            text = setup_text()
+        body, _, undo = text.partition('## Undo')
+        self.setup_cmd.set_command(body.strip())
+        self.setup_undo.set_command(undo.strip())
+
     def _clock_section(self) -> QWidget:
         from ...core.ptp import SOURCES
         sec = Section('Clock source', 'The offset between this machine\'s clock and the device\'s: from PTP when both '
@@ -541,8 +580,8 @@ class HardwarePage(Page):
         if path:
             with open(path, 'w', encoding='utf-8') as fh:
                 fh.write(ptp.ptp4l_conf(profile, iface))
-            self.ptp_info.setText(f'Written for {iface}. Install it yourself: falcon hil setup prints the commands '
-                                  '(Falcon runs none of them).')
+            self.ptp_info.setText(f'Written for {iface}. Install it yourself: Setup commands (below) has the '
+                                  'commands to copy (Falcon runs none of them).')
 
     def can_config(self):
         """The session's CAN section (core.hil.can_section), or None when the loop is off."""

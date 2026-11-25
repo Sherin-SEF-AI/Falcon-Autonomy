@@ -20,7 +20,7 @@ from ..core import deploy as DP
 from ..core.jobs import FINAL, JobSpec
 from ..core.paths import tilde
 from .theme import STATUS
-from .widgets import Form, KeyValues, Section, button, label, scroll
+from .widgets import CommandBlock, Details, Form, KeyValues, Section, button, label, scroll
 
 COLUMNS = ('Engine', 'Median (ms)', 'p95 (ms)', 'Throughput (qps)', 'Power (W)', 'Energy (mJ, est.)', 'AP [95 %]',
            'AP / reference [95 %]', 'Gate')
@@ -115,6 +115,18 @@ class DeployTab(QWidget):
         b.addWidget(button('Check the device', self.check))
         b.addStretch(1)
         sec.add(b)
+        cbox = QWidget()                     # the same from a terminal: the job's command and the device check
+        cv = QVBoxLayout(cbox)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.addWidget(label('Build, profile, score and gate', h=True))
+        self.cmd_all = CommandBlock('', 'What the main button queues, with the choices above (OUT: a new folder)')
+        cv.addWidget(self.cmd_all)
+        cv.addWidget(label('Check the device first (changes nothing)', h=True))
+        self.cmd_check = CommandBlock('', 'What the device has: TensorRT, trtexec, power rails, power mode')
+        cv.addWidget(self.cmd_check)
+        self.cmd_details = Details(cbox, 'From a terminal')
+        self.cmd_details.toggled.connect(lambda on: self.show_commands() if on else None)
+        sec.add(self.cmd_details)
         lv.addWidget(sec)
         self.state = KeyValues(('Job',))
         lv.addWidget(self.state)
@@ -210,6 +222,30 @@ class DeployTab(QWidget):
         if p:
             self.gate.setText(p)
 
+    def all_args(self, out: str, mid: str, runs: list, cal: list, prec: list) -> list:
+        """The `falcon deploy all` arguments for the choices above."""
+        argv = ['all', self.win.project.path or 'PROJECT.falcon.json', '--model', mid, '--out', out, '--device',
+                self.device.currentData(), '--precision', ','.join(prec), '--calib-count',
+                str(self.calib_count.value()), '--every', str(self.every.value()), '--runs', str(self.runs_n.value()),
+                '--boot', str(self.boot.value())]
+        if self.dla.currentData() is not None:
+            argv += ['--dla', str(self.dla.currentData())]
+        if self.gate.text().strip():
+            argv += ['--gate', self.gate.text().strip()]
+        for r in runs:
+            argv += ['--run', r]
+        for r in cal:
+            argv += ['--calib-run', r]
+        return argv
+
+    def show_commands(self):
+        import shlex
+        prec = [p for p, c in self.prec.items() if c.isChecked()]
+        argv = self.all_args('OUT', self.model.currentData() or 'MODEL_ID', self._checked(self.ev_runs) or ['RUN'],
+                             self._checked(self.cal_runs), prec)
+        self.cmd_all.set_command('falcon deploy ' + ' '.join(shlex.quote(a) for a in argv))
+        self.cmd_check.set_command(f'falcon deploy check --device {self.device.currentData()}')
+
     def run_all(self):
         mid = self.model.currentData()
         runs, cal = self._checked(self.ev_runs), self._checked(self.cal_runs)
@@ -227,17 +263,7 @@ class DeployTab(QWidget):
         while os.path.exists(out):
             out, k = f'{base}-{k}', k + 1
         os.makedirs(out)
-        argv = ['all', self.win.project.path, '--model', mid, '--out', out, '--device', self.device.currentData(),
-                '--precision', ','.join(prec), '--calib-count', str(self.calib_count.value()), '--every',
-                str(self.every.value()), '--runs', str(self.runs_n.value()), '--boot', str(self.boot.value())]
-        if self.dla.currentData() is not None:
-            argv += ['--dla', str(self.dla.currentData())]
-        if self.gate.text().strip():
-            argv += ['--gate', self.gate.text().strip()]
-        for r in runs:
-            argv += ['--run', r]
-        for r in cal:
-            argv += ['--calib-run', r]
+        argv = self.all_args(out, mid, runs, cal, prec)
         where = 'the simulated device' if self.device.currentData() == 'sim' else 'the Jetson'
         self._submit(argv, f'Deploy {self.model.currentText()} on {where}')
 
