@@ -38,6 +38,7 @@ def test_drive_records_frames_labels_and_run_json(project, tmp_path):
     run = json.loads((out / 'run.json').read_text())
     assert run['status'] == 'ok' and run['exit_code'] == 0 and run['provenance']['seed'] == 1
     assert run['provenance']['host']['carla_server'] == '0.9.16'
+    assert run['provenance']['fidelity'] == 'fake'             # core.fidelity: the fake module says so
     perf = run['performance']
     assert perf['steps'] == 20 and perf['source'] == 'measured' and perf['mpx_per_step'] == pytest.approx(160 * 90 * 3 / 1e6, abs=1e-3)
     frames = [json.loads(x) for x in (out / 'frames.jsonl').read_text().splitlines()]

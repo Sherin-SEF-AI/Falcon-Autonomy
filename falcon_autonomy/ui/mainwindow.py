@@ -600,6 +600,9 @@ class MainWindow(QMainWindow):
         self.resize(1440, 900)
         self.actions_: dict = {}
         self.pages: list = []
+        from .context import RunContext
+        self.context = RunContext(self)          # the active run/seed/rig/scenario/world (ui.context)
+        self.send_targets: dict = {}             # page key -> (title, handler(run_path), tip): ui.context.send_to_menu
         self._closing = False
 
         from . import motion

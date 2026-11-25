@@ -153,6 +153,8 @@ class Worker:
     def finish_run(self, code: int, error=None, **extra):
         if self.carla is not None:
             self.run['provenance']['backend'] = self.compat.doc()
+            from ..core import fidelity
+            self.run['provenance'].setdefault('fidelity', fidelity.of_module(self.carla))
             rep = self.compat.report()
             if rep is not None:
                 self.run['compat'] = rep

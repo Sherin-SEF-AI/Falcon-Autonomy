@@ -55,6 +55,7 @@ import os
 import numpy as np
 
 __version__ = '0.9.16'
+FALCON_FAKE = True            # core.fidelity: runs against this module record fidelity 'fake'
 _GRAVITY = 9.81
 EARTH_R = 6378137.0
 LOG = []                       # (what, details) of every client call that changes the world; tests read it

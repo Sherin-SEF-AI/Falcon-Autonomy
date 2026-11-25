@@ -767,3 +767,170 @@ def optional_tab(host, module: str, cls: str, title: str, owner=None):
     else:
         host.addWidget(sec)
     return w
+
+
+# ------------------------------------------------------------------------------------------- 4.2 shared pieces
+def fidelity_chip(level: str) -> QLabel:
+    """How real a result is (core.fidelity), as a chip beside a run, chart or verdict; the sentence in the tooltip."""
+    from ..core import fidelity as F
+    c = chip(F.label(level), F.tone(level))
+    c.setToolTip(F.sentence(level))
+    c.setProperty('fidelity', level or 'unknown')
+    return c
+
+
+def fidelity_item(item, col: int, level: str):
+    """A tree row's fidelity in column col: the short label, the sentence as tooltip, the tone's colour."""
+    from ..core import fidelity as F
+    from .theme import STATUS, THEME
+    item.setText(col, F.label(level))
+    item.setToolTip(col, F.sentence(level))
+    t = F.tone(level)
+    if t in STATUS:
+        item.setForeground(col, QColor(THEME.status(t)))
+    return item
+
+
+def short_id(text: str, keep: int = 8) -> str:
+    """A long identifier (run id, hash, path) cut in the middle: its start and end kept, `…` between."""
+    text = str(text or '')
+    if len(text) <= 2 * keep + 1:
+        return text
+    return f'{text[:keep]}…{text[-keep:]}'
+
+
+def _copy(text: str, src: QWidget | None = None):
+    from PyQt6.QtWidgets import QApplication, QToolTip
+    QApplication.clipboard().setText(text)
+    if src is not None:
+        QToolTip.showText(src.mapToGlobal(QPoint(0, src.height())), 'Copied', src)
+
+
+class IdLabel(QLabel):
+    """An identifier shown short (short_id), in mono: the whole text in the tooltip, a click copies it."""
+
+    def __init__(self, text: str = '', keep: int = 8, parent=None):
+        super().__init__(parent)
+        self.keep = keep
+        self.setProperty('mono', True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setText(text)
+
+    def setText(self, text):                                   # noqa: N802
+        self.full = str(text or '')
+        QLabel.setText(self, short_id(self.full, self.keep))
+        self.setToolTip(f'{self.full}\nClick to copy' if self.full else '')
+
+    def mousePressEvent(self, ev):                             # noqa: N802
+        if self.full and ev.button() == Qt.MouseButton.LeftButton:
+            _copy(self.full, self)
+        super().mousePressEvent(ev)
+
+
+class IdDelegate(QStyledItemDelegate):
+    """A tree or table column of identifiers: mono, cut in the middle to fit, never widening the column. Use
+    copyable_ids() to install it — it also copies the whole id on a click and puts it in the tooltip."""
+
+    def initStyleOption(self, option, index):                 # noqa: N802
+        super().initStyleOption(option, index)
+        from PyQt6.QtGui import QFontDatabase
+        option.font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        option.textElideMode = Qt.TextElideMode.ElideMiddle
+
+
+def copyable_ids(view, *cols: int):
+    """Make columns of a QTreeWidget/QTableWidget identifier columns: middle-elided mono, the full text as tooltip,
+    a click on a cell copies its full text (Qt.ItemDataRole.UserRole + 1 if set, else the text)."""
+    d = IdDelegate(view)
+    for c in cols:
+        view.setItemDelegateForColumn(c, d)
+
+    full_role = Qt.ItemDataRole.UserRole + 1
+
+    def tree_clicked(it, col):
+        if col in cols and it is not None:
+            _copy(str(it.data(col, full_role) or it.text(col)), view.viewport())
+
+    def table_clicked(row, col):
+        it = view.item(row, col)
+        if col in cols and it is not None:
+            _copy(str(it.data(full_role) or it.text()), view.viewport())
+
+    if hasattr(view, 'topLevelItemCount'):
+        view.itemClicked.connect(tree_clicked)
+    elif hasattr(view, 'cellClicked'):
+        view.cellClicked.connect(table_clicked)
+    return d
+
+
+class CommandBlock(QFrame):
+    """A shell command to run yourself: mono, selectable, with a Copy button (and its tooltip saying what it does).
+    Falcon never runs it — the block is text."""
+
+    def __init__(self, command: str, what: str = '', parent=None):
+        super().__init__(parent)
+        self.setObjectName('commandBlock')
+        self.setProperty('card', True)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(10, 6, 6, 6)
+        self.text = label('', mono=True, sel=True, wrap=True)
+        h.addWidget(self.text, 1)
+        self.copy_btn = button('Copy', lambda: _copy(self.command, self.copy_btn), tip='Copy the command')
+        h.addWidget(self.copy_btn, 0, Qt.AlignmentFlag.AlignTop)
+        self.set_command(command, what)
+
+    def set_command(self, command: str, what: str = ''):
+        self.command = command
+        self.text.setText(command)
+        self.setToolTip(what)
+
+
+class Details(QWidget):
+    """A collapsed drawer under a compact summary: a *Details ▸* toggle shows its body (text or a widget) in place —
+    the long explanation stays one click away instead of filling the page."""
+
+    toggled = pyqtSignal(bool)
+
+    def __init__(self, body: str | QWidget = '', title: str = 'Details', expanded: bool = False, parent=None):
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(4)
+        self.title = title
+        self.toggle_btn = QPushButton()
+        self.toggle_btn.setProperty('role', 'link')
+        self.toggle_btn.setFlat(True)
+        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_btn.clicked.connect(lambda: self.set_expanded(not self.expanded))
+        v.addWidget(self.toggle_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        if isinstance(body, QWidget):
+            self.body = body
+        else:
+            self.body = label(body, muted=True, small=True, wrap=True, sel=True)
+        v.addWidget(self.body)
+        self.set_expanded(expanded)
+
+    def set_text(self, text: str):
+        if isinstance(self.body, QLabel):
+            self.body.setText(text)
+
+    def set_expanded(self, on: bool):
+        self.expanded = bool(on)
+        self.body.setVisible(self.expanded)
+        self.toggle_btn.setText(f'{self.title} {"▾" if self.expanded else "▸"}')
+        self.toggled.emit(self.expanded)
+
+
+def action_callout(text: str, tone: str = 'warning', actions=()) -> QFrame:
+    """A callout (a flag that must not be missed) with the next steps as buttons beside it: actions is a sequence of
+    (label, slot) or (label, slot, tooltip). A flag then leads somewhere: Jump to config, Attach evidence, Run a
+    sensitivity check …"""
+    f = callout(text, tone)
+    h = f.layout()
+    f.buttons = []
+    for a in actions:
+        lab, slot = a[0], a[1]
+        b = button(lab, slot, tip=a[2] if len(a) > 2 else '')
+        h.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
+        f.buttons.append(b)
+    return f

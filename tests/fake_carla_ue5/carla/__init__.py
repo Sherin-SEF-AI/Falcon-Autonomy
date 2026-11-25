@@ -30,6 +30,7 @@ with open(_BASE, encoding='utf-8') as _fh:
 __doc__ = _DOC
 
 __version__ = '0.10.0'
+FALCON_FAKE = True
 STATE['server_version'] = '0.10.0'                                  # noqa: F821 (defined by the 0.9.16 fake)
 MAPS = ('Town10HD_Opt', 'Mine_01')
 
