@@ -1,7 +1,9 @@
 """Replay: import a real log (nuScenes, Waymo v2, a ROS 2 bag, KITTI raw, a Falcon run), see where it goes in a world
 and how well its road matches, see its trajectories top-down over time, edit what-if changes, replay the original and
 the changed log in CARLA as jobs, and compare them (core.logreplay; docs/log-replay.md); and reconstruct the log's own
-appearance to look at it from poses it never took (recon_panel; core.recon; docs/reconstruction.md)."""
+appearance to look at it from poses it never took (recon_panel; core.recon; docs/reconstruction.md). Side by side
+(ui.replay_sync, core.logreplay.sync): any two runs on one time slider with their divergences marked —
+compare_runs(run_a, run_b) is the way in for other pages (Release gate, Send to)."""
 from __future__ import annotations
 
 import json
@@ -10,11 +12,12 @@ import re
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLineEdit, QSlider, QSpinBox,
-                             QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLineEdit, QSlider,
+                             QSpinBox, QSplitter, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ...core.jobs import FINAL
 from ..theme import STATUS, THEME
+from ..runfid import FidelitySlot, fidelity_of, fit_rows, likeness, set_run_context
 from ..widgets import Form, KeyValues, Page, Section, button, label, optional_tab, scroll
 
 KINDS = (('', 'Detect from the path'), ('nuscenes', 'nuScenes (JSON tables)'), ('waymo', 'Waymo Open Dataset v2'),
@@ -124,7 +127,8 @@ class ReplayPage(Page):
         lv = QVBoxLayout(left)
 
         sec = Section('Log', 'Imported logs live in the workspace (logs/<name>/log.json): the trajectories only, never '
-                             'the dataset\'s images or points.')
+                             'the dataset\'s images or points. A dataset\'s log is Recorded; a Falcon run keeps its '
+                             'own run\'s fidelity.')
         f = Form()
         self.kind = QComboBox()
         for k, text in KINDS:
@@ -152,6 +156,16 @@ class ReplayPage(Page):
         sec.add(b)
         self.info = KeyValues(('Log', 'Source', 'Duration', 'Actors', 'Map', 'Left out'))
         sec.add(self.info)
+        fr = QWidget()
+        frh = QHBoxLayout(fr)
+        frh.setContentsMargins(0, 0, 0, 0)
+        frh.addWidget(label('Fidelity', muted=True))
+        self.log_fid = FidelitySlot('unknown')          # recorded (a dataset's log), else the source run's
+        frh.addWidget(self.log_fid)
+        frh.addStretch(1)
+        self.log_fid_row = fr
+        fr.hide()                                       # until a log is loaded
+        sec.add(fr)
         lv.addWidget(sec)
 
         sec = Section('World and placement', 'A log recorded in a world replays on its own roads; a geo-located log in '
@@ -224,8 +238,9 @@ class ReplayPage(Page):
         lv.addStretch(1)
         split.addWidget(scroll(left))
 
-        right = QWidget()
-        rv = QVBoxLayout(right)
+        self.right = right = QTabWidget()
+        plan = QWidget()
+        rv = QVBoxLayout(plan)
         rv.addWidget(label('Trajectories (the replay\'s, with the changes)', h=True))
         self.view = TopDown()
         rv.addWidget(self.view, 1)
@@ -235,22 +250,48 @@ class ReplayPage(Page):
         b = QHBoxLayout()
         b.addWidget(button('Replay the original', lambda: self.run('original')))
         b.addWidget(button('Replay with the changes', lambda: self.run('changed'), role='primary'))
-        b.addWidget(button('Compare', self.do_compare))
+        b.addWidget(button('Compare', self.do_compare,
+                           tip='The original and the changed replay side by side on one slider, with the numbers'))
         b.addStretch(1)
         rv.addLayout(b)
         self.state = KeyValues(('Original', 'Changed', 'State'))
         rv.addWidget(self.state)
-        rv.addWidget(label('Comparison (paired by step; changed − original)', h=True))
+        right.addTab(plan, 'Plan')
+        # ---- side by side: two runs on one slider, divergences marked (ui.replay_sync), and the numbers
+        from ..replay_sync import SyncCompare
+        cmp_ = QWidget()
+        cv = QVBoxLayout(cmp_)
+        self.sync = SyncCompare()
+        self.sync.loaded.connect(self._sync_loaded)
+        self._want_summary = False                      # fill the numbers from the sync when it is computed
+        cv.addWidget(self.sync, 3)
+        hr = QHBoxLayout()
+        hr.addWidget(label('Numbers (paired by step; B − A)', h=True))
+        self.cmp_fid = FidelitySlot('unknown')          # the comparison's fidelity: combine() of the two runs
+        hr.addWidget(self.cmp_fid)
+        hr.addStretch(1)
+        cv.addLayout(hr)
         self.table = QTreeWidget()
-        self.table.setHeaderLabels(['Measure', 'Original', 'Changed', 'Difference'])
+        self.table.setHeaderLabels(['Measure', 'A (original)', 'B (changed)', 'Difference'])
         self.table.setRootIsDecorated(False)
-        self.table.setMinimumHeight(170)
-        rv.addWidget(self.table)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # sized to its rows
+        hd = self.table.header()
+        hd.setStretchLastSection(False)
+        hd.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for c in (1, 2, 3):
+            hd.setSectionResizeMode(c, QHeaderView.ResizeMode.Fixed)
+            self.table.setColumnWidth(c, 100 if c < 3 else 132)
+            self.table.headerItem().setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        cv.addWidget(self.table)
         self.note = label('', muted=True, wrap=True)
-        rv.addWidget(self.note)
+        cv.addWidget(self.note)
+        right.addTab(scroll(cmp_), 'Side by side')
         split.addWidget(right)
         split.setSizes([460, 820])
         win.bridge.finished.connect(self.on_finished)
+        from ..context import register_target
+        register_target(win, 'replay', 'Replay', self.open_run,
+                        'Replay ▸ the run imported as a log (its trajectories), to change and replay it')
         self.refresh()
 
     # ---------------------------------------------------------------- logs
@@ -342,6 +383,8 @@ class ReplayPage(Page):
         self.actor.addItem('ego', 'ego')
         for a in self.log.actors:
             self.actor.addItem(f'{a.id} ({a.cls})', a.id)
+        self.log_fid.set(log_fidelity(self.log.meta))
+        self.log_fid_row.show()
         self.changes = []
         self.show_changes()
         self.replan()
@@ -498,11 +541,94 @@ class ReplayPage(Page):
             self.state.set('State', 'replay the original and the changed log first')
             return
         self.state.set('State', 'comparing…')
+        self.show_pair(a, b)
 
         def work():
             from ...core.logreplay.compare import compare
             return compare(a, [b], out_dir=os.path.join(os.path.dirname(b), os.path.basename(b) + '-comparison'))
         tasks.run(self, work, self.show_comparison, lambda e: self.state.set('State', f'compare failed: {e}'))
+
+    def compare_runs(self, run_a: str, run_b: str):
+        """Two Falcon run folders side by side: A the baseline, B the candidate, on one time slider with their
+        divergences marked (ui.replay_sync; computed in the background — `self.sync.loaded` fires when done). The
+        numbers below are the replay comparison when both are replays of one log (core.logreplay.compare), else
+        what both recorded (core.logreplay.sync's summary). Other pages: `win.go('replay').compare_runs(a, b)`."""
+        from .. import tasks
+        a, b = os.path.abspath(run_a), os.path.abspath(run_b)
+        if self.win.page('replay') is self and self.win.stack.currentWidget() is not self:
+            self.win.go('replay')
+        self.show_pair(a, b)
+        both_replays = all(os.path.isfile(os.path.join(d, 'replay.json')) for d in (a, b))
+        if not both_replays:
+            self._want_summary = True
+            return
+
+        def work():
+            from ...core.logreplay.compare import compare
+            return compare(a, [b])
+
+        def fail(e):
+            if self.sync.paths != (a, b):
+                return
+            self._want_summary = f'not a paired replay comparison ({e}).'
+            if self.sync.data is not None:
+                self._sync_loaded(self.sync.data)
+        tasks.run(self, work, self.show_comparison, fail)
+
+    def show_pair(self, a: str, b: str):
+        """Open Side by side on runs a and b (their fidelity and like-for-like notice at once, the views when the
+        synchronisation is computed)."""
+        self.comparison = None
+        self._want_summary = False
+        self.table.clear()
+        self.note.setText('')
+        self.right.setCurrentIndex(1)
+        set_run_context(self.win, b)
+        self._show_fidelity([fidelity_of(a), fidelity_of(b)])
+        self.sync.load(a, b)
+
+    def _show_fidelity(self, levels):
+        from ...core import fidelity as F
+        self.cmp_fid.set(F.combine(levels))
+        tone, why = likeness(levels)
+        self.cmp_fid.setToolTip(f'Not like for like: {why}' if tone == 'critical' else why)
+
+    def _sync_loaded(self, d):
+        want, self._want_summary = self._want_summary, False
+        if not want or d is None or self.comparison is not None:
+            return
+        sa, sb = d['summary']['a'], d['summary']['b']
+
+        def fmt(v):
+            return '—' if v is None else (f'{v:.3f}' if isinstance(v, float) else str(v))
+
+        def diff(x, y):
+            if x is None or y is None:
+                return '—'
+            return f'{float(y) - float(x):+.3f}'
+        rows = [('Collision (boxes overlap)', 'collision'), ('Minimum TTC, s', 'min_ttc_s'),
+                ('Ego path, m', 'ego_path_m'), ('Duration, s', 'duration_s'), ('Actors', 'actors')]
+        for text, key in rows:
+            x, y = sa.get(key), sb.get(key)
+            if isinstance(x, bool):
+                x, y = float(x), float(y)
+            self._row(text, fmt(x), fmt(y), diff(x, y))
+        sm = d['summary']
+        self._row('Ego position, largest difference (m)', '', '',
+                  '—' if sm['max_gap_m'] is None else f'{sm["max_gap_m"]:.3f} at {sm["max_gap_t"]:.2f} s')
+        why = want if isinstance(want, str) else 'not a paired replay comparison.'
+        self.note.setText(f'What both runs recorded, on one clock: {why} One pair, no interval. ' + ' '.join(d['notes']))
+
+    def _row(self, text, a, b, diff):
+        it = QTreeWidgetItem([text, a, b, diff])
+        from ..theme import mono
+        for c in (1, 2, 3):
+            it.setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            it.setFont(c, mono(12))
+            it.setToolTip(c, it.text(c))
+        self.table.addTopLevelItem(it)
+        fit_rows(self.table, self.table.topLevelItemCount())
+        return it
 
     def show_comparison(self, doc):
         self.comparison = doc
@@ -512,11 +638,36 @@ class ReplayPage(Page):
         def fmt(v):
             return '—' if v is None else (f'{v:.3f}' if isinstance(v, float) else str(v))
         for key, text in SHOWN_METRICS:
-            it = QTreeWidgetItem([text, fmt(doc['original_metrics'].get(key)), fmt(p['metrics'].get(key)),
-                                  fmt(p['difference'].get(key))])
-            self.table.addTopLevelItem(it)
+            self._row(text, fmt(doc['original_metrics'].get(key)), fmt(p['metrics'].get(key)),
+                      fmt(p['difference'].get(key)))
         st = p['ego_step_by_step']
-        self.table.addTopLevelItem(QTreeWidgetItem(['Ego position, largest difference (m)', '', '',
-                                                    f'{fmt(st["max_position_difference_m"])} at {fmt(st["at_t"])} s']))
+        self._row('Ego position, largest difference (m)', '', '',
+                  f'{fmt(st["max_position_difference_m"])} at {fmt(st["at_t"])} s')
+        fid = doc.get('fidelity_runs') or {}
+        if fid:
+            self._show_fidelity([fid.get('original')] + list(fid.get('changed') or []))
         self.note.setText(doc.get('interval_note') or '')
         self.state.set('State', 'compared')
+
+    def open_run(self, run_path: str):
+        """Send to ▸ Replay: the Falcon run imported as a log (kind 'falcon') and chosen, ready to change and replay."""
+        self.win.go('replay')
+        k = self.kind.findData('falcon')
+        self.kind.setCurrentIndex(k if k >= 0 else 0)
+        self.path.setText(run_path)
+        self.right.setCurrentIndex(0)
+        self.do_import()
+
+
+def log_fidelity(meta: dict) -> str:
+    """A log's fidelity: what its import recorded; for a log imported before 4.2, recorded when it comes from a
+    dataset or a bag (a recording by definition) and the source run's when it is a Falcon run (unknown when that
+    run is gone)."""
+    from ...core import fidelity as F
+    lv = (meta or {}).get('fidelity')
+    if lv in F.LEVELS:
+        return lv
+    src = (meta or {}).get('source') or {}
+    if src.get('format') and src.get('format') != 'falcon':
+        return 'recorded'
+    return F.of_run(src['path']) if src.get('path') else 'unknown'

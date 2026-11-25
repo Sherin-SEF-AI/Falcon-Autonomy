@@ -257,7 +257,8 @@ def test_browse_searches_sorts_and_tags(window, qapp, monkeypatch):
     br.filter.setText('dur>abc')
     assert br.query_state.text().startswith('⚠') and not br.save_query_btn.isEnabled()
     br.filter.setText('')
-    br.runs.sortByColumn(4, Qt.SortOrder.AscendingOrder)                  # duration: 1 s before 2 s
+    from falcon_autonomy.ui.pages.data import COL
+    br.runs.sortByColumn(COL['Duration'], Qt.SortOrder.AscendingOrder)    # duration: 1 s before 2 s
     assert br.runs.topLevelItem(0).data(0, 256) == b
     br.runs.clearSelection()
     br.runs.topLevelItem(1).setSelected(True)
@@ -265,7 +266,7 @@ def test_browse_searches_sorts_and_tags(window, qapp, monkeypatch):
     br.edit_tags()
     key = os.path.join('runs', 'g-a')
     assert window.project.doc['run_tags'] == {key: ['day', 'golden']}
-    assert pump(qapp, lambda: any(br.runs.topLevelItem(i).text(6) == 'day, golden'
+    assert pump(qapp, lambda: any(br.runs.topLevelItem(i).text(COL['Tags']) == 'day, golden'
                                   for i in range(br.runs.topLevelItemCount())), 3)
     br.filter.setText('tag:golden')
     assert br.visible_runs() == [a]

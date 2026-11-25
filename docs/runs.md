@@ -25,6 +25,17 @@ knows) is indexed by `falcon_autonomy.core.runindex`:
 | rule violations | the newest saved traffic-rule check of the run (Data ▸ Browse ▸ *Save for a report*), when there is one |
 | events | `collision`, `teleport`, `odd_exit`, `failed_check`, `fault`, `rule_violation`, and the status when not `ok` |
 
+Browse's list shows Run, Date, Status, **Fidelity** and **Min TTC** first (in view without scrolling sideways at
+1440 × 900; World, Weather, Duration and Tags after them). Fidelity is how real the run is — the simulator or model
+that made it, from `provenance.fidelity` in run.json (core.fidelity: CARLA, CARLA UE5, Fake simulator, Kinematic,
+Neural render, Recorded); a run written before 4.2 reads *Fidelity unknown*, never a guess. The Run cell is the run's
+name in mono, cut in the middle; a click copies the run's folder. The chosen run's header repeats its name, folder
+and fidelity chip, with *Send to ▸*.
+
+**Send to and the active run.** A run row's context menu (Browse, Home's recent runs) has *Send to ▸* every page
+that takes a run (Data, Replay, …). Choosing a run makes it the window's active run, with the seed, rig, scenario and
+world its run.json records (the pills in the top bar).
+
 The summaries are cached in `<workspace>/runindex.json`, keyed by each run's path and the sizes and modification times
 of `run.json`, `frames.jsonl` and `odd-monitor.json`: a run is re-read only when one of them changed. The cache can be
 deleted at any time.
@@ -86,6 +97,12 @@ Data ▸ Compare (or Browse ▸ *Compare* with two to four runs selected) shows 
   traffic side): the rule violations and the ego's **lane margin** — how far its body is inside its lane — minimum and
   median (not recorded without a lane map). "never closing" for the minimum TTC means the scenario's actors were
   never on a collision course.
+- **Fidelity first.** The table's first row is each run's fidelity. When two runs are of different fidelity (a fake
+  run beside a CARLA one, a kinematic screen beside a neural render) a critical notice above the numbers says the
+  comparison is not like for like and why; a difference may come from the simulators, not from what changed. When a
+  run does not record its fidelity (before 4.2) a muted note says so.
+- *Side by side in Replay* opens A and B from above on one time slider with the steps where they part marked
+  ([log replay](log-replay.md#side-by-side-two-runs-on-one-slider)).
 
 ## Dataset health
 

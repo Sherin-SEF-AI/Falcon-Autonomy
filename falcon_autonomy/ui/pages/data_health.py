@@ -146,6 +146,15 @@ class HealthTab(QWidget):
         self.summary.clear()
         every = 'every frame' if r['every'] == 1 else f'every {r["every"]}th frame'
         self.summary.set('Drives', f'{len(r["runs"])} runs, {r["frames"]} frames ({every} read: {r["frames_read"]})')
+        from collections import Counter
+        from ...core import fidelity as F
+        from ..runfid import fidelity_of
+        levels = [fidelity_of(p) for p in r['runs']]
+        n = Counter(levels)
+        self.summary.set('Fidelity', F.label(F.combine(levels)) + ('' if len(n) < 2 else ': ' + ', '.join(
+            f'{k} {F.label(lv).lower()}' for lv, k in n.most_common())),
+            'How real the drives are (core.fidelity): one level when they agree, Mixed fidelity (with the count of '
+            'each) when they do not')
         self.summary.set('Labels', f'{r["objects"]} objects in {r["labelled_frames"]} labelled camera frames'
                          if r['labelled_frames'] else 'no box labels recorded (the rig\'s cameras need the boxes2d '
                                                       'layer)')

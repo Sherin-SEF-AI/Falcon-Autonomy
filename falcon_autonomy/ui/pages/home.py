@@ -16,8 +16,11 @@ from ...core.jobs import FINAL
 from ...core.paths import tilde
 from ...sim import server as S
 from .. import icons, motion, tasks
+from ..runfid import fidelity_of, set_run_context
 from ..theme import THEME, mono
-from ..widgets import EmptyState, KeyValues, Meter, Page, Section, Stat, button, label
+from ..widgets import EmptyState, KeyValues, Meter, Page, Section, Stat, button, fidelity_item, label
+
+RECENT_RUNS = 8                     # rows of Recent runs: all shown whole, none cut at 1280 × 800 (Data has the rest)
 
 
 def next_step(doc: dict, runs: int, evaluations: int) -> tuple[str, str, str, str]:
@@ -74,6 +77,8 @@ class StatLink(Stat):
 
     def __init__(self, caption, on_click, tip=''):
         super().__init__(caption)
+        self.sub.setWordWrap(True)                  # a long line goes to two lines rather than being cut
+        self.layout().addStretch(1)                 # the number at the top, whatever the tiles' heights
         self.on_click = on_click
         self.link_text = caption
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -145,27 +150,32 @@ class HomePage(Page):
         # ---- recent runs | the server and the machine
         mid = QHBoxLayout()
         mid.setSpacing(12)
-        runs = Section('Recent runs', 'Double-click a run to browse its frames in Data.')
+        runs = Section('Recent runs', 'Double-click a run to browse its frames in Data; right-click: Send to ▸.')
         self.runs = QTreeWidget()
-        self.runs.setHeaderLabels(['When', 'World', 'Rig', 'Steps', 'Real time', 'Status'])
+        self.runs.setHeaderLabels(['When', 'World', 'Rig', 'Steps', 'Real time', 'Status', 'Fidelity'])
         self.runs.setRootIsDecorated(False)
         self.runs.setAlternatingRowColors(True)
         hd = self.runs.header()
         hd.setStretchLastSection(False)
-        for c, mode in ((0, 'fit'), (1, 'stretch'), (2, 'stretch'), (3, 'fit'), (4, 'fit'), (5, 'fit')):
+        for c, mode in ((0, 'fit'), (1, 'stretch'), (2, 'stretch'), (3, 'fit'), (4, 'fit'), (5, 'fit'), (6, 'fit')):
             hd.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch if mode == 'stretch'
                                     else QHeaderView.ResizeMode.ResizeToContents)
         for c in (3, 4):
             self.runs.headerItem().setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.runs.headerItem().setToolTip(3, 'Simulation steps recorded')
         self.runs.headerItem().setToolTip(4, 'Simulated time over wall time while recording (1.00 × = real time)')
-        self.runs.setMinimumHeight(260)
+        self.runs.headerItem().setToolTip(6, 'How real the run is: the simulator (or model) that made it '
+                                             '(core.fidelity); "Fidelity unknown": written before 4.2')
+        self.runs.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # sized to its rows (refresh)
         self.runs.itemDoubleClicked.connect(lambda it, _c: self.open_run(it))
-        from ..assistant_dock import add_ask_menu
-        add_ask_menu(self.runs, win, lambda it: ('run', {'run': it.data(0, 256)}) if it.data(0, 256) else None)
+        self.runs.itemClicked.connect(lambda it, _c: set_run_context(win, it.data(0, 256)))
+        self.runs._ask_target = lambda it: ('run', {'run': it.data(0, 256)}) if it.data(0, 256) else None
+        self.runs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.runs.customContextMenuRequested.connect(self._run_menu)
         self.runs_empty = EmptyState('No runs yet.', 'Record a dataset', lambda: win.go('data'))
         runs.add(self.runs)
         runs.add(self.runs_empty)
+        runs.body.addStretch(1)                      # the list hugs its note; spare height goes below it
         mid.addWidget(runs, 3)
         side = QVBoxLayout()
         side.setSpacing(12)
@@ -272,7 +282,7 @@ class HomePage(Page):
         from ...core.scenarios import LIBRARY
         models = doc.get('models') or []
         tiles = {
-            'worlds': (len(worlds), f'{len(worlds) - towns} imported · {towns} CARLA town{"s" * (towns != 1)}'
+            'worlds': (len(worlds), f'{towns} town{"s" * (towns != 1)} · {len(worlds) - towns} imported'
                        if worlds else 'none yet'),
             'rigs': (len(rigs), f'{sum(len(r.get("sensors") or []) for r in rigs)} sensors in all' if rigs
                      else 'none yet'),
@@ -281,12 +291,15 @@ class HomePage(Page):
                      else 'none yet'),
             'models': (len(models), ', '.join(sorted({m.get('kind', '') for m in models} - {''})) or 'none yet'),
         }
+        tips = {'worlds': f'{towns} CARLA town(s), {len(worlds) - towns} imported (OpenStreetMap or OpenDRIVE)'}
         for k, (t, text) in self.count_btns.items():
             n, sub = tiles[k]
             t.set(n, sub=sub)
+            if k in tips:
+                t.sub.setToolTip(tips[k])
             t.link_text = f'{n} {text.lower() if n != 1 else text.lower().rstrip("s")}'
         self.runs.clear()
-        rows = every[:10]
+        rows = every[:RECENT_RUNS]
         for r in rows:
             world, _, rig = r['name'].partition(' / ')
             steps, rtf = _run_numbers(r['path'])
@@ -304,7 +317,9 @@ class HomePage(Page):
             sev = {'ok': 'good', 'failed': 'critical', 'crashed': 'critical', 'cancelled': 'warning'}.get(
                 r['status'], 'warning')
             it.setIcon(5, icons.status_icon(sev))
+            fidelity_item(it, 6, fidelity_of(r['path']))
             self.runs.addTopLevelItem(it)
+        self._fit_rows(self.runs, len(rows))
         self.runs.setVisible(bool(rows))
         self.runs_empty.setVisible(not rows)
         self.evals.clear()
@@ -334,7 +349,7 @@ class HomePage(Page):
         else:
             name, (v, lo, hi) = latest
             synthetic = 'synthetic' in (name or '').lower() or 'testing only' in (name or '').lower()
-            self.ap_tile.set(f'{v:.3f}', sub=('synthetic · ' if synthetic else '') + f'CI {lo:.3f}–{hi:.3f}',
+            self.ap_tile.set(f'{v:.3f}', sub=('synthetic · ' if synthetic else '') + f'CI\u00a0{lo:.3f}–{hi:.3f}',
                              tone='warning' if synthetic else '')
             self.ap_tile.sub.setToolTip(f'{name}: bootstrap 95 % interval {lo:.3f} – {hi:.3f}'
                                         + (' (a synthetic test model: says nothing about a real detector)'
@@ -344,6 +359,30 @@ class HomePage(Page):
         self._show_next()
         self.refresh_jobs()
         self.refresh_machine()
+
+    @staticmethod
+    def _fit_rows(tree, n):
+        from ..runfid import fit_rows
+        fit_rows(tree, n)
+
+    def _run_menu(self, pos):
+        m = self.build_run_menu(self.runs.itemAt(pos))
+        if m is not None:
+            m.popup(self.runs.viewport().mapToGlobal(pos))
+
+    def build_run_menu(self, it):
+        """A recent run's context menu: Send to ▸ (every page that takes a run) and Ask about this."""
+        from PyQt6.QtWidgets import QMenu
+        from ..context import send_to_menu
+        path = it.data(0, 256) if it is not None else ''
+        if not path:
+            return None
+        m = QMenu(self.runs)
+        m.addMenu(send_to_menu(self.win, path, exclude='home', parent=m))
+        m.addSeparator()
+        m.addAction('Ask about this', lambda: self.win.ask_about('run', run=path))
+        self.runs._ask_menu = m                      # kept alive while shown (and for the tests)
+        return m
 
     def refresh_jobs(self):
         self.jobs.clear()
@@ -441,6 +480,7 @@ class HomePage(Page):
             self.win.suggestions.dismiss(self.suggestion)
 
     def open_run(self, it):
+        set_run_context(self.win, it.data(0, 256))
         data = self.win.go('data')
         if data is not None:
             data.show_run(it.data(0, 256))
@@ -499,9 +539,13 @@ class StatusPanel(Page):
 
         runs = Section('Latest runs')
         self.runs = QTreeWidget()
-        self.runs.setHeaderLabels(['When', 'Run', 'Status', 'Steps', 'Steps/s', 'Folder'])
+        self.runs.setHeaderLabels(['When', 'Run', 'Status', 'Fidelity', 'Steps', 'Steps/s', 'Folder'])
         self.runs.setRootIsDecorated(False)
         self.runs.setMinimumHeight(180)
+        from ..widgets import copyable_ids
+        copyable_ids(self.runs, 6)                  # the folder: mono, cut in the middle, a click copies it
+        for c in (4, 5):
+            self.runs.headerItem().setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.runs.itemDoubleClicked.connect(lambda it, _c: self.open_run(it))
         runs.add(self.runs)
         v.addWidget(runs)
@@ -547,9 +591,15 @@ class StatusPanel(Page):
         if svc.catalog is not None:
             for r in svc.catalog.list('run', 12):
                 s = r['summary']
-                it = QTreeWidgetItem([r['created'].replace('T', ' ').rstrip('Z'), r['name'], r['status'],
+                it = QTreeWidgetItem([r['created'].replace('T', ' ').rstrip('Z'), r['name'], r['status'], '',
                                       str(s.get('steps', '')), str(s.get('steps_per_s', '')), tilde(r['path'])])
                 it.setData(0, 256, r['path'])
+                it.setData(6, Qt.ItemDataRole.UserRole + 1, r['path'])
+                it.setToolTip(6, f'{r["path"]}\nClick to copy')
+                fidelity_item(it, 3, fidelity_of(r['path']))
+                for c in (4, 5):
+                    it.setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    it.setFont(c, mono(12))
                 sev = {'ok': 'good', 'failed': 'critical', 'crashed': 'critical', 'cancelled': 'warning'}.get(
                     r['status'], 'warning')
                 it.setIcon(2, icons.status_icon(sev))

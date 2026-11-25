@@ -44,6 +44,7 @@ def test_replay_page_import_changes_runs_and_compare(window, qapp, tmp_path):
     page.do_import()
     assert pump(qapp, lambda: page.log is not None and page.log.meta['source']['format'] == 'ros2', 20)
     assert page.logs.count() == 1 and page.info.vals['Map'].text().startswith('carla Town10HD_Opt')
+    assert page.log.meta['fidelity'] == 'recorded' and page.log_fid.text() == 'Recorded'   # a bag: a recording
     assert page.plan is not None and page.plan['placement']['mode'] == 'matched'
     # the straight log with an actor, chosen from the workspace's logs
     os.makedirs(page.logs_dir(), exist_ok=True)
@@ -79,6 +80,11 @@ def test_replay_page_import_changes_runs_and_compare(window, qapp, tmp_path):
     rows = {page.table.topLevelItem(i).text(0): page.table.topLevelItem(i).text(3)
             for i in range(page.table.topLevelItemCount())}
     assert rows['Collision (0/1)'] in ('0.000', '1.000') and 'deterministic' in page.note.text()
+    # the comparison is also side by side on one slider (ui.replay_sync), with the runs' fidelity (the fake carla)
+    assert pump(qapp, lambda: page.sync.data is not None, 30)
+    assert page.right.currentIndex() == 1 and page.sync.fids['A'].text() == 'Fake simulator'
+    assert page.cmp_fid.text() == 'Fake simulator' and page.comparison['fidelity'] == 'fake'
+    assert not page.sync.likeness.isVisibleTo(page)
     _, changed_dir = page.jobs['changed']
     rp = json.load(open(os.path.join(changed_dir, 'replay.json')))
     assert rp['changes'][0]['op'] == 'add_pedestrian' and rp['map_match']['verdict'] == 'match'
