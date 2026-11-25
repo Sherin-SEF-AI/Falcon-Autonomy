@@ -31,7 +31,7 @@ import shlex
 
 from .provenance import utc_now
 
-SCHEMA = 'falcon.runindex/1'
+SCHEMA = 'falcon.runindex/2'      # /2 (4.2): entries carry fidelity; a /1 cache is rebuilt
 CACHE_FILE = 'runindex.json'
 FILES = ('run.json', 'frames.jsonl', 'odd-monitor.json')
 
@@ -44,6 +44,7 @@ WEATHER_KINDS = ('clear', 'cloudy', 'wet', 'rain')
 FIELDS = {
     'name': ('name', 'text'), 'world': ('world', 'text'), 'map': ('map', 'text'), 'weather': ('weather', 'text'),
     'tod': ('tod', 'text'), 'kind': ('kind', 'text'), 'worker': ('worker', 'text'), 'status': ('status', 'text'),
+    'fidelity': ('fidelity', 'text'),
     'scenario': ('scenario', 'text'), 'rig': ('rig', 'text'), 'folder': ('rel', 'text'),
     'events': ('events', 'set'), 'event': ('events', 'set'), 'tag': ('tags', 'set'), 'tags': ('tags', 'set'),
     'dur': ('duration_s', 'num'), 'duration': ('duration_s', 'num'), 'frames': ('frames', 'num'),
@@ -144,6 +145,11 @@ def _scan_frames(path: str) -> dict:
             'teleports': teleports, 'odd_out_frames': odd_out}
 
 
+def _fidelity(run: dict) -> str:
+    from . import fidelity
+    return fidelity.of_doc(run)
+
+
 def summarise(run_dir: str, workspace: str = '') -> dict | None:
     """One run's summary (None without a readable run.json)."""
     rp = os.path.join(run_dir, 'run.json')
@@ -165,6 +171,7 @@ def summarise(run_dir: str, workspace: str = '') -> dict | None:
         'path': os.path.abspath(run_dir), 'id': os.path.basename(os.path.normpath(run_dir)),
         'rel': _rel(run_dir, workspace), 'name': run.get('name') or st.get('name') or os.path.basename(run_dir),
         'worker': run.get('worker'), 'status': run.get('status'), 'error': run.get('error'),
+        'fidelity': _fidelity(run),
         'started': run.get('started'), 'finished': run.get('finished'),
         'kind': _kind(run, st, run_dir),
         'world': proj.get('world'), 'map': st.get('town') or (os.path.basename(os.path.dirname(xodr)) if xodr else None),

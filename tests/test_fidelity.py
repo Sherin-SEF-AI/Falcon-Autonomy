@@ -136,3 +136,15 @@ def test_context_and_send_to(qapp):
     assert got == ['/w/runs/r2'] and ctx.get('run') == '/w/runs/r2'
     ctx.clear()
     assert ctx.values == {} and seen[-1] == {}
+
+
+def test_run_index_carries_fidelity(tmp_path):
+    from falcon_autonomy.core import runindex as RI
+    for name, lv in (('r-fake', 'fake'), ('r-real', 'carla'), ('r-old', None)):
+        d = tmp_path / 'runs' / name
+        d.mkdir(parents=True)
+        prov = {'settings': {}, **({'fidelity': lv} if lv else {})}
+        (d / 'run.json').write_text(json.dumps({'status': 'ok', 'provenance': prov}))
+    runs = {e['id']: e for e in RI.build(str(tmp_path), cache=False)}
+    assert runs['r-fake']['fidelity'] == 'fake' and runs['r-old']['fidelity'] == 'unknown'
+    assert [e['id'] for e in RI.search(list(runs.values()), 'fidelity:fake')] == ['r-fake']
