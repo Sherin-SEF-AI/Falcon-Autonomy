@@ -116,7 +116,9 @@ def test_the_trust_threshold_line_follows_the_box_and_the_low_correlation_panel(
     # not trusted: the panel shows, its rows say why, the worst pairs are listed with their runs
     assert tab.why_low.isVisibleTo(tab) and tab.diagnosis['parameter']['name'] == 'gap'
     kv = {k: v.text() for k, v in tab.why_kv.vals.items()}
-    assert kv['ρ'].startswith('+0.75 over 14 pairs · trust at ≥ 0.30') and 'gap' in kv['Parameter']
+    # judged with the study's own threshold (0.5), not the box's 0.3; the box's value is the next search's line
+    assert kv['ρ'].startswith('+0.75 over 14 pairs · trust at ≥ 0.50') and 'gap' in kv['Parameter']
+    assert tab.rho_trace.threshold == 0.5 and tab.rho_trace.next_threshold == pytest.approx(0.3)
     assert kv['Worst pair'].startswith('cheap ') and kv['Camera'] == 'front 64 × 36'
     assert tab.disagree.topLevelItemCount() == 3 and tab.disagree.topLevelItem(0).text(0) == '7'
     full = tab.disagree.topLevelItem(0).data(4, Qt.ItemDataRole.UserRole + 1)
@@ -124,13 +126,15 @@ def test_the_trust_threshold_line_follows_the_box_and_the_low_correlation_panel(
     assert full.startswith('/ws/studies/s/runs/') and tab.disagree.topLevelItem(0).text(4) == short_id(
         os.path.basename(full)) and tab.disagree.topLevelItem(0).toolTip(4) == full
     assert 'Spearman over a dozen pairs is itself noisy' in tab.why_details.body.text()
-    # trusted and above the box's threshold: no panel; under it: the panel, judged against the box
+    # trusted at its own threshold: no panel; raising the box changes the NEXT search's threshold only — the shown
+    # study keeps its line and verdict (no 'trusted' beside a ρ under the new box value)
     with open(path, 'w') as fh:
         json.dump(_prescreen_doc(_swapped_pairs(), trust='trusted'), fh)
     tab.load()
     assert not tab.why_low.isVisibleTo(tab)
     tab.min_rho.setValue(0.8)
-    assert tab.why_low.isVisibleTo(tab) and tab.rho_trace.threshold_label() == 'trust at ρ ≥ 0.80'
+    assert not tab.why_low.isVisibleTo(tab) and tab.rho_trace.threshold_label() == 'trust at ρ ≥ 0.50'
+    assert tab.rho_trace.next_threshold == pytest.approx(0.8)
     # fidelity: the confirmed runs' chip, the screen's, and each failure's row
     assert tab.fid_runs.level == 'fake' and tab.fid_runs.chip.text() == 'Fake simulator'
     assert tab.failures.headerItem().text(4) == 'Fidelity' and tab.failures.topLevelItem(0).text(4) == 'Fake simulator'

@@ -171,6 +171,7 @@ class RhoTrace(QWidget):
     def __init__(self):
         super().__init__()
         self.series, self.threshold, self.min_pairs, self.trust = [], 0.5, 12, ''
+        self.next_threshold = None      # the box's value when it differs from the shown study's own threshold
         self.hover = -1
         self.setMinimumHeight(150)
         self.setMouseTracking(True)
@@ -181,8 +182,11 @@ class RhoTrace(QWidget):
         self.hover = -1
         self.update()
 
-    def set_threshold(self, v: float):
+    def set_threshold(self, v: float, next_v: float | None = None):
+        """v: the threshold the shown study was judged with (or the box's value before any study); next_v: the box's
+        value when it differs — drawn faint as the next search's threshold, never as this study's."""
         self.threshold = float(v)
+        self.next_threshold = None if next_v is None or abs(float(next_v) - self.threshold) < 1e-9 else float(next_v)
         self.update()
 
     def threshold_label(self) -> str:
@@ -245,6 +249,15 @@ class RhoTrace(QWidget):
             below = False
         p.drawText(QRectF(x0 + 6, ty + 3 if below else ty - 17, 200, 14),
                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), self.threshold_label())
+        if self.next_threshold is not None:                     # the box changed since: the next search's, faint
+            nt = Y(self.next_threshold)
+            p.setPen(QPen(QColor(THEME.tok['muted']), 1, Qt.PenStyle.DotLine))
+            p.drawLine(QPointF(x0, nt), QPointF(x0 + w, nt))
+            p.setPen(QColor(THEME.tok['muted']))
+            p.setFont(mono(10))
+            p.drawText(QRectF(x0 + w - 206, nt + 3 if self.next_threshold > 0.85 else nt - 16, 200, 14),
+                       int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+                       f'next search: ρ ≥ {self.next_threshold:.2f}')
         mx = self._x(self.min_pairs, x0, w)                     # the trust rule's pair count
         p.setPen(QPen(QColor(THEME.tok['muted']), 1, Qt.PenStyle.DotLine))
         p.drawLine(QPointF(mx, y0), QPointF(mx, y0 + h))
@@ -612,6 +625,7 @@ class PrescreenTab(QWidget):
                               'with care.' if lv == 'mixed' else '', 'critical' if lv == 'mixed' else '')
         self.fid_screen.set(d.get('screen_fidelity') or F.SCREEN_FIDELITY)
         self.rho_trace.set_pairs(d['pairs'], f.get('min_pairs') or 12, d['trust'])
+        self.rho_trace.set_threshold(self._study_threshold(d), self.min_rho.value())
         self.show_diagnosis(d)
         before = {self.failures.topLevelItem(i).data(0, 256).get('run')
                   for i in range(self.failures.topLevelItemCount())}
@@ -639,11 +653,22 @@ class PrescreenTab(QWidget):
         x = it.data(0, 256) if it is not None else None
         return (x or {}).get('run') or ''
 
+    def _study_threshold(self, d) -> float:
+        """The trust threshold the shown study was judged with (its own min_spearman), else the box's value."""
+        g = (d or {}).get('gap') or {}
+        try:
+            return float(g['min_spearman'])
+        except (KeyError, TypeError, ValueError):
+            return self.min_rho.value()
+
     def threshold_changed(self, v: float):
-        """The trust threshold box: the dashed line follows it, and the diagnosis is judged against it."""
-        self.rho_trace.set_threshold(v)
+        """The trust threshold box sets the NEXT search's threshold: with no study shown the dashed line follows it;
+        with a study shown its own threshold stays the line (its verdict was judged by it) and the box's value is a
+        faint 'next search' line."""
         if self.doc is not None:
-            self.show_diagnosis(self.doc)
+            self.rho_trace.set_threshold(self._study_threshold(self.doc), v)
+        else:
+            self.rho_trace.set_threshold(v)
 
     def _rig_doc(self):
         rid = self._page_value('rig', '')
@@ -653,14 +678,14 @@ class PrescreenTab(QWidget):
             return None
 
     def show_diagnosis(self, d):
-        """The *Why correlation is low* panel: shown when ρ is under the box's threshold or the screen is not
+        """The *Why correlation is low* panel: shown when ρ is under the study's threshold or the screen is not
         trusted; key-value rows, the most disagreeing pairs, and the whole sentences behind *Details*."""
         self.diagnosis = None
         if not d or not d.get('pairs'):
             self.why_low.hide()
             return None
         g = d.get('gap') or {}
-        thr = self.min_rho.value()
+        thr = self._study_threshold(d)                         # the verdict's own threshold, not the box's
         dg = F.diagnose(d['pairs'], thr, int(g.get('min_pairs') or 12), self._rig_doc())
         self.diagnosis = dg
         show = dg['low'] or d.get('trust') != 'trusted'

@@ -25,8 +25,8 @@ A response to a review of the 4.1 window. Everything was tested on the fake CARL
 - **Flags with next steps.** Unverified regulation values and failed or missing fault-tolerance checks offer Jump to
   config, Attach evidence (undoable) and Run sensitivity check (the verdict re-judged at ±10 %, Falcon's band since no
   pack states one; fault tolerance also at both ends of the bracket). The document and clause show with each value.
-- **Two-speed search explains itself.** The trust threshold is drawn on the rank-correlation chart and follows the
-  box; when the screen is not trusted a panel lists the measured causes (most-disagreeing runs, ties in the cheap score,
+- **Two-speed search explains itself.** The study's trust threshold is drawn on the rank-correlation chart (a changed
+  box shows as a faint *next search* line); when the screen is not trusted a panel lists the measured causes (most-disagreeing runs, ties in the cheap score,
   too few pairs, the parameter the disagreement grows with, a tiny camera).
 - **Fewer paragraphs.** Long notes on Worlds, Rare cases, Two-speed, Gate, Campaign, Fault tolerance, Regulation packs,
   Latency, Monitors and Reports became key-value badges with the full text behind Details — every caveat kept. Run ids,

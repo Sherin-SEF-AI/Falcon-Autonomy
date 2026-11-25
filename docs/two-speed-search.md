@@ -25,9 +25,11 @@ Since 4.2 the section also shows (each tested in `tests/test_ui42_studies.py`):
   *Screen* — always `Kinematic`. Each confirmed failure's row has its run's level; run ids are short, mono, and a
   click copies the whole path.
 - **Rank correlation as the pairs arrived**: ρ over the first *k* pairs for every *k*, one axis (−1 … +1), the trust
-  threshold as a labelled dashed line (*trust at ρ ≥ 0.50*, or the *Trust at ρ ≥* box's value — it moves as the box
-  changes), and a dotted mark at the 12 pairs trust is judged from.
-- **Why correlation is low**, shown when ρ is under the box's threshold or the screen is not trusted: key-value rows
+  threshold the shown study was judged with as a labelled dashed line (*trust at ρ ≥ 0.50*; before any study, the
+  *Trust at ρ ≥* box's value). The box sets the next search's threshold: when it differs from the study's, it shows as a
+  faint dotted *next search: ρ ≥ …* line, so a verdict is never shown beside a threshold it was not judged by. A dotted
+  mark at the 12 pairs trust is judged from.
+- **Why correlation is low**, shown when ρ is under the study's threshold or the screen is not trusted: key-value rows
   (ρ, too few pairs, ties in the cheap value, the worst pair, the parameter the disagreement grows with, a tiny
   camera), the three pairs whose ranks disagree most (each with its parameters, cheap and CARLA values and run —
   double-click browses it, right-click *Send to ▸*), and the full sentences behind *Details*.
