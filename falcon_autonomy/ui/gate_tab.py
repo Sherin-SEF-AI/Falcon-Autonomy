@@ -147,8 +147,9 @@ class Band(QWidget):
                        int((Qt.AlignmentFlag.AlignLeft if right else Qt.AlignmentFlag.AlignRight)
                            | Qt.AlignmentFlag.AlignVCenter), f'{G.WORDS[self.verdict]} at {self.decided}')
             if self.by == 'discordant':                                         # the band itself has not cleared zero
-                p.drawText(QRectF(X(k) + 6 if right else X(k) - 286, y0 + 18, 280, 14),
-                           int((Qt.AlignmentFlag.AlignLeft if right else Qt.AlignmentFlag.AlignRight)
+                right2 = X(k) < x0 + w - 290                                    # the longer line needs its own room
+                p.drawText(QRectF(X(k) + 6 if right2 else X(k) - 286, y0 + 18, 280, 14),
+                           int((Qt.AlignmentFlag.AlignLeft if right2 else Qt.AlignmentFlag.AlignRight)
                                | Qt.AlignmentFlag.AlignVCenter), 'shown by the discordant pairs (θ ≠ ½)')
         if 0 <= self.hover < upto:
             p.setPen(Qt.PenStyle.NoPen)
