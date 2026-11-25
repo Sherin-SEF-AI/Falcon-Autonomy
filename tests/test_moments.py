@@ -492,3 +492,51 @@ def test_the_auto_index_job_and_setting(ws):
     assert M.after_job(Svc, Job(d, code=P.CRASHED)) is None and M.after_job(Svc, Job(d, kind='moments-index')) is None
     assert M.after_job(Svc, Job(os.path.join(ws, 'runs'))) is None
     assert math.isfinite(M.LOG_DT_S)
+
+
+# ------------------------------------------------------------------------------------------------ 4.2
+@pytest.mark.parametrize('text, where, types', [
+    ('time to collision under 1.5 s', [('ttc', '<', 1.5)], []),
+    ('cut-ins with time to collision below 2 seconds', [('ttc', '<', 2.0)], ['cut_in']),
+    ('time-to-collision less than 1 s', [('ttc', '<', 1.0)], []),
+    ('cut in where time to collision was 1.2 s or less', [('ttc', '<=', 1.2)], ['cut_in']),
+    ('time to collision 1.5 s', [('ttc', '<=', 1.5)], []),
+    ('time to collision', [('ttc', '<', M.LOW_TTC_S)], []),
+    ('low time to collision at night', [], ['low_ttc']),
+    ('collisions with a time to collision under 2 s', [('ttc', '<', 2.0)], ['collision']),
+    ('gap 5 m or more', [('gap', '>=', 5.0)], []),
+])
+def test_time_to_collision_is_a_ttc_condition_never_the_collision_type(text, where, types):
+    pq = M.parse_query(text)
+    assert pq['filter']['where'] == where and pq['filter']['types'] == types, pq
+    assert pq['not_understood'] == [], pq
+
+
+def test_fidelity_is_stored_per_run_shown_per_hit_and_filtered(ws):
+    import sqlite3
+    for name, lv in (('headon-real', 'carla'), ('headon-fake', 'fake')):
+        write_run(ws, name, 10.0, [actor('car', lambda t: 120 - 10 * t, 0.0, yaw=180.0)], dur=7.0,
+                  extra={'provenance': {'settings': {'weather': DAY, 'fps': 20}, 'fidelity': lv}})
+    M.index(ws, xodr='')
+    hits = M.search(ws, M.new_filter(types=['collision']))['hits']
+    assert {os.path.basename(h['run']): h['fidelity'] for h in hits} == {'headon': 'unknown', 'headon-real': 'carla',
+                                                                        'headon-fake': 'fake'}
+    got = M.search(ws, M.new_filter(types=['collision'], fidelity='carla'))
+    assert [os.path.basename(h['run']) for h in got['hits']] == ['headon-real'] and 'fidelity carla' in got['understood']
+    pq = M.parse_query('collisions on the fake simulator')
+    assert pq['filter']['fidelity'] == 'fake' and pq['not_understood'] == []
+    assert [os.path.basename(h['run']) for h in M.search(ws, pq['filter'])['hits']] == ['headon-fake']
+    with pytest.raises(M.MomentsError, match='fidelity'):
+        M.check_filter(M.new_filter(fidelity='photoreal'))
+    # one run's moments, and whether a run is indexed
+    real = os.path.join(ws, 'runs', 'headon-real')
+    assert M.indexed(ws, real) and not M.indexed(ws, os.path.join(ws, 'runs', 'nope'))
+    own = M.run_moments(ws, real)
+    assert own and {m['run'] for m in own} == {real} and [m['t0'] for m in own] == sorted(m['t0'] for m in own)
+    # a store from before 4.2 (no fidelity column) gains it on opening, filled from the runs' run.json
+    con = sqlite3.connect(M.db_path(ws))
+    con.execute('ALTER TABLE runs DROP COLUMN fidelity')
+    con.commit()
+    con.close()
+    hits = M.search(ws, M.new_filter(types=['collision'], fidelity='fake'))['hits']
+    assert [os.path.basename(h['run']) for h in hits] == ['headon-fake']

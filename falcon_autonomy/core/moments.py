@@ -54,10 +54,19 @@ Queries. parse_query() uses core.scenario_check's phrase set (actor kinds with t
 two wheeler, bike, scooty, cow …; manoeuvres; side; light; weather; junction and speed breaker) plus this module's
 phrases for the moment types it does not have (TYPE_PHRASES) and numeric constraints ("TTC under 1.5 s", "above 40
 km/h"). It is rule-based: a word outside the vocabulary is not understood, and is listed (never dropped silently);
-the filter is always shown back ("understood as: …"). Types and numeric constraints are required of a hit; the other
+the filter is always shown back ("understood as: …"). "Time to collision" (or TTC) is always a TTC condition, never
+the collision type: with a bound ("time to collision under 1.5 s", "TTC 1.2 s or less") it is that bound; a bare
+number after it ("time to collision 1.5 s") is read as at most that; with no number at all it is min TTC < LOW_TTC_S
+(the low-TTC threshold), and the filter shown back says so. Types, numeric constraints and the fidelity are required
+of a hit; the other
 terms (actor, side, light, weather, world, road, source) are scored — a hit matching all of them comes first, then
 partial matches with what they miss — and ties go to the more severe moment. Severity is a 0–1 ranking heuristic
 (SEVERITY_NOTE), not a risk estimate.
+
+Fidelity (core.fidelity, 4.2). Every indexed source records its level: a run folder what its run.json says (carla,
+fake …; unknown before 4.2), an imported log or a near-miss ranking 'recorded'. A hit carries it, and a filter may
+require it ("fidelity": a level; words such as "in CARLA", "on the fake simulator", or --fidelity). A store written
+before 4.2 gains the column on opening, filled from the runs' run.json files (no run is read again).
 
 Privacy. A run derived from the user's dashcam footage (assistant.privacy.private_reason, a route replay, a near-miss
 ranking) is indexed on this machine like any other but flagged private: the command line and the window show it to
@@ -683,7 +692,7 @@ _DDL = (
     'CREATE TABLE IF NOT EXISTS sources (kind TEXT, path TEXT, PRIMARY KEY (kind, path))',
     'CREATE TABLE IF NOT EXISTS runs (path TEXT PRIMARY KEY, rel TEXT, source TEXT, kind TEXT, name TEXT, key TEXT, '
     'private INTEGER, duration_s REAL, distance_m REAL, world TEXT, tod TEXT, weather TEXT, rain REAL, fog REAL, '
-    'started TEXT, tracks INTEGER, note TEXT)',
+    'started TEXT, tracks INTEGER, note TEXT, fidelity TEXT)',
     'CREATE TABLE IF NOT EXISTS moments (id TEXT PRIMARY KEY, run TEXT, type TEXT, t0 REAL, t1 REAL, actors TEXT, '
     'actor_ids TEXT, side TEXT, min_ttc_s REAL, gap_m REAL, rel_speed_kmh REAL, ego_speed_kmh REAL, decel_mps2 REAL, '
     'severity REAL, road TEXT, speed_band TEXT, numbers TEXT)',
@@ -702,8 +711,22 @@ def _open(workspace: str, create: bool = True):
     con.row_factory = sqlite3.Row
     for s in _DDL:
         con.execute(s)
+    cols = {r[1] for r in con.execute('PRAGMA table_info(runs)')}
+    if 'fidelity' not in cols:                      # a store from before 4.2: the column, filled from run.json
+        from . import fidelity as FD
+        with con:
+            con.execute('ALTER TABLE runs ADD COLUMN fidelity TEXT')
+            for r in con.execute('SELECT path, source FROM runs').fetchall():
+                con.execute('UPDATE runs SET fidelity = ? WHERE path = ?', (source_fidelity(r[1], r[0]), r[0]))
     con.execute('INSERT OR REPLACE INTO meta VALUES (?, ?)', ('schema', SCHEMA))
     return con
+
+
+def source_fidelity(source: str, path: str) -> str:
+    """An indexed source's fidelity (core.fidelity): a run folder's run.json says; a log or a near-miss ranking is
+    a recording."""
+    from . import fidelity as FD
+    return FD.of_run(path) if source == 'run' else 'recorded'
 
 
 def _private(path: str, entry: dict | None = None) -> bool:
@@ -727,10 +750,10 @@ def moment_id(run_path: str, k: int) -> str:
 
 def _store(con, run: dict, moments: list):
     con.execute('DELETE FROM moments WHERE run = ?', (run['path'],))
-    con.execute('INSERT OR REPLACE INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                tuple(run.get(k) for k in ('path', 'rel', 'source', 'kind', 'name', 'key', 'private', 'duration_s',
-                                           'distance_m', 'world', 'tod', 'weather', 'rain', 'fog', 'started',
-                                           'tracks', 'note')))
+    cols = ('path', 'rel', 'source', 'kind', 'name', 'key', 'private', 'duration_s', 'distance_m', 'world', 'tod',
+            'weather', 'rain', 'fog', 'started', 'tracks', 'note', 'fidelity')
+    con.execute(f'INSERT OR REPLACE INTO runs ({", ".join(cols)}) VALUES ({",".join("?" * len(cols))})',
+                tuple(run.get(k) for k in cols))
     for k, m in enumerate(moments):
         con.execute('INSERT INTO moments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                     (moment_id(run['path'], k), run['path'], m['type'], m['t0'], m['t1'], ','.join(m['actors']),
@@ -818,7 +841,7 @@ def index(workspace: str, runs=(), nearmiss=(), force: bool = False, only=None, 
                 progress(k, len(todo), path)
             row = {'path': path, 'rel': RI.key_of(path, workspace), 'source': source, 'key': key, 'kind': source,
                    'name': os.path.basename(os.path.dirname(path) if source != 'run' else path), 'private': 0,
-                   'tracks': 0, 'note': ''}
+                   'tracks': 0, 'note': '', 'fidelity': source_fidelity(source, path)}
             moments = []
             try:
                 if source == 'run':
@@ -881,19 +904,22 @@ def after_job(service, job):
     return service.queue.submit(index_job_spec(service.workspace, s.run_dir))
 
 
-def _rows(workspace: str, public_only: bool = False, types=None) -> list:
+def _rows(workspace: str, public_only: bool = False, types=None, run: str = '') -> list:
     con = _open(workspace, create=False)
     if con is None:
         return []
     try:
         q = ('SELECT m.*, r.rel, r.source, r.kind AS run_kind, r.name AS run_name, r.private, r.world, r.tod, '
-             'r.weather, r.rain, r.fog, r.started FROM moments m JOIN runs r ON r.path = m.run')
+             'r.weather, r.rain, r.fog, r.started, r.fidelity FROM moments m JOIN runs r ON r.path = m.run')
         cond, args = [], []
         if public_only:
             cond.append('r.private = 0')
         if types:
             cond.append(f'm.type IN ({",".join("?" * len(types))})')
             args += list(types)
+        if run:
+            cond.append('m.run = ?')
+            args.append(run)
         if cond:
             q += ' WHERE ' + ' AND '.join(cond)
         out = []
@@ -903,10 +929,30 @@ def _rows(workspace: str, public_only: bool = False, types=None) -> list:
             d['actor_ids'] = [x for x in (d['actor_ids'] or '').split(',') if x]
             d['numbers'] = json.loads(d['numbers'] or '{}')
             d['private'] = bool(d['private'])
+            d['fidelity'] = d.get('fidelity') or 'unknown'
             out.append(d)
         return out
     finally:
         con.close()
+
+
+def indexed(workspace: str, path: str) -> bool:
+    """Whether a run folder (or log) is in the store."""
+    con = _open(workspace, create=False)
+    if con is None:
+        return False
+    try:
+        return con.execute('SELECT 1 FROM runs WHERE path = ?', (os.path.abspath(path),)).fetchone() is not None
+    finally:
+        con.close()
+
+
+def run_moments(workspace: str, path: str) -> list:
+    """The moments of one indexed run, in time order (each as search() gives a hit, matching fully)."""
+    out = _rows(workspace, run=os.path.abspath(path))
+    for m in out:
+        m['match'], m['missed'] = 1.0, []
+    return sorted(out, key=lambda m: (m['t0'], m['id']))
 
 
 def get(workspace: str, mid: str) -> dict | None:
@@ -931,6 +977,7 @@ def _rx(p):
 
 _S = r'[\s-]+'
 TYPE_PHRASES = [
+    ('cut_in', _rx(r'cut[\s-]?ins')),               # the plural (core.scenario_check reads "cut in", "cuts in")
     ('cut_out', _rx(rf'cut(?:s|ting)?{_S}out|cut[\s-]?out|(?:pulls?|moves?|swerves?){_S}out{_S}of{_S}'
                     rf'(?:the{_S}|our{_S}|my{_S})?(?:lane|way)')),
     ('close_pass', _rx(rf'close{_S}pass(?:es|ing)?|pass(?:es|ing|ed)?{_S}(?:too{_S}|very{_S})?close(?:ly)?|'
@@ -976,6 +1023,20 @@ _NUM = re.compile(
     r'above|more[\s-]+than|greater[\s-]+than|faster[\s-]+than|longer[\s-]+than|>=|>|at[\s-]+least|=)\s*'
     r'(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>km/?h|kmph|kph|m/s(?:\^?2|²)|m/s|seconds?|secs?|s|metres?|meters?|m)?(?![\w/])',
     re.I)
+_TTC_WORDS = re.compile(r'\b(?:time[\s-]+to[\s-]+collisions?|ttc)\b', re.I)
+# a bound written after the number: "TTC 1.2 s or less", "gap 5 m or more"; with "time to collision"/TTC and no
+# direction at all ("time to collision 1.5 s") it is read as at most that
+_NUM_AFTER = re.compile(
+    r'(?P<field>ttc|time[\s-]+to[\s-]+collisions?|gap|distance|headway|ego[\s-]+speed|relative[\s-]+speed|'
+    r'closing[\s-]+speed|rel[\s-]+speed|speed|decel(?:eration)?|severity|duration)'
+    r'\s*(?:is|of|was|=|:)?\s*(?P<num>\d+(?:\.\d+)?)\s*'
+    r'(?P<unit>km/?h|kmph|kph|m/s(?:\^?2|²)|m/s|seconds?|secs?|s|metres?|meters?|m)?(?![\w/])'
+    r'(?:\s+or\s+(?P<dir>less|under|below|lower|shorter|fewer|more|over|above|higher|longer|greater))?', re.I)
+FIDELITY_PHRASES = [('fake', _rx(r'(?:on\s+the\s+|in\s+the\s+)?fake(?:[\s-]+(?:carla|simulator|sim|runs?))?')),
+                    ('carla-ue5', _rx(r'(?:carla[\s-]+)?ue5')),
+                    ('carla', _rx(r'(?:real[\s-]+|in[\s-]+)?carla')),
+                    ('neural', _rx(r'neural[\s-]+(?:render(?:ing)?|reconstruction|replay)')),
+                    ('kinematic', _rx(r'kinematic[\s-]+(?:screen|sim(?:ulator)?)'))]
 _SIDE = re.compile(r'\b(?:from|on|to|towards?|into)[\s-]+(?:the[\s-]+|your[\s-]+|our[\s-]+|its[\s-]+)?(left|right)\b|'
                    r'\b(left|right)[\s-]+(?:hand[\s-]+)?side\b', re.I)
 _OPS = {'under': '<', 'below': '<', 'less than': '<', 'slower than': '<', 'shorter than': '<', '<': '<', '<=': '<=',
@@ -998,7 +1059,7 @@ _CK_TOD = {'day': 'day', 'low_sun': 'low sun', 'twilight': 'twilight', 'night': 
 
 def new_filter(**kw) -> dict:
     f = {'types': [], 'not_types': [], 'actors': [], 'side': None, 'tod': None, 'weather': None, 'world': None,
-         'road': None, 'source': None, 'where': []}
+         'road': None, 'source': None, 'where': [], 'fidelity': None}
     for k, v in kw.items():
         if k not in f:
             raise MomentsError(f'unknown filter field {k!r}')
@@ -1046,6 +1107,12 @@ def check_filter(f: dict) -> dict:
                 raise MomentsError(f'{k}: {v!r} is not one of {", ".join(allowed)}')
             g[k] = v
     g['world'] = str(f['world']).strip() if f.get('world') else None
+    if f.get('fidelity'):
+        from . import fidelity as FD
+        v = str(f['fidelity']).strip().lower()
+        if v not in FD.LEVELS:
+            raise MomentsError(f'fidelity: {v!r} is not one of {", ".join(FD.LEVELS)}')
+        g['fidelity'] = v
     for w in f.get('where') or ():
         w = parse_where(w) if isinstance(w, str) else tuple(w)
         if len(w) != 3 or w[0] not in FIELDS or w[1] not in ('<', '<=', '>', '>=', '='):
@@ -1070,6 +1137,8 @@ def understood(f: dict) -> str:
     for fld, op, v in f['where']:
         _c, unit, name = FIELDS[fld]
         parts.append(f'{name} {op} {v:g}{(" " + unit) if unit else ""}')
+    if f.get('fidelity'):
+        parts.append(f'fidelity {f["fidelity"]}')
     return ' · '.join(parts) if parts else '(everything)'
 
 
@@ -1106,6 +1175,21 @@ def parse_query(text: str) -> dict:
         op = _OPS[re.sub(r'[\s-]+', ' ', m.group('op').lower())]
         f['where'].append((fld, op, round(val, 4)))
         note(m.start(), m.end(), f'{FIELDS[fld][2]} {op} {val:g}')
+    for m in _NUM_AFTER.finditer(text):             # "TTC 1.2 s or less", "time to collision 1.5 s"
+        if over(m.start(), m.end()):
+            continue
+        fw = re.sub(r'[\s-]+', ' ', m.group('field').lower())
+        fld = 'ttc' if fw.startswith('time to collision') else _FIELD_WORDS.get(fw)
+        d = (m.group('dir') or '').lower()
+        if fld is None or (not d and fld != 'ttc'):
+            continue                                # a bare "speed 40": no direction, not guessed
+        op = '>=' if d in ('more', 'over', 'above', 'higher', 'longer', 'greater') else '<='
+        val = float(m.group('num'))
+        if fld in ('speed', 'rel_speed') and (m.group('unit') or '').lower() == 'm/s':
+            val *= 3.6
+        f['where'].append((fld, op, round(val, 4)))
+        note(m.start(), m.end(), f'{FIELDS[fld][2]} {op} {val:g}')
+    ttc_words = [(m.start(), m.end()) for m in _TTC_WORDS.finditer(text)]   # never the collision type
     own = []
     m = CK.PHRASES['no_collision'].search(text)
     if m:                                           # "without a collision": before the collision phrases see it
@@ -1114,12 +1198,26 @@ def parse_query(text: str) -> dict:
         f['not_types'].append('collision')
     for typ, rx in TYPE_PHRASES:
         for m in rx.finditer(text):
-            if over(m.start(), m.end()):
+            if over(m.start(), m.end()) or (typ == 'collision' and over(m.start(), m.end(), ttc_words)):
                 continue
             own.append((m.start(), m.end()))
             note(m.start(), m.end(), f'type {typ}')
             if typ not in f['types']:
                 f['types'].append(typ)
+    for a, b in ttc_words:                          # a TTC named without a number: the low-TTC threshold
+        if over(a, b):
+            continue
+        if not any(w[0] == 'ttc' for w in f['where']):
+            f['where'].append(('ttc', '<', LOW_TTC_S))
+            note(a, b, f'min TTC < {LOW_TTC_S:g} (the low-TTC threshold; give a number to change it)')
+        else:
+            spans.append((a, b))
+    own += ttc_words
+    for lv, rx in FIDELITY_PHRASES:
+        m = rx.search(text)
+        if m and not over(m.start(), m.end()) and f['fidelity'] is None:
+            f['fidelity'] = lv
+            note(m.start(), m.end(), f'fidelity {lv}')
     groups = []
     for g, rx in GROUP_PHRASES:
         for m in rx.finditer(text):
@@ -1220,6 +1318,8 @@ def match(m: dict, f: dict) -> tuple:
         v = (m['t1'] - m['t0']) if fld == 'duration' else m.get(col)
         if not _cmp(v, op, x):
             return None, []
+    if f.get('fidelity') and (m.get('fidelity') or 'unknown') != f['fidelity']:
+        return None, []
     total, missed = 0, []
     for k in SOFT:
         want = f.get(k)
@@ -1436,7 +1536,8 @@ def describe(m: dict) -> str:
     ttc = f'{m["min_ttc_s"]:.2f} s' if m.get('min_ttc_s') is not None else '—'
     return (f'{m["id"]:12} {m["type"]:19} {who:14} {(m.get("side") or "—"):5} TTC {ttc:7} '
             f'sev {m.get("severity") or 0:.2f}'
-            f'  {m["t0"]:7.2f}–{m["t1"]:<7.2f} {"(private) " if m.get("private") else ""}{m.get("rel")}')
+            f'  {m["t0"]:7.2f}–{m["t1"]:<7.2f} {"(private) " if m.get("private") else ""}{m.get("rel")}'
+            f'  [{m.get("fidelity") or "unknown"}]')
 
 
 def _ws(arg: str) -> str:
@@ -1446,7 +1547,8 @@ def _ws(arg: str) -> str:
 
 def filter_from_args(a) -> dict:
     f = new_filter(types=list(a.type or ()), actors=list(a.actor or ()), side=a.side, tod=a.tod, weather=a.weather,
-                   world=a.world, road=a.road, source=a.source, where=[parse_where(w) for w in a.where or ()])
+                   world=a.world, road=a.road, source=a.source, where=[parse_where(w) for w in a.where or ()],
+                   fidelity=getattr(a, 'fidelity', None))
     for tod in ('night', 'day', 'twilight'):
         if getattr(a, tod, False):
             f['tod'] = tod
@@ -1496,6 +1598,9 @@ def main_moments(argv) -> int:
     se.add_argument('--world')
     se.add_argument('--road', choices=ROADS)
     se.add_argument('--source', choices=SOURCES)
+    from .fidelity import LEVELS as _LEVELS
+    se.add_argument('--fidelity', choices=tuple(_LEVELS), help='only moments of runs of this fidelity (carla, fake, '
+                                                               'recorded …; core.fidelity)')
     se.add_argument('--where', action='append', metavar='FIELD<N',
                     help='a numeric constraint, e.g. ttc<1.5 or speed>40 (fields: ' + ', '.join(FIELDS) + ')')
     for flag in ('night', 'day', 'twilight', 'rain', 'wet', 'clear', 'cloudy'):

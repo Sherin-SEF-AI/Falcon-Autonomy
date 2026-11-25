@@ -329,7 +329,7 @@ def test_two_speed_finds_failures_in_clearly_more_seeds_than_plain_search():
     assert sum(f > 0 for f in found) >= sum(f > 0 for f in pof) + 4
     for r, ts, calls in two:
         assert sum(calls) == BUDGET == len(ts.pairs) and r['fallback'] is None
-        f = r['fidelity']
+        f = r['gap']
         assert f['trust'] == 'trusted' and f['spearman'] >= 0.5 and f['pairs'] == BUDGET
         # a stated share of every round is random controls: 1 of each batch of 6 (20 % rounded, at least one)
         roles = [p['role'] for p in ts.pairs]
@@ -383,7 +383,7 @@ def test_a_decorrelated_cheap_model_is_distrusted_and_the_search_falls_back():
         bad = S.PlantedObjective({'center': [0.2, 0.8, 0.8, 0.15], 'radii': [0.2, 0.2, 0.2, 0.2]}, seed=seed + 7,
                                  noise=0.05)
         r, ts, calls = _two_speed(seed, low=lambda Pp: np.array([bad(p) for p in Pp]))
-        f = r['fidelity']
+        f = r['gap']
         assert f['trust'] == 'not trusted' and f['spearman'] < 0.5
         fb = r['fallback']
         assert fb['method'] == 'bayes-pof' and 'Spearman' in fb['why'] and fb['from_run'] == 12 and fb['runs'] == 12
@@ -398,7 +398,7 @@ def test_a_decorrelated_cheap_model_is_distrusted_and_the_search_falls_back():
     assert ts.trust() == 'not judged yet'
     flat = F.TwoSpeed(high.space, lambda Pp: np.zeros(len(Pp)), 0.5, 0, screen=300, refine=0)
     r = F.run_two_speed(flat, lambda ps: [high(p) for p in ps], 12, 6)
-    assert r['fidelity']['spearman'] is None and r['fidelity']['trust'] == 'not judged yet' and r['fallback'] is None
+    assert r['gap']['spearman'] is None and r['gap']['trust'] == 'not judged yet' and r['fallback'] is None
 
 
 def test_prior_evaluations_are_pairs_and_a_failed_run_counts_to_the_budget():
@@ -450,18 +450,22 @@ def test_a_two_speed_study_is_an_ordinary_study_with_fidelity_fields(ws):
     # rows as any search's, plus the fidelity record; the fake runs the director, which the fast simulator mirrors
     for r in rows:
         assert r['status'] == 'ok' and r['objective'] == r['criticality'] and r['objective_key'] == st.okey
-        f = r['fidelity']
+        f = r['screen']                                           # the two-speed record ("fidelity" before 4.2)
         assert f['role'] in ('top', 'control') and f['driver'] == 'follower' and 0.0 <= f['low'] <= 1.0
         assert abs(f['low'] - r['criticality']) < 0.1, r
-    assert [r['fidelity']['role'] for r in rows] == ['control', 'top', 'top', 'top'] * 2
-    assert d['trust'] == 'trusted' and d['fidelity']['spearman'] > 0.6 and d['fallback'] is None
+        assert r['fidelity'] == 'fake'                            # core.fidelity: the run's level, from its run.json
+    assert [r['screen']['role'] for r in rows] == ['control', 'top', 'top', 'top'] * 2
+    assert d['trust'] == 'trusted' and d['gap']['spearman'] > 0.6 and d['fallback'] is None
+    assert d['fidelity'] == 'fake' and d['screen_fidelity'] == 'kinematic'
+    assert {p['fidelity'] for p in d['pairs']} == {'fake'} and {f['fidelity'] for f in d['failures']} <= {'fake'}
     assert d['throughput']['per_s'] > 50 and d['throughput']['device'] == 'cpu'
     assert {p['run'] for p in d['pairs']} == {r['run'] for r in rows}
     assert all(f['value'] >= 0.7 and os.path.isdir(f['run']) for f in d['failures'])
     assert any('Spearman' in t for t in logs) and any('screened' in t for t in logs)
     s = json.load(open(os.path.join(st.dir, 'search-prescreen.json')))
     assert s['method'] == 'prescreen' and len(s['history']) == 8 and s['threshold'] == 0.7
-    assert s['fidelity']['trust'] == 'trusted' and [h['i'] for h in s['history']] == list(range(8))
+    assert s['gap']['trust'] == 'trusted' and [h['i'] for h in s['history']] == list(range(8))
+    assert s['fidelity'] == 'fake' and s['screen_fidelity'] == 'kinematic'
     assert s['failures'] == sorted(s['failures'], key=lambda h: -h['value'])
     # the other result readers read it as a search: the report, the ODD coverage's kind, the assistant's study tool
     from falcon_autonomy.core import oddcoverage as OC
@@ -471,10 +475,10 @@ def test_a_two_speed_study_is_an_ordinary_study_with_fidelity_fields(ws):
     # resumed with the same budget: nothing is run; with a larger one: only the difference, rounds continuing
     d2 = F.run_study(_study(ws), 8, batch=4, threshold=0.7, screen=600, refine=100, min_pairs=6)
     assert len(os.listdir(os.path.join(st.dir, 'runs'))) == 8 and d2['spent'] == 8
-    assert d2['fidelity']['spearman'] == pytest.approx(d['fidelity']['spearman'])
+    assert d2['gap']['spearman'] == pytest.approx(d['gap']['spearman'])
     d3 = F.run_study(_study(ws), 10, batch=4, threshold=0.7, screen=600, refine=100, min_pairs=6)
     rows = _study(ws).results()
-    assert len(rows) == 10 and d3['spent'] == 10 and [r['fidelity']['round'] for r in rows[8:]] == [2, 2]
+    assert len(rows) == 10 and d3['spent'] == 10 and [r['screen']['round'] for r in rows[8:]] == [2, 2]
     assert 'fidelity' in F.headline(d3) and 'trusted' in F.headline(d3)
     # an evaluation another search made is a pair (a prior), never a control
     plain = _study(ws)

@@ -9,7 +9,12 @@ approved scope is done; such things appear under Needs you.
 
 Below: the selected campaign — its state as a word in its status colour, the budgets as meters with their numbers
 (used of given), a sweep line while it runs, the decision log (every decision with its reason; new rows ease in) and,
-once it is finished, the brief. Stop asks the runner to stop: it cancels its job and writes the brief."""
+once it is finished, the brief. Stop asks the runner to stop: it cancels its job and writes the brief.
+
+4.2: the preview is compact — the scope and budget as key-value badges and the planned studies as a table, the whole
+approval text (exactly what the one approval shows) behind *Details*; what is never done unattended is one line with
+its list behind *Details*. The campaign's fidelity (core.fidelity over its studies' results) is a chip beside its
+state."""
 from __future__ import annotations
 
 import os
@@ -21,8 +26,9 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout, 
 
 from ..core import campaign as K
 from . import motion
+from .study_bits import Badges, FidelitySlot
 from .theme import THEME, mono
-from .widgets import Meter, Section, button, flow_row, label, scroll
+from .widgets import Details, Meter, Section, button, flow_row, label, scroll
 
 STATE_TONE = {'draft': '', 'approved': 'warning', 'running': 'warning', 'stopped': 'serious', 'done': 'good'}
 STATE_WORD = {'draft': 'draft — not approved', 'approved': 'approved — waiting for its runner', 'running': 'running',
@@ -107,8 +113,9 @@ class CampaignTab(QWidget):
             cb.setToolTip(spec['about'])
             self.kinds[kind] = cb
         sec.add(flow_row(*self.kinds.values()))
-        sec.add(label('Never done unattended, whatever is ticked: ' + '; '.join(K.OUTSIDE.values()) + '.', muted=True,
-                      wrap=True))
+        sec.add(label('Some things are never done unattended, whatever is ticked.', muted=True, small=True))
+        sec.add(Details('Never done unattended, whatever is ticked: ' + '; '.join(K.OUTSIDE.values()) + '; anything '
+                        'on the assistant\'s never-list. They go to the brief as "needs you".'))
         row = QHBoxLayout()
         self.preview_btn = button('Preview', self.preview, tip='the plan and its estimated costs: nothing is written')
         self.start_btn = button('Approve and start', self.start, role='primary',
@@ -117,13 +124,23 @@ class CampaignTab(QWidget):
         row.addWidget(self.start_btn)
         row.addStretch(1)
         sec.add(row)
-        self.card = QPlainTextEdit()
+        self.scope_badges = Badges()                    # the preview, compact: scope and budget as badges
+        self.scope_badges.hide()
+        sec.add(self.scope_badges)
+        self.plan_tree = QTreeWidget()
+        self.plan_tree.setHeaderLabels(['Study', 'Kind', 'What', 'About', 'GPU'])
+        self.plan_tree.setRootIsDecorated(False)
+        self.plan_tree.setMaximumHeight(150)
+        self.plan_tree.hide()
+        sec.add(self.plan_tree)
+        self.card = QPlainTextEdit()                    # the approval's whole text, behind Details
         self.card.setReadOnly(True)
         self.card.setProperty('mono', True)
         self.card.setFont(mono(12))
         self.card.setMinimumHeight(150)
-        self.card.hide()
-        sec.add(self.card)
+        self.card_details = Details(self.card, 'The approval\'s whole text')
+        self.card_details.hide()
+        sec.add(self.card_details)
         self.note = label('', muted=True, wrap=True)
         sec.add(self.note)
         v.addWidget(sec)
@@ -137,6 +154,9 @@ class CampaignTab(QWidget):
                                                       'brief written')
         row.addWidget(self.pick, 1)
         row.addWidget(self.state)
+        self.fid = FidelitySlot()
+        self.fid.setToolTip('The fidelity of what the campaign\'s studies read (core.fidelity)')
+        row.addWidget(self.fid)
         row.addWidget(self.stop_btn)
         sec.add(row)
         self.sweep = motion.Sweep()
@@ -191,14 +211,47 @@ class CampaignTab(QWidget):
     def preview(self) -> str | None:
         """The approval's text for the form as it stands (nothing written)."""
         try:
-            text = K.approval_text(self._draft(write=False))
+            rec = self._draft(write=False)
+            text = K.approval_text(rec)
         except K.CampaignError as e:
             self.note.setText(str(e))
             return None
         self.card.setPlainText(text)
-        self.card.show()
+        self.card_details.show()
+        self.show_scope(rec)
         self.note.setText('Nothing is written or run until you approve.')
         return text
+
+    def show_scope(self, rec: dict):
+        """The preview as badges and a table (the whole text is the card behind Details)."""
+        b = rec['budget']
+        studies = rec['studies']
+        total = sum(float(s['est']['seconds'] or 0.0) for s in studies)
+        gpu = sum(float(s['est']['gpu_seconds'] or 0.0) for s in studies) / 3600.0
+        self.scope_badges.set([
+            ('GPU-h', f'{float(b["gpu_hours"]):g}', 'the campaign\'s GPU-hours: the wall time of GPU-holding studies'),
+            ('Until', b['deadline'] or 'no deadline', 'cancelled at the deadline'),
+            ('Jobs', f'≤ {b["max_jobs"]}', 'at most this many jobs'),
+            ('Disk', f'{float(b["disk_gb"]):g} GB', 'the disk budget'),
+            ('Kinds', ', '.join(rec['scope']['kinds']), 'the study kinds it may run; anything else is "needs you"'),
+            ('Planner', rec['planner'], 'rule-based, no model' if rec['planner'] != 'assistant' else
+             'the model orders the candidates; it cannot add a study'),
+            ('Planned', f'{len(studies)} · about {K._fmt_s(total)}' + (f' · {gpu:.2f} GPU-h' if gpu else ''),
+             'each study is refused at its turn if it no longer fits the budget'),
+        ] + ([('Needs you', str(len(rec['needs_you'])), '; '.join(n['what'] for n in rec['needs_you'][:6]),
+               'warning')] if rec['needs_you'] else []))
+        self.scope_badges.show()
+        self.plan_tree.clear()
+        for s in studies:
+            h = next((h for h in rec['hypotheses'] if h['id'] == s['hypothesis']), {})
+            it = QTreeWidgetItem([s['id'], s['kind'], s['title'], K._fmt_s(s['est']['seconds']),
+                                  f'{s["est"]["gpu_seconds"] / 3600.0:.2f} h' if s['est']['gpu_seconds'] else 'no'])
+            it.setToolTip(2, f'tests: {h.get("text", "")}')
+            it.setToolTip(3, s['est']['source'])
+            self.plan_tree.addTopLevelItem(it)
+        for k in (0, 1, 3, 4):
+            self.plan_tree.resizeColumnToContents(k)
+        self.plan_tree.setVisible(bool(studies))
 
     def _confirm(self, text: str) -> bool:
         box = QMessageBox(self)
@@ -274,6 +327,8 @@ class CampaignTab(QWidget):
             return None
         s = st['state']
         self.state.setText(STATE_WORD[s])
+        lv = st.get('fidelity') or 'unknown'
+        self.fid.set(lv, 'mixed fidelity' if lv == 'mixed' else '', 'critical' if lv == 'mixed' else '')
         tone = STATE_TONE[s]
         self.state.setStyleSheet(f'color: {THEME.status(tone)}' if tone else '')
         live = s in ('approved', 'running')

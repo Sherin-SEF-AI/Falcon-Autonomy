@@ -153,6 +153,17 @@ simulation rate. Each objective, model, searched weather and rate gets its own s
 [-fog…][-10hz]`), so a study's values compare among themselves. The failing cases show the objective, the criticality
 and the perception failure; *Why did this fail?* attributes the selected case ([root cause](root-cause.md)).
 
+Since 4.2 (`core.fidelity`): every `results.jsonl` row records its run's fidelity (`fidelity`: carla, fake …, read
+from its `run.json`; older rows are read from their run at display time) and every `search-<method>.json` records the
+study's (`core.fidelity.combine` over its rows — `mixed` when runs of different simulators were pooled). The page
+shows it as a *Runs* chip beside the curve (*Mixed fidelity* in the critical colour, with a sentence) and per case in
+the failing cases' *Fidelity* column; run ids are short with the whole path in the tooltip. Selecting a case makes
+its run (with the page's seed and scenario) the window's active one; its context menu has *Replay the case*,
+*Browse its run* and *Send to ▸*. The page registers the Send-to target **Rare cases**: a run sent from another page
+selects its scenario, seed, world and rig here and shows a callout with *Estimate its failure rate* and *Search its
+variations* — nothing is queued until one of them is clicked; a run whose scenario is not in the project is said so.
+The *Search* section's long note is three badges with the text behind *Details*.
+
 ```sh
 falcon search PROJECT --scenario lead_brake --name fog-mil --objective perception --model syn \
     --weather fog_density [--metric perception|window_miss|lost_lead|miss_rate] [--target-class car] \

@@ -18,6 +18,23 @@ every failure reported is a CARLA run. Code: `falcon_autonomy/core/fastsim.py` (
 | `falcon prescreen scenarios` · `falcon prescreen bench [--scenario KEY] [--n N] [--device cpu\|cuda]` | which built-ins are covered and why not the rest; the throughput on this machine |
 | the assistant | `research_prescreen_run` (act), `research_prescreen_show` (read) ([assistant tools](assistant-tools.md)) |
 
+Since 4.2 the section also shows (each tested in `tests/test_ui42_studies.py`):
+
+- **Fidelity chips** (`core.fidelity`): *Confirmed runs* — the level the CARLA runs' `run.json` record
+  (`Fake simulator` on the fake, `Mixed fidelity` in the critical colour when the study pooled simulators) — and
+  *Screen* — always `Kinematic`. Each confirmed failure's row has its run's level; run ids are short, mono, and a
+  click copies the whole path.
+- **Rank correlation as the pairs arrived**: ρ over the first *k* pairs for every *k*, one axis (−1 … +1), the trust
+  threshold as a labelled dashed line (*trust at ρ ≥ 0.50*, or the *Trust at ρ ≥* box's value — it moves as the box
+  changes), and a dotted mark at the 12 pairs trust is judged from.
+- **Why correlation is low**, shown when ρ is under the box's threshold or the screen is not trusted: key-value rows
+  (ρ, too few pairs, ties in the cheap value, the worst pair, the parameter the disagreement grows with, a tiny
+  camera), the three pairs whose ranks disagree most (each with its parameters, cheap and CARLA values and run —
+  double-click browses it, right-click *Send to ▸*), and the full sentences behind *Details*.
+- The intro is three badges (*Screen kinematic, straight road* · *Confirms CARLA* · *Controls random share*), the
+  caveat "the cheap value is a screen, never a result" as one line, the rest behind *Details*. A failure row selected
+  becomes the window's active run; its context menu has *Send to ▸*.
+
 ## The fast simulator
 
 A scenario ([scenarios](scenarios.md)) is run for a whole batch of parameter sets at once, on **one straight road** in
@@ -148,7 +165,8 @@ study's finished runs.
 
 ## The fidelity gap
 
-`prescreen.json` → `fidelity`, shown on the section and by `falcon prescreen show`:
+`prescreen.json` → `gap` (called `fidelity` before 4.2; a file written then is still read, and its rows'
+`fidelity` record too), shown on the section and by `falcon prescreen show`:
 
 | field | what |
 |---|---|
@@ -167,6 +185,23 @@ Two things to know about the rank correlation: the selected points stretch the r
 the top of the screen), and where the CARLA landscape is flat outside a small failure region the ranks there are
 noise — so ρ over all pairs can read low for a cheap model that still finds failures. A false "not trusted" costs
 little: the plain search starts from every confirmed run.
+
+### Why correlation is low
+
+`core.fastsim.diagnose(pairs, min_spearman, min_pairs, rig)` — a pure function of the confirmed pairs, tested on
+planted pairs in `tests/test_fastsim_diagnose.py` — reads them for the usual causes, each a measured fact:
+
+| finding | how it is measured |
+|---|---|
+| too few pairs | fewer than `min_pairs` (12, the trust rule): ρ over so few moves a lot with each run |
+| ties / saturation | the largest group of pairs sharing one cheap value (to 6 decimals); named when it is ≥ 25 % of the pairs and at least 3 (heuristic) — at 0 the screen sees no conflict, at 1 a collision; tied values cannot be ordered |
+| the worst pairs | the pairs with the largest \|cheap rank − CARLA rank\| (average ranks), the three largest listed with their parameters and runs |
+| a parameter | Spearman of \|rank difference\| against each numeric scenario parameter (from 5 pairs); the strongest is named when \|ρ\| ≥ 0.5 (heuristic): the screen misreads that parameter's high (or low) values |
+| a tiny camera | a camera of the study's rig under 640 × 360 pixels (heuristic): a stack that sees through it can miss what the kinematic screen — perfect knowledge — assumes it sees |
+| an inverted order | ρ < 0: the screen orders the runs against CARLA |
+
+They are leads, not proof: a Spearman over a dozen pairs is itself noisy, and a parameter "named" may be one that
+merely co-varies with the true cause.
 
 ## Measured: against plain search
 
@@ -216,9 +251,9 @@ An ordinary study, `<workspace>/studies/<name>/`:
 
 | file | holds |
 |---|---|
-| `results.jsonl` | one row per finished CARLA run, as any search's (values, run folder, criticality, RSS label, objective), plus `fidelity`: `{low, role: top \| control \| fallback, round, predicted, p_fail, driver}` |
-| `search-prescreen.json` | the search result in the searches' format (`method: prescreen`, history, failures, threshold, space) plus `fidelity` and `fallback` — what the study report, the safety case's failure evidence, the ODD coverage and the failure clusters read |
-| `prescreen.json` | `falcon.prescreen/1`: the pairs (cheap, CARLA, role, round, the prediction made before the run, the run), the fit, the trust word, the fallback, the failures, the throughput measured in this run |
+| `results.jsonl` | one row per finished CARLA run, as any search's (values, run folder, criticality, RSS label, objective, `fidelity`: the run's level), plus `screen`: `{low, role: top \| control \| fallback, round, predicted, p_fail, driver}` (before 4.2 this record was `fidelity`) |
+| `search-prescreen.json` | the search result in the searches' format (`method: prescreen`, history, failures, threshold, space) plus `gap` (the fidelity gap), `fallback`, `fidelity` (core.fidelity.combine over the confirmed runs) and `screen_fidelity: kinematic` — what the study report, the safety case's failure evidence, the ODD coverage and the failure clusters read |
+| `prescreen.json` | `falcon.prescreen/1`: the pairs (cheap, CARLA, role, round, the prediction made before the run, the run, its fidelity), the fit, the trust word, the fallback, the failures (each with its run's fidelity), the throughput measured in this run, `fidelity` and `screen_fidelity` |
 | `runs/<key>/` | the CARLA runs: replayable, exportable, browsable like any study's |
 
 `--on cluster` sends the CARLA runs to the cluster's nodes ([cluster](cluster.md)); the screen and the study run

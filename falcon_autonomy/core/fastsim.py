@@ -68,9 +68,23 @@ bound (core.failrate.binom_upper). It estimates P(fails in CARLA | the screen wo
 uniform over the search space; with n dropped controls and none failing the bound is 1 − 0.05^(1/n) ≈ 3/n, so 8
 controls bound it at 31 %, 30 at 9.5 %: a small control sample cannot show a small risk, and the output says n.
 
-Output: an ordinary study (sim.studio.Study: results.jsonl rows as any search's, each with a "fidelity" record;
-search-prescreen.json in the search result's format with a "fidelity" block) plus prescreen.json (PRESCREEN_SCHEMA:
-the pairs, the fit, the trust word, the throughput measured in this run). Everything that reads a search reads it.
+Output: an ordinary study (sim.studio.Study: results.jsonl rows as any search's, each with a "screen" record — the
+cheap value, its role and round; before 4.2 that record was called "fidelity" and is still read so) plus
+search-prescreen.json in the search result's format with the fidelity gap as "gap", and prescreen.json
+(PRESCREEN_SCHEMA: the pairs, the fit, the trust word, the throughput measured in this run). Everything that reads a
+search reads it.
+
+FIDELITY (core.fidelity, 4.2). The cheap value is "kinematic" (`screen_fidelity`); the result — every failure listed,
+every pair's high side — is a CARLA run whose run.json says what it was, and prescreen.json's top-level "fidelity" is
+core.fidelity.combine over those confirmed runs ("fake" on the fake CARLA, "mixed" when runs of different fidelity
+were pooled). Each pair and each failure carries its run's level.
+
+WHY CORRELATION IS LOW (diagnose()). When ρ is below the trust threshold, or trust is not "trusted", diagnose() reads
+the pairs for the usual causes, each a measured fact: the pairs whose ranks disagree most (cheap rank against CARLA
+rank), saturation and ties in the cheap value (a screen that gives many candidates the same value cannot order them),
+fewer pairs than the trust rule needs, a scenario parameter along which the disagreement concentrates (Spearman of
+|rank difference| against each numeric parameter), and a camera too small for the stack to see what the kinematic
+model assumes it sees. They are leads, not proof: a Spearman over a dozen pairs is itself noisy.
 """
 from __future__ import annotations
 
@@ -82,6 +96,7 @@ import time
 import numpy as np
 
 from . import criticality as CR
+from . import fidelity as FD
 from . import scenarios as SC
 from . import search as S
 
@@ -95,6 +110,7 @@ DRIVERS = ('follower', 'idm', 'none')
 TRUST = ('trusted', 'not trusted', 'not judged yet')
 DIVERSITY = 0.04                   # × √d: the smallest unit-cube distance between two confirmed points
 ROW_CHUNK = 120000                 # rows (scenario × step) per criticality call: bounds the temporaries' memory
+SCREEN_FIDELITY = 'kinematic'      # core.fidelity: what the cheap value is
 
 
 class Unsupported(ValueError):
@@ -920,7 +936,7 @@ def run_two_speed(ts: TwoSpeed, high, budget: int, batch: int = 8, fallback: str
     """Spend `budget` CARLA runs (counting the pairs ts already holds): two-speed rounds while the screen is trusted
     (or not judged yet), then — if it is judged not trusted — a plain searcher told every confirmed run. high(list of
     parameter dicts) -> list of values (None: a run that failed). on_batch(ts, candidates, values) after each batch.
-    Returns {'history', 'failures', 'fidelity', 'fallback'}."""
+    Returns {'history', 'failures', 'gap' (the fidelity gap: TwoSpeed.fidelity()), 'fallback'}."""
     from ..sim.studio import method_class
 
     def spent():
@@ -967,7 +983,7 @@ def run_two_speed(ts: TwoSpeed, high, budget: int, batch: int = 8, fallback: str
         fb['runs'] = spent() - fb['from_run']
     hist = [{'params': p['params'], 'value': p['high'], 'i': i, 'low': p['low'], 'role': p['role']}
             for i, p in enumerate(q for q in ts.pairs if q['high'] is not None)]
-    return {'history': hist, 'failures': S.failures(hist, ts.threshold), 'fidelity': ts.fidelity(), 'fallback': fb}
+    return {'history': hist, 'failures': S.failures(hist, ts.threshold), 'gap': ts.fidelity(), 'fallback': fb}
 
 
 # ================================================================================================ the study
@@ -978,12 +994,32 @@ def default_name(scenario_id: str) -> str:
 
 
 def read_prescreen(study_dir: str) -> dict | None:
+    """prescreen.json of a study folder (None when there is none). A file written before 4.2 holds the fidelity gap
+    under "fidelity": it is moved to "gap", and the fidelity level is read from its pairs' runs (unknown when they do
+    not say)."""
     try:
         with open(os.path.join(study_dir, 'prescreen.json'), encoding='utf-8') as fh:
             d = json.load(fh)
     except (OSError, ValueError):
         return None
-    return d if d.get('schema') == PRESCREEN_SCHEMA else None
+    if not isinstance(d, dict) or d.get('schema') != PRESCREEN_SCHEMA:
+        return None
+    if isinstance(d.get('fidelity'), dict):                     # before 4.2: the gap was called "fidelity"
+        d['gap'] = d.pop('fidelity')
+    if d.get('fidelity') not in FD.LEVELS:
+        d['fidelity'] = FD.combine(p.get('fidelity') or (FD.of_run(p['run']) if p.get('run') else 'unknown')
+                                   for p in d.get('pairs') or ())
+    d.setdefault('screen_fidelity', SCREEN_FIDELITY)
+    return d
+
+
+def screen_record(r: dict) -> dict:
+    """A results.jsonl row's two-speed record (cheap value, role, round …): "screen", or before 4.2 "fidelity"."""
+    rec = r.get('screen')
+    if isinstance(rec, dict):
+        return rec
+    rec = r.get('fidelity')
+    return rec if isinstance(rec, dict) else {}
 
 
 def run_study(study, budget: int, batch: int = 8, threshold: float = 0.5, screen: int = 10000, refine: int = 2000,
@@ -994,6 +1030,7 @@ def run_study(study, budget: int, batch: int = 8, threshold: float = 0.5, screen
     evaluations — its own (their "fidelity" record says what they were) and any other search's (pairs, never
     controls). Writes each row's fidelity record, prescreen.json after every batch and search-prescreen.json at the
     end. Unsupported when the fast simulator cannot run the scenario."""
+    from ..sim.studio import row_fidelity
     from .provenance import utc_now, write_json
     log = log or (lambda text: None)
     if study.spec['objective'] != 'criticality':
@@ -1013,33 +1050,36 @@ def run_study(study, budget: int, batch: int = 8, threshold: float = 0.5, screen
     prev = read_prescreen(study.dir) or {}
     by_round = {}
     for r in past:
-        f = r.get('fidelity') or {}
+        f = screen_record(r)
         if f.get('role') in ('top', 'control', 'fallback'):
             by_round.setdefault(int(f.get('round', 0)), []).append(r)
         else:
             ts.add_prior(r['values'], r['objective'])
     for k in sorted(by_round):
         rows = by_round[k]
-        ts.tell([{'params': r['values'], 'x': S.to_unit(space, r['values']).tolist(), 'low': r['fidelity']['low'],
-                  'role': r['fidelity']['role'], 'predicted': r['fidelity'].get('predicted'),
-                  'p_fail': r['fidelity'].get('p_fail'), 'round': k} for r in rows], [r['objective'] for r in rows])
+        ts.tell([{'params': r['values'], 'x': S.to_unit(space, r['values']).tolist(), 'low': screen_record(r)['low'],
+                  'role': screen_record(r)['role'], 'predicted': screen_record(r).get('predicted'),
+                  'p_fail': screen_record(r).get('p_fail'), 'round': k} for r in rows], [r['objective'] for r in rows])
     if (prev.get('trust') == TRUST[1] or ts.final_trust) and not retrust:
         ts.final_trust = TRUST[1]
     elif retrust:
         ts.final_trust = None
-    keys = {}
+    keys, levels = {}, {}                                      # parameters -> run; run -> its fidelity level
 
     def doc(extra=None):
         ok = [p for p in ts.pairs if p['high'] is not None]
+        runs = [keys.get(json.dumps(p['params'], sort_keys=True)) for p in ok]
+        lv = [levels.get(r) or (row_fidelity({'run': r}) if r else 'unknown') for r in runs]
         d = {'schema': PRESCREEN_SCHEMA, 'study': study.name, 'scenario': study.scn.get('id'),
              'updated': utc_now(), 'threshold': threshold, 'budget': budget, 'spent': len(ts.pairs),
              'screened': low.n, 'throughput': tp, 'driver': driver, 'objective': study.objective_doc(),
              'options': {'batch': batch, 'screen': screen, 'refine': refine, 'control_fraction': control_fraction,
                          'min_spearman': min_spearman, 'min_pairs': min_pairs, 'fallback': fallback},
-             'trust': ts.trust(), 'fidelity': ts.fidelity(),
+             'trust': ts.trust(), 'gap': ts.fidelity(), 'fidelity': FD.combine(lv),
+             'screen_fidelity': SCREEN_FIDELITY,
              'pairs': [{'low': round(p['low'], 6), 'high': round(p['high'], 6), 'role': p['role'],
                         'round': p['round'], 'predicted': p['predicted'], 'values': p['params'],
-                        'run': keys.get(json.dumps(p['params'], sort_keys=True))} for p in ok],
+                        'run': r, 'fidelity': f} for p, r, f in zip(ok, runs, lv)],
              'limits': 'the cheap value is a kinematic model on a straight road (core.fastsim): a screen, never a '
                        'result; every failure listed is a CARLA run'}
         d.update(extra or {})
@@ -1047,6 +1087,7 @@ def run_study(study, budget: int, batch: int = 8, threshold: float = 0.5, screen
 
     for r in past:
         keys[json.dumps(r['values'], sort_keys=True)] = r['run']
+        levels[r['run']] = row_fidelity(r)
 
     def high(batch_params):
         rows = study.evaluate(batch_params, progress)
@@ -1059,9 +1100,12 @@ def run_study(study, budget: int, batch: int = 8, threshold: float = 0.5, screen
             r = by.get(json.dumps(c['params'], sort_keys=True))
             if r is None or y is None:
                 continue
-            r['fidelity'] = {'low': round(c['low'], 6), 'role': c['role'], 'round': c['round'],
-                             'predicted': c['predicted'], 'p_fail': c['p_fail'], 'driver': driver}
+            r['screen'] = {'low': round(c['low'], 6), 'role': c['role'], 'round': c['round'],
+                           'predicted': c['predicted'], 'p_fail': c['p_fail'], 'driver': driver}
+            if isinstance(r.get('fidelity'), dict):              # a row written before 4.2: its level, not the record
+                r['fidelity'] = row_fidelity({'run': r['run']})
             keys[json.dumps(c['params'], sort_keys=True)] = r['run']
+            levels[r['run']] = row_fidelity(r)
         study._rewrite(rows)
         write_json(os.path.join(study.dir, 'prescreen.json'), doc({'state': 'running'}))
         f = ts_.fidelity()
@@ -1070,29 +1114,34 @@ def run_study(study, budget: int, batch: int = 8, threshold: float = 0.5, screen
             f' over {f["pairs"]} pairs: {f["trust"]}')
 
     res = run_two_speed(ts, high, budget, batch, fallback, on_batch)
-    fid = res['fidelity']
+    fails = []
+    for h in res['failures']:
+        run = keys.get(json.dumps(h['params'], sort_keys=True))
+        fails.append({'value': h['value'], 'low': h['low'], 'role': h['role'], 'values': h['params'], 'run': run,
+                      'fidelity': levels.get(run) or (row_fidelity({'run': run}) if run else 'unknown')})
+    d = doc({'state': 'finished', 'fallback': res['fallback'], 'failures': fails})
     out = {'method': 'prescreen', 'budget': budget, 'history': res['history'], 'failures': res['failures'],
            'threshold': threshold, 'objective': study.objective_doc(), 'space': space,
-           'fidelity': fid, 'fallback': res['fallback']}
+           'gap': res['gap'], 'fallback': res['fallback'], 'fidelity': d['fidelity'],
+           'screen_fidelity': SCREEN_FIDELITY}
     write_json(os.path.join(study.dir, 'search-prescreen.json'), out)
-    d = doc({'state': 'finished', 'fallback': res['fallback'],
-             'failures': [{'value': h['value'], 'low': h['low'], 'role': h['role'], 'values': h['params'],
-                           'run': keys.get(json.dumps(h['params'], sort_keys=True))} for h in res['failures']]})
     write_json(os.path.join(study.dir, 'prescreen.json'), d)
     return d
 
 
 def headline(d: dict) -> str:
     """One paragraph of a prescreen.json for the terminal and the assistant."""
-    f = d.get('fidelity') or {}
+    f = d.get('gap') or {}
     fn = f.get('false_negative') or {}
     rho = f.get('spearman')
     tp = d.get('throughput') or {}
     lines = [f'{d.get("study")}: {d.get("spent")} of {d.get("budget")} CARLA runs, {len(d.get("failures") or ())} '
              f'failures (objective ≥ {d.get("threshold"):g}); screened {d.get("screened")} candidates at '
              f'{tp.get("per_s")} evaluations/s ({tp.get("device")})',
-             'fidelity: Spearman ' + ('not defined' if rho is None else f'{rho:.2f}') + f' over {f.get("pairs")} '
-             f'pairs (needs ≥ {f.get("min_spearman"):g} over ≥ {f.get("min_pairs")}): the screen is {d.get("trust")}']
+             'fidelity gap: Spearman ' + ('not defined' if rho is None else f'{rho:.2f}') + f' over {f.get("pairs")} '
+             f'pairs (needs ≥ {f.get("min_spearman"):g} over ≥ {f.get("min_pairs")}): the screen is {d.get("trust")}',
+             f'fidelity: the confirmed runs {FD.label(d.get("fidelity"))}, the screen '
+             f'{FD.label(d.get("screen_fidelity") or SCREEN_FIDELITY)}']
     if fn.get('dropped_controls'):
         lines.append(f'false-negative risk: {fn["failed"]} of {fn["dropped_controls"]} random controls the screen '
                      f'would have dropped failed in CARLA (≤ {fn["upper95"]:.0%} at 95 %)')
@@ -1102,6 +1151,106 @@ def headline(d: dict) -> str:
         fb = d['fallback']
         lines.append(f'fell back to {fb["method"]} after {fb["from_run"]} runs: {fb["why"]}')
     return '\n'.join(lines)
+
+
+# ================================================================================================ why ρ is low
+TINY_CAMERA_PX = 640 * 360         # heuristic: a camera below this many pixels resolves a car at 30 m in a few pixels
+CONCENTRATED_RHO = 0.5             # heuristic: |Spearman(|rank diff|, parameter)| from which a parameter is named
+SATURATED_SHARE = 0.25             # heuristic: this share of the pairs sharing one cheap value is saturation
+
+
+def _camera_pixels(rig: dict | None) -> list:
+    """(name, width, height) of a rig's cameras (core.project's sensor records)."""
+    out = []
+    for s in (rig or {}).get('sensors') or ():
+        if str(s.get('type', '')).startswith('camera') and s.get('width') and s.get('height'):
+            out.append((str(s.get('name') or s.get('id') or 'camera'), int(s['width']), int(s['height'])))
+    return out
+
+
+def diagnose(pairs, min_spearman: float = 0.5, min_pairs: int = 12, rig: dict | None = None,
+             top: int = 3) -> dict:
+    """Why the cheap and the CARLA criticality agree so little (module doc), from the confirmed pairs alone — a pure
+    function. pairs: prescreen.json's [{'low', 'high', 'values', 'run', …}]; rig: the study's rig (its cameras'
+    sizes). Returns {'spearman', 'pairs', 'low' (ρ below min_spearman, or not computable), 'findings' [{'key', 'text',
+    'tone'}] most telling first, 'disagreements' [the `top` pairs with the largest |cheap rank − CARLA rank|: values,
+    low, high, rank_low, rank_high, run], 'ties' {'distinct', 'largest_share', 'at', 'at_zero', 'at_one'},
+    'parameter' ({'name', 'rho', 'n'} or None), 'cameras' [(name, w, h) under TINY_CAMERA_PX]}. Every finding is a
+    measured fact about these pairs; none is proof of a cause (a Spearman over a dozen pairs is itself noisy)."""
+    ok = [p for p in pairs or () if p.get('high') is not None and p.get('low') is not None]
+    n = len(ok)
+    lo = np.array([float(p['low']) for p in ok]) if n else np.zeros(0)
+    hi = np.array([float(p['high']) for p in ok]) if n else np.zeros(0)
+    rho = spearman(lo, hi) if n >= 3 else None
+    out = {'spearman': rho, 'pairs': n, 'min_spearman': float(min_spearman), 'min_pairs': int(min_pairs),
+           'low': rho is None or rho < min_spearman, 'findings': [], 'disagreements': [], 'ties': None,
+           'parameter': None, 'cameras': []}
+    F = out['findings']
+    if n < min_pairs:
+        F.append({'key': 'few_pairs', 'tone': 'warning',
+                  'text': f'{n} of the {min_pairs} pairs the trust rule needs: ρ over so few pairs moves a lot with '
+                          'each new run'})
+    if n:
+        vals, counts = np.unique(np.round(lo, 6), return_counts=True)
+        k = int(np.argmax(counts))
+        share = float(counts[k]) / n
+        out['ties'] = {'distinct': int(len(vals)), 'largest_share': round(share, 3), 'count': int(counts[k]),
+                       'at': float(vals[k]),
+                       'at_zero': int(np.sum(lo <= 1e-6)), 'at_one': int(np.sum(lo >= 1.0 - 1e-6))}
+        if share >= SATURATED_SHARE and counts[k] >= 3:
+            where = 'at 0 (the screen sees no conflict)' if vals[k] <= 1e-6 else \
+                'at 1 (the screen sees a collision)' if vals[k] >= 1.0 - 1e-6 else f'at {vals[k]:.3f}'
+            F.append({'key': 'saturation', 'tone': 'warning',
+                      'text': f'{int(counts[k])} of {n} pairs share one cheap value {where}: tied values cannot be '
+                              'ordered, so ρ cannot reach the CARLA order among them'})
+    if n >= 2:
+        rl, rh = ranks(lo), ranks(hi)
+        diff = np.abs(rl - rh)
+        order = np.argsort(-diff, kind='stable')[:max(int(top), 0)]
+        for i in order:
+            if diff[i] <= 0:
+                break
+            p = ok[int(i)]
+            out['disagreements'].append({'values': p.get('values') or {}, 'low': float(lo[i]), 'high': float(hi[i]),
+                                         'rank_low': float(rl[i]), 'rank_high': float(rh[i]),
+                                         'rank_diff': float(diff[i]), 'run': p.get('run') or '',
+                                         'role': p.get('role'), 'fidelity': p.get('fidelity') or 'unknown'})
+        if out['disagreements']:
+            d0 = out['disagreements'][0]
+            kind = ('the screen ranks it low, CARLA high' if d0['rank_high'] > d0['rank_low'] else
+                    'the screen ranks it high, CARLA low')
+            F.append({'key': 'disagreement', 'tone': '',
+                      'text': f'largest rank disagreement: cheap {d0["low"]:.3f} against CARLA {d0["high"]:.3f} '
+                              f'({kind}; {d0["rank_diff"]:.0f} places apart of {n})'})
+        if n >= 5:
+            best = None
+            names = sorted({k for p in ok for k, v in (p.get('values') or {}).items()
+                            if isinstance(v, (int, float)) and not isinstance(v, bool)})
+            for name in names:
+                xs = [(p.get('values') or {}).get(name) for p in ok]
+                if any(not isinstance(x, (int, float)) or isinstance(x, bool) for x in xs):
+                    continue
+                r = spearman(np.array(xs, dtype=float), diff)
+                if r is not None and (best is None or abs(r) > abs(best['rho'])):
+                    best = {'name': name, 'rho': round(float(r), 3), 'n': n}
+            if best is not None and abs(best['rho']) >= CONCENTRATED_RHO:
+                out['parameter'] = best
+                side = 'high' if best['rho'] > 0 else 'low'
+                F.append({'key': 'parameter', 'tone': 'warning',
+                          'text': f'the disagreement grows with {best["name"]} (Spearman {best["rho"]:+.2f} of the '
+                                  f'rank gap against it): the screen misreads {side} {best["name"]}'})
+    tiny = [c for c in _camera_pixels(rig) if c[1] * c[2] < TINY_CAMERA_PX]
+    if tiny:
+        out['cameras'] = tiny
+        c = tiny[0]
+        F.append({'key': 'camera', 'tone': 'warning',
+                  'text': f'the rig\'s camera {c[0]} is {c[1]} × {c[2]}: a stack that sees through it can miss what '
+                          'the kinematic screen (perfect knowledge) assumes it sees'})
+    if rho is not None and rho < 0:
+        F.insert(0, {'key': 'inverted', 'tone': 'critical',
+                     'text': f'ρ {rho:+.2f}: the screen orders the runs against CARLA — it is not measuring the same '
+                             'thing for this scenario'})
+    return out
 
 
 def bench(scenario: str = 'lead_brake', n: int = 4096, device: str = 'cpu', seed: int = 0, driver: str = 'follower',
@@ -1247,7 +1396,7 @@ def main_prescreen(argv) -> int:
         Pp = [S.to_params(low.space, x) for x in X]
         L = low(Pp)
         order = np.argsort(-L)[:a.top]
-        out = {'scenario': scn.get('id'), 'screened': a.n, 'throughput': low.throughput(),
+        out = {'scenario': scn.get('id'), 'screened': a.n, 'throughput': low.throughput(), 'fidelity': SCREEN_FIDELITY,
                'share_at_or_over_0.5': float(np.mean(L >= 0.5)),
                'top': [{'low': round(float(L[i]), 4), 'values': Pp[i]} for i in order]}
         if a.json:
@@ -1325,9 +1474,9 @@ def main_prescreen(argv) -> int:
                       em.log)
         for line in headline(d).splitlines():
             em.log(line)
-        f = d['fidelity']
+        f = d['gap']
         em.result('ok', summary={'evaluated': d['spent'], 'failures': len(d['failures']), 'trust': d['trust'],
-                                 'spearman': f['spearman'], 'screened': d['screened'],
+                                 'spearman': f['spearman'], 'fidelity': d['fidelity'], 'screened': d['screened'],
                                  'fallback': (d.get('fallback') or {}).get('method')})
     except (RuntimeError, ValueError, ProjectError) as e:
         print(f'failed: {e}', flush=True)

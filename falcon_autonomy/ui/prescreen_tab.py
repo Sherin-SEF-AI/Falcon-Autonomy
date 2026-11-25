@@ -8,7 +8,14 @@ screen is not trusted; the world, rig, seed and failure threshold are the page's
 curve, failing cases and failure map show its runs too). A scenario the fast simulator cannot run says why and is not
 queued. While it runs a sweep shows the CARLA runs spent; the result: the scatter of the cheap against the CARLA
 criticality of every confirmed run with the rank correlation and the trust word, the false-negative risk the random
-controls give, and the confirmed failures (each a CARLA run, the cheap value beside it)."""
+controls give, and the confirmed failures (each a CARLA run, the cheap value beside it).
+
+4.2: the result's fidelity as chips (the confirmed runs' level from their run.json, the screen's 'kinematic'), per row
+in the failures; the running rank correlation over the pairs (RhoTrace) with the trust threshold as a labelled dashed
+line that follows the *Trust at ρ ≥* box; and, when ρ is under it or the screen is not trusted, a compact *Why
+correlation is low* panel (core.fastsim.diagnose: the pairs whose ranks disagree most — each openable and sendable —,
+ties in the cheap value, too few pairs, the parameter the disagreement grows with, a tiny camera). A failure row
+selects its run as the window's active one and has *Send to ▸*."""
 from __future__ import annotations
 
 import os
@@ -23,8 +30,9 @@ from ..core import fastsim as F
 from ..core.jobs import FINAL, JobSpec
 from . import motion
 from .placement import PlacementCombo
+from .study_bits import Badges, FidelitySlot, link_runs
 from .theme import THEME, mono
-from .widgets import Form, Stat, button, label
+from .widgets import Details, Form, KeyValues, Stat, button, copyable_ids, fidelity_item, label, short_id
 
 TRUST_TONE = {'trusted': 'good', 'not trusted': 'critical', 'not judged yet': 'warning'}
 ROLE_WORDS = {'top': 'selected by the screen', 'control': 'random control', 'fallback': 'plain search (fallback)',
@@ -146,6 +154,138 @@ class Scatter(QWidget):
         p.drawText(QPointF(x0, self.height() - 8), 'cheap →  up: CARLA · filled: selected · ring: control · line: fit')
 
 
+def running_spearman(pairs, cap: int = 2000) -> list:
+    """[(k, ρ over the first k pairs)] for k = 3 … n (ρ None when not defined): how the rank correlation moved as
+    the pairs arrived."""
+    ok = [p for p in pairs or () if p.get('high') is not None][:cap]
+    lo = [float(p['low']) for p in ok]
+    hi = [float(p['high']) for p in ok]
+    return [(k, F.spearman(lo[:k], hi[:k])) for k in range(3, len(ok) + 1)]
+
+
+class RhoTrace(QWidget):
+    """The rank correlation of the cheap and the CARLA criticality over the pairs as they arrived (one axis, ρ in
+    [−1, 1]): the trust threshold as a labelled dashed line (the *Trust at ρ ≥* box's value, live), the pair count
+    from which trust is judged as a dotted mark, zero as a recessive line. Hover reads ρ after k pairs."""
+
+    def __init__(self):
+        super().__init__()
+        self.series, self.threshold, self.min_pairs, self.trust = [], 0.5, 12, ''
+        self.hover = -1
+        self.setMinimumHeight(150)
+        self.setMouseTracking(True)
+
+    def set_pairs(self, pairs, min_pairs: int = 12, trust: str = ''):
+        self.series = running_spearman(pairs)
+        self.min_pairs, self.trust = int(min_pairs or 12), trust
+        self.hover = -1
+        self.update()
+
+    def set_threshold(self, v: float):
+        self.threshold = float(v)
+        self.update()
+
+    def threshold_label(self) -> str:
+        return f'trust at ρ ≥ {self.threshold:.2f}'
+
+    def _geom(self):
+        return 44.0, 12.0, self.width() - 60.0, self.height() - 40.0
+
+    def _n(self) -> int:
+        return self.series[-1][0] if self.series else 0
+
+    def _x(self, k, x0, w):
+        n = max(self._n(), self.min_pairs, 4)
+        return x0 + w * (k - 1) / max(n - 1, 1)
+
+    def mouseMoveEvent(self, ev):                               # noqa: N802
+        if not self.series:
+            return
+        x0, _y0, w, _h = self._geom()
+        best, at = 1e9, -1
+        for i, (k, _r) in enumerate(self.series):
+            d = abs(self._x(k, x0, w) - ev.position().x())
+            if d < best:
+                best, at = d, i
+        if at != self.hover:
+            self.hover = at
+            k, r = self.series[at]
+            self.setToolTip(f'after {k} pairs: ρ ' + ('not defined (a side is constant)' if r is None else
+                                                      f'{r:+.2f}') +
+                            (f'\n(trust is judged from {self.min_pairs} pairs)' if k < self.min_pairs else ''))
+            self.update()
+
+    def leaveEvent(self, _ev):                                  # noqa: N802
+        self.hover = -1
+        self.update()
+
+    def paintEvent(self, _ev):                                  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        x0, y0, w, h = self._geom()
+
+        def Y(v):
+            return y0 + h * (0.5 - 0.5 * min(max(v, -1.0), 1.0))
+        p.setFont(mono(10))
+        for t in (-1.0, 0.0, 1.0):                              # recessive grid, labelled in mono
+            p.setPen(QPen(QColor(THEME.tok['soft']), 1))
+            p.drawLine(QPointF(x0, Y(t)), QPointF(x0 + w, Y(t)))
+            p.setPen(QColor(THEME.tok['off']))
+            p.drawText(QRectF(0, Y(t) - 8, x0 - 8, 16), int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+                       f'{t:+.0f}' if t else '0')
+        thr = QColor(THEME.tok['ink2'])                         # the trust threshold: dashed, labelled
+        p.setPen(QPen(thr, 1.2, Qt.PenStyle.DashLine))
+        ty = Y(self.threshold)
+        p.drawLine(QPointF(x0, ty), QPointF(x0 + w, ty))
+        p.setPen(thr)
+        p.setFont(mono(11))
+        first = next((r for _k, r in self.series if r is not None), None)
+        below = (first is not None and first >= self.threshold) or self.threshold > 0.85   # away from the line
+        if self.threshold < -0.85:
+            below = False
+        p.drawText(QRectF(x0 + 6, ty + 3 if below else ty - 17, 200, 14),
+                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), self.threshold_label())
+        mx = self._x(self.min_pairs, x0, w)                     # the trust rule's pair count
+        p.setPen(QPen(QColor(THEME.tok['muted']), 1, Qt.PenStyle.DotLine))
+        p.drawLine(QPointF(mx, y0), QPointF(mx, y0 + h))
+        p.setPen(QColor(THEME.tok['muted']))
+        p.setFont(mono(10))
+        fits = mx + 150 < x0 + w
+        p.drawText(QRectF(mx + 4 if fits else mx - 154, y0 + h - 16, 150, 14),
+                   int((Qt.AlignmentFlag.AlignLeft if fits else Qt.AlignmentFlag.AlignRight)
+                       | Qt.AlignmentFlag.AlignVCenter), f'judged from {self.min_pairs} pairs')
+        pts = [(k, r) for k, r in self.series if r is not None]
+        if not pts:
+            p.setPen(QColor(THEME.tok['muted']))
+            p.setFont(mono(11))
+            p.drawText(QRectF(x0, y0, w, h), int(Qt.AlignmentFlag.AlignCenter), 'ρ needs 3 confirmed pairs')
+        else:
+            tone = QColor(THEME.status(TRUST_TONE.get(self.trust, 'warning'))) if self.trust else \
+                QColor(THEME.tok['ink'])
+            p.setPen(QPen(QColor(THEME.tok['ink']), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                          Qt.PenJoinStyle.RoundJoin))
+            for (ka, ra), (kb, rb) in zip(pts, pts[1:]):
+                p.drawLine(QPointF(self._x(ka, x0, w), Y(ra)), QPointF(self._x(kb, x0, w), Y(rb)))
+            k, r = pts[-1]
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(tone)
+            p.drawEllipse(QPointF(self._x(k, x0, w), Y(r)), 4.0, 4.0)
+            p.setPen(tone)
+            p.setFont(mono(11))                                 # the value, in the half the line is not in
+            ly = Y(-0.45) if r > 0 else Y(0.55)
+            p.drawText(QRectF(x0 + w - 236, ly - 7, 230, 14),
+                       int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+                       f'ρ {r:+.2f} after {k} pairs' + (f' · {self.trust}' if self.trust else ''))
+            if 0 <= self.hover < len(self.series) and self.series[self.hover][1] is not None:
+                kh, rh = self.series[self.hover]
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(THEME.tok['ink']))
+                p.drawEllipse(QPointF(self._x(kh, x0, w), Y(rh)), 3.5, 3.5)
+        p.setFont(mono(11))
+        p.setPen(QColor(THEME.tok['muted']))
+        p.drawText(QPointF(x0, self.height() - 8), f'pairs → ({self._n()})  line: ρ of cheap vs CARLA so far')
+
+
 class PrescreenTab(QWidget):
     """The Two-speed search section (module doc). owner: the Rare cases page (owner.win the window)."""
 
@@ -157,10 +297,18 @@ class PrescreenTab(QWidget):
         self.doc = None
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(label('A fast kinematic simulator (the director\'s lane follower on a straight road, the same '
-                          'criticality formula) rates thousands of parameter sets in seconds; CARLA runs only the '
-                          'most promising, and a share of random controls that measure how far the two agree. The '
-                          'cheap value is a screen, never a result.', muted=True, wrap=True))
+        self.intro = Badges()
+        self.intro.set([('Screen', 'kinematic, straight road', 'the director\'s lane follower on a straight road, the '
+                         'same criticality formula: thousands of parameter sets in seconds'),
+                        ('Confirms', 'CARLA', 'CARLA runs only the most promising'),
+                        ('Controls', 'random share', 'a share of random controls measures how far the two agree')])
+        v.addWidget(self.intro)
+        v.addWidget(label('The cheap value is a screen, never a result.', muted=True, small=True))
+        v.addWidget(Details('A fast kinematic simulator (the director\'s lane follower on a straight road, the same '
+                            'criticality formula) rates thousands of parameter sets in seconds; CARLA runs only the '
+                            'most promising, and a share of random controls that measure how far the two agree. The '
+                            'cheap value is a screen, never a result. Trust is judged from 12 confirmed pairs: below '
+                            'the threshold ρ the rest of the budget goes to a plain search. docs/two-speed-search.md.'))
         f = Form()
         self.scenario = QComboBox()
         self.scenario.currentIndexChanged.connect(lambda _: self.scenario_changed())
@@ -189,6 +337,7 @@ class PrescreenTab(QWidget):
         self.min_rho.setToolTip('Below this Spearman rank correlation between the cheap and the CARLA criticality the '
                                 'screen is not trusted: a plain search (Bayesian optimisation by the probability of '
                                 'failure) spends the rest of the budget')
+        self.min_rho.valueChanged.connect(lambda v: self.threshold_changed(v))
         self.placement = PlacementCombo(getattr(self.win, 'settings', None))
         self.placement.currentIndexChanged.connect(lambda _: self.scenario_changed())
         for text, w in (('Scenario', self.scenario), ('CARLA runs', self.budget), ('Per round', self.batch),
@@ -222,15 +371,51 @@ class PrescreenTab(QWidget):
         for s in (self.s_rho, self.s_fn, self.s_runs):
             stats.addWidget(s, 1)
         v.addLayout(stats)
+        fr = QHBoxLayout()
+        self.fid_runs = FidelitySlot('Confirmed runs')
+        self.fid_screen = FidelitySlot('Screen')
+        self.fid_screen.set(F.SCREEN_FIDELITY)
+        fr.addWidget(self.fid_runs)
+        fr.addWidget(self.fid_screen)
+        fr.addStretch(1)
+        v.addLayout(fr)
+        v.addWidget(label('Rank correlation as the pairs arrived', h=True))
+        self.rho_trace = RhoTrace()
+        self.rho_trace.set_threshold(self.min_rho.value())
+        v.addWidget(self.rho_trace)
+        self.why_low = QWidget()                                 # Why correlation is low (core.fastsim.diagnose)
+        wl = QVBoxLayout(self.why_low)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setSpacing(6)
+        wl.addWidget(label('Why correlation is low', h=True))
+        self.why_kv = KeyValues()
+        wl.addWidget(self.why_kv)
+        self.disagree = QTreeWidget()
+        self.disagree.setHeaderLabels(['Rank gap', 'Cheap', 'CARLA', 'Values', 'Run'])
+        self.disagree.setRootIsDecorated(False)
+        self.disagree.setMaximumHeight(110)
+        self.disagree.setToolTip('The pairs whose cheap rank and CARLA rank differ most; right-click to send a run on')
+        self.disagree.itemDoubleClicked.connect(lambda it, _c: self.browse(it))
+        copyable_ids(self.disagree, 4)
+        link_runs(self.disagree, self.win, self._run_of, exclude='rarecases',
+                  actions=lambda it: [('Browse its run', lambda: self.browse(it))])
+        wl.addWidget(self.disagree)
+        self.why_details = Details('')
+        wl.addWidget(self.why_details)
+        self.why_low.hide()
+        v.addWidget(self.why_low)
         v.addWidget(label('Cheap against CARLA criticality', h=True))
         self.scatter = Scatter()
         v.addWidget(self.scatter)
         v.addWidget(label('Confirmed failures (CARLA runs)', h=True))
         self.failures = QTreeWidget()
-        self.failures.setHeaderLabels(['CARLA', 'Cheap', 'Found by', 'Values', 'Run'])
+        self.failures.setHeaderLabels(['CARLA', 'Cheap', 'Found by', 'Values', 'Fidelity', 'Run'])
         self.failures.setRootIsDecorated(False)
         self.failures.setMinimumHeight(120)
         self.failures.itemDoubleClicked.connect(lambda it, _c: self.browse(it))
+        copyable_ids(self.failures, 5)
+        link_runs(self.failures, self.win, self._run_of, exclude='rarecases',
+                  actions=lambda it: [('Browse its run', lambda: self.browse(it))])
         v.addWidget(self.failures)
         fb = QHBoxLayout()
         fb.addWidget(button('Browse its run', lambda: self.browse(self.failures.currentItem())))
@@ -393,8 +578,11 @@ class PrescreenTab(QWidget):
             self.s_runs.set('—')
             self.scatter.set_data([], self._page_value('threshold', 0.5))
             self.failures.clear()
+            self.fid_runs.set('unknown')
+            self.rho_trace.set_pairs([])
+            self.show_diagnosis(None)
             return
-        f = d['fidelity']
+        f = d['gap']
         fn = f['false_negative']
         rho = f['spearman']
         tone = TRUST_TONE.get(d['trust'], 'warning')
@@ -419,14 +607,23 @@ class PrescreenTab(QWidget):
                               f'{fb["why"]}' if fb else f'The screen is {d["trust"]}')
                            + f' · {len(d.get("failures") or ())} failures confirmed')
         self.scatter.set_data(d['pairs'], d['threshold'], f.get('isotonic'), rho, d['trust'])
+        lv = d.get('fidelity') or 'unknown'
+        self.fid_runs.set(lv, 'Mixed fidelity: the confirmed runs pool simulators of different fidelity; compare '
+                              'with care.' if lv == 'mixed' else '', 'critical' if lv == 'mixed' else '')
+        self.fid_screen.set(d.get('screen_fidelity') or F.SCREEN_FIDELITY)
+        self.rho_trace.set_pairs(d['pairs'], f.get('min_pairs') or 12, d['trust'])
+        self.show_diagnosis(d)
         before = {self.failures.topLevelItem(i).data(0, 256).get('run')
                   for i in range(self.failures.topLevelItemCount())}
         self.failures.clear()
         for x in d.get('failures') or ():
             it = QTreeWidgetItem([f'{x["value"]:.3f}', f'{x["low"]:.3f}', ROLE_WORDS.get(x['role'], x['role']),
                                   ', '.join(f'{k}={v:.3g}' if isinstance(v, float) else f'{k}={v}'
-                                            for k, v in sorted(x['values'].items())),
-                                  os.path.basename(x.get('run') or '')])
+                                            for k, v in sorted(x['values'].items())), '',
+                                  short_id(os.path.basename(x.get('run') or ''))])
+            fidelity_item(it, 4, x.get('fidelity') or 'unknown')
+            it.setData(5, Qt.ItemDataRole.UserRole + 1, x.get('run') or '')
+            it.setToolTip(5, x.get('run') or '')
             it.setData(0, 256, x)
             self.failures.addTopLevelItem(it)
             if before and x.get('run') not in before:             # a failure that just arrived eases in
@@ -436,6 +633,81 @@ class PrescreenTab(QWidget):
         x = it.data(0, 256) if it is not None else None
         if x and x.get('run') and hasattr(self.win, 'go'):
             self.win.go('data').show_run(x['run'])
+
+    @staticmethod
+    def _run_of(it):
+        x = it.data(0, 256) if it is not None else None
+        return (x or {}).get('run') or ''
+
+    def threshold_changed(self, v: float):
+        """The trust threshold box: the dashed line follows it, and the diagnosis is judged against it."""
+        self.rho_trace.set_threshold(v)
+        if self.doc is not None:
+            self.show_diagnosis(self.doc)
+
+    def _rig_doc(self):
+        rid = self._page_value('rig', '')
+        try:
+            return self.win.project.item('rigs', rid) if rid else None
+        except AttributeError:
+            return None
+
+    def show_diagnosis(self, d):
+        """The *Why correlation is low* panel: shown when ρ is under the box's threshold or the screen is not
+        trusted; key-value rows, the most disagreeing pairs, and the whole sentences behind *Details*."""
+        self.diagnosis = None
+        if not d or not d.get('pairs'):
+            self.why_low.hide()
+            return None
+        g = d.get('gap') or {}
+        thr = self.min_rho.value()
+        dg = F.diagnose(d['pairs'], thr, int(g.get('min_pairs') or 12), self._rig_doc())
+        self.diagnosis = dg
+        show = dg['low'] or d.get('trust') != 'trusted'
+        self.why_low.setVisible(bool(show))
+        if not show:
+            return dg
+        self.why_kv.clear()
+        rho = dg['spearman']
+        self.why_kv.set('ρ', ('not defined' if rho is None else f'{rho:+.2f}') + f' over {dg["pairs"]} pairs · trust '
+                        f'at ≥ {thr:.2f}' + (f' · the screen is {d.get("trust")}' if d.get('trust') else ''))
+        names = {'inverted': 'Order', 'few_pairs': 'Pairs', 'saturation': 'Ties', 'disagreement': 'Worst pair',
+                 'parameter': 'Parameter', 'camera': 'Camera'}
+        for f in dg['findings']:
+            key = names.get(f['key'], f['key'])
+            short = {'few_pairs': f'{dg["pairs"]} of {dg["min_pairs"]} needed',
+                     'saturation': (f'{dg["ties"]["count"]} of {dg["pairs"]} at '
+                                    f'{dg["ties"]["at"]:.3g}' if dg['ties'] else ''),
+                     'parameter': (f'{dg["parameter"]["name"]} (ρ {dg["parameter"]["rho"]:+.2f})'
+                                   if dg['parameter'] else ''),
+                     'camera': (f'{dg["cameras"][0][0]} {dg["cameras"][0][1]} × {dg["cameras"][0][2]}'
+                                if dg['cameras'] else ''),
+                     'inverted': 'the screen orders against CARLA'}.get(f['key'])
+            if f['key'] == 'disagreement' and dg['disagreements']:
+                x = dg['disagreements'][0]
+                short = f'cheap {x["low"]:.3f} vs CARLA {x["high"]:.3f}'
+            self.why_kv.set(key, short or f['text'], tip=f['text'])
+            if f['tone']:
+                self.why_kv.vals[key].setStyleSheet(f'color: {THEME.status(f["tone"])}')
+        if not dg['findings']:
+            self.why_kv.set('Findings', 'none of the usual causes shows in these pairs')
+        self.disagree.clear()
+        for x in dg['disagreements']:
+            it = QTreeWidgetItem([f'{x["rank_diff"]:.0f}', f'{x["low"]:.3f}', f'{x["high"]:.3f}',
+                                  ', '.join(f'{k}={v:.3g}' if isinstance(v, float) else f'{k}={v}'
+                                            for k, v in sorted(x['values'].items())),
+                                  short_id(os.path.basename(x['run'] or ''))])
+            it.setData(4, Qt.ItemDataRole.UserRole + 1, x['run'] or '')
+            it.setToolTip(4, x['run'] or '')
+            it.setData(0, 256, x)
+            self.disagree.addTopLevelItem(it)
+        self.disagree.setVisible(bool(dg['disagreements']))
+        self.why_details.set_text('\n'.join(['• ' + f['text'] + '.' for f in dg['findings']] + [
+            'How it is read: the pairs are ranked by their cheap and by their CARLA criticality; a pair far apart in '
+            'the two ranks is one the screen misorders. Ties in the cheap value cannot be ordered at all. The '
+            'parameter named is the one whose value best orders the rank gaps (Spearman). These are leads measured on '
+            'these pairs, not proof: a Spearman over a dozen pairs is itself noisy.']))
+        return dg
 
     def shutdown(self):
         self.timer.stop()

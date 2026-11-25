@@ -48,6 +48,11 @@ was tried (study, cost, result), what was ruled out, the evidence (paths), budge
 you" items and the recommended next step. Every sentence is assembled from the studies' own result files; nothing
 from the user's dashcam footage enters it (the studies read are the public ones: core.autoresearch.suggestions and
 core.moments with public_only). A conclusion is only as good as the studies that ran.
+
+Fidelity (core.fidelity, 4.2). Each study's result records the fidelity of what it read (result_fidelity(): a search's
+or failure-rate study's summary, else its rows' runs; the moments matched; a root-cause file), 'unknown' when its
+files do not say; the record keeps the campaign's (`fidelity`, core.fidelity.combine over the results) and the brief
+shows both — a campaign that pooled fake and real runs says "mixed fidelity" beside its answer.
 """
 from __future__ import annotations
 
@@ -649,9 +654,39 @@ def _read(path, default=None):
         return default
 
 
+def study_fidelity(folder_path: str) -> str:
+    """The fidelity a study folder records (core.fidelity): its summaries' top-level "fidelity" (search-*.json,
+    failure-rate.json, prescreen.json), else core.fidelity.combine over its rows' runs (results.jsonl); unknown when
+    nothing says."""
+    from . import fidelity as FD
+    if not folder_path or not os.path.isdir(folder_path):
+        return 'unknown'
+    levels = []
+    for f in sorted(os.listdir(folder_path)):
+        if f.endswith('.json') and (f.startswith('search-') or f in ('failure-rate.json', 'prescreen.json')):
+            d = _read(os.path.join(folder_path, f))
+            if isinstance(d, dict) and isinstance(d.get('fidelity'), str):
+                levels.append(FD.of_doc(d))
+    if not any(lv != 'unknown' for lv in levels):
+        try:
+            from ..sim.studio import rows_fidelity
+            with open(os.path.join(folder_path, 'results.jsonl'), encoding='utf-8') as fh:
+                levels.append(rows_fidelity(json.loads(x) for x in fh if x.strip()))
+        except (OSError, ValueError):
+            pass
+    return FD.combine(levels)
+
+
 def triage(workspace: str, rec: dict, study: dict, project=None) -> dict:
     """A finished study's result, read from its own files: {'summary', 'verdict' ('supported' | 'not supported' |
-    'ruled out' | 'inconclusive' | 'evidence'), 'strength' (a key of CONFIDENCE), 'numbers', 'links'}."""
+    'ruled out' | 'inconclusive' | 'evidence'), 'strength' (a key of CONFIDENCE), 'numbers', 'links', 'fidelity' (of
+    what it read, core.fidelity)}."""
+    out = _triage(workspace, rec, study, project)
+    out.setdefault('fidelity', 'unknown')
+    return out
+
+
+def _triage(workspace: str, rec: dict, study: dict, project=None) -> dict:
     from . import autoresearch as R
     cond = goal_conditions(rec['goal'])
     kind = study['kind']
@@ -686,7 +721,8 @@ def triage(workspace: str, rec: dict, study: dict, project=None) -> dict:
                 'verdict': 'evidence' if n and constrained else 'inconclusive',
                 'strength': 'low' if n and constrained else 'none',
                 'numbers': {'matching_moments': n, 'hours': h, 'private_left_out': res['private_left_out']},
-                'links': [m['run'] for m in res['hits']] or [M.db_path(workspace)]}
+                'links': [m['run'] for m in res['hits']] or [M.db_path(workspace)],
+                'fidelity': _combine(m.get('fidelity') for m in res['hits'])}
     if kind == 'rootcause':
         doc = _read(os.path.join(study.get('out') or '', 'rootcause.json'), {}) or {}
         if not doc:
@@ -702,7 +738,7 @@ def triage(workspace: str, rec: dict, study: dict, project=None) -> dict:
                 'strength': 'moderate' if hit else ('low' if clear else 'none'),
                 'numbers': {'miss_rate': doc.get('miss_rate'), 'clear_attributes': names[:6],
                             'objects': doc.get('n_objects')},
-                'links': [os.path.join(study['out'], 'rootcause.json')]}
+                'links': [os.path.join(study['out'], 'rootcause.json')], 'fidelity': _of_doc(doc)}
     if kind == 'ablation':
         sid = study['ablation']['study']
         try:
@@ -737,7 +773,23 @@ def triage(workspace: str, rec: dict, study: dict, project=None) -> dict:
                         f'{est.get("ci_high", est.get("upper"))}])' if p is not None else
                         'the study finished; its folder holds the result (not summarised here)'),
             'verdict': 'evidence' if p is not None else 'inconclusive', 'strength': 'low' if p is not None else 'none',
-            'numbers': {'p': p}, 'links': [d or workspace]}
+            'numbers': {'p': p}, 'links': [d or workspace], 'fidelity': study_fidelity(d)}
+
+
+def _combine(levels) -> str:
+    from . import fidelity as FD
+    return FD.combine(levels)
+
+
+def _of_doc(doc) -> str:
+    from . import fidelity as FD
+    return FD.of_doc(doc)
+
+
+def campaign_fidelity(rec: dict) -> str:
+    """The campaign's fidelity: core.fidelity.combine over its finished studies' results."""
+    return _combine((s.get('result') or {}).get('fidelity') for s in rec.get('studies') or ()
+                    if s.get('state') == 'done')
 
 
 # ================================================================================================ the loop
@@ -957,6 +1009,7 @@ def step(workspace: str, cid: str, io, project=None, settings=None, complete=Non
                 running['result'] = {'summary': f'its result could not be read ({type(e).__name__}: {e})',
                                      'verdict': 'inconclusive', 'strength': 'none', 'numbers': {}, 'links': []}
             r = running['result']
+            rec['fidelity'] = campaign_fidelity(rec)
             h['status'] = {'evidence': 'some evidence'}.get(r['verdict'], r['verdict'])
             log(workspace, cid, 'result', r['summary'], study=running['id'], verdict=r['verdict'],
                 elapsed_s=running['elapsed_s'])
@@ -1103,7 +1156,9 @@ def status(workspace: str, cid: str, now: float | None = None) -> dict:
                      'seconds': None if not b.get('deadline') else round(epoch(b['deadline']) - now, 1)},
             'studies': [{k: s.get(k) for k in ('id', 'kind', 'title', 'state', 'why', 'elapsed_s')}
                         | {'estimate_s': s['est']['seconds'], 'result': (s.get('result') or {}).get('summary'),
-                           'verdict': (s.get('result') or {}).get('verdict')} for s in rec['studies']],
+                           'verdict': (s.get('result') or {}).get('verdict'),
+                           'fidelity': (s.get('result') or {}).get('fidelity')} for s in rec['studies']],
+            'fidelity': campaign_fidelity(rec),
             'hypotheses': [{k: h.get(k) for k in ('id', 'text', 'status', 'study')} for h in rec['hypotheses']],
             'needs_you': [{k: n.get(k) for k in ('what', 'why')} for n in rec['needs_you']],
             'answer': rec.get('answer'), 'stopped': rec.get('stopped'),
@@ -1137,17 +1192,21 @@ def brief_markdown(workspace: str, rec: dict) -> str:
     u = accountant(workspace, rec).used(rec)
     b = rec['budget']
     by = {h['id']: h for h in rec['hypotheses']}
+    from . import fidelity as FD
+    fid = campaign_fidelity(rec)
     L = [f'# Morning brief — campaign {rec["id"]}', '', f'**Goal.** {rec["goal"]}', '',
          f'**Answer.** {ans["text"]} {ans["second"]}', '',
          f'**Confidence: {ans["confidence"]}** — {CONFIDENCE[ans["confidence"]]}.', '',
-         '## What was tried', '', '| Study | Kind | Cost | Result |', '|---|---|---|---|']
+         f'**Fidelity: {FD.label(fid)}** — {FD.sentence(fid)}', '',
+         '## What was tried', '', '| Study | Kind | Cost | Fidelity | Result |', '|---|---|---|---|---|']
     for s in rec['studies']:
         if s['state'] in ('done', 'failed', 'cancelled'):
             cost = _fmt_s(s.get('elapsed_s')) + (' GPU' if KINDS[s['kind']]['gpu'] else ' CPU')
             res = (s.get('result') or {}).get('summary') or s.get('why') or s['state']
-            L.append(f'| {s["id"]} {s["title"]} | {s["kind"]} | {cost} | {str(res).replace("|", "/")} |')
+            lv = FD.label((s.get('result') or {}).get('fidelity')) if s['state'] == 'done' else '—'
+            L.append(f'| {s["id"]} {s["title"]} | {s["kind"]} | {cost} | {lv} | {str(res).replace("|", "/")} |')
     if not any(s['state'] in ('done', 'failed', 'cancelled') for s in rec['studies']):
-        L.append('| (nothing ran) | | | |')
+        L.append('| (nothing ran) | | | | |')
     ruled = [s for s in rec['studies'] if (s.get('result') or {}).get('verdict') in ('ruled out', 'not supported')]
     L += ['', '## Ruled out', '']
     L += [f'- {by[s["hypothesis"]]["text"]} — {s["result"]["verdict"]}: {s["result"]["summary"]}' for s in ruled] or \

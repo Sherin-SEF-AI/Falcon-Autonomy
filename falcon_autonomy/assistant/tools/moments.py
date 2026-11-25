@@ -37,7 +37,7 @@ assert not set(MINE) & set(_compact.SHORT), set(MINE) & set(_compact.SHORT)
 _compact.SHORT.update(MINE)
 
 ROW = ('id', 'type', 't0', 't1', 'actors', 'side', 'min_ttc_s', 'gap_m', 'rel_speed_kmh', 'ego_speed_kmh',
-       'decel_mps2', 'severity', 'road', 'tod', 'weather', 'world', 'source')
+       'decel_mps2', 'severity', 'road', 'tod', 'weather', 'world', 'source', 'fidelity')
 
 
 def _M():

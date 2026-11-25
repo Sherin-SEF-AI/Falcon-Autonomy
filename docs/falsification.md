@@ -101,6 +101,10 @@ a stopped study resumes exactly), `search-<method>.json`, and `falsify.json` (`f
 best ρ, the falsified runs and the near misses with their parameters and runs, the runs whose ρ was unknown and the
 signals they missed, provenance.
 
+Since 4.2 each row records its run's fidelity and `search-<method>.json` the study's (`core.fidelity`); the *Falsify*
+section shows a *Runs* fidelity chip above its runs, each run's level in its row, and a run row's context menu has
+*Send to ▸*. A requirement falsified on the fake simulator shows the tool works, not that a real stack violates it.
+
 ## Limits
 
 - Robustness mixes units across predicates of one formula (the usual STL caveat): `G (ttc_min_s >= 1.5 and

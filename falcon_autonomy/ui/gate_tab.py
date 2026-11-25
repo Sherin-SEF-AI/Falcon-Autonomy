@@ -8,7 +8,13 @@ paired trials, the same scenario instance and seed under both versions, until th
 sweep shows the trials against the budget. The result: the verdict as a word with its colour, the confidence band of
 the primary difference over the trials (one axis; zero solid, the margin dashed; it holds at every look, so the gate
 may stop the moment it clears zero or sits inside the margin), and the scenarios the new version newly fails, each
-with its pair of runs. A verdict holds for the tested scenario distribution only — the section says so under it."""
+with its pair of runs. A verdict holds for the tested scenario distribution only — the section says so under it.
+
+4.2: each version's fidelity as a chip (core.fidelity, from its trials' runs); two versions at different fidelity get
+no verdict — the verdict reads "no verdict: different fidelity" with the reason in the critical colour — and a version
+whose own trials mix levels keeps its verdict with a critical *Mixed fidelity* chip and a sentence. Each newly failing
+row has *Compare in Replay* (the Replay page's compare_runs, when this build has it), short copyable run ids, the pair's
+fidelity, and *Send to ▸* in its context menu; selecting a row makes its B run the window's active run."""
 from __future__ import annotations
 
 import os
@@ -20,12 +26,14 @@ from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QDoubleSpinBox, QHBoxLayout, QLineEdit, QListWidget,
                              QListWidgetItem, QSpinBox, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
+from ..core import fidelity as FD
 from ..core import releasegate as G
 from ..core.jobs import FINAL, JobSpec
 from . import motion
 from .placement import PlacementCombo
+from .study_bits import Badges, FidelitySlot, link_runs
 from .theme import THEME, mono
-from .widgets import Form, Stat, button, label
+from .widgets import Details, Form, Stat, button, callout, copyable_ids, label, short_id
 
 
 class Band(QWidget):
@@ -165,9 +173,17 @@ class GateTab(QWidget):
         self.doc = None
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(label('The old version A and the new version B drive the same scenario instances with the same '
-                          'seeds; the gate looks after every batch and stops when the answer is clear. Its '
-                          'confidence holds however often it looks.', muted=True, wrap=True))
+        self.intro = Badges()
+        self.intro.set([('Design', 'paired trials, same seeds', 'the old version A and the new version B drive the '
+                         'same scenario instances with the same seeds'),
+                        ('Looks', 'after every batch', 'the gate stops when the answer is clear'),
+                        ('Confidence', 'valid at every look', 'it holds however often the gate looks')])
+        v.addWidget(self.intro)
+        v.addWidget(Details('The old version A and the new version B drive the same scenario instances with the same '
+                            'seeds; the gate looks after every batch and stops when the answer is clear. Its '
+                            'confidence holds however often it looks. Two versions that ran at different fidelity '
+                            '(core.fidelity: a fake or kinematic side against CARLA) get no verdict. '
+                            'docs/release-gate.md.'))
         f = Form()
         self.name = QLineEdit('release')
         self.name.setToolTip('The gate\'s folder under the workspace\'s gates/; running it again resumes it')
@@ -237,16 +253,35 @@ class GateTab(QWidget):
         for s in (self.s_verdict, self.s_trials, self.s_diff):
             stats.addWidget(s, 1)
         v.addLayout(stats)
+        fr = QHBoxLayout()
+        self.fid_a = FidelitySlot('A')
+        self.fid_b = FidelitySlot('B')
+        fr.addWidget(self.fid_a)
+        fr.addWidget(self.fid_b)
+        fr.addStretch(1)
+        v.addLayout(fr)
+        self.fid_note = callout('', 'critical')                  # refused, or mixed within a version
+        self.fid_note.hide()
+        v.addWidget(self.fid_note)
         v.addWidget(label('Confidence band over the trials', h=True))
         self.band = Band()
         v.addWidget(self.band)
         self.scope = label('', small=True, muted=True, wrap=True)
         v.addWidget(self.scope)
+        self.scope_details = Details('')
+        v.addWidget(self.scope_details)
         v.addWidget(label('Newly failing under the new version', h=True))
         self.changes = QTreeWidget()
-        self.changes.setHeaderLabels(['Change', 'Trial', 'Scenario', 'Seed', 'Value A → B', 'Run A', 'Run B'])
+        self.changes.setHeaderLabels(['Change', 'Trial', 'Scenario', 'Seed', 'Value A → B', 'Fidelity', 'Run A',
+                                      'Run B', ''])
         self.changes.setRootIsDecorated(False)
         self.changes.setMinimumHeight(130)
+        copyable_ids(self.changes, 6, 7)
+        link_runs(self.changes, self.win, lambda it: ((it.data(0, 256) or {}).get('b') or '') if it else '',
+                  exclude='reports',
+                  actions=lambda it: [('Compare in Replay', lambda: self.compare_in_replay(it.data(0, 256))),
+                                      ('Browse run A', lambda: self.browse('a')),
+                                      ('Browse run B', lambda: self.browse('b'))])
         v.addWidget(self.changes)
         cb = QHBoxLayout()
         cb.addWidget(button('Browse run A', lambda: self.browse('a')))
@@ -254,6 +289,8 @@ class GateTab(QWidget):
         cb.addWidget(button('Compare the pair', self.compare, tip='Both runs side by side on the Data page'))
         cb.addStretch(1)
         v.addLayout(cb)
+        self.note = label('', small=True, muted=True, wrap=True)
+        v.addWidget(self.note)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll)
         self.refresh()
@@ -414,7 +451,21 @@ class GateTab(QWidget):
             for s in (self.s_verdict, self.s_trials, self.s_diff):
                 s.set('—')
             self.scope.setText('')
+            self.scope_details.set_text('')
+            self.fid_a.set('unknown')
+            self.fid_b.set('unknown')
+            self.fid_note.hide()
             return
+        fv = d.get('fidelity_by_version') or {}
+        mixed = {s: fv.get(s) == 'mixed' for s in ('a', 'b')}
+        self.fid_a.set(fv.get('a') or 'unknown')
+        self.fid_b.set(fv.get('b') or 'unknown')
+        why = d.get('refused') or d.get('fidelity_note') or ''
+        self.fid_note.label.setText(('No verdict. ' + d['refused']) if d.get('refused') else why)
+        tone = 'critical' if d.get('refused') or any(mixed.values()) else 'warning'
+        self.fid_note.label.setStyleSheet(f'color: {THEME.status(tone)}')
+        self.fid_note.setProperty('tone', tone)
+        self.fid_note.setVisible(bool(why))
         vs = d.get('versions') or {}
         tone = G.TONES.get(d['verdict'], 'warning')
         running = d.get('state') != 'finished'
@@ -430,22 +481,74 @@ class GateTab(QWidget):
                         sub=(f'θ in [{dc["interval"][0]:.2f}, {dc["interval"][1]:.2f}] decided · '
                              if d.get('decided_by') == 'discordant' else '')
                         + f'margin ±{d["margin"]:g}' + (' · inside the margin' if d['within_margin'] else ''))
+        if d['verdict'] == 'refused':
+            self.s_verdict.set('no verdict', sub='the versions ran at different fidelity', tone='critical')
+            self.s_verdict.value.setStyleSheet(f'color: {THEME.status("critical")}')
         self.state.setText((self.job.summary() + ' · ' if busy else '') + G.headline(d).splitlines()[0])
-        self.scope.setText('The verdict ' + d['scope'] + '.')
+        self.scope.setText('The verdict holds for the tested scenario distribution only.')
+        self.scope_details.set_text('The verdict ' + d['scope'] + '. Trials are taken as independent draws of that '
+                                    'distribution; in physics motion or with traffic a pair also holds run-to-run '
+                                    'noise (it costs trials, not validity).')
+        levels = self._trial_levels()
+        can = self._replay_can_compare()
         for kind, rows in (('newly fails', d['newly_failing']), ('newly passes', d['newly_passing'])):
             for x in rows:
+                la, lb = levels.get(x['i'], ('unknown', 'unknown'))
+                fl = FD.label(la) if la == lb else f'{FD.label(la)} / {FD.label(lb)}'
                 it = QTreeWidgetItem([kind, str(x['i']), str(x['scenario']), str(x['seed']),
-                                      f'{x["value_a"]:.3f} → {x["value_b"]:.3f}',
-                                      os.path.basename(x['a'] or ''), os.path.basename(x['b'] or '')])
+                                      f'{x["value_a"]:.3f} → {x["value_b"]:.3f}', fl,
+                                      short_id(os.path.basename(x['a'] or '')),
+                                      short_id(os.path.basename(x['b'] or '')), ''])
                 it.setForeground(0, QColor(THEME.status('critical' if kind == 'newly fails' else 'good')))
                 it.setToolTip(4, ', '.join(f'{k}={v:.3g}' if isinstance(v, float) else f'{k}={v}'
                                            for k, v in sorted((x.get('values') or {}).items())))
+                it.setToolTip(5, f'A: {FD.sentence(la)}\nB: {FD.sentence(lb)}')
+                if FD.tone(la if la != 'unknown' else lb):
+                    it.setForeground(5, QColor(THEME.status(FD.tone(la if la != 'unknown' else lb))))
+                for col, side in ((6, 'a'), (7, 'b')):
+                    it.setData(col, Qt.ItemDataRole.UserRole + 1, x[side] or '')
+                    it.setToolTip(col, x[side] or '')
                 it.setData(0, 256, x)
                 self.changes.addTopLevelItem(it)
+                if kind == 'newly fails':
+                    b = button('Compare in Replay', lambda _=False, x=x: self.compare_in_replay(x),
+                               tip='Both runs of the pair on the Replay page' if can else
+                               'This build\'s Replay page cannot compare two runs yet: use Compare the pair (the Data '
+                               'page)')
+                    b.setEnabled(can)
+                    b.setProperty('role', 'link')
+                    self.changes.setItemWidget(it, 8, b)
+        for k in (0, 1, 2, 3, 4, 5):
+            self.changes.resizeColumnToContents(k)
 
     def _row(self):
         it = self.changes.currentItem()
         return it.data(0, 256) if it is not None else None
+
+    def _trial_levels(self) -> dict:
+        """{trial: (A's level, B's level)} from trials.jsonl (core.releasegate.trial_fidelity)."""
+        d = self.gate_dir()
+        if not d:
+            return {}
+        return {t['i']: (G.trial_fidelity(t['a']), G.trial_fidelity(t['b'])) for t in G.read_trials(d)}
+
+    def _replay_can_compare(self) -> bool:
+        if not hasattr(self.win, 'page'):
+            return hasattr(self.win, 'go')                     # a window without page lookup: try on click
+        page = self.win.page('replay')
+        return page is not None and hasattr(page, 'compare_runs')
+
+    def compare_in_replay(self, x):
+        """A newly failing pair on the Replay page (its compare_runs(run_a, run_b), workstream R)."""
+        if not x or not hasattr(self.win, 'go'):
+            return False
+        page = self.win.go('replay')
+        if page is not None and hasattr(page, 'compare_runs'):
+            page.compare_runs(x['a'], x['b'])
+            return True
+        self.note.setText('This build\'s Replay page cannot compare two runs: Compare the pair shows them on the '
+                          'Data page.')
+        return False
 
     def browse(self, side: str):
         x = self._row()

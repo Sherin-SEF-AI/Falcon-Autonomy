@@ -22,6 +22,10 @@ logic requirement from its recorded trace (core.rules.trace_from_run) in this pr
 keeps ρ, the value and the verdict ('stl'), and stl/<run>-<objective key>.json the per-sample series. Another
 requirement re-scores the same runs (nothing driven again). A run whose ρ is unknown is kept with value 0 and
 'stl.state' "not evaluable", and is told to the searcher as None (it learns nothing from it).
+
+Fidelity (core.fidelity, 4.2): each row records the level its run's run.json says ("fidelity": carla, fake …; an older
+row is read from its run.json, row_fidelity()), and search-<method>.json records "fidelity" = core.fidelity.combine of
+the study's rows — "mixed" when runs of different fidelity were pooled, which the pages show in the critical colour.
 """
 from __future__ import annotations
 
@@ -31,6 +35,7 @@ import os
 import time
 
 from ..core import datasets as D
+from ..core import fidelity as FD
 from ..core import protocol as P
 from ..core import scenarios as SC
 from ..core.drive import scenario_config
@@ -100,6 +105,20 @@ def requirement_argv(req: dict | None) -> list:
     if req.get('smooth'):
         out += ['--smooth', str(req['smooth'])]
     return out
+
+
+def row_fidelity(r: dict) -> str:
+    """A results.jsonl row's fidelity (core.fidelity.LEVELS): what its run recorded, written with the row since 4.2;
+    an older row's is read from its run.json now ('unknown' when nothing says — never guessed)."""
+    lv = (r or {}).get('fidelity')
+    if isinstance(lv, str) and lv in FD.LEVELS:
+        return lv
+    return FD.of_run(r['run']) if (r or {}).get('run') else 'unknown'
+
+
+def rows_fidelity(rows) -> str:
+    """The fidelity of a set of rows (core.fidelity.combine): one level, 'mixed' or 'unknown'."""
+    return FD.combine(row_fidelity(r) for r in rows or () if r)
 
 
 def study_dir(workspace, name):
@@ -339,7 +358,7 @@ class Study:
                 except (OSError, ValueError):
                     run = {'status': 'failed', 'error': 'no run.json'}
                 res = {'key': cfg['cache_key'], 'values': batch[i], 'run': cfg['out'], 'status': run.get('status'),
-                       'error': run.get('error'), 'scenario': run.get('scenario')}
+                       'error': run.get('error'), 'scenario': run.get('scenario'), 'fidelity': FD.of_doc(run)}
                 res['objective'] = res['criticality'] = objective(res)
                 if self.okey == 'criticality':
                     res['objective_key'] = 'criticality'
@@ -426,7 +445,8 @@ class Study:
             write_json(state_path, {'objective_key': self.okey, 'threshold': threshold, 'state': algo.state()})
         out = {'method': method, 'budget': budget, 'history': algo.history,
                'failures': S.failures(algo.history, threshold), 'threshold': threshold,
-               'objective': self.objective_doc(), 'space': space}
+               'objective': self.objective_doc(), 'space': space,
+               'fidelity': rows_fidelity(self.current_results())}
         write_json(os.path.join(self.dir, f'search-{method}.json'), out)
         return out
 
@@ -578,7 +598,7 @@ def main_study(argv) -> int:
             out = st.search(a.method, a.budget, a.batch, a.threshold,
                             lambda n: em.progress(min(n / total, 1.0), f'{n} of {total}', force=True))
             em.result('ok', summary={'evaluated': len(out['history']), 'failures': len(out['failures']),
-                                     'objective': spec['objective'],
+                                     'objective': spec['objective'], 'fidelity': out['fidelity'],
                                      'best': max((h['value'] for h in out['history']), default=None)})
     except (RuntimeError, ValueError, ProjectError) as e:
         print(f'failed: {e}', flush=True)
