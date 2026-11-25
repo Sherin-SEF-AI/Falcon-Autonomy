@@ -14,7 +14,7 @@ carries its document, clause and **whether it was verified**. Code: `falcon_auto
 
 | where | what |
 |---|---|
-| Reports ▸ *Regulation packs* | the notice; the packs with their cases, how many run and how many values are unverified; the case table with each case's clause, its result as a word with its colour, a mark on every case that uses an unverified value, and what was measured; *Run the pack* (a job) and *Export the report* into the reports folder |
+| Reports ▸ *Regulation packs* | the notice; the packs with their cases, how many run and how many values are unverified; the verdict with the result's fidelity chip (*Fake simulator*, *CARLA* …); each unverified value as a flag naming its document and clause, with three next steps — *Jump to config* (selects it in the values table), *Attach evidence* (the result as a Solution of the [safety case](gsn.md), undoable there) and *Run sensitivity check* (below); the case table with each case's clause, its result as a word with its colour, a mark on every case that uses an unverified value, and what was measured (a run case: right click *Send to ▸*, selecting it makes it the active run); the values table (value, document · clause, how it was read; why in the tooltip) and Falcon's own choices behind *Details*; the world and rig of the run (*Where*); *Run the pack* (a job) and *Export the report* into the reports folder |
 | `falcon regpack list` · `falcon regpack show PACK [--json]` | the packs; one pack's cases, values, sources and which values are unverified |
 | `falcon regpack run PROJECT PACK --name N [--case ID…] [--group G…] [--driver follower\|autopilot] [--degraded-mode] [--world W] [--rig R] [--seed N] [--fps F] [--duration-scale X] [--fake-carla DIR]` | run the cases as stack runs and score them: `regpacks/<name>/regpack.json` and `report.html` |
 | `falcon regpack report DIR [--out FILE.html]` | the result as text and as a self-contained report |
@@ -165,12 +165,36 @@ a straight road with the ego going straight); the others are gaps because the sc
 no scenario is placed on a merging or branching section. Nothing is run and nothing passes: "covered" means a scenario
 of that kind exists, not that its parameter space was explored.
 
+## Sensitivity of an unverified value (4.2)
+
+`core.regpacks.sensitivity(pack, value, result=None, rel=0.10)` re-evaluates what a value decides at the low and high
+ends of a band and says whether a case or the verdict flips. It runs nothing: a run case is re-judged from what it
+measured. The band is the range the value record gives (`range`; no pack gives one today), else ±10 % of the value —
+Falcon's choice, stated with every answer.
+
+| value | what is re-evaluated |
+|---|---|
+| `r157` `pm_dy0` | performance model 1's classification of each cut-in (mandatory or informative) with dy0 at 1.44 and 1.76 m, the case's result from its measured collision, and the pack's verdict. On the pack's six cut-ins nothing flips (the classification does not change even at ±80 %: dy0 only sets from when a contact counts) |
+| `r157` `pm_vy_max` | no check of the pack reads it: it cannot change a case or the verdict |
+| `ncap_aeb_c2c` `bands_ccrs` / `bands_ccrm` | each run case's colour band from its measured impact speed with every band bound scaled ×0.9 and ×1.1, and the AEB score (none for a partial grid). A case 14 km/h into a 15 km/h bound flips from yellow to orange at the low end |
+| `ncap_aeb_c2c` `overlap_sign` | both signs: every ±overlap pair of results swapped, and the score. The protocol weights the mirror pairs equally, so the score does not move |
+| `iso34502` `same_in_iso` | a statement, not a number: not applicable |
+
 ## How a case is run and scored
 
 Each runnable case is one stack run (`core/stack.py`, the worker `workers/stack.py`) through
 `sim.service.study_service`, with the chosen driver as the system under test — Falcon's built-in follower, CARLA's
 autopilot; for a ROS 2 stack, `falcon regpack export` writes the scenarios and a suite for `falcon stack`. A case the
 world or backend cannot run (no adjacent lane for a cut-in, a route too short) is **refused by name** with the reason.
+When the map's lane ends before an actor's distance (the workers' director: `ahead_m` beyond the lane), the run is
+no longer refused with an IndexError (4.2): the director first prefers a start whose lane reaches the farthest actor,
+and when none does it places the actor at the lane's end, notes it in the run (`notes`, `scenario.placed_short`), and
+the case says *placed nearer than the case asks … NOT the document's geometry* — the pack's verdict is then
+incomplete, never passed. (The reported case, `cut-out-60-60-1`, now fits on the fake's 300 m road and passes.)
+
+A result records `fidelity` — core.fidelity.combine of its runs (`fake` on the fake CARLA) — and each case its run's;
+the report shows it beside the verdict.
+
 Scoring reads the run's own results:
 
 | signal | from |
@@ -180,6 +204,17 @@ Scoring reads the run's own results:
 | the bumper gap to the lead against d_min(v) | `trajectories.json`; judged only while the lead has been steady for 2 s (Falcon's reading of "restore") |
 | how far the body went beyond its lane | the recorded lateral offset from the lane centre, the lane's and the vehicle's width |
 | the minimum risk manoeuvre | `core/mrm.py`'s verdict with the deceleration limit set to the regulation's 4.0 m/s² (its reaction, standstill, jerk and lane limits are Falcon's heuristics) |
+
+## The fake simulator and a large rig (4.2)
+
+The fake `carla` module the tests and demos use ray-casts every camera pixel in numpy. Measured on the development
+machine (`render()` of a scene with six boxes, three frames each): 64 × 36 0.002 s, 320 × 180 0.04 s, 640 × 360 0.20 s,
+1280 × 720 **1.19 s per frame**; a label image is a second frame of the same size. A project's default rig (1280 × 720
+with semantic labels) therefore spends minutes per run on the fake, and a campaign of dozens of runs looks stalled —
+the cost is the test double's, not Falcon's and not a real CARLA's. The section's *Where* row (world and rig of the
+project, the active ones preselected) warns when the fake is in use and the chosen rig renders more than about
+0.1 s per step there (`ui/robustkit.py`: about 1.3 s per megapixel-frame), and suggests a small rig (320 × 180, no
+labels) for runs on the fake.
 
 ## Limits
 

@@ -777,8 +777,126 @@ def calibration_statements(cells: list) -> list:
             for s, t in out.items()]
 
 
+SENS_BAND = 0.10        # the band tried around a requirement the user stated (no document gives a range), 4.2
+
+
+def sensitivity(cell: dict, requirements: dict | None, rel: float = SENS_BAND) -> dict:
+    """Whether a cell's requirement verdict (met / not met) holds at the ends of two bands (4.2, pure: nothing is
+    run): the requirement ±rel (the user's number: no document gives it a range) and the tolerance's own bracket
+    [last pass, first fail] — where between the grid's points the true tolerance lies. A cell with no requirement,
+    not measured, or failing without the fault has nothing to re-evaluate (applicable False, with why).
+
+    Returns {'fault', 'sensor', 'unit', 'required', 'tolerated', 'ends': [{'what', 'tolerated', 'required',
+    'verdict'}], 'nominal', 'flips', 'applicable', 'why'}."""
+    req = (requirements or {}).get(cell.get('fault'))
+    out = {'fault': cell.get('fault'), 'sensor': cell.get('sensor'), 'unit': cell.get('unit', ''),
+           'required': req, 'tolerated': cell.get('tolerated'), 'rel': rel, 'ends': [], 'nominal': None,
+           'flips': False, 'applicable': False, 'why': ''}
+    if cell.get('status') == 'refused':
+        out['why'] = 'not measured: ' + (cell.get('note') or 'refused')
+        return out
+    if cell.get('status') == 'fails_nominal':
+        out['why'] = 'the criterion fails without the fault: no tolerance to compare'
+        return out
+    if not req:
+        out['why'] = 'no requirement set for this fault: nothing to judge against'
+        return out
+    tol = float(cell['tolerated'])
+    b = cell.get('bracket') or [None, None]
+    lo_t = float(b[0]) if b[0] is not None else tol
+    hi_t = float(b[1]) if b[1] is not None else None          # tolerates_max: no failure found, no upper end
+
+    def word(t, r):
+        return 'met' if t >= r else 'not met'
+    req = float(req)
+    out['applicable'] = True
+    out['nominal'] = word(tol, req)
+    ends = [(f'requirement −{100 * rel:g} %', tol, req * (1 - rel)),
+            (f'requirement +{100 * rel:g} %', tol, req * (1 + rel)),
+            ('tolerance at the last pass', lo_t, req)]
+    if hi_t is not None:
+        ends.append(('tolerance just below the first fail', hi_t, req))
+    for what, t, r in ends:
+        out['ends'].append({'what': what, 'tolerated': round(t, 6), 'required': round(r, 6), 'verdict': word(t, r)})
+    out['flips'] = any(e['verdict'] != out['nominal'] for e in out['ends'])
+    out['why'] = ('the verdict changes inside the band: the margin is thinner than the uncertainty' if out['flips']
+                  else 'the verdict holds at every end')
+    return out
+
+
+def sensitivity_text(s: dict) -> str:
+    """sensitivity() as lines for a tooltip or the command line."""
+    if not s['applicable']:
+        return f'{s["sensor"]} · {s["fault"]}: {s["why"]}'
+    u = s['unit']
+    lines = [f'{s["sensor"]} · {s["fault"]}: tolerated {s["tolerated"]:.4g} {u}, required {float(s["required"]):.4g} '
+             f'{u} — {s["nominal"]}']
+    for e in s['ends']:
+        lines.append(f'  {e["what"]}: {e["tolerated"]:.4g} vs {e["required"]:.4g} {u} → {e["verdict"]}'
+                     + (' FLIPS' if e['verdict'] != s['nominal'] else ''))
+    lines.append(s['why'])
+    return '\n'.join(lines)
+
+
+def flags(doc: dict, requirements: dict | None = None) -> list:
+    """What a campaign leaves to act on (4.2), most severe first: a requirement not met, a cell failing without the
+    fault, a requirement met inside its ±SENS_BAND (a thin margin: no safety factor is applied), a cell not measured
+    (a missing check), a non-monotone response, and the measured faults that have no requirement (no verdict at
+    all). Each: {'kind', 'tone', 'sensor', 'fault', 'text', 'field' (what "Jump to config" focuses: requirement,
+    scenario or the row), 'sensitivity' (whether a sensitivity check applies)}."""
+    reqs = dict(requirements if requirements is not None else doc.get('requirements') or {})
+    out, no_req = [], []
+    for c in doc.get('cells') or []:
+        st, req = c.get('status'), reqs.get(c['fault'])
+        base = {'sensor': c['sensor'], 'fault': c['fault']}
+        what = f'{c["sensor"]} · {c["title"].lower()}'
+        if st == 'refused':
+            out.append(dict(base, kind='missing', tone='warning', field='row', sensitivity=False,
+                            text=f'{what}: not measured — {c.get("note") or "refused"}'))
+            continue
+        if st == 'fails_nominal':
+            out.append(dict(base, kind='fails_nominal', tone='critical', field='scenario', sensitivity=False,
+                            text=f'{what}: the criterion fails without the fault (the scenario or the criterion, '
+                                 'not the sensor)'))
+            continue
+        if st == 'not_monotone':
+            out.append(dict(base, kind='not_monotone', tone='warning', field='row', sensitivity=False,
+                            text=f'{what}: the response is not monotone; the tolerance shown is the lowest failure '
+                                 'the grid found'))
+        if not req:
+            no_req.append(c)
+            continue
+        m = margin(c, reqs)
+        if m is not None and m < 1.0:
+            out.append(dict(base, kind='not_met', tone='critical', field='requirement', sensitivity=True,
+                            text=f'{what}: tolerates {float(c["tolerated"]):.3g} {c["unit"]}, the requirement is '
+                                 f'{float(req):.3g} {c["unit"]} — not met'))
+        elif m is not None and m < 1.0 + SENS_BAND:
+            out.append(dict(base, kind='thin_margin', tone='warning', field='requirement', sensitivity=True,
+                            text=f'{what}: met with {100 * (m - 1):.0f} % to spare, inside ±{100 * SENS_BAND:g} % — '
+                                 'no safety factor is applied'))
+    if no_req:
+        c = no_req[0]
+        out.append({'kind': 'no_requirement', 'tone': 'warning', 'sensor': c['sensor'], 'fault': c['fault'],
+                    'field': 'requirement', 'sensitivity': False,
+                    'text': f'{len(no_req)} measured cell(s) have no requirement, so no verdict: '
+                            + ', '.join(sorted({x['fault'] for x in no_req}))})
+    rank = {'critical': 0, 'warning': 1}
+    return sorted(out, key=lambda f: rank.get(f['tone'], 2))
+
+
+def campaign_fidelity(cells, out_dir: str = '', runs=None) -> tuple:
+    """(fidelity, source fidelity) of a campaign (core.fidelity, 4.2): an offline one is `recorded` with its runs'
+    combined level beside it; a closed-loop one is the combined level of its stack runs (out_dir/runs/…)."""
+    from . import fidelity as F
+    if runs is not None:
+        return 'recorded', F.combine(F.of_run(r) for r in runs)
+    paths = sorted({rr for c in cells or [] for rr in c.get('runs') or []})
+    return F.combine(F.of_run(os.path.join(out_dir, rr)) for rr in paths), ''
+
+
 def result(cells: list, mode: str, name: str = '', seed: int = 0, requirements: dict | None = None,
-           inputs: dict | None = None) -> dict:
+           inputs: dict | None = None, fidelity: str = 'unknown', source_fidelity: str = '') -> dict:
     from .provenance import utc_now
     tol = {}
     for c in cells:
@@ -786,6 +904,7 @@ def result(cells: list, mode: str, name: str = '', seed: int = 0, requirements: 
             'tolerated': c.get('tolerated'), 'bracket': c.get('bracket'), 'unit': c['unit'], 'status': c['status']}
     return {'schema': SCHEMA, 'name': name, 'mode': mode, 'created': utc_now(), 'seed': int(seed),
             'inputs': inputs or {}, 'requirements': dict(requirements or {}), 'cells': cells, 'tolerance': tol,
+            'fidelity': fidelity, **({'source_fidelity': source_fidelity} if source_fidelity else {}),
             'most_fragile': most_fragile(cells, requirements), 'calibration': calibration_statements(cells),
             'method': 'per cell: the response at 0 and on a coarse grid, a monotonicity check of the verdicts, then '
                       'bisection of the bracket; common random numbers across severities (core.faulttol)',
@@ -1000,7 +1119,8 @@ def _run(a) -> int:
             inputs = {'runs': [os.path.relpath(os.path.abspath(x), proj.workspace) for x in a.runs],
                       'model': a.model or None, 'options': opts}
             mode = 'offline'
-        doc = result(cells, mode, a.name, a.seed, req, inputs)
+        fid, src = campaign_fidelity(cells, out) if mode == 'closed_loop' else campaign_fidelity(cells, runs=a.runs)
+        doc = result(cells, mode, a.name, a.seed, req, inputs, fid, src)
         path = write(doc, out)
     except FaultTolError as e:
         print(f'failed: {e}', flush=True)

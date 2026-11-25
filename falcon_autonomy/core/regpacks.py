@@ -711,6 +711,174 @@ def runnable(c: dict) -> bool:
     return bool(c.get('scenario')) and not c.get('refuse')
 
 
+# ================================================================================ how much an unverified value matters
+SENS_BAND = 0.10        # the band tried around a value not verified in its document when it gives no range (4.2)
+
+
+def value_band(v: dict, rel: float = SENS_BAND) -> tuple:
+    """(low, high, how it was chosen) of a value record: the range the record gives (`range`), else ±rel of a number
+    (a dict or list of numbers: each scaled), else None for a value that is not a number."""
+    if v.get('range'):
+        lo, hi = v['range']
+        return lo, hi, 'the range the document gives'
+
+    def scale(x, f):
+        if isinstance(x, bool) or x is None:
+            return x
+        if isinstance(x, (int, float)):
+            return round(x * f, 6)
+        if isinstance(x, list):
+            return [scale(y, f) for y in x]
+        if isinstance(x, dict):
+            return {k: scale(y, f) for k, y in x.items()}
+        raise TypeError
+    try:
+        return (scale(v['value'], 1.0 - rel), scale(v['value'], 1.0 + rel),
+                f'±{100 * rel:g} % of the value (the document gives no range)')
+    except TypeError:
+        return None, None, 'not a number: no band to try'
+
+
+def cases_using(p: dict, name: str) -> list:
+    """The ids of the pack's cases whose values include the value record `name` (a name of values_of)."""
+    rec = dict(values_of(p)).get(name)
+    if rec is None:
+        return []
+    if '.' in name and name.split('.', 1)[0] in {c['id'] for c in p['cases']}:
+        return [name.split('.', 1)[0]]
+    return [c['id'] for c in p['cases'] if any(x == rec for x in (c.get('values') or {}).values())]
+
+
+def _case_result(must: bool, row: dict | None):
+    """A cut-in row's result word with its classification `must`, from its measured collision (None: not run)."""
+    if not row or row.get('result') not in ('pass', 'fail', 'informative'):
+        return None
+    if not (row.get('measured') or {}).get('collision'):
+        return 'pass'
+    return 'fail' if must else 'informative'
+
+
+def sensitivity(pid: str, name: str, doc: dict | None = None, rel: float = SENS_BAND) -> dict:
+    """Re-evaluate what an unverified value of a pack decides at the low and high ends of its band (value_band) and
+    say whether the verdict flips (4.2, a pure function: no simulation is run — a run case is re-judged from what
+    was measured). doc: a result of the pack (None: the pack's classification only).
+
+    What is re-evaluated: R157 pm_dy0 — performance model 1's classification of each cut-in (mandatory or
+    informative) and with it the case's result and the pack's verdict; Euro NCAP bands_ccrs / bands_ccrm — each run
+    case's colour band from its measured impact speed with the band bounds scaled, and the AEB score; overlap_sign —
+    both signs (the grid is run mirror-symmetrically, so a sign swaps ±overlap cases). A value no check reads, or a
+    statement that is not a number, says so and cannot flip anything."""
+    p = pack(pid)
+    rec = dict(values_of(p)).get(name)
+    if rec is None:
+        raise RegPackError(f'pack {pid} has no value {name!r}')
+    lo, hi, how = value_band(rec, rel)
+    using = cases_using(p, name)
+    out = {'pack': pid, 'name': name, 'value': rec['value'], 'unit': rec['unit'], 'source': rec['source'],
+           'document': SOURCES.get(rec['source'], {}).get('title', rec['source']), 'clause': rec['clause'],
+           'basis': rec['basis'], 'verified': rec['verified'], 'low': lo, 'high': hi, 'band': how, 'cases': [],
+           'verdict': None, 'flips': False, 'applicable': True, 'checked': '', 'run': doc is not None}
+    rows = {r['id']: r for r in (doc or {}).get('cases') or []}
+    whole = bool(doc) and (doc.get('inputs') or {}).get('cases_selected') == len(p['cases'])
+    if name == 'pm_dy0':
+        out['checked'] = 'performance model 1\'s cut-in classification (mandatory / informative)'
+        alt = {}
+        for end, dy in (('nominal', rec['value']), ('low', lo), ('high', hi)):
+            alt[end] = {}
+            for c in p['cases']:
+                if c['id'] not in using:
+                    continue
+                v = c['values']
+                avoid = pm1_cut_in_avoidable(v['ego_speed']['value'], v['other_speed']['value'], v['dx0']['value'],
+                                             v['vy']['value'], dy)
+                alt[end][c['id']] = avoid or c.get('required_5252', False)
+        for cid in using:
+            words = {e: ('mandatory' if alt[e][cid] else 'informative') for e in alt}
+            res = {e: _case_result(alt[e][cid], rows.get(cid)) for e in alt}
+            row = {'id': cid, **{e: words[e] + (f', {res[e]}' if res[e] else '') for e in alt}}
+            row['flips'] = len({row[e] for e in alt}) > 1
+            out['cases'].append(row)
+        if doc is not None:
+            ver = {}
+            for end in alt:
+                d2 = copy.deepcopy(doc)
+                for r in d2['cases']:
+                    if r['id'] in alt[end]:
+                        r['mandatory'] = alt[end][r['id']]
+                        got = _case_result(r['mandatory'], r)
+                        if got:
+                            r['result'] = got
+                ver[end] = verdict_of(p, d2, whole)['verdict']
+            out['verdict'] = ver
+    elif name in ('bands_ccrs', 'bands_ccrm') or name.endswith('.bands'):
+        out['checked'] = 'the colour band of each run case\'s impact speed, and the AEB score'
+        if doc is not None:
+            alt = {'nominal': copy.deepcopy(doc['cases']), 'low': copy.deepcopy(doc['cases']),
+                   'high': copy.deepcopy(doc['cases'])}
+            by_case = {c['id']: c for c in p['cases']}
+            for cid in using:
+                r, c = rows.get(cid), by_case[cid]
+                if not r or r.get('factor') is None:
+                    continue
+                cr = next(x for x in c['criteria'] if x['kind'] == 'impact_band')
+                m = r.get('measured') or {}
+                v_imp = m.get('relative_impact_kmh') if cr.get('relative') else m.get('impact_speed_kmh')
+                words = {}
+                for end, f in (('nominal', 1.0), ('low', 1.0 - rel), ('high', 1.0 + rel)):
+                    words[end] = band(v_imp, [None if b is None else b * f for b in cr['bands']])
+                    for x in alt[end]:
+                        if x['id'] == cid:
+                            x['factor'] = BAND_SCORE['value'][words[end]]
+                out['cases'].append({'id': cid, **words, 'flips': len(set(words.values())) > 1})
+            sc = {e: aeb_score(v)['points'] for e, v in alt.items()}
+            out['verdict'] = {e: ('—' if v is None else f'{v:g} of 3 points') for e, v in sc.items()}
+    elif name == 'overlap_sign':
+        out['low'], out['high'] = 'as recalled', 'the other side'
+        out['band'] = 'a direction: both signs tried (no ±10 % band for a sign)'
+        out['checked'] = 'the AEB score with every ±overlap pair of results swapped'
+        if doc is not None:
+            sw = copy.deepcopy(doc['cases'])
+            fac = {r['id']: r.get('factor') for r in doc['cases']}
+            for r in sw:
+                if r.get('overlap') not in (None, 100) and r.get('speed') is not None:
+                    mirror = f'{r["id"].rsplit("-", 1)[0]}-{-int(r["overlap"])}'
+                    r['factor'] = fac.get(mirror)
+            a, b = aeb_score(doc['cases'])['points'], aeb_score(sw)['points']
+            out['verdict'] = {'nominal': '—' if a is None else f'{a:g} of 3 points', 'low': '—' if a is None else
+                              f'{a:g} of 3 points', 'high': '—' if b is None else f'{b:g} of 3 points'}
+    elif lo is None:
+        out.update(applicable=False, checked='a statement, not a number: there is no band to try and no verdict '
+                                             'reads it as a number')
+    elif not using:
+        out['checked'] = 'no check of this pack reads it: its band cannot change a case or the verdict'
+    else:
+        out.update(applicable=False, checked='no re-evaluation is implemented for this value')
+    if isinstance(out['verdict'], dict):
+        out['flips'] = len(set(out['verdict'].values())) > 1
+    out['flips'] = out['flips'] or any(c['flips'] for c in out['cases'])
+    return out
+
+
+def sensitivity_text(s: dict) -> str:
+    """One line per finding of sensitivity(), for the command line and a tooltip."""
+    def fmt(x):
+        t = json.dumps(x, default=str) if not isinstance(x, str) else x
+        return t if len(t) <= 60 else t[:57] + '…'
+    tried = f'tried {fmt(s["low"])} and {fmt(s["high"])}' if s['low'] is not None else 'nothing to try'
+    head = f'{s["name"]} = {fmt(s["value"])} {s["unit"]}'.rstrip() + \
+        f' ({s["document"]}, {s["clause"]}): {tried} — {s["band"]}'
+    lines = [head, f're-evaluated: {s["checked"]}' if s['checked'] else '']
+    for c in s['cases']:
+        lines.append(f'  {c["id"]}: {c["nominal"]} → low {c["low"]}, high {c["high"]}' +
+                     (' FLIPS' if c['flips'] else ''))
+    if s['verdict']:
+        v = s['verdict']
+        lines.append(f'verdict: {v["nominal"]} → low {v["low"]}, high {v["high"]}')
+    lines.append(('the verdict FLIPS inside the band' if s['flips'] else 'nothing flips inside the band')
+                 if s['applicable'] else 'not applicable')
+    return '\n'.join(x for x in lines if x)
+
+
 # ========================================================================================================= scoring
 def _traj(run_dir: str) -> dict:
     import numpy as np
@@ -935,6 +1103,7 @@ def run_pack(svc, project, pid: str, out_dir: str, world: str, rig_id: str, case
              driver: str = 'follower', seed: int = 0, fps: float = 20.0, duration_scale: float = 1.0,
              degraded_mode: bool = False, progress=None, name: str = '') -> dict:
     """Run a pack's cases (cached per run key) and return the result document (written by write())."""
+    from . import fidelity as F
     from . import stack as ST
     from .provenance import utc_now
     from ..sim.stacksuite import run_one
@@ -966,11 +1135,17 @@ def run_pack(svc, project, pid: str, out_dir: str, world: str, rig_id: str, case
                                      why=f'the run did not finish: {run.get("error") or run.get("status")}'))
                 else:
                     s = score_case(c, run, cfg['out'])
-                    r = _row(c, run=os.path.relpath(cfg['out'], out_dir), **s)
+                    r = _row(c, run=os.path.relpath(cfg['out'], out_dir), fidelity=F.of_doc(run), **s)
                     if c.get('scalable') and duration_scale != 1.0:
                         r['note'] = (r['note'] + ' ' if r['note'] else '') + \
                             (f'shortened to {cfg["scenario"]["duration_s"]:g} s: NOT the document\'s duration')
                         r['shortened'] = True
+                    moved = (run.get('scenario') or {}).get('placed_short')
+                    if moved:                       # the map's lane ended before an actor's distance (director)
+                        r['placed_short'] = moved
+                        r['note'] = (r['note'] + ' ' if r['note'] else '') + 'placed nearer than the case asks (' + \
+                            ', '.join(f'{m["actor"]} at {m["placed_m"]:g} m, not {m["ahead_m"]:g} m' for m in moved) + \
+                            '): the lane ended; NOT the document\'s geometry'
                     for k in ('pm1_avoidable', 'required_5252', 'speed', 'overlap'):
                         if k in c:
                             r[k] = c[k]
@@ -986,7 +1161,8 @@ def run_pack(svc, project, pid: str, out_dir: str, world: str, rig_id: str, case
                       'duration_scale': duration_scale, 'degraded_mode': bool(degraded_mode),
                       'backend': getattr(svc, 'backend', ''), 'cases_in_pack': len(p['cases']),
                       'cases_selected': len(chosen)},
-           'cases': rows, 'unverified': unverified(p), 'choices': choices(p)}
+           'cases': rows, 'unverified': unverified(p), 'choices': choices(p),
+           'fidelity': F.combine(r.get('fidelity') for r in rows if r.get('run'))}
     doc.update(verdict_of(p, doc, len(chosen) == len(p['cases'])))
     return doc
 
@@ -1009,16 +1185,19 @@ def verdict_of(p: dict, doc: dict, whole: bool) -> dict:
     failed = [r for r in mand if r['result'] == 'fail']
     open_ = [r for r in mand if r['result'] in ('refused', 'not judged')]
     short = [r for r in rows if r.get('shortened')]
+    moved = [r for r in rows if r.get('placed_short')]
     passed = sum(r['result'] == 'pass' for r in mand)
     out['score'] = {'passed': passed, 'mandatory': len(mand), 'share': round(passed / len(mand), 4) if mand else None}
     if failed:
         v, note = 'failed', f'{len(failed)} mandatory case(s) failed: {", ".join(r["id"] for r in failed[:6])}'
-    elif open_ or not whole or short:
+    elif open_ or not whole or short or moved:
         v = 'incomplete'
         note = '; '.join(x for x in (
             f'{len(open_)} mandatory case(s) refused or not judged' if open_ else '',
             'only a selection of the pack\'s cases was run' if not whole else '',
-            f'{len(short)} case(s) ran shortened' if short else '') if x)
+            f'{len(short)} case(s) ran shortened' if short else '',
+            f'{len(moved)} case(s) had an actor placed nearer than asked (the map\'s lane ended)' if moved else '')
+            if x)
     else:
         v, note = 'passed', f'all {len(mand)} mandatory cases passed'
     out.update(verdict=v, verdict_note=note + ' — a simulation pre-check, not an approval')
@@ -1110,6 +1289,9 @@ def report(src: str):
     pg.h2('Verdict')
     sc = doc.get('score') or {}
     pairs = [('verdict', R.esc(doc['verdict'])), ('why', R.esc(doc.get('verdict_note', '')))]
+    if doc.get('fidelity'):                      # what produced the runs (core.fidelity, 4.2)
+        from . import fidelity as F
+        pairs.append(('fidelity', R.esc(f'{F.label(doc["fidelity"])}: {F.sentence(doc["fidelity"])}')))
     if doc['pack'] == 'ncap_aeb_c2c':
         for g, s in (sc.get('scenarios') or {}).items():
             pairs.append((g, R.esc(f'{s["points"]:.3f} of {s["of"]:g} points' if s['points'] is not None else

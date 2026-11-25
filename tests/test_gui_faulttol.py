@@ -43,7 +43,8 @@ def test_the_table_the_requirement_and_the_curve(window, qapp, tmp_path):
         assert rows[('cam', 'exposure')].text(3) == '[3, —]'                  # no failure up to the largest tried
         assert rows[('cam', 'noise')].text(6) == 'not measured' and '--model' in rows[('cam', 'noise')].toolTip(6)
         assert tab.fragile.value.text() == 'cam' and 'tested range' in tab.fragile.sub.text()
-        assert 'Derived — cam: extrinsic yaw must hold within' in tab.derived.text()
+        assert 'Derived — cam: extrinsic yaw must hold within' in tab.derived_text()
+        assert tab.derived.vals['cam'].text().startswith('extrinsic yaw must hold within')
         # a requirement the yaw tolerance does not meet: the word, its colour, the meter, the settings
         tab.table.setCurrentItem(yaw)
         assert tab.req.isEnabled() and tab.req.suffix() == ' deg'

@@ -12,7 +12,7 @@ their docstrings are the reference.
 
 | where | what |
 |---|---|
-| Stack testing ▸ *Fault tolerance* | a campaign's table: the tolerated severity in mono numerals with its unit, the bracket, the requirement you set for the selected row's fault (kept in the settings), a meter of how much of the tolerance that requirement uses, and the status as a word with its colour (*met*, *not met*, *no requirement*, *not measured* with the reason). Selecting a row draws its response curve — one axis, the threshold dashed, circles pass and squares fail, hover names a point. Below: the most fragile sensor and the derived calibration statements. *Run a closed-loop campaign* queues one on the page's world and rig |
+| Stack testing ▸ *Fault tolerance* | a campaign's table: the tolerated severity in mono numerals with its unit, the bracket, the requirement you set for the selected row's fault (kept in the settings), a meter of how much of the tolerance that requirement uses, and the status as a word with its colour (*met*, *not met*, *no requirement*, *not measured* with the reason). Selecting a row draws its response curve — one axis, the threshold dashed, circles pass and squares fail, hover names a point. Below: the most fragile sensor and the derived calibration statements, one compact row per sensor (how they are derived behind *Details*). The campaign wears its fidelity chip — closed loop: its runs' level; offline: *Recorded · of <level> runs*. The failed or missing checks are flags with next steps (below). *Where* picks the world and rig of the project; *Run a closed-loop campaign* queues one there; a recorded run — sent with *Send to ▸ Fault tolerance* from any run row, or chosen — is analysed offline with *Analyse the recorded run* (a job; nothing starts without the click) |
 | `falcon faulttol models [--json]` | the graded fault models: unit, largest severity tried, sensors, what is modelled, and which are offline only |
 | `falcon faulttol run PROJECT --name N --runs RUN… [--model ID] [--sensor ID…] [--fault F…] [--require FAULT=SEVERITY…] [--ap-drop X] [--ap-metric AP\|AP50\|AP75] [--recall-drop X] [--retention-drop X] [--lidar-tol M] [--max-frames N] [--grid N] [--steps N] [--seed N]` | an **offline** campaign on recorded runs: no simulator |
 | `falcon faulttol run PROJECT --name N --closed-loop --scenario S [--criterion degraded\|criticality\|fail\|stl] [--threshold X] [--stl TEXT] [--seeds 0,1] [--driver follower\|autopilot] [--no-degraded-mode] [--onset S] [--world W] [--rig R] [--fps F] [--fake-carla DIR]` | a **closed-loop** campaign: stack runs through the simulator, the fault starting at `--onset` |
@@ -97,6 +97,25 @@ failing severity the grid found**, unbisected — a bisection would be meaningle
 
 The tolerated severity is the bracket's lower end: the largest severity *seen to pass*, not an interpolation.
 
+## Flags and their next steps (4.2)
+
+`core.faulttol.flags(doc, requirements)` lists what a campaign leaves to act on, most severe first: a requirement
+**not met**; a cell that **fails without the fault** (the scenario or the criterion fails, not the sensor); a
+requirement met with less than 10 % to spare (**no safety factor** is applied anywhere); a cell **not measured** (a
+missing check, with its reason); a **non-monotone** response; and the measured faults with **no requirement** (no
+verdict at all). The tab shows the first four as callouts, the rest behind *Details*. Each has *Jump to config* (the
+row and its requirement field, or the campaign's scenario) and *Attach evidence* (the campaign as a Solution of the
+[safety case](gsn.md), claiming `tolerance.<sensor>.<fault>.tolerated >= <requirement>` when one is set); a
+requirement flag also has *Run sensitivity check*: `core.faulttol.sensitivity(cell, requirements, rel=0.10)` judges
+met / not met at the requirement ±10 % (your number: no document gives it a range) and at both ends of the
+tolerance's bracket [last pass, first fail], and says whether the verdict flips. Nothing is run.
+
+## Fidelity (4.2)
+
+A closed-loop campaign records `fidelity` = core.fidelity.combine over its stack runs. An offline campaign is an
+analysis of recorded runs: `fidelity` is `recorded` and `source_fidelity` the combined level of the runs it read. A
+[safety case](gsn.md) Solution bound to an offline campaign of fake runs verifies amber at best.
+
 ## What is derived, not measured
 
 `calibration` in the result restates each tolerance as the accuracy it implies — "cam-front: extrinsic yaw must hold
@@ -108,6 +127,17 @@ safety factor is applied — a real calibration budget needs margin on top.
 tab) it is the lowest *tolerated ÷ required*; below 1 the requirement is not met. Without any, it is the lowest
 *tolerated ÷ largest severity tried* — a rough ordering only, because the faults' units differ; the result says which
 basis it used.
+
+## The fake simulator and a large rig (4.2)
+
+The fake `carla` module the tests and demos use ray-casts every camera pixel in numpy. Measured on the development
+machine (`render()` of a scene with six boxes, three frames each): 64 × 36 0.002 s, 320 × 180 0.04 s, 640 × 360 0.20 s,
+1280 × 720 **1.19 s per frame**; a label image is a second frame of the same size. A project's default rig (1280 × 720
+with semantic labels) therefore spends minutes per run on the fake, and a campaign of dozens of runs looks stalled —
+the cost is the test double's, not Falcon's and not a real CARLA's. The section's *Where* row (world and rig of the
+project, the active ones preselected) warns when the fake is in use and the chosen rig renders more than about
+0.1 s per step there (`ui/robustkit.py`: about 1.3 s per megapixel-frame), and suggests a small rig (320 × 180, no
+labels) for runs on the fake.
 
 ## Limits
 

@@ -231,7 +231,9 @@ def test_gsn_binds_a_pack_result(ran):
     assert G.verify(ws, doc)['nodes']['S1']['status'] == 'red'                 # incomplete is not passed
     G.bind(ws, doc, 'S1', 'regpack', 'regpacks/r157-a', {'measure': 'field', 'path': 'score.share', 'op': '>=',
                                                          'limit': 1.0})
-    assert G.verify(ws, doc)['nodes']['S1']['status'] == 'green'
+    r = G.verify(ws, doc)['nodes']['S1']                         # the claim holds, on the fake simulator (4.2)
+    assert r['status'] == 'amber' and r['fidelity'] == 'fake' and 'not a real simulator' in r['why']
+    assert r['claim']['ok'] is True
 
 
 # ------------------------------------------------------------------------------------------ the tools and the CLI

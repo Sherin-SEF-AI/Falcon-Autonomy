@@ -43,6 +43,10 @@ result must show:
   regpack.json) by `verdict` (equals "passed") or by `field` (e.g. score.share >= a limit). Neither is a type-approval
   or a rating: the claim binds what the simulation pre-check showed.
 
+A single recorded run (kind run, 4.2; ref the run folder, its run.json pinned) is claimed by `field`, e.g. path
+scenario.passed equals true, or by its hash alone. attach() adds a result as a new Solution under a goal and binds it
+(the GUI's "Attach evidence" and Send to ▸ Reports; detach() undoes it).
+
 A runtime monitor (kind monitor; ref a package folder of `falcon monitor gen`, core.monitorgen) binds its manifest's
 hash; with no claim it is green when the latest equivalence check of that manifest agreed with the offline checker,
 red when it disagreed, and amber when a monitored rule's formula has changed since the monitor was generated, the
@@ -59,7 +63,10 @@ VERIFY (verify()) gives every node a status:
     green   a Solution whose file's hash is the pinned one and whose claim holds (or has no claim)
     amber   its file is missing, or changed since it was bound (re-bind to accept the new result), or its claim cannot
             be evaluated on it; an alias ("@latest") follows the newest result, so a new result is not a change —
-            amber only when nothing resolves
+            amber only when nothing resolves. Also amber (4.2) when the claim holds but the evidence's fidelity
+            (core.fidelity: the result's `fidelity`, a run's provenance.fidelity) is fake, kinematic or mixed — or it
+            is an offline analysis (recorded) of such runs: "evidence from <label>, not a real simulator". A result
+            that records no fidelity (written before 4.2: unknown) verifies as before
     red     the claim is violated on the bound result (a bound broken: e.g. a CI run whose failures lift the
             Clopper–Pearson upper bound above the limit)
     grey    undeveloped: a Solution with no evidence bound, a Goal or Strategy marked undeveloped or supported by
@@ -104,7 +111,8 @@ LINKS = ('SupportedBy', 'InContextOf')
 SUPPORTERS = ('Goal', 'Strategy')
 SUPPORTED = ('Goal', 'Strategy', 'Solution', 'AwayGoal')
 CONTEXTS = ('Context', 'Assumption', 'Justification')
-KINDS = ('failrate', 'suite', 'ci', 'falsify', 'rules', 'lineage', 'monitor', 'faulttol', 'regpack', 'gate')
+KINDS = ('failrate', 'suite', 'ci', 'falsify', 'rules', 'lineage', 'monitor', 'faulttol', 'regpack', 'gate', 'run')
+NOT_REAL = ('fake', 'kinematic', 'mixed')       # core.fidelity levels whose evidence verifies amber at best (4.2)
 MEASURES = ('failure_rate', 'pass_rate', 'min_robustness', 'falsified_runs', 'violations_per_km', 'verdict', 'field',
             'data_root')
 NO_LIMIT = ('verdict', 'data_root')            # measures that compare no number with a limit
@@ -326,7 +334,7 @@ def latest_ci(workspace: str, name: str) -> str | None:
 
 RESULT_FILE = {'failrate': 'failure-rate.json', 'suite': 'results.jsonl', 'ci': 'ci-results.json',
                'falsify': 'falsify.json', 'rules': 'rules.json', 'monitor': 'manifest.json',
-               'faulttol': 'faulttol.json', 'regpack': 'regpack.json', 'gate': 'gate.json'}
+               'faulttol': 'faulttol.json', 'regpack': 'regpack.json', 'gate': 'gate.json', 'run': 'run.json'}
 
 
 def resolve(workspace: str, ev: dict, overrides: dict | None = None) -> tuple:
@@ -735,6 +743,7 @@ def check_evidence(workspace: str, ev: dict, overrides: dict | None = None) -> d
             return dict(out, status='amber', where_now=now,
                         why=f'its runs were made {where_text(now)} now, {where_text(ev["where"])} when bound: re-bind '
                             'to accept it')
+    out['fidelity'], out['source_fidelity'] = evidence_fidelity(d)
     claim = ev.get('claim') or {}
     if ev.get('data'):
         why = _data_changed(workspace, ev['data'])
@@ -752,7 +761,74 @@ def check_evidence(workspace: str, ev: dict, overrides: dict | None = None) -> d
     out['claim'] = c
     if c['ok'] is None:
         return dict(out, status='amber', why=f'the claim cannot be evaluated: {c["detail"]}')
+    if c['ok']:
+        weak = not_real_why(out['fidelity'], out['source_fidelity'])
+        if weak:                                   # it holds, but on a test double or a cheap screen (4.2)
+            return dict(out, status='amber', why=f'{c["detail"]}; but {weak}')
     return dict(out, status='green' if c['ok'] else 'red', why=c['detail'])
+
+
+def evidence_fidelity(d) -> tuple:
+    """(the evidence's fidelity, the fidelity of what an offline analysis read or '') — core.fidelity: a result's
+    top-level `fidelity` (a run's provenance.fidelity), a list of rows combined; unknown when nothing records it."""
+    from . import fidelity as F
+    if isinstance(d, dict):
+        src = d.get('source_fidelity')
+        return level_of(d), (src if isinstance(src, str) and src in F.LEVELS else '')
+    if isinstance(d, list):
+        return F.combine(level_of(r) for r in d if isinstance(r, dict)), ''
+    return 'unknown', ''
+
+
+def level_of(d: dict) -> str:
+    """core.fidelity.of_doc, but a `fidelity` that is not a level (a two-speed study's record of its screen is a dict)
+    reads as unknown instead of failing."""
+    from . import fidelity as F
+    lv = d.get('fidelity') or (d.get('provenance') or {}).get('fidelity')
+    return lv if isinstance(lv, str) and lv in F.LEVELS else 'unknown'
+
+
+def not_real_why(level: str, source: str = '') -> str:
+    """Why evidence of this fidelity cannot verify green ('' when it can): fake, kinematic or mixed results — or an
+    offline analysis (recorded) of such runs — are not a real simulator's. Unknown stays as before 4.2."""
+    from . import fidelity as F
+    if level in NOT_REAL:
+        return f'evidence from {F.label(level)}, not a real simulator'
+    if level == 'recorded' and source in NOT_REAL:
+        return f'evidence from an offline analysis of {F.label(source)} runs, not a real simulator'
+    return ''
+
+
+def attach(workspace: str, doc: dict, kind: str, ref: str, claim: dict | None = None, text: str = '',
+           parent: str = '') -> str:
+    """Add a result as a new Solution of the argument and bind it (4.2: "Attach evidence" on a flag): the Solution
+    supports `parent` (a Goal or Strategy; default the first top goal, which stops being undeveloped) and its
+    evidence is pinned as bind() pins it. doc changes in place (the caller saves and logs); returns the new node's id.
+    Undo is detach()."""
+    if not parent:
+        tops = top_goals(doc)
+        if not tops:
+            raise GSNError('the safety case has no goal to attach evidence to')
+        parent = tops[0]
+    p = node(doc, parent)
+    if p['type'] not in SUPPORTERS:
+        raise GSNError(f'{parent} is a {p["type"]}: evidence attaches under a Goal or Strategy')
+    nid = new_id(doc, 'Sn')
+    doc['nodes'].append(_n(nid, 'Solution', text or f'{kind}: {ref}'))
+    doc['links'].append(_l(parent, nid))
+    try:
+        bind(workspace, doc, nid, kind, ref, claim)
+    except GSNError:
+        detach(doc, nid)
+        raise
+    p.pop('undeveloped', None)
+    return nid
+
+
+def detach(doc: dict, nid: str):
+    """Remove a Solution added by attach() and its links (doc changes in place)."""
+    doc['nodes'] = [n for n in doc['nodes'] if n['id'] != nid]
+    doc['links'] = [ln for ln in doc['links'] if nid not in (ln['from'], ln['to'])]
 
 
 def bind(workspace: str, doc: dict, nid: str, kind: str, ref: str, claim: dict | None = None,

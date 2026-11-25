@@ -15,7 +15,7 @@ its Solution red, the red propagates to the top goal, and a CI gate can fail the
 
 | where | what |
 |---|---|
-| Reports ▸ *Safety case (GSN)* | the argument drawn in GSN shapes, each node marked by its status as verified now, in a word and a colour (met blue, evidence changed amber, not met orange, undeveloped grey); *Verify now* draws it in level by level; click a node for its text, status, why and evidence (result, claim, pinned SHA-256, when bound); *New from the template*, *Verify now*, *Re-bind* (undoable: *Undo* puts the previous evidence back), *Export HTML…* / *Export SVG…* |
+| Reports ▸ *Safety case (GSN)* | the argument drawn in GSN shapes, each node marked by its status as verified now, in a word and a colour (met blue, evidence changed amber, not met orange, undeveloped grey); *Verify now* draws it in level by level; click a node for its text, status, why and evidence (result, its fidelity, claim, pinned SHA-256 shortened with the whole in the tooltip, when bound); an evidence node names its result's fidelity in the drawing (◆ FAKE SIMULATOR, ◆ RECORDED · OF FAKE SIMULATOR RUNS …); *New from the template*, *Verify now*, *Re-bind* (undoable: *Undo* puts the previous evidence back), *Export HTML…* / *Export SVG…*. 4.2: the other sections' *Attach evidence* adds their result here as a new Solution under the selected Goal or Strategy (else the first top goal; a blank safety case is started when there is none) — one undo step; *Send to ▸ Reports* from any run row shows the run here, preselected, with its fidelity and the goal to attach it under: nothing changes until *Attach* |
 | `falcon gsn new --project P [--template sotif\|iso26262\|blank] [--bind] [--force]` | start from a template; `--bind` pins every result it points at |
 | `falcon gsn show --project P [--json]` | the tree with each node's status and why |
 | `falcon gsn bind --project P NODE [--kind K --ref REF] [--measure M --bound B --conf C --limit L --data REF \| --claim JSON] [--unbind]` | bind or re-bind (keeping the claim when none is given) |
@@ -122,9 +122,16 @@ training names the version — rather than comparing the two roots.
 | status | a Solution | a Goal or Strategy |
 |---|---|---|
 | **green** | its file's hash is the pinned one and the claim holds (or there is none) | every support green |
-| **amber** | the file is missing; it changed since it was bound (*re-bind to accept it*); or the claim cannot be evaluated on it (a refused estimate's point, a field that is not there) | a support amber (and none red) |
+| **amber** | the file is missing; it changed since it was bound (*re-bind to accept it*); or the claim cannot be evaluated on it (a refused estimate's point, a field that is not there); or (4.2) the claim holds but the result's fidelity is fake, kinematic or mixed — or it is an offline analysis (`recorded`) of such runs: "evidence from <label>, not a real simulator" | a support amber (and none red) |
 | **red** | the claim is violated on the bound result — a bound broken | a support red |
 | **grey** | no evidence bound (undeveloped) | marked undeveloped, supported by nothing, or a support grey (and none amber or red); an AwayGoal |
+
+Fidelity (4.2) is read from the result itself: a top-level `fidelity` (a study, a campaign, a pack result, a
+budget) or a run's `provenance.fidelity` (core.fidelity); a result list (a suite's rows) combines its rows'. A result
+written before 4.2 records none (*unknown*) and verifies exactly as before — Falcon never guesses. A violated claim
+stays red whatever the fidelity. Evidence kind `run` (4.2) binds a single recorded run (`run.json`), claimed by a
+`field` such as `scenario.passed` equals `true` or by its hash alone; `core.gsn.attach()` / `detach()` add and remove
+a Solution with its link (the GUI's undoable attach).
 
 Propagation is AND, worst first: red > amber > grey > green. Context, Assumption and Justification nodes carry no
 status. An alias is amber only when nothing resolves; a new CI result is not a "change" for it.

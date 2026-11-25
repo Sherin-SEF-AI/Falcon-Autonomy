@@ -39,7 +39,11 @@ def test_the_packs_a_run_and_the_report(window, qapp, tmp_path):
         assert cut.text(1) == 'Annex 5, 4.4; 5.2.5.2; Annex 4 Appendix 3' and cut.text(2) == 'not run'
         assert cut.text(3) == UNVERIFIED_MARK and 'dy0' in cut.toolTip(3)
         assert _rows(tab)[1].text(3) == '' and tab.unver.value.text() == '2'
-        assert 'read from a chart or figure' in tab.unverified.text() and not tab.export_btn.isEnabled()
+        vals = {tab.values.topLevelItem(i).text(0): tab.values.topLevelItem(i)
+                for i in range(tab.values.topLevelItemCount())}
+        assert set(vals) == {'pm_dy0', 'pm_vy_max'} and vals['pm_dy0'].text(3) == 'read from a figure'
+        assert 'read from a chart or figure' in vals['pm_dy0'].toolTip(3) and not tab.export_btn.isEnabled()
+        assert len(tab.flag_widgets) == 2 and 'Annex 4 Appendix 3, Figure 6' in tab.flag_widgets['pm_dy0'].label.text()
         # Euro NCAP lane support: nothing runs, every case says why
         tab.packs.setCurrentItem(tab.packs.topLevelItem(2))
         assert not tab.run_btn.isEnabled() and all(r.text(2) == 'refused' for r in _rows(tab))

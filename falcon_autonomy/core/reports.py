@@ -35,6 +35,8 @@ Kinds (KINDS) and their source:
 - gsn          a workspace's living safety case (safety/gsn.json; core.gsn, `falcon gsn export`): the argument drawn
                in GSN with each node's status as verified now, the evidence with its pinned hashes and claims, the
                recent events
+Fidelity (4.2): the meta records `fidelity` — core.fidelity.combine of what the source documents it read record —
+when at least one records it; the Reports page shows it beside each report.
 - regpack      a regulation pack result's folder (regpack.json; core.regpacks, `falcon regpack run`): the disclaimer
                (a simulation pre-check, not an approval or a rating), the verdict or score, each case with its
                clause and result, the values not verified in the document's text, the sources and limits
@@ -231,6 +233,7 @@ class Page:
         self.kind, self.title, self.source = kind, title, os.path.abspath(source)
         self.parts: list = []
         self.read: dict = {}
+        self.levels: list = []           # the fidelity each source document records (core.fidelity, 4.2)
 
     def json(self, path: str) -> dict:
         try:
@@ -238,6 +241,11 @@ class Page:
         except (OSError, ValueError) as e:
             raise ReportError(f'cannot read {path}: {e}') from None
         self.read[os.path.abspath(path)] = PV.sha256_file(path)
+        if isinstance(d, dict):                    # its fidelity when it records one (a level, not another record)
+            from . import fidelity as F
+            lv = d.get('fidelity') or (d.get('provenance') or {}).get('fidelity')
+            if isinstance(lv, str) and lv in F.LEVELS:
+                self.levels.append(lv)
         return d
 
     def jsonl(self, path: str) -> list:
@@ -275,8 +283,13 @@ class Page:
 
     def meta(self) -> dict:
         from .. import __version__
-        return {'schema': REPORT_SCHEMA, 'kind': self.kind, 'title': self.title, 'source': self.source,
-                'created': PV.utc_now(), 'app_version': __version__, 'inputs': dict(sorted(self.read.items()))}
+        from . import fidelity as F
+        m = {'schema': REPORT_SCHEMA, 'kind': self.kind, 'title': self.title, 'source': self.source,
+             'created': PV.utc_now(), 'app_version': __version__, 'inputs': dict(sorted(self.read.items()))}
+        lv = F.combine(self.levels)
+        if lv != 'unknown':                  # only when a source records it (4.2); older sources say nothing
+            m['fidelity'] = lv
+        return m
 
     def render(self) -> tuple:
         meta = self.meta()

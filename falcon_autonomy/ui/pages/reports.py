@@ -1,7 +1,11 @@
 """Reports: self-contained HTML reports of a loop iteration, a model evaluation, a dataset, a rare-case study or a
 Leaderboard-style result (core.reports), made as jobs (`falcon report`), listed from the workspace's reports folder,
 opened in the browser and exported to a folder; and outputs for a paper (core.paper: LaTeX and CSV tables, figures,
-data cards) as `falcon paper` jobs."""
+data cards) as `falcon paper` jobs.
+
+4.2: each report shows the fidelity of what it reports on (core.fidelity, when its sources record it), and the page is
+the Send to ▸ Reports target: a run sent here waits in the safety case section, preselected, to be attached as
+evidence on a click."""
 from __future__ import annotations
 
 import os
@@ -9,13 +13,13 @@ import sys
 
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QMessageBox, QTreeWidget,
-                             QTreeWidgetItem)
+from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QMessageBox, QScrollArea,
+                             QTreeWidget, QTreeWidgetItem)
 
 from ...core import reports as R
 from ...core.jobs import FINAL, JobSpec
 from ...core.paths import tilde
-from ..widgets import KeyValues, Page, PlaceholderTree, Section, button, label, optional_tab
+from ..widgets import KeyValues, Page, PlaceholderTree, Section, button, fidelity_item, label, optional_tab
 
 KIND_TITLES = {'iteration': 'Loop iteration', 'evaluation': 'Model evaluation', 'dataset': 'Dataset coverage',
                'study': 'Rare-case study', 'leaderboard': 'Leaderboard result', 'rules': 'Traffic-rule check',
@@ -55,7 +59,7 @@ class ReportsPage(Page):
         v.addWidget(self._paper_section())
         sec = Section('Reports', 'In the workspace\'s reports folder. Double-click one to open it in the browser.')
         self.list = PlaceholderTree('No reports yet: choose a kind and a source above, then Make the report.')
-        self.list.setHeaderLabels(['Created', 'Kind', 'Title', 'File'])
+        self.list.setHeaderLabels(['Created', 'Kind', 'Title', 'Fidelity', 'File'])
         self.list.setRootIsDecorated(False)
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list.setMinimumHeight(220)
@@ -71,7 +75,7 @@ class ReportsPage(Page):
             QUrl.fromLocalFile(R.reports_dir(self.win.workspace())))))
         row.addStretch(1)
         sec.add(row)
-        self.info = KeyValues(('Title', 'Kind', 'Source', 'Created', 'Files read', 'File'))
+        self.info = KeyValues(('Title', 'Kind', 'Source', 'Fidelity', 'Created', 'Files read', 'File'))
         sec.add(self.info)
         v.addWidget(sec)
         self.gsn = optional_tab(v, 'ui.gsn_tab', 'GsnTab', 'Safety case (GSN)', self)   # 4.0, in progress
@@ -79,7 +83,26 @@ class ReportsPage(Page):
         self.gate = optional_tab(v, 'ui.gate_tab', 'GateTab', 'Release gate', self)   # 4.1 (core.releasegate)
         v.addStretch(1)
         win.bridge.finished.connect(self._finished)
+        from ..context import register_target
+        from ..theme import THEME
+        THEME.changed.connect(self._themed)          # a bound slot: the fidelity column's colours follow the theme
+        register_target(win, 'reports', 'Reports (attach as evidence)', self.take_run,
+                        'Open the safety case with the run ready to attach as evidence (nothing changes without a '
+                        'click)')
         self.refresh()
+
+    def _themed(self, _name):
+        self.refresh()
+
+    def take_run(self, run_path: str):
+        """Send to ▸ Reports: go here and offer the run in the safety case section, preselected."""
+        self.win.go('reports')
+        if self.gsn is not None:
+            self.gsn.offer_run(run_path)
+            sec = self.gsn.parentWidget()
+            area = self.findChild(QScrollArea)
+            if area is not None and sec is not None:
+                area.ensureWidgetVisible(sec)
 
     def showEvent(self, ev):
         super().showEvent(ev)
@@ -145,10 +168,15 @@ class ReportsPage(Page):
         self.list.clear()
         for m in R.list_reports(self.folder()):
             t = QTreeWidgetItem([(m.get('created') or '').replace('T', ' ').rstrip('Z'),
-                                 KIND_TITLES.get(m['kind'], m['kind']), m['title'], os.path.basename(m['path'])])
+                                 KIND_TITLES.get(m['kind'], m['kind']), m['title'], '—', os.path.basename(m['path'])])
             t.setData(0, 256, m['path'])
             t.setData(1, 256, m)
-            t.setToolTip(3, tilde(m['path']))
+            if m.get('fidelity'):
+                fidelity_item(t, 3, m['fidelity'])
+            else:
+                t.setToolTip(3, 'Not recorded: the report\'s sources were written before Falcon recorded fidelity, '
+                                'or are not simulation results')
+            t.setToolTip(4, tilde(m['path']))
             self.list.addTopLevelItem(t)
             if m['path'] == sel:
                 self.list.setCurrentItem(t)
@@ -177,6 +205,9 @@ class ReportsPage(Page):
         self.info.set('Title', m['title'])
         self.info.set('Kind', KIND_TITLES.get(m['kind'], m['kind']))
         self.info.set('Source', tilde(m['source']))
+        from ...core import fidelity as F
+        self.info.set('Fidelity', F.label(m['fidelity']) if m.get('fidelity') else 'not recorded',
+                      tip=F.sentence(m['fidelity']) if m.get('fidelity') else '')
         self.info.set('Created', m.get('created'))
         self.info.set('Files read', f'{len(m.get("inputs") or {})} (their SHA-256 are in the report)')
         self.info.set('File', tilde(m['path']))
