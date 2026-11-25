@@ -183,6 +183,7 @@ def run_estimate(study, judge: str = 'objective', threshold: float = 0.5, opts: 
                            for s in fin],
                provenance=block({'results': os.path.join(study.dir, 'results.jsonl'), 'state': sp},
                                 seed=study.search_seed))
+    out['fidelity'] = FR.fidelity_of(out)                 # core.fidelity: how real the final runs were
     write_json(os.path.join(study.dir, RESULT_FILE), out)
     return out
 
