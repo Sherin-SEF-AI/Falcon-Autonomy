@@ -264,7 +264,8 @@ class NeuralSim:
         self.episodes_path = os.path.join(self.out, 'episodes.jsonl')
         self.summary = {'schema': SCHEMA, 'reconstruction': self.rec.path, 'envelope': self.envelope,
                         'deviate_m': self.deviate_m, 'cameras': self.cameras, 'obs_size': list(self.obs_size),
-                        'fps': self.fps, 'actors': getattr(self.controller, 'name', 'logged'), 'episodes': []}
+                        'fps': self.fps, 'actors': getattr(self.controller, 'name', 'logged'), 'episodes': [],
+                        'fidelity': 'neural'}                    # core.fidelity: every episode is a neural render
         from .scene import private_source
         self.private = private_source(self.rec.path)      # a dashcam reconstruction: every record says so
         if self.private:
@@ -624,6 +625,7 @@ class NeuralSim:
             if 'source' in run:                          # the reconstruction's own mark stands
                 rr.pop('source', None)
             run.update(rr)
+        run.setdefault('provenance', {})['fidelity'] = 'neural'   # core.fidelity: a neural render in closed loop
         run['outputs'] = PV.hash_tree(d, skip=('run.json',))
         PV.write_json(os.path.join(d, 'run.json'), run)
 

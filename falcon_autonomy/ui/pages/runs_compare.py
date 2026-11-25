@@ -1,7 +1,9 @@
 """Data ▸ Compare: two to four recorded runs side by side (core.runcompare): their cameras on one time scrubber,
 aligned by simulation time from each run's first frame; their events on a shared timeline; and a table of what each
 recorded, with the difference from the first run. Rule violations and lane margins come from a traffic-rule check
-of each run, computed in the background. *Export for a paper* writes the table as LaTeX and CSV (core.paper)."""
+of each run, computed in the background. *Export for a paper* writes the table as LaTeX and CSV (core.paper).
+Each run's fidelity (core.fidelity) is the table's first row; runs of different fidelity (a fake run beside a CARLA
+one, say) get a critical notice above the numbers that they are not like for like."""
 from __future__ import annotations
 
 import os
@@ -15,7 +17,9 @@ from PyQt6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QHeaderView, Q
 from ...core import runcompare as RC
 from .. import tasks
 from ..drivesets import index_entries
-from ..widgets import EmptyState, Section, button, label
+from ..runfid import fidelity_of, likeness
+from ..theme import mono
+from ..widgets import EmptyState, Section, button, callout, fidelity_item, label
 from .data import ImageView
 
 SLOTS = 'ABCD'
@@ -155,14 +159,26 @@ class CompareTab(QWidget):
         self.body.addWidget(top)
         sec = Section('What each run recorded', 'The difference is against A. "not recorded" means the run did not '
                                                 'record it (a plain drive has no scenario, so no collision check).')
+        self.likeness = callout('', 'critical')          # runs of different fidelity: not like for like
+        self.likeness.hide()
+        sec.add(self.likeness)
+        self.likeness_note = label('', muted=True, small=True, wrap=True)   # one run does not record its fidelity
+        self.likeness_note.hide()
+        sec.add(self.likeness_note)
         self.table = QTreeWidget()
         self.table.setRootIsDecorated(False)
         self.table.setMinimumHeight(90)
         sec.add(self.table)
-        sec.add(button('Export for a paper', self.export_paper, tip='The table as LaTeX (booktabs) and CSV into the '
-                                                                    'workspace\'s paper folder (core.paper)'))
+        er = QHBoxLayout()
+        er.addWidget(button('Export for a paper', self.export_paper, tip='The table as LaTeX (booktabs) and CSV into '
+                                                                         'the workspace\'s paper folder (core.paper)'))
+        er.addWidget(button('Side by side in Replay', self.side_by_side,
+                            tip='Replay ▸ Side by side: A and B from above on one time slider, the steps where they '
+                                'part marked'))
+        er.addStretch(1)
+        sec.add(er)
         self.body.addWidget(sec)
-        self.body.setSizes([520, 300])
+        self.body.setSizes([430, 390])
         v.addWidget(self.empty, 1)
         v.addWidget(self.body, 1)
         self.body.hide()
@@ -200,6 +216,15 @@ class CompareTab(QWidget):
 
     def chosen(self) -> list:
         return [c.currentData() for c in self.combos if c.currentData()]
+
+    def side_by_side(self):
+        """Replay's synchronized view of A and B (ReplayPage.compare_runs)."""
+        if len(self.runs) < 2:
+            return None
+        rp = self.win.go('replay')
+        if rp is not None and hasattr(rp, 'compare_runs'):
+            rp.compare_runs(self.runs[0]['path'], self.runs[1]['path'])
+        return rp
 
     def export_paper(self):
         """Queue `falcon paper runs RUN… --out <ws>/paper/runs-<stamp>` for the runs shown (a run from the dashcam
@@ -266,10 +291,28 @@ class CompareTab(QWidget):
         rows = RC.table([r['entry'] for r in self.runs], [r['rules'] for r in self.runs])
         self.table.clear()
         self.table.setHeaderLabels([''] + [f'{r["slot"]}: {r["entry"]["name"]}' for r in self.runs])
+        right = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        for k, r in enumerate(self.runs):
+            self.table.headerItem().setToolTip(k + 1, f'{r["entry"]["name"]}\n{r["path"]}')
+            self.table.headerItem().setTextAlignment(k + 1, right)
+        levels = [fidelity_of(r['path']) for r in self.runs]
+        tone, why = likeness(levels)
+        self.likeness.setVisible(tone == 'critical')
+        self.likeness.label.setText(f'Not like for like: {why}. A difference below may come from the simulators, '
+                                    'not from what changed.' if tone == 'critical' else '')
+        self.likeness_note.setVisible(tone == 'muted')
+        self.likeness_note.setText(f'Fidelity: {why}; compare with care.' if tone == 'muted' else '')
+        it = QTreeWidgetItem(['Fidelity'] + [''] * len(self.runs))
+        for k, lv in enumerate(levels):
+            fidelity_item(it, k + 1, lv)
+            it.setTextAlignment(k + 1, right)
+        self.table.addTopLevelItem(it)
         for row in rows:
             cells = [c['text'] + (f'  ({c["delta"]})' if c['delta'] else '') for c in row['cells']]
             it = QTreeWidgetItem([row['label']] + cells)
             for k, c in enumerate(row['cells']):
+                it.setTextAlignment(k + 1, right)
+                it.setFont(k + 1, mono(12))
                 if c['value'] is None:
                     it.setForeground(k + 1, QColor(self.palette().placeholderText().color()))
             self.table.addTopLevelItem(it)

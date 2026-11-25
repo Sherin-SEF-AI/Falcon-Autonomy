@@ -148,7 +148,12 @@ def compare(original: str, changed: list, model: dict | None = None, workspace: 
             intervals['mean_difference'][k] = {
                 'mean': round(float(np.mean(ok)), 6) if ok else None, 'n': len(ok),
                 'ci95': _boot(vals, n_boot, seed)}
+    from .. import fidelity as F
+    lv_a, lv_b = F.of_run(A['dir']), [F.of_run(B['dir']) for B in Bs]
     doc = {'schema': COMPARISON_SCHEMA, 'original': A['dir'], 'changed': [B['dir'] for B in Bs],
+           'fidelity': F.combine([lv_a] + lv_b),          # core.fidelity: one level for the comparison
+           'fidelity_runs': {'original': lv_a, 'changed': lv_b,
+                             'like_for_like': [list(F.comparable(lv_a, b)) for b in lv_b]},
            'log': A.get('log'), 'original_metrics': A['metrics'], 'pairs': pairs, 'intervals': intervals,
            'interval_note': None if intervals else
            'one changed run: a kinematic replay is deterministic, so one pair is one sample and no interval can be '

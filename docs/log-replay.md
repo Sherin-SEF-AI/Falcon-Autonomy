@@ -198,7 +198,52 @@ n-th frame of one camera of A and of each B against each run's own ground truth;
 core.harness's paired bootstrap gives each number's difference B − A — over pairs of runs when there are several, else
 over frames (not independent: too narrow, and the result says so). `predictions-*.jsonl` keep every frame.
 
-`comparison.json` (schema `falcon.replay_comparison/1`) holds all of it, with provenance over each run's run.json.
+`comparison.json` (schema `falcon.replay_comparison/1`) holds all of it, with provenance over each run's run.json,
+and its **fidelity** (core.fidelity): `fidelity` one level for the comparison (the runs' level when they agree,
+`mixed` when they do not) and `fidelity_runs` each run's, with whether A and each B are like for like.
+
+### Side by side: two runs on one slider
+
+The page's *Compare* (and `ReplayPage.compare_runs(run_a, run_b)` for any two Falcon run folders: Data ▸ Compare's
+*Side by side in Replay*, the release gate) opens **Side by side**: run A (the baseline) and run B (the candidate)
+from above next to each other, driven by **one** time slider, each with its fidelity chip and its folder (click to
+copy). Each view draws every track's trail faintly, the positions at the slider's time, its ego solid and the other
+run's ego as a dashed ring; its frame turns critical while the runs diverge there. When the two runs are of different
+fidelity (a fake run beside a CARLA one, say) a critical notice says they are not like for like; a run written
+before 4.2 (fidelity unknown) gets a muted note.
+
+The **divergences** are found once, when the runs load (core.logreplay.sync, numpy). Both runs go on one clock of the
+finer of their two steps, aligned by time from each run's first sample (never by step index); a run shows nothing at
+a time it has no sample within half its step. A step **diverges** when, with both runs present:
+
+- the egos' box centres are more than **1.0 m** apart;
+- one ego's box overlaps an actor's and the other's does not (a collision in one run only);
+- the smallest time to collision to any actor (core.criticality, constant velocity, 10 s horizon) differs by more
+  than **1.0 s** while at least one is within the horizon;
+- an actor is present in one run and not in the other (matched by id; when the runs share fewer than half their ids
+  — two servers, different spawns — ids mean nothing across them and the number of actors present is compared
+  instead, said in a note).
+
+The thresholds are choices, not a standard. A stretch of diverging steps is one divergence: its start is a tick on
+the slider (its length shaded), and *Jump to first divergence*, ◀ and ▶ move between them. The line under the
+slider says the ego gap and why the step diverges; the summary gives the count, the first and the largest ego gap.
+Poses come from `trajectories.json` when the run has it (a replay, a scenario), else `actors.jsonl` (the ego is the
+`hero`), else `frames.jsonl` — the ego alone, its velocity from its positions and a typical 4.6 × 2.0 m box
+(heuristic, said in a note); such a run is compared by its ego's position only (its actors were not recorded, which
+is not the same as absent).
+
+Under the views, the numbers: for two replays of one log the paired comparison above; for any other two runs what
+both recorded on that clock (collision, minimum TTC, ego path, duration, actors, the largest ego gap) — one pair, no
+interval.
+
+### Fidelity of a log
+
+An imported log records its fidelity in `log.json`: `recorded` for a dataset's log or a bag (a recording), the
+source run's own level for a Falcon run (`unknown` when that run did not record it). A log imported before 4.2 reads
+`recorded` when its source is a dataset or a bag. The Log section shows it as a chip; each replay run records its own
+(the simulator it ran on: `provenance.fidelity` in run.json).
+
+*Send to ▸ Replay* (a run's context menu on Data or Home) imports a Falcon run as a log here in one click.
 
 ## Measured
 

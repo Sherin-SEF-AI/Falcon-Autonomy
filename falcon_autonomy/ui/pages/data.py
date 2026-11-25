@@ -10,16 +10,17 @@ import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QHeaderView,
-                             QLabel, QLineEdit, QMessageBox, QSlider, QSpinBox, QSplitter, QStackedWidget, QTabWidget,
-                             QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+                             QLabel, QLineEdit, QMessageBox, QSizePolicy, QSlider, QSpinBox, QSplitter, QStackedWidget,
+                             QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ...core import budget, labels
 from ...core.drive import drive_config, run_dir_name
 from ...core.paths import tilde
 from ...core.project import ProjectError
 from .. import icons, tasks
-from ..widgets import (EmptyState, Form, KeyValues, Page, PlaceholderTree, Section, button, clear_layout, flow_row,
-                       label, scroll, set_enabled)
+from ..runfid import FidelitySlot, fidelity_of, set_run_context
+from ..widgets import (EmptyState, Form, IdLabel, KeyValues, Page, PlaceholderTree, Section, button, clear_layout,
+                       copyable_ids, fidelity_item, flow_row, label, scroll, set_enabled)
 
 
 class ImageView(QLabel):
@@ -235,7 +236,11 @@ class RulesPanel(QWidget):
 
 
 BROWSABLE = (None, 'drive', 'translate', 'replay')            # workers whose runs have frames to browse
-RUN_COLUMNS = ['Run', 'Date', 'World', 'Weather', 'Duration', 'Status', 'Tags']
+RUN_COLUMNS = ['Run', 'Date', 'Status', 'Fidelity', 'Min TTC', 'World', 'Weather', 'Duration', 'Tags']
+COL = {c: i for i, c in enumerate(RUN_COLUMNS)}
+# widths that keep Run … Min TTC in view at 1440 × 900 without scrolling sideways (the rest scrolls)
+COL_WIDTH = {'Run': 168, 'Date': 92, 'Status': 78, 'Fidelity': 120, 'Min TTC': 76, 'World': 110, 'Weather': 96,
+             'Duration': 72}
 SEARCH_HELP = ('Search the runs (docs/runs.md). Terms are ANDed:\n'
                '  world:w-blr  map:Town10  weather:rain (a preset or clear/cloudy/wet/rain)  tod:night\n'
                '  status:ok  kind:scenario|search|route|drive  scenario:lead  rig:…  tag:mine\n'
@@ -245,21 +250,37 @@ SEARCH_HELP = ('Search the runs (docs/runs.md). Terms are ANDed:\n'
 
 
 class RunItem(QTreeWidgetItem):
-    """A run's row: sorts dates and durations as values, not text."""
+    """A run's row: sorts dates, durations and TTCs as values, not text; its fidelity (core.fidelity) coloured by
+    tone; the Run cell copies the run's folder on a click (ui.widgets.copyable_ids)."""
 
     def __init__(self, e):
-        dur = e.get('duration_s')
-        super().__init__([e['name'], (e.get('started') or '')[:16].replace('T', ' '), e.get('world') or e.get('map')
-                          or '—', e.get('weather') or '—', f'{dur:.1f} s' if dur is not None else '—',
-                          e.get('status') or '?', ', '.join(e.get('tags') or ())])
+        dur, ttc = e.get('duration_s'), e.get('min_ttc_s')
+        started = (e.get('started') or '').replace('T', ' ')
+        cells = {'Run': e['name'], 'Date': started[5:16], 'World': e.get('world') or e.get('map') or '—',
+                 'Weather': e.get('weather') or '—', 'Duration': f'{dur:.1f} s' if dur is not None else '—',
+                 'Status': e.get('status') or '?', 'Tags': ', '.join(e.get('tags') or ()),
+                 'Min TTC': f'{ttc:.2f} s' if ttc is not None else '—', 'Fidelity': ''}
+        super().__init__([cells[c] for c in RUN_COLUMNS])
         self.entry = e
         self.setData(0, 256, e['path'])
-        self.setToolTip(0, f'{e["name"]}\n{tilde(e["path"])}\n{(e.get("started") or "").replace("T", " ").rstrip("Z")}'
-                           + (f'\nevents: {", ".join(e["events"])}' if e.get('events') else ''))
+        self.setData(0, Qt.ItemDataRole.UserRole + 1, e['path'])       # what a click on the Run cell copies
+        self.setToolTip(0, f'{e["name"]}\n{tilde(e["path"])}\n{started.rstrip("Z")}'
+                           + (f'\nevents: {", ".join(e["events"])}' if e.get('events') else '')
+                           + '\nClick to copy the folder')
+        self.setToolTip(COL['Date'], started.rstrip('Z'))
+        self.fidelity = e.get('fidelity') or fidelity_of(e['path'])
+        fidelity_item(self, COL['Fidelity'], self.fidelity)
+        from ..theme import mono
+        for c in ('Date', 'Min TTC', 'Duration'):
+            self.setFont(COL[c], mono(12))
+        for c in ('Min TTC', 'Duration'):
+            self.setTextAlignment(COL[c], Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if ttc is None:
+            self.setToolTip(COL['Min TTC'], 'not recorded: the run has no scenario criticality')
 
     def __lt__(self, other):
         c = self.treeWidget().sortColumn() if self.treeWidget() else 0
-        key = {1: 'started', 4: 'duration_s'}.get(c)
+        key = {COL['Date']: 'started', COL['Duration']: 'duration_s', COL['Min TTC']: 'min_ttc_s'}.get(c)
         if key is not None:
             a, b = self.entry.get(key), other.entry.get(key)
             if a is None or b is None:
@@ -406,7 +427,9 @@ class BrowseTab(QWidget):
         self.frames: list = []
         self.cache = None                     # (index, sensor, rgb, label colours, tags)
         h = QHBoxLayout(self)
-        split = QSplitter()
+        self.split = split = QSplitter()
+        self._sized = False                     # True once the user moves the divider (then it stays theirs)
+        split.splitterMoved.connect(lambda *_: setattr(self, '_sized', True))
         h.addWidget(split)
         side = QWidget()
         sv = QVBoxLayout(side)
@@ -425,13 +448,24 @@ class BrowseTab(QWidget):
         self.runs.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.runs.setSortingEnabled(True)
         self.runs.sortByColumn(1, Qt.SortOrder.DescendingOrder)
-        self.runs.header().setStretchLastSection(False)
-        self.runs.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        self.runs.setColumnWidth(0, 170)
-        for c in range(1, len(RUN_COLUMNS)):
-            self.runs.header().setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
-        self.runs.setMinimumWidth(320)         # name and date without scrolling; the rest scrolls
-        self.runs.currentItemChanged.connect(lambda it, _p: self.show_run(it.data(0, 256)) if it else None)
+        hd = self.runs.header()
+        hd.setStretchLastSection(False)
+        for c, name in enumerate(RUN_COLUMNS):
+            hd.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive if name in COL_WIDTH
+                                    else QHeaderView.ResizeMode.ResizeToContents)
+            if name in COL_WIDTH:
+                self.runs.setColumnWidth(c, COL_WIDTH[name])
+        for name in ('Min TTC', 'Duration'):
+            self.runs.headerItem().setTextAlignment(COL[name], Qt.AlignmentFlag.AlignRight |
+                                                    Qt.AlignmentFlag.AlignVCenter)
+        self.runs.headerItem().setToolTip(COL['Fidelity'], 'How real the run is: the simulator (or model) that made it '
+                                                           '(core.fidelity); "Fidelity unknown": written before 4.2')
+        self.runs.headerItem().setToolTip(COL['Min TTC'], 'The scenario\'s smallest time to collision '
+                                                          '(core.criticality); — when the run has no scenario')
+        self.runs.headerItem().setToolTip(COL['Date'], 'Started (month-day hour:minute, UTC); the year in the tooltip')
+        copyable_ids(self.runs, COL['Run'])     # mono, cut in the middle; a click copies the run's folder
+        self.runs.setMinimumWidth(320)          # Run … Min TTC in view in the pane's default width; the rest scrolls
+        self.runs.currentItemChanged.connect(lambda it, _p: self.choose(it.data(0, 256)) if it else None)
         self.runs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.runs.customContextMenuRequested.connect(self._menu)
         sv.addWidget(self.runs, 1)
@@ -456,6 +490,19 @@ class BrowseTab(QWidget):
         self.empty = EmptyState('Choose a run on the left to see its frames, labels, objects and traffic rules.')
         right = QWidget()
         rv = QVBoxLayout(right)
+        head = QHBoxLayout()                  # the run shown: its name and folder (copyable), its fidelity, Send to
+        head.setSpacing(8)
+        self.head_name = label('', title=True)
+        self.head_id = IdLabel('', keep=14)
+        for w in (self.head_name, self.head_id):            # never widen the pane: cut, whole text in the tooltip
+            w.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.head_fid = FidelitySlot('unknown')
+        self.send_btn = button('Send to ▸', self.send_menu, tip='This run to another page (Replay, …) in one click')
+        head.addWidget(self.head_name, 2)
+        head.addWidget(self.head_fid)
+        head.addWidget(self.head_id, 3)
+        head.addWidget(self.send_btn)
+        rv.addLayout(head)
         top = QHBoxLayout()
         self.sensor = QComboBox()
         self.layer = QComboBox()
@@ -515,6 +562,7 @@ class BrowseTab(QWidget):
         self.objects.setHeaderLabels(['Track', 'Class', 'Box', 'Occluded', 'Truncated', 'Range'])
         self.objects.setRootIsDecorated(False)
         self.objects.setMinimumHeight(140)
+        self.objects.header().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)   # all six in view, no scrolling
         objs.add(self.objects)
         below = QWidget()                     # the frame's details and the run's rules, under a splitter
         bv = QVBoxLayout(below)
@@ -542,7 +590,7 @@ class BrowseTab(QWidget):
         self.body.addWidget(vsplit)
         split.addWidget(self.body)
         split.setStretchFactor(1, 1)
-        split.setSizes([320, 900])
+        split.setSizes([sum(COL_WIDTH[c] for c in RUN_COLUMNS[:5]) + 40, 640])
         self.slider.valueChanged.connect(self.load_frame)
         self.sensor.currentIndexChanged.connect(lambda _: self.load_frame(self.slider.value()))
         self.opacity.valueChanged.connect(lambda _: self.compose())
@@ -556,7 +604,8 @@ class BrowseTab(QWidget):
         self.runs.clear()
         for e in self.entries:
             it = RunItem(e)
-            it.setIcon(5, icons.status_icon({'ok': 'good', 'cancelled': 'warning'}.get(e['status'], 'critical')))
+            it.setIcon(COL['Status'], icons.status_icon({'ok': 'good', 'cancelled': 'warning'}.get(e['status'],
+                                                                                              'critical')))
             self.runs.addTopLevelItem(it)
             if e['path'] == cur:
                 self.runs.setCurrentItem(it)
@@ -592,9 +641,16 @@ class BrowseTab(QWidget):
                 if not self.runs.topLevelItem(i).isHidden()]
 
     def _menu(self, pos):
+        m = self.build_menu(self.runs.itemAt(pos))
+        if m is not None:
+            m.exec(self.runs.viewport().mapToGlobal(pos))
+
+    def build_menu(self, it):
+        """The run rows' context menu (None with no run selected): organise, hand off, Send to ▸, ask."""
         from PyQt6.QtWidgets import QMenu
+        from ..context import send_to_menu
         if not self.selected_runs():
-            return
+            return None
         m = QMenu(self)
         m.addAction('Tags…', self.edit_tags)
         m.addAction('Save as a drive set…', self.save_selection_set)
@@ -604,11 +660,42 @@ class BrowseTab(QWidget):
         m.addAction('Train on these', self.train_selected)
         m.addSeparator()
         m.addAction('Derive synthetic audio', self.derive_audio)
-        it = self.runs.itemAt(pos)
+        path = it.data(0, 256) if it is not None else self.run_dir
+        if path:
+            m.addSeparator()
+            sub = send_to_menu(self.win, path, exclude='data', parent=m)
+            m.addMenu(sub)
+            m.send_to = sub
         if it is not None and it.data(0, 256):
             m.addSeparator()
             m.addAction('Ask about this', lambda p=it.data(0, 256): self.win.ask_about('run', run=p))
-        m.exec(self.runs.viewport().mapToGlobal(pos))
+        return m
+
+    def send_menu(self):
+        from ..context import send_to_menu
+        if not self.run_dir:
+            return
+        m = send_to_menu(self.win, self.run_dir, exclude='data', parent=self)
+        m.exec(self.send_btn.mapToGlobal(self.send_btn.rect().bottomLeft()))
+
+    def choose(self, path):
+        """A run row chosen: shown, and the window's active run (with its seed, rig, scenario, world)."""
+        self.show_run(path)
+        if path:
+            set_run_context(self.win, path)
+
+    def select_run(self, path) -> bool:
+        """Select the run's row (showing it); False when the list does not have it."""
+        for i in range(self.runs.topLevelItemCount()):
+            it = self.runs.topLevelItem(i)
+            if it.data(0, 256) == path:
+                it.setHidden(False)
+                self.runs.setCurrentItem(it)
+                self.runs.scrollToItem(it)
+                if self.run_dir != path:
+                    self.choose(path)
+                return True
+        return False
 
     def edit_tags(self):
         from PyQt6.QtWidgets import QInputDialog
@@ -648,10 +735,31 @@ class BrowseTab(QWidget):
     def compare_selected(self):
         self.page.compare_runs(self.selected_runs())
 
+    def _fit_split(self):
+        """Until the user drags the divider: the run list wide enough for Run … Min TTC, the viewer the rest."""
+        total = sum(self.split.sizes())
+        if self._sized or total <= 0 or not self.isVisible():
+            return
+        want = sum(COL_WIDTH[c] for c in RUN_COLUMNS[:5]) + 40
+        side = min(want, int(total * 0.55))
+        if self.split.sizes()[0] != side:
+            self.split.blockSignals(True)
+            self.split.setSizes([side, total - side])
+            self.split.blockSignals(False)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._fit_split()
+
     def showEvent(self, ev):
         super().showEvent(ev)
+        self._fit_split()
         if not self.run_dir and self.runs.topLevelItemCount():      # the newest run, rather than a blank viewer
-            self.runs.setCurrentItem(self.runs.topLevelItem(0))
+            it = self.runs.topLevelItem(0)                         # (shown, not made the active run: not chosen)
+            self.runs.blockSignals(True)
+            self.runs.setCurrentItem(it)
+            self.runs.blockSignals(False)
+            self.show_run(it.data(0, 256))
 
     def selected_runs(self) -> list:
         sel = [it.data(0, 256) for it in self.runs.selectedItems()]
@@ -690,6 +798,12 @@ class BrowseTab(QWidget):
         self.info.clear()
         self.rules.show_run(path)
         self._show_team(path)
+        self.head_name.setText(next((e['name'] for e in getattr(self, 'entries', ()) if e['path'] == path), '')
+                               if path else '')
+        self.head_name.setToolTip(self.head_name.text())
+        self.head_id.setText(path or '')
+        self.head_fid.set(fidelity_of(path) if path else 'unknown')
+        self.send_btn.setEnabled(bool(path))
         self.sensor.blockSignals(True)
         self.sensor.clear()
         self.sensor.blockSignals(False)
@@ -906,7 +1020,13 @@ class DataPage(Page):
         self.tabs.addTab(scroll(self.health), 'Health')
         self.tabs.addTab(scroll(self.datasets), 'Datasets')
         v.addWidget(self.tabs, 1)
+        from ..context import register_target
+        register_target(win, 'data', 'Data', self._sent, 'Data ▸ Browse with the run chosen (frames, labels, rules)')
         self.refresh()
+
+    def _sent(self, path):
+        self.win.go('data')
+        self.show_run(path)
 
     def refresh(self):
         self.record.refresh()
@@ -961,9 +1081,11 @@ class DataPage(Page):
         self.compare.set_runs(paths)
 
     def show_run(self, path):
+        """Browse with this run chosen (its row selected when the list has it): Home, Send to ▸ Data, …"""
         self.tabs.setCurrentWidget(self.browse)
         self.browse.refresh()
-        self.browse.show_run(path)
+        if not self.browse.select_run(path):
+            self.browse.choose(path)
 
     def on_run_finished(self, job):
         self.browse.refresh()

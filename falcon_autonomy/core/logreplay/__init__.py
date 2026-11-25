@@ -71,9 +71,19 @@ def falcon_export_town(bag_path: str) -> dict | None:
 
 def import_log(kind: str | None, path: str, **opts) -> Log:
     """Import a log. kind one of KINDS (None: detected from the path). opts: nuscenes scene, channel; waymo segment;
-    ros2 world_frame, ego_frame, topics, unknown_by_size, town (the map when the caller knows it)."""
+    ros2 world_frame, ego_frame, topics, unknown_by_size, town (the map when the caller knows it).
+
+    The log's meta records its fidelity (core.fidelity): `recorded` for a dataset's log or a bag (a recording), the
+    source run's own for a Falcon run (unknown when that run did not record it)."""
+    from .. import fidelity as F
     path = os.path.abspath(os.path.expanduser(path))
     kind = kind or detect_kind(path)
+    log = _import(kind, path, opts)
+    log.meta.setdefault('fidelity', F.of_run(path) if kind == 'falcon' else 'recorded')
+    return log
+
+
+def _import(kind, path, opts) -> Log:
     if kind not in KINDS:
         raise LogError(f'{path}: not a log this version reads (nuScenes, Waymo v2, ROS 2 bag, KITTI raw, Falcon run)')
     if kind == 'nuscenes':

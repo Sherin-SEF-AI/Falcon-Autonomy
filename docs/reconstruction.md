@@ -866,7 +866,9 @@ reconstruction's own lateral-shift measurement (`eval --warp-shift`), the larges
 of the unshifted control on both sides; every step records the ego's deviation from the logged path, the PSNR expected
 there and whether it is inside the envelope, and beyond `--deviate` (3 m) the step is flagged and the episode ends
 (truncated, termination `outside_reconstruction`). With level-k road users each episode also gets `levelk.json` (their
-trajectories, the realism of their motion and whether a two-wheeler inched in front of the ego).
+trajectories, the realism of their motion and whether a two-wheeler inched in front of the ego). Every episode's
+run.json records `provenance.fidelity` = `neural` and closedloop.json `fidelity` = `neural` (core.fidelity), so Data,
+Home and Replay show it as *Neural render* and never compare it unflagged with a CARLA run.
 
 ```sh
 falcon recon closedloop RECON --policy ID --out DIR [--actors logged|levelk] [--levelk-params JSON|FILE]
