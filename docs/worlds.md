@@ -209,6 +209,31 @@ CARLA cannot build a new mesh at runtime (an extruded footprint, say), but `stat
 already cooked into the package — the towns' own buildings, trees and lamps among them. Falcon uses that to put a
 city around the roads (next section): stand-ins, of about the right size, not the real buildings.
 
+## Known import gaps
+
+The Worlds page's *Imported place* section ends with **Known import gaps**: what this import could not represent,
+one row each with its count, what was done about it, and a tooltip saying what it means (`core.importgaps`). From 4.2
+the import records them in `import.json` (`import_gaps`); for a world imported earlier they are counted from its stored
+`area.osm` in the background ("counted from the stored area.osm"), and when that file is gone the section says
+*not recorded for this world*.
+
+| Row | Counted as | Handled |
+|---|---|---|
+| Flat terrain | converted roads tagged `bridge`, `tunnel` (other than `no`) or `layer` ≠ 0; the tooltip splits them and counts nodes with an `ele` tag | flattened: Falcon leaves `Osm2OdrSettings.elevation_layer_height` at CARLA's default, 0.0 m (CARLA's `PythonAPI/docs/osm2odr.yml`), so a flyover and the road under it overlap at ground level with no junction; `ele` is not read |
+| Buildings on the road | footprints a converted road's surface reaches: the road as a band of lanes × lane width around its OSM centreline (lanes from the tags as `expected_lanes` reads them, else 1 one-way, 2 two-way) | not in the world; the city stand-ins are kept off the lanes (left out or moved). Often arcades, gates, roofs over fuel stations or mapping errors; the tooltip counts those tagged `building=roof` or `layer` > 0 |
+| Roads dropped | highway ways of types the converter does not convert (footway, service, track, path …), by type | not converted |
+| Relations not read | OSM relations skipped when reading | turn restrictions unknown (every turn the geometry allows is allowed), multipolygon buildings missing |
+| Ways cut at the edge | node references missing from the file | dropped when reading |
+| Buildings not placed | from the city's own report: footprints with no stand-in, with core.cityprops' reasons; without a city, every footprint | left out of the city |
+| Props not placed | the trees, lamps and street furniture the city left out, by kind and reason | left out of the city |
+| Speed breakers skipped | `features.json`: skipped plus not representable | not written into the road |
+
+The city and speed-breaker rows follow a rebuild (they are read from those reports, not from the import). Limits: the
+road band is an estimate — the converter's own widths and offsets differ by up to a lane, so a footprint at the kerb
+may count or not; a bridge without a `bridge`/`layer` tag is not counted. The section's other values are short
+key-values; the converter's notes, the lane-check method and what an OpenDRIVE world leaves out are under **Notes and
+method ▸**, the longer explanations under **Details ▸**.
+
 ## A city around the roads
 Worlds ▸ **City around the roads** (`core.cityprops`) dresses an imported world from an OpenStreetMap file — the
 import's own, or another with the buildings a roads-only download lacks (a regional `.osm.pbf` extract; read, never

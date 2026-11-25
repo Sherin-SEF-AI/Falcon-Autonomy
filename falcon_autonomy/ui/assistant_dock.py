@@ -1,9 +1,13 @@
 """The Assistant panel (a right-side dock): a conversation with Falcon's assistant, which uses the app through its tools
 (docs/assistant.md).
 
-Chat: the mode (Ask, Auto, Autopilot) and the main model at the top; the plan checklist the model keeps; the messages —
-the user's, the assistant's (Markdown, streamed; run, job and scenario ids are links that go there; numbers no tool
-returned are marked "not from Falcon's data"), tool-call cards (name, arguments, result, duration; collapsed), approval
+Chat: the mode (Ask, Auto, Autopilot) and the main model at the top; a banner when no live model is behind the panel
+(scripted replies, a missing or refused key: ui.assistant_facts.liveness); the plan checklist the model keeps; the
+messages — the user's, the assistant's (Markdown, streamed; run ids and runs/<id> paths, job and scenario ids are links
+that go there, and a time named after a run opens that run at that time; numbers a tool of the turn returned are
+underlined, "from <tool>" on hover, and the reply lists the tools it used; numbers no tool returned are marked "not
+from Falcon's data"; the rest is the model's commentary: ui.assistant_facts), tool-call cards (name, the arguments in
+short, a one-line result and the duration; the full arguments and result behind them), approval
 cards (what, the exact change from Tool.preview, the estimate, Approve / Approve all of this kind / Reject), the jobs it
 queued with their progress, Falcon's events; then the box: Enter sends, Shift+Enter is a new line, Esc stops.
 Activity: everything it changed, newest first, each with Undo (a project edit through the window's undo stack, a job
@@ -34,6 +38,7 @@ from ..assistant.provider import Cancelled, fmt_tokens
 from ..assistant.service import NOTICE
 from ..assistant.session import Session, wire
 from ..core.budget import fmt_duration
+from . import assistant_facts as F
 from . import icons
 from .theme import STATUS, THEME, mono, sans
 from .widgets import PlaceholderTree, button, clear_layout, label, set_enabled
@@ -127,10 +132,6 @@ def _known_scenarios(win) -> set:
         return set()
 
 
-WORD = re.compile(r'[A-Za-z0-9][\w.\-]{2,}')
-JOB = re.compile(r'\b([Jj]ob)\s+#?(\d+)\b')
-
-
 BR = re.compile(r'<br\s*/?>', re.I)
 
 
@@ -140,9 +141,10 @@ def md_safe(text: str) -> str:
     return '\n'.join(BR.sub(' · ' if ln.lstrip().startswith('|') else '  \n', ln) for ln in (text or '').split('\n'))
 
 
-def render_html(text: str, ungrounded=(), win=None, final=True) -> str:
-    """Markdown as rich text for a QLabel; when final, run/job/scenario ids become falcon:// links and the numbers no
-    tool returned are marked."""
+def render_html(text: str, ungrounded=(), win=None, final=True, verified=None) -> str:
+    """Markdown as rich text for a QLabel; when final, the reply's spans are marked (ui.assistant_facts.annotate): run,
+    job and scenario ids and times in a run become falcon:// links, numbers a tool of the turn returned (verified:
+    {number text: tool}) are underlined links to "from <tool>", and the numbers no tool returned are marked."""
     doc = QTextDocument()
     doc.setDefaultFont(sans(12))
     doc.setMarkdown(md_safe(text), QTextDocument.MarkdownFeature.MarkdownDialectGitHub)
@@ -155,33 +157,43 @@ def render_html(text: str, ungrounded=(), win=None, final=True) -> str:
     scns = _known_scenarios(win) if win is not None else set()
     jobs = {j.id for j in win.queue.jobs} if win is not None else set()
     link = THEME.tok['ink']
+    good = THEME.status('good')
     mark = MARK.get(THEME.name, MARK['dark'])
-    nums = sorted({re.sub(r'\s?%$|[kKMB]$', '', u) for u in ungrounded}, key=len, reverse=True)
-    num_re = re.compile(r'(?<![\w.])(' + '|'.join(re.escape(n) for n in nums) + r')(?![\w]|\.\d)') if nums else None
 
-    def text_node(s: str) -> str:
-        def word(mw):
-            w = mw.group(0)
-            if w in runs:
-                return f'<a href="falcon://run/{html.escape(w)}" style="color:{link}">{w}</a>'
-            if w in scns:
-                return f'<a href="falcon://scenario/{html.escape(w)}" style="color:{link}">{w}</a>'
-            return w
-        s = WORD.sub(word, s) if (runs or scns) else s
-        s = JOB.sub(lambda mj: f'<a href="falcon://job/{mj.group(2)}" style="color:{link}">{mj.group(0)}</a>'
-                    if int(mj.group(2)) in jobs else mj.group(0), s)
-        if num_re is not None:
-            s = num_re.sub(lambda mn: f'<span style="color:{mark}; text-decoration:underline" title="not from '
-                           f'Falcon\'s data">{mn.group(1)}</span>', s)
-        return s
+    def wrap(seg: str, kind: str, val) -> str:
+        if kind == 'run':
+            return f'<a href="falcon://run/{html.escape(val)}" style="color:{link}">{seg}</a>'
+        if kind == 'time':
+            run, t = val
+            return f'<a href="falcon://run/{html.escape(run)}?t={html.escape(t)}" style="color:{link}">{seg}</a>'
+        if kind == 'scenario':
+            return f'<a href="falcon://scenario/{html.escape(val)}" style="color:{link}">{seg}</a>'
+        if kind == 'job':
+            return f'<a href="falcon://job/{val}" style="color:{link}">{seg}</a>'
+        if kind == 'verified':
+            return (f'<a href="falcon://fact/{html.escape(val)}" style="color:{good}; text-decoration:underline" '
+                    f'title="from {html.escape(val)}">{seg}</a>')
+        return (f'<span style="color:{mark}; text-decoration:underline" title="not from Falcon\'s data">{seg}'
+                '</span>')
+
     parts = re.split(r'(<[^>]+>)', body)
-    inside_a = False
+    inside_a, last_run = False, ''
     for i, p in enumerate(parts):
         if p.startswith('<'):
             inside_a = (inside_a or p.lower().startswith('<a ')) and not p.lower().startswith('</a')
             continue
-        if p and not inside_a:
-            parts[i] = text_node(p)
+        if not p or inside_a:
+            continue
+        spans, last_run = F.annotate(p, runs, scns, jobs, verified, ungrounded, last_run)
+        if not spans:
+            continue
+        b, k = [], 0
+        for a, e, kind, val in spans:
+            b.append(p[k:a])
+            b.append(wrap(p[a:e], kind, val))
+            k = e
+        b.append(p[k:])
+        parts[i] = ''.join(b)
     return ''.join(parts)
 
 
@@ -192,6 +204,8 @@ class Bubble(QLabel):
     def __init__(self, kind: str, text: str = '', win=None):
         super().__init__()
         self.kind, self.raw, self.win, self.ungrounded, self.final = kind, text, win, [], kind != 'assistant'
+        self.tools: list = []                     # [(tool, result)] of the turn: the verified numbers, the footer
+        self.verified: dict = {}
         self.setWordWrap(True)
         self.setMinimumWidth(40)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -199,6 +213,7 @@ class Bubble(QLabel):
                                      Qt.TextInteractionFlag.LinksAccessibleByMouse |
                                      Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
         self.linkActivated.connect(self.linkTo.emit)
+        self.linkHovered.connect(self._hovered)
         if kind == 'user':
             self.setObjectName('bubbleUser')
             self.setContentsMargins(8, 6, 8, 6)
@@ -212,9 +227,36 @@ class Bubble(QLabel):
                                 'error': 'Error'}.get(kind, kind))
         self.render()
 
-    def set_text(self, text: str, final: bool = False, ungrounded=()):
+    def set_text(self, text: str, final: bool = False, ungrounded=(), tools=None):
         self.raw, self.final, self.ungrounded = text, final, list(ungrounded)
+        if tools is not None:
+            self.tools = list(tools)
+        self.verified = F.verified_numbers(text, self.tools) if final and self.kind == 'assistant' else {}
         self.render()
+
+    def _hovered(self, href: str):
+        from PyQt6.QtGui import QCursor
+        from PyQt6.QtWidgets import QToolTip
+        if href.startswith('falcon://fact/'):
+            QToolTip.showText(QCursor.pos(), f'from {href[len("falcon://fact/"):]} (a tool result of this turn); '
+                                             'click to open its card', self)
+        elif href.startswith('falcon://run/') and '?t=' in href:
+            run, t = href[len('falcon://run/'):].split('?t=', 1)
+            QToolTip.showText(QCursor.pos(), f'Open {run} on Data at {t} s', self)
+        elif not href:
+            QToolTip.hideText()
+
+    def footer(self) -> str:
+        """Which tools the reply rests on, and how many of its numbers came from them."""
+        if self.kind != 'assistant' or not self.final:
+            return ''
+        names = list(dict.fromkeys(n for n, _r in self.tools))
+        if names:
+            n = len(self.verified)
+            return (f'Tools this turn: {", ".join(names)}' + (f' · {n} number{"s" if n != 1 else ""} from them '
+                                                               '(underlined)' if n else '') +
+                    ' · the rest is the model\'s commentary')
+        return ''
 
     def render(self):
         pal = self.palette()
@@ -222,7 +264,10 @@ class Bubble(QLabel):
         self.setPalette(pal)
         if self.kind == 'assistant':
             self.setTextFormat(Qt.TextFormat.RichText)
-            body = render_html(self.raw, self.ungrounded, self.win, self.final)
+            body = render_html(self.raw, self.ungrounded, self.win, self.final, self.verified)
+            foot = self.footer()
+            if foot and self.raw.strip():
+                body += f'<p style="color:{THEME.tok["muted"]}; font-size:11px">{html.escape(foot)}</p>'
             if self.final and self.ungrounded:
                 mark = MARK.get(THEME.name, MARK['dark'])
                 body += (f'<p style="color:{mark}; font-size:11px">Not from Falcon\'s data: '
@@ -257,7 +302,13 @@ class ToolCard(QFrame):
         self.body.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.body.hide()
+        self.line = QLabel()                    # the result in one line, under the name and arguments
+        self.line.setProperty('muted', True)
+        self.line.setProperty('small', True)
+        self.line.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.line.setContentsMargins(22, 0, 0, 0)
         v.addWidget(self.head)
+        v.addWidget(self.line)
         v.addWidget(self.body)
         self.result, self.ms, self.summary, self.error, self.approval = '', None, '', False, ''
         self._update()
@@ -271,15 +322,21 @@ class ToolCard(QFrame):
         how = {'approved': 'approved', 'approved_all': 'approved (all of this kind)', 'allowed': 'approved earlier',
                'auto': 'ran without asking', 'rejected': 'declined', 'stopped': 'stopped',
                'show_me': 'show me', 'read': 'looked', 'preapproved': 'approved ahead'}.get(self.approval, '')
-        bits = [self.name, when] + ([how] if how else []) + ([self.summary] if self.summary else [])
+        args_short = short_args(self.arguments)
+        bits = [self.name + (f'({args_short})' if args_short else '()'), when] + ([how] if how else [])
         self.head.setText('  ' + ' · '.join(bits))
-        self.head.setToolTip(' · '.join(bits))
+        self.head.setToolTip(' · '.join(bits + ([self.summary] if self.summary else [])))
+        one = one_line(self.summary or self.result) if self.ms is not None else 'running…'
+        self.line.setText(f'→ {one}' if one else '')
+        self.line.setVisible(bool(one))
         if self.error:
             self.head.setIcon(icons.status_icon('warning'))
         elif self.ms is not None:
             self.head.setIcon(icons.icon('chev-d' if self.head.isChecked() else 'chev-r', 12))
         try:
-            args = json.dumps(json.loads(self.arguments or '{}'), indent=1, ensure_ascii=False)
+            a = json.loads(self.arguments or '{}')
+            args = '\n'.join(f'  {k} = {json.dumps(v, ensure_ascii=False)}' for k, v in a.items()) \
+                if isinstance(a, dict) else json.dumps(a, indent=1, ensure_ascii=False)
         except ValueError:
             args = self.arguments
         res = self.result
@@ -294,6 +351,28 @@ class ToolCard(QFrame):
         self.body.setVisible(on)
         if not self.error and self.ms is not None:
             self.head.setIcon(icons.icon('chev-d' if on else 'chev-r', 12))
+
+
+def short_args(arguments: str, limit: int = 60) -> str:
+    """A tool call's arguments in one short line: k=v, … (strings quoted, long values cut)."""
+    try:
+        a = json.loads(arguments or '{}')
+    except ValueError:
+        return (arguments or '')[:limit]
+    if not isinstance(a, dict):
+        return json.dumps(a, ensure_ascii=False)[:limit]
+    parts = []
+    for k, v in a.items():
+        t = json.dumps(v, ensure_ascii=False)
+        parts.append(f'{k}={t if len(t) <= 24 else t[:21] + "…"}')
+    out = ', '.join(parts)
+    return out if len(out) <= limit else out[:limit - 1] + '…'
+
+
+def one_line(text: str, limit: int = 110) -> str:
+    """A result as one line: its summary or its first line, cut."""
+    t = ' '.join(str(text or '').split())
+    return t if len(t) <= limit else t[:limit - 1] + '…'
 
 
 class ApprovalCard(QFrame):
@@ -726,6 +805,8 @@ class AssistantPanel(QWidget):
         self.host.bridge.event.connect(self.on_event)
         self.session = None
         self.agent = None
+        self.turn_tools: list = []          # [(tool, result)] of the turn under way: what its reply's numbers rest on
+        self.last_error = ''                # the kind of the last provider error ('auth' …), for the live banner
 
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -774,6 +855,12 @@ class AssistantPanel(QWidget):
         top.addWidget(self.show_btn)
         top.addWidget(self.menu_btn)
         v.addLayout(top)
+        self.live_banner = label('', small=True, wrap=True)     # no live model behind the panel: never mistaken
+        self.live_banner.setObjectName('errorBox')
+        self.live_banner.setContentsMargins(8, 4, 8, 4)
+        self.live_banner.setAccessibleName('Not a live model')
+        self.live_banner.hide()
+        v.addWidget(self.live_banner)
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
@@ -953,9 +1040,26 @@ class AssistantPanel(QWidget):
         if self.session.messages:
             self.session.save()
 
+    def liveness(self):
+        """None when a live model answers, else (kind, text): ui.assistant_facts.liveness."""
+        cfg = self.svc.cfg()
+        try:
+            has = self.svc.key_store().has()
+        except Exception:                      # noqa: BLE001 (a keyring that cannot be read: no key)
+            has = False
+        return F.liveness(bool(cfg.get('enabled')), self.svc.needs_key(cfg), has,
+                          bool(getattr(self.svc, 'scripted', False)), self.last_error, self.svc.provider_title())
+
+    def show_liveness(self):
+        lv = self.liveness()
+        self.live_banner.setText(lv[1] if lv else '')
+        self.live_banner.setProperty('live', lv[0] if lv else 'live')
+        self.live_banner.setVisible(lv is not None)
+
     def refresh_state(self):
         cfg = self.svc.cfg()
         ok, why = self.svc.ready()
+        self.show_liveness()
         has = bool(self.session and self.session.messages)
         self.pages.setCurrentIndex(1 if ok or has else 0)
         self.banner.setText(why)
@@ -1066,10 +1170,10 @@ class AssistantPanel(QWidget):
         if self._at_bottom:
             self.scroll.verticalScrollBar().setValue(hi)
 
-    def _bubble(self, kind, text, final=True, ungrounded=()):
+    def _bubble(self, kind, text, final=True, ungrounded=(), tools=None):
         b = Bubble(kind, '', self.win)
         b.linkTo.connect(self.navigate)
-        b.set_text(text, final, ungrounded)
+        b.set_text(text, final, ungrounded, tools)
         return self._add(b)
 
     def rebuild(self):
@@ -1088,13 +1192,13 @@ class AssistantPanel(QWidget):
             hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             self._add(hint)
         results = {m.get('tool_call_id'): m for m in msgs if m.get('role') == 'tool'}
-        for m in msgs:
+        for k, m in enumerate(msgs):
             role = m.get('role')
             if role == 'user':
                 self._bubble('event' if m.get('_event') else 'user', m.get('_display') or m.get('content') or '')
             elif role == 'assistant':
                 if m.get('content'):
-                    self._bubble('assistant', m['content'], True, m.get('_ungrounded') or [])
+                    self._bubble('assistant', m['content'], True, m.get('_ungrounded') or [], F.turn_tools(msgs, k))
                 for tc in m.get('tool_calls') or []:
                     fn = tc.get('function') or {}
                     card = self._add(ToolCard(fn.get('name', ''), fn.get('arguments', '')))
@@ -1313,7 +1417,11 @@ class AssistantPanel(QWidget):
                 self.stream = self._bubble('assistant', '', final=False)
             if self.stream is not None:
                 self._render_timer.stop()
-                self.stream.set_text(p.get('content') or self.stream_text, True, p.get('ungrounded') or [])
+                self.stream.set_text(p.get('content') or self.stream_text, True, p.get('ungrounded') or [],
+                                     self.turn_tools)
+            if self.last_error in ('auth', 'forbidden'):    # an answer came: the key works now
+                self.last_error = ''
+                self.show_liveness()
                 if not (p.get('content') or self.stream_text):
                     self.stream.hide()
             self.stream, self.stream_text = None, ''
@@ -1329,6 +1437,8 @@ class AssistantPanel(QWidget):
                 card = self.cards[p['id']] = self._add(ToolCard(p['name'], p.get('arguments') or ''))
             card.done(p.get('result') or '', p.get('ms') or 0.0, p.get('summary') or '', p.get('error'),
                       p.get('approval') or '')
+            if not p.get('error'):
+                self.turn_tools.append((p['name'], p.get('result') or ''))
         elif kind == 'approval':
             card = ApprovalCard(p, p.decide)
             self.research.changed()
@@ -1386,9 +1496,14 @@ class AssistantPanel(QWidget):
         elif kind == 'usage':
             self._usage_text()
         elif kind == 'error':
+            if p.get('kind') in ('auth', 'forbidden'):  # the key was refused (a missing key: liveness sees it)
+                self.last_error = p['kind']
+            self.show_liveness()
             self._bubble('error', p['message'])
             self.win.log.append_line(f'assistant: {p["message"]}')
         elif kind == 'turn':
+            if p['state'] == 'started':
+                self.turn_tools = []
             if p['state'] != 'started':
                 if self.stream is not None:
                     self._render_timer.stop()
@@ -1509,8 +1624,24 @@ class AssistantPanel(QWidget):
         what, ident = u.host(), u.path().lstrip('/')
         if what == 'run':
             path = _known_runs(self.win).get(ident)
+            if not path:                                 # a runs/<id> path the catalogue does not list (yet)
+                cand = os.path.join(self.win.workspace(), 'runs', os.path.basename(ident))
+                path = cand if os.path.isdir(cand) else ''
             if path:
-                self.win.go('data').show_run(path)
+                self.win.context.set(run=path)
+                data = self.win.go('data')
+                data.show_run(path)
+                t = u.query().partition('t=')[2] if 't=' in u.query() else ''
+                if t and hasattr(getattr(data, 'browse', None), 'seek_time'):
+                    try:
+                        data.browse.seek_time(float(t))
+                    except ValueError:
+                        pass
+        elif what == 'fact':                             # a verified number: open the card of the tool it came from
+            card = next((c for c in reversed(list(self.cards.values())) if c.name == ident), None)
+            if card is not None:
+                card.head.setChecked(True)
+                self.scroll.ensureWidgetVisible(card)
         elif what == 'job':
             show_job(self.win, int(ident))
         elif what == 'scenario':
@@ -1528,22 +1659,43 @@ class AssistantPanel(QWidget):
 
 # --------------------------------------------------------------------------------------------- installing it
 PANEL_W = 360
+PAGES_MIN = 1100                                 # docked only while the pages (navigator included) keep this much …
+SLACK = 40                                       # … and this much more than their own minimum width
+
+
+def fits_docked(win) -> bool:
+    """Whether the panel docked at PANEL_W leaves the pages unsqueezed: PAGES_MIN wide, and SLACK more than their
+    minimum (a split page at its minimum has its side lists crushed)."""
+    return room_for_panel(win) >= PANEL_W + SLACK and win.width() - PANEL_W >= PAGES_MIN
+
+
+def squeezed(win) -> bool:
+    """The pages beside a docked panel are at (or near) their minimum, or narrower than PAGES_MIN."""
+    c = win.centralWidget()
+    return c.width() < max(PAGES_MIN, c.minimumSizeHint().width() + SLACK) - 8
 
 
 def place(win):
-    """Dock the panel at the right when the window has room for it beside the pages (their minimum width); else float
-    it over the window's right edge — so showing it never makes the window wider than it is (a 1280 px screen). A
+    """Dock the panel at the right when the window has room for it beside the pages without squeezing them
+    (fits_docked); else float it over the window's right edge — so showing it never makes the window wider than it is (a 1280 px screen). A
     panel the user floated or moved stays where they put it."""
     dock = win.assistant_dock
     if dock.isVisible() or getattr(dock, '_user_placed', False):
         return
     room = room_for_panel(win)
-    if room >= dock.minimumSizeHint().width() + 8:
+    if fits_docked(win):
         if dock.isFloating():
             dock.setFloating(False)
         QTimer.singleShot(0, lambda: win.resizeDocks([dock], [min(PANEL_W, room - 8)], Qt.Orientation.Horizontal))
         return
+    _overlay(win, dock)
+
+
+def _overlay(win, dock):
+    """Float the panel over the window's right edge (Falcon's choice: it docks again once there is room)."""
+    dock._redocking = True
     dock.setFloating(True)
+    dock._redocking = False
     dock._auto_floated = True                    # Falcon floated it: it docks again once the window has room
     g = win.frameGeometry()
     h = max(420, win.height() - 120)
@@ -1560,6 +1712,17 @@ def room_for_panel(win) -> int:
     return room
 
 
+def overlay_if_narrow(win):
+    """A docked panel (Falcon placed) becomes an overlay when the pages beside it are squeezed (the window is being
+    made narrower: squeezed()), instead of crushing the pages' split views; one the user placed stays where they put
+    it. Docked, the panel's own minimum width keeps the window from narrowing further; floating, it does not."""
+    dock = getattr(win, 'assistant_dock', None)
+    if dock is None or not dock.isVisible() or dock.isFloating() or getattr(dock, '_user_placed', False):
+        return
+    if squeezed(win):
+        _overlay(win, dock)
+
+
 def redock_if_room(win):
     """A panel Falcon floated because the window was too narrow docks again when the window has grown (maximised,
     say); one the user floated or moved stays where they put it."""
@@ -1567,7 +1730,7 @@ def redock_if_room(win):
     if dock is None or not dock.isVisible() or not dock.isFloating() or not getattr(dock, '_auto_floated', False):
         return
     room = room_for_panel(win)
-    if room >= dock.minimumSizeHint().width() + 8:
+    if fits_docked(win):
         dock._auto_floated = False
         dock._redocking = True
         dock.setFloating(False)

@@ -11,7 +11,7 @@ from ...core.project import Edit, new_id
 from ...core.worlds import TOWNS
 from .. import icons
 from ..theme import THEME
-from ..widgets import (Form, KeyValues, Page, Section, SliderField, Stat, button, clear_layout, label,
+from ..widgets import (Details, Form, KeyValues, Page, Section, SliderField, Stat, button, clear_layout, label,
                        set_enabled)
 
 LIMITS = ('Limits of CARLA\'s weather: its lidar and radar ignore it (no loss of range in rain or fog) — switch on '
@@ -24,6 +24,10 @@ FEATURES_ABOUT = ('Speed breakers written into the road\'s elevation, so the veh
                   'OpenStreetMap\'s traffic_calming tags, and optionally every N metres (IRC:99-1988 spaces repeated '
                   'humps 100–120 m apart). They span the full road width (an elevation profile). Potholes are not '
                   'expressible as such (a full-width dip is the nearest). docs/indian-assets.md.')
+PLACE_ABOUT = ('An OpenDRIVE world is roads, lanes, sidewalks and junctions only: no buildings, vegetation, textures '
+               'or terrain. City around the roads (below) places CARLA\'s own buildings, trees and lamps as stand-ins '
+               'at load time; docs/worlds.md describes that and the full-fidelity path. Known import gaps lists, with '
+               'counts, what this import could not represent (hover a row for what it means).')
 
 
 class WorldsPage(Page):
@@ -88,10 +92,13 @@ class WorldsPage(Page):
         sec.add(hb)
         ev.addWidget(sec)
 
-        self.place = Section('Imported place', 'An OpenDRIVE world: roads, lanes, sidewalks and junctions only; '
-                                               'City around the roads (below) places CARLA\'s own buildings, trees '
-                                               'and lamps as stand-ins (docs/worlds.md, also the full-fidelity '
-                                               'path).')
+        self.place = Section('Imported place')
+        facts = KeyValues()
+        facts.set('Contains', 'roads · lanes · sidewalks · junctions')
+        facts.set('Not contained', 'buildings · vegetation · textures · terrain',
+                  'City around the roads (below) places stand-ins for buildings, trees and lamps')
+        self.place.add(facts)
+        self.place.add(Details(PLACE_ABOUT))
         from ..osmimport import RoadGraphView
         pb = QHBoxLayout()                       # the place's actions first, above the preview and the report
         self.verify_btn = button('Verify traffic handedness', self.verify, tip='Load the world, run traffic and '
@@ -119,6 +126,12 @@ class WorldsPage(Page):
         self.place.add(self.graph)
         self.place_kv = KeyValues()
         self.place.add(self.place_kv)
+        self.place_details = Details('', 'Notes and method')
+        self.place.add(self.place_details)
+        self.place.add(label('Known import gaps', h=True))
+        from ..import_gaps import ImportGaps
+        self.gaps = ImportGaps(self)
+        self.place.add(self.gaps)
         self.verify_kv = KeyValues()
         self.place.add(self.verify_kv)
         ev.addWidget(self.place)
@@ -256,36 +269,40 @@ class WorldsPage(Page):
             with open(os.path.join(d, 'import.json'), encoding='utf-8') as fh:
                 rep = json.load(fh)
         except (OSError, ValueError):
-            self.place_kv.set('State', f'the import\'s files are missing from the workspace ({d})')
+            self.place_kv.set('State', 'the import\'s files are missing from the workspace', d)
+            self.place_details.set_text('')
+            self.gaps.show_world(w, d, None)
             for b in (self.edit_map_btn, self.reimport_btn):
                 set_enabled(b, False, 'The world\'s files are missing from the workspace')
             return
         for b in (self.edit_map_btn, self.reimport_btn):
             set_enabled(b, True)
         from ..osmimport import show_report
-        show_report(self.place_kv, rep)
+        self.place_details.set_text(show_report(self.place_kv, rep))
+        self.gaps.show_world(w, d, rep)
         t = rep.get('graph_totals') or {}
         lc = rep.get('lane_check') or {}
         tm = rep.get('timings') or {}
-        self.stats['roads'].set(t.get('roads', '—'), sub='one per travel direction')
+        self.stats['roads'].set(t.get('roads', '—'), sub='per direction')
         self.stats['km'].set(f'{t.get("road_km", 0):.2f}', 'km', 'of road')
         self.stats['junctions'].set(t.get('junctions', '—'))
         self.stats['signals'].set(t.get('signals', '—'))
         self.stats['lanes'].set(f'{100 * lc["agreement"]:.0f}' if lc.get('comparable') else '—',
                                 '%' if lc.get('comparable') else '',
-                                f'{lc["matched"]} of {lc["comparable"]} ways agree' if lc.get('comparable')
-                                else 'no comparable way')
+                                f'{lc["matched"]}/{lc["comparable"]} ways agree' if lc.get('comparable')
+                                else 'none comparable')
         self.stats['total'].set(tm.get('total_s', '—'), 's' if tm.get('total_s') is not None else '',
-                                'read, convert and write')
+                                'read+convert')
         self.place_kv.set('State', f'imported from {os.path.basename(rep["source"])}')
         from ...core.mapedit import edits_hash
         edits = (w.get('osm') or {}).get('edits') or []
         applied = (rep.get('map_edits') or {}).get('sha256') or edits_hash([])
         sl = rep.get('signal_lanes')
         if sl is None and rep.get('handedness') == 'LHT':
-            self.place_kv.set('Converter', '⚠ imported by an earlier version: its traffic lights may control no lane '
-                                           'and one-way roads may lie a carriageway off their street — Re-import with '
-                                           'the current converter… makes a corrected copy (docs/worlds.md)')
+            self.place_kv.set('Converter', '⚠ an earlier version: lights may control no lane (Re-import…)',
+                              'Imported by an earlier version: its traffic lights may control no lane and one-way '
+                              'roads may lie a carriageway off their street — Re-import with the current converter… '
+                              'makes a corrected copy (docs/worlds.md)')
         elif sl and sl.get('no_lane'):
             self.place_kv.set('Traffic lights', f'⚠ {sl["no_lane"]} of {sl["oriented"]} signal records control no '
                                                 'lane in CARLA')
@@ -436,8 +453,15 @@ class RoadFeatures(Section):
     distance (a project edit); undo restores the settings, not the file — apply again to change it."""
 
     def __init__(self, page):
-        super().__init__('Road features', FEATURES_ABOUT)
+        super().__init__('Road features')
         self.page = page
+        facts = KeyValues()
+        facts.set('Speed breakers', 'OSM traffic_calming tags · optionally every N m', 'IRC:99-1988 spaces repeated '
+                  'humps 100–120 m apart')
+        facts.set('Width', 'the full road (an elevation profile)', 'Potholes are not expressible as such (a full-width '
+                  'dip is the nearest)')
+        self.add(facts)
+        self.add(Details(FEATURES_ABOUT))
         from PyQt6.QtWidgets import QCheckBox, QDoubleSpinBox
         f = Form()
         self.use_osm = QCheckBox('From OpenStreetMap (traffic_calming = bump, hump, table)')

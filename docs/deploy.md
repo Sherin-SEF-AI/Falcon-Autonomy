@@ -241,6 +241,9 @@ profile, score and gate* runs `falcon deploy all` as a job (no GPU lock: the eng
 when simulated). Per deployment: the device and its software, the power mode and clocks, and per engine its latency,
 throughput, power, estimated energy, AP with its interval, the ratio to the reference with its paired interval and
 the gate's verdict; selecting an engine shows its build, layer precisions, DLA fallbacks and each criterion.
+**From a terminal ▸** under the buttons shows the same job as a `falcon deploy all …` command with the current choices
+(`OUT` standing for the new folder) and `falcon deploy check --device …` (it changes nothing on the device), each with
+**Copy**.
 
 ## What you must do for the real run
 

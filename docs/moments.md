@@ -110,6 +110,10 @@ falcon moments search my.falcon.json --type cut_in --actor two_wheeler --night -
   double-click opens the run on the Data page at that time; *Make a scenario…* and *Drive set…* (the runs of the full
   matches as one undoable drive set).
 
+- In the **command palette** (Ctrl+K), a query the index understands (`cut-in ttc<1.5`, `pedestrian crossing`) lists
+  its five best full matches under *Moments*; Enter opens the run on Data at the moment's time (a log's moment: the
+  log on Replay). A query that means every moment (no recognised word) adds none; near-miss clips are not listed.
+
 ## Exposure
 
 `falcon moments stats WS [--by tod|weather|world|source]` prints how often each type occurs per hour of indexed

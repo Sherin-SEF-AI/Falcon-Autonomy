@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBo
                              QVBoxLayout)
 
 from ..cluster import nodes as N
-from .widgets import Form, Section, button, callout, label
+from .widgets import CommandBlock, Details, Form, Section, button, callout, label
 
 NODE_COLS = ('Node', 'Kind', 'Pool', 'Slots', 'Where', 'Test')
 
@@ -111,6 +111,36 @@ class NodeDialog(QDialog):
         self.accept()
 
 
+UNIT = 'falcon-worker-daemon@.service'
+SETUP = (f'# on the workstation (a systemd user unit: no root)\n'
+         f'cp packaging/cluster/{UNIT} ~/.config/systemd/user/\n'
+         'systemctl --user daemon-reload\n'
+         'systemctl --user enable --now falcon-worker-daemon@0      # slot 0; @1 for slot 1 …\n'
+         'loginctl enable-linger "$USER"                            # optional: keep it running while logged out\n'
+         '# from this machine: your public key on the workstation\n'
+         'ssh-copy-id -i ~/.ssh/id_ed25519.pub USER@HOST')
+CHECK = 'falcon cluster nodes test NAME            # reaches each slot; changes nothing'
+UNDO = ('systemctl --user disable --now falcon-worker-daemon@0\n'
+        f'rm ~/.config/systemd/user/{UNIT}\n'
+        'systemctl --user daemon-reload')
+
+
+def node_commands() -> Details:
+    """A workstation node's setup (docs/cluster.md), its check and its undo, each with Copy: Falcon runs none."""
+    from PyQt6.QtWidgets import QVBoxLayout, QWidget
+    box = QWidget()
+    v = QVBoxLayout(box)
+    v.setContentsMargins(0, 0, 0, 0)
+    for title, cmd, what in (('Set up a workstation node', SETUP, 'On the workstation, then your key from here '
+                              '(docs/cluster.md); Falcon never needs root'),
+                             ('Check it (dry run)', CHECK, 'Reaches the node\'s slots (SSH, token, hello); starts '
+                              'no job'),
+                             ('Undo', UNDO, 'Stops and removes the slot\'s daemon on the workstation')):
+        v.addWidget(label(title, h=True))
+        v.addWidget(CommandBlock(cmd, what))
+    return Details(box, 'Commands for a workstation node')
+
+
 class ComputeSection(Section):
     def __init__(self, page):
         super().__init__('Compute', 'Where jobs run besides this machine: workstations, Slurm, Kubernetes; and cloud '
@@ -135,6 +165,7 @@ class ComputeSection(Section):
                                                          'system)'))
         row.addStretch(1)
         self.add(row)
+        self.add(node_commands())
         self.add(label('Pools', h=True))
         self.pools = QTableWidget(0, 4)
         self.pools.setHorizontalHeaderLabels(('Pool', 'Slots', 'Jobs at once (0: no limit)',

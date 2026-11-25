@@ -21,7 +21,9 @@ The import:
 5. writes world.xodr, the road graph for the preview (graph.json), and import.json: what was read, converted and
    dropped, the lane check against OSM on a seeded sample (core.xodr.lane_check: lane counts and positions) and on
    every edited way, the lane links that do not meet, the map edits applied and skipped, the handedness, what an
-   OpenDRIVE world does not contain (buildings, vegetation, textures), timings.
+   OpenDRIVE world does not contain (buildings, vegetation, textures), timings, and import_gaps: what the import
+   cannot represent, counted (core.importgaps: roads flattened from bridges, tunnels and layers, buildings on the road
+   surface, roads of unconverted types, relations and cut ways).
 
 With city_only (out: the world's city/ folder, world_dir: the world's folder) it instead dresses an imported world
 (core.cityprops.build): the city features of `source` (an .osm or .osm.pbf file, read only) around the world's box,
@@ -174,6 +176,11 @@ class OsmImport(Worker):
                            'describes that and the full-fidelity path'},
                'timings': t, 'road_features': features, 'lane_links': links, 'map_edits': edit_rep,
                'signal_lanes': X.signal_lanes(text)}
+        try:                                    # what the world cannot represent, counted (core.importgaps; 4.2)
+            from ..core import importgaps as G
+            rep['import_gaps'] = G.compute(data, types, (lat0, lon0), float(s.get('lane_width', 3.35)))
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
+            rep['import_gaps'] = {'error': f'{type(e).__name__}: {e}'}
         if cfg.get('city'):                     # dressed from the same source (core.cityprops); never fails the import
             rep['city'] = self.city_step(cfg, bbox or summ.get('bbox'), (lat0, lon0))
         write_json(os.path.join(self.out_dir, 'import.json'), rep)

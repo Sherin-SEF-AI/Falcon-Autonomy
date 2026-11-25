@@ -524,7 +524,10 @@ can0] [--ptp-interface IF]` **prints** the commands for you to run — vcan (`mo
 vcan`, `mtu 72` for CAN FD), a USB-CAN / CAN FD adapter (`ip link set can0 up type can bitrate 500000 dbitrate 2000000
 fd on`) and its bench confirmation, the Orin's mttcan, v4l2loopback (`modprobe v4l2loopback devices=2
 video_nr=40,41 card_label=falcon exclusive_caps=1`) and PTP (linuxptp, the generated file, `ptp4l -f … -m`), and how
-to undo them. `falcon doctor` lists what is in place (informational: none of it is required).
+to undo them. `falcon doctor` lists what is in place (informational: none of it is required). In the window,
+**Hardware ▸ Setup commands ▸ Show the commands** shows the same text in two blocks with **Copy** — the setup (for the
+CAN interface chosen in the CAN section, `can0` for a simulated or vcan one) and its undo — and Settings ▸ Hardware
+shows `falcon hil setup` to copy.
 
 ## Measured here, and what needs the hardware
 

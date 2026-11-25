@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QMes
 
 from ..core.paths import tilde
 from ..core.project import Edit
-from .widgets import Form, KeyValues, Section, button, label, set_enabled
+from .widgets import Details, Form, KeyValues, Section, button, label, set_enabled
 
 ABOUT = ('CARLA cannot import a new mesh at runtime, but it can place the meshes cooked into its package: its towns\' '
          'buildings, trees and lamps. Each OpenStreetMap building footprint gets the town building nearest in size '
@@ -25,8 +25,17 @@ LAMP_MODES = (('osm+procedural', 'OSM\'s and every 30 m along sidewalks'), ('osm
 
 class CitySection(Section):
     def __init__(self, page):
-        super().__init__('City around the roads', ABOUT)
+        super().__init__('City around the roads')
         self.page = page
+        facts = KeyValues()
+        facts.set('Buildings', 'a town mesh near each footprint\'s size (a stand-in)', 'Turned to the footprint, '
+                  'uniformly scaled 0.6–1.6×, kept off the lanes and other buildings; façade, roof and style are the '
+                  'town mesh\'s, not the real building\'s')
+        facts.set('Trees · lamps · furniture', 'OSM\'s where mapped, plus generated ones', 'Trees spread over parks '
+                  'and woods; lamps every 30 m along sidewalks; bus stops, benches and bins at OSM\'s points')
+        facts.set('Ground', 'CARLA\'s empty grey beside the roads', 'No plausible ground mesh in the package')
+        self.add(facts)
+        self.add(Details(ABOUT))
         self.job = None
         self.pending_source = {}             # world id → a file chosen but not built yet
         self.on = QCheckBox('Place the city in every run of this world')
@@ -118,10 +127,11 @@ class CitySection(Section):
         fb = (c.get('features') or {}).get('buildings')
         if fb is not None:
             hf = s.get('height_from') or {}
-            self.kv.set('Buildings', f'{sum((by.get("building") or {}).values())} of {fb} OSM footprints; size '
-                                     f'closeness (RMS of relative L, W, H differences) median {s.get("fit_score_median")}; '
-                                     f'heights from tags {hf.get("height", 0)}, from levels {hf.get("levels", 0)}, '
-                                     f'typical for the type {hf.get("typical", 0)}')
+            self.kv.set('Buildings', f'{sum((by.get("building") or {}).values())} of {fb} OSM footprints · size fit '
+                                     f'{s.get("fit_score_median")}',
+                        f'Size closeness: the median RMS of the relative L, W, H differences. Heights from tags '
+                        f'{hf.get("height", 0)}, from levels {hf.get("levels", 0)}, typical for the type '
+                        f'{hf.get("typical", 0)}')
         sk = s.get('skipped') or {}
         if sk:
             self.kv.set('Skipped', '; '.join(f'{k}: ' + ', '.join(f'{n} {why}' for why, n in sorted(v.items()))

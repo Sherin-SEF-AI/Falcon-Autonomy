@@ -1,6 +1,12 @@
 """The main window: a left navigator of pages in groups (Home first), the Jobs and Log docks (shown while there is
 work, behind a status-bar badge otherwise), the status bar (jobs, server, GPU, memory), undo and redo for every project
-edit, the command palette (Ctrl+K), dark and light themes."""
+edit, the command palette (Ctrl+K), dark and light themes.
+
+Focus mode (View ▸ Focus mode, Ctrl+Shift+F, the page header's button; Esc leaves): the open page across the whole
+window — the navigator, the Jobs, Log and Assistant docks hidden, the header down to the page's title, the status bar
+down to a thin line, and in the page every visible splitter keeps only its largest pane (the others are hidden; their
+sizes come back on leaving). A job started meanwhile does not open the Jobs panel (it shows on leaving); the Assistant
+asking for approval leaves focus mode."""
 from __future__ import annotations
 
 import os
@@ -604,6 +610,8 @@ class MainWindow(QMainWindow):
         self.context = RunContext(self)          # the active run/seed/rig/scenario/world (ui.context)
         self.send_targets: dict = {}             # page key -> (title, handler(run_path), tip): ui.context.send_to_menu
         self._closing = False
+        self.focus_mode = False
+        self._focus_saved: dict = {}             # what focus mode hid, to put back
 
         from . import motion
         from .frame import NavList, PageHeader, TopBar
@@ -617,7 +625,7 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout(central)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(0)
-        side = QWidget()
+        side = self.side = QWidget()
         side.setObjectName('side')
         side.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         side.setFixedWidth(216)
@@ -638,6 +646,7 @@ class MainWindow(QMainWindow):
         mv.setContentsMargins(0, 0, 0, 0)
         mv.setSpacing(0)
         self.header = PageHeader()
+        self.header.focus_btn.clicked.connect(lambda: self.set_focus_mode(not self.focus_mode))
         mv.addWidget(self.header)
         self.stack = QStackedWidget()
         body = QHBoxLayout()
@@ -740,8 +749,12 @@ class MainWindow(QMainWindow):
             if i != self.stack.currentIndex():
                 from . import motion
                 motion.crossfade(self.stack, self.stack.currentWidget())
+            if self.focus_mode:                         # the old page's panes back, the new page's collapsed
+                self._restore_splitters()
             self.stack.setCurrentIndex(i)
             self.header.show_page(self.pages[i])
+            if self.focus_mode:
+                self._collapse_splitters(self.pages[i])
             page = self.pages[i]
             if not getattr(page, '_motion_shown', False):      # the first visit: its cards fade in one by one
                 page._motion_shown = True
@@ -755,8 +768,88 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, ev):                          # noqa: N802
         super().resizeEvent(ev)
         if hasattr(self, 'assistant_dock'):
-            from .assistant_dock import redock_if_room
-            QTimer.singleShot(0, lambda: redock_if_room(self))
+            from .assistant_dock import overlay_if_narrow, redock_if_room
+            QTimer.singleShot(0, lambda: (overlay_if_narrow(self), redock_if_room(self)))
+
+    # ------------------------------------------------------------------ focus mode
+    def set_focus_mode(self, on: bool):
+        """Focus mode on or off (module doc). Returns the new state."""
+        on = bool(on)
+        if on == self.focus_mode:
+            return on
+        sb = self.statusBar()
+        docks = [d for d in (self.jobs_dock, self.log_dock, getattr(self, 'assistant_dock', None)) if d is not None]
+        if on:
+            self._focus_saved = {'side': self.side.isVisible(), 'docks': {d: d.isVisible() for d in docks},
+                                 'status': (sb.minimumHeight(), sb.maximumHeight())}
+            self.focus_mode = True
+            self.side.hide()
+            for d in docks:
+                d.hide()
+            self.header.set_compact(True)
+            kids = [w for w in sb.findChildren(QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly)
+                    if w.isVisible()]
+            for w in kids:                               # a thin line: nothing of the bar's drawn in it
+                w.hide()
+            self._focus_saved['status_kids'] = kids
+            sb.setFixedHeight(3)
+            self._collapse_splitters(self.stack.currentWidget())
+        else:
+            self.focus_mode = False
+            saved = self._focus_saved
+            self._restore_splitters()
+            self.side.setVisible(saved.get('side', True))
+            for d, vis in (saved.get('docks') or {}).items():
+                d.setVisible(vis)
+            mn, mx = saved.get('status', (0, 16777215))
+            sb.setMinimumHeight(mn)
+            sb.setMaximumHeight(mx)
+            for w in saved.get('status_kids') or []:
+                try:
+                    w.show()
+                except RuntimeError:
+                    pass
+            self.header.set_compact(False)
+            self._focus_saved = {}
+        self.header.focus_btn.setChecked(on)
+        a = self.actions_.get('focus')
+        if a is not None:
+            a.blockSignals(True)
+            a.setChecked(on)
+            a.blockSignals(False)
+        ex = self.actions_.get('focus_exit')
+        if ex is not None:
+            ex.setEnabled(on)
+        return on
+
+    def _collapse_splitters(self, page):
+        """Each visible splitter of the page keeps its largest pane; the others are hidden (outer splitters first: a
+        splitter inside a hidden pane is left alone)."""
+        from PyQt6.QtWidgets import QSplitter
+        saved = []
+        if page is not None:
+            for sp in page.findChildren(QSplitter):
+                if not sp.isVisibleTo(page) or sp.count() < 2:
+                    continue
+                sizes = sp.sizes()
+                vis = [i for i in range(sp.count()) if sp.widget(i).isVisibleTo(page)]
+                if len(vis) < 2:
+                    continue
+                keep = max(vis, key=lambda i: (sizes[i], -i))
+                hid = [sp.widget(i) for i in vis if i != keep]
+                for w in hid:
+                    w.hide()
+                saved.append((sp, sizes, hid))
+        self._focus_saved['splits'] = saved
+
+    def _restore_splitters(self):
+        for sp, sizes, hid in reversed(self._focus_saved.pop('splits', [])):
+            try:
+                for w in hid:
+                    w.show()
+                sp.setSizes(sizes)
+            except RuntimeError:                          # the page rebuilt that splitter meanwhile
+                pass
 
     def menuBar(self):                                   # noqa: N802 — the menus live in the top bar
         return self._menubar
@@ -793,6 +886,10 @@ class MainWindow(QMainWindow):
             self.jobs_dock.raise_()
 
     def show_jobs(self):
+        if self.focus_mode:                              # shown on leaving focus mode
+            docks = self._focus_saved.setdefault('docks', {})
+            docks[self.jobs_dock] = docks[self.log_dock] = True
+            return
         if not self.jobs_dock.isVisible():
             self.set_jobs_visible(True)
 
@@ -801,6 +898,8 @@ class MainWindow(QMainWindow):
 
     def show_assistant(self, on: bool = True, focus: bool = False):
         """Show or hide the Assistant panel; focus puts the keyboard in its message box."""
+        if on and self.focus_mode:
+            self.set_focus_mode(False)
         if on:
             from .assistant_dock import place
             place(self)                                  # docked when there is room beside the pages, else floating
@@ -907,6 +1006,11 @@ class MainWindow(QMainWindow):
             self._act(f'theme_{name}', f'{name.title()} theme', lambda _=False, n=name: self.set_theme(n), menu=v)
         v.addSeparator()
         self._act('jobs_panel', 'Jobs and log panel', self.toggle_jobs, 'Ctrl+J', v)
+        fa = self._act('focus', 'Focus mode', lambda on=False: self.set_focus_mode(bool(on)), 'Ctrl+Shift+F', v,
+                       tip='The page across the whole window: navigator, panels and side lists hidden (Esc leaves)')
+        fa.setCheckable(True)
+        ex = self._act('focus_exit', 'Leave focus mode', lambda: self.set_focus_mode(False), 'Esc')
+        ex.setEnabled(False)                             # Esc is the window's only while focus mode is on
         for i, p in enumerate(self.pages):            # Ctrl+0 Home, Ctrl+1 … Ctrl+9 the next nine pages
             self._act(f'page_{p.key}', f'Go to {p.title}', lambda _=False, k=p.key: self.go(k),
                       f'Ctrl+{i}' if i <= 9 else None, v if i == 0 else None)

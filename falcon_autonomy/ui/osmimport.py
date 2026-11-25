@@ -295,6 +295,9 @@ class ImportDialog(QDialog):
         resv.addWidget(self.graph, 1)
         self.report = KeyValues(('State',))
         resv.addWidget(self.report)
+        from .widgets import Details
+        self.report_details = Details('', 'Notes and method')
+        resv.addWidget(self.report_details)
         split.addWidget(res)
         split.setSizes([420, 360, 420])
         bb = QDialogButtonBox()
@@ -415,7 +418,7 @@ class ImportDialog(QDialog):
             self.graph.set_graph(json.load(fh))
         with open(os.path.join(out, 'import.json'), encoding='utf-8') as fh:
             self.rep = json.load(fh)
-        show_report(self.report, self.rep)
+        self.report_details.set_text(show_report(self.report, self.rep))
         for b in (self.add_btn, self.drive_btn):
             set_enabled(b, True)
 
@@ -432,24 +435,35 @@ class ImportDialog(QDialog):
                 live.choose_world(w['id'])
 
 
-def show_report(kv: KeyValues, rep: dict):
+def show_report(kv: KeyValues, rep: dict) -> str:
+    """The import's report as short key-values (the long parts in each value's tooltip); returns the rest — the
+    converter's notes, the lane-check method, what an OpenDRIVE world leaves out — as text for a Details drawer."""
     t = rep.get('graph_totals') or {}
     lc = rep.get('lane_check') or {}
     kv.set('State', 'converted')
-    kv.set('Road network', f'{t.get("roads", "?")} roads, {t.get("road_km", 0):.2f} km (one road per travel '
-                           f'direction), {t.get("junctions", 0)} junctions, {t.get("signals", 0)} signals')
+    kv.set('Road network', f'{t.get("roads", "?")} roads · {t.get("road_km", 0):.2f} km · {t.get("junctions", 0)} '
+                           f'junctions · {t.get("signals", 0)} signals', 'One road per travel direction')
     kv.set('Lanes per direction', ', '.join(f'{k} lane{"s" if int(k) > 1 else ""}: {v} roads' for k, v in sorted(
-        (t.get('driving_lanes_per_direction') or {}).items(), key=lambda kv: int(kv[0]))))
-    kv.set('Traffic', {'LHT': 'left-hand (rule="LHT" on every road)', 'RHT': 'right-hand'}.get(
-        rep.get('handedness'), rep.get('handedness')))
+        (t.get('driving_lanes_per_direction') or {}).items(), key=lambda kv: int(kv[0]))) or '—',
+        'driving lanes per direction: number of roads with that many')
+    kv.set('Traffic', {'LHT': 'left-hand', 'RHT': 'right-hand'}.get(rep.get('handedness'), rep.get('handedness')),
+           {'LHT': 'rule="LHT" on every road'}.get(rep.get('handedness'), ''))
     if lc.get('comparable'):
-        kv.set('Lanes against OSM', f'{lc["matched"]} of {lc["comparable"]} comparable ways agree '
-                                    f'({100 * lc["agreement"]:.0f} %) — {lc.get("method", "")}')
+        kv.set('Lanes against OSM', f'{lc["matched"]} of {lc["comparable"]} agree ({100 * lc["agreement"]:.0f} %)',
+               lc.get('method', ''))
     else:
-        kv.set('Lanes against OSM', 'no comparable way in the sample (the area has no named, lane-tagged roads)')
+        kv.set('Lanes against OSM', 'no comparable way in the sample',
+               'the area has no named, lane-tagged roads in the sample')
     nr = rep.get('not_represented') or {}
-    kv.set('Not in the world', f'{nr.get("buildings", 0)} buildings in the extract — {nr.get("text", "")}')
+    kv.set('Not in the world', f'{nr.get("buildings", 0)} buildings, vegetation, textures, props', nr.get('text', ''))
     tm = rep.get('timings') or {}
-    kv.set('Timings', f'read {tm.get("read_s")} s, convert {tm.get("convert_s")} s, total {tm.get("total_s")} s')
-    for n in (rep.get('notes') or [])[:6]:
-        kv.set('Note', n)
+    kv.set('Timings', f'read {tm.get("read_s")} s · convert {tm.get("convert_s")} s · total {tm.get("total_s")} s')
+    notes = list(rep.get('notes') or [])
+    parts = []
+    if nr.get('text'):
+        parts.append(f'Not in the world: {nr["text"]}.')
+    if lc.get('method'):
+        parts.append(f'Lane check: {lc["method"]}.')
+    parts += [f'• {n}' for n in notes]
+    kv.set('Notes', f'{len(notes)} from the converter (Details)' if notes else 'none')
+    return '\n'.join(parts)

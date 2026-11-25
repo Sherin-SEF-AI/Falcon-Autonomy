@@ -86,6 +86,10 @@ systemctl --user enable --now falcon-worker-daemon@0      # slot 0; @1 for slot 
 loginctl enable-linger "$USER"                            # optional: keep it running while logged out
 ```
 
+Settings ▸ Compute ▸ **Commands for a workstation node** has these with **Copy**, together with `ssh-copy-id`,
+the check that changes nothing (`falcon cluster nodes test NAME`) and the undo (`systemctl --user disable --now
+falcon-worker-daemon@0`, removing the unit file, `daemon-reload`). Falcon runs none of them.
+
 Slot N listens on **127.0.0.1:2350+N only** — never on the network; this machine reaches it through an SSH tunnel —
 and runs its own Falcon service in a scratch workspace (`~/.cache/FalconAutonomy/worker-N`): its CARLA server on
 2310+10N (traffic manager 8310+N), started on demand under Falcon's memory cap, a GPU's CARLA lock shared with every

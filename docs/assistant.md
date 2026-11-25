@@ -197,8 +197,24 @@ The status bar badge's tooltip shows the last minute's tokens against the limit.
   by name, with Send and Cancel), *Clear the conversation*, *Open the audit log*, *Settings ▸ Assistant*.
 - The **status bar** badge: the model, the tokens of this session and their estimated cost.
 
-The panel docks at the right when the window has room beside the pages, else it floats over the window's right edge
-(a 1280 px screen): showing it never makes the window wider.
+What is Falcon's and what is the model's (4.2): each reply lists the tools of its turn (*Tools this turn: …*) and how
+many of its numbers came from them; a number a tool of that turn returned is underlined, and hovering it says *from
+<tool>* (a click opens that tool's card). The matching is the grounding check's ([below](#grounding)), credited to the
+first tool of the turn that holds the number; anything not marked is the model's commentary. Run ids and `runs/<id>`
+paths are links to the run on Data, and a time named after a run (*t = 12.5 s*, *at 12.5 s*, *2.0–4.5 s*) opens that
+run there at that time. Tool cards show the call in one line — `name(arg=value, …)`, its duration and how it was
+approved — and the result in one line under it (`→ …`); expanded, the arguments one per line and the result as sent.
+
+A banner across the top of the panel says when no live model is behind it, so a demo is never taken for one: **Not
+a live model: replies are scripted** (a test double or a recorded demo: the service's `scripted` flag, or
+`FALCON_ASSISTANT_SCRIPTED=1`), **No model: the API key … is missing**, or **No model: … refused the API key** (after a
+401 or 403; it clears with the next answer). Falcon cannot tell a scripted server from a real one by itself: a harness
+that drives the panel with scripted replies must set the flag.
+
+The panel docks at the right when the window has room beside the pages without squeezing them — the pages keep
+1100 px (navigator included) and 40 px more than their minimum — else it floats over the window's right edge (a
+1280 or 1440 px screen): showing it never makes the window wider. A docked panel becomes such an overlay when the
+window is made narrower, and docks again when it is wide enough; a panel you moved yourself stays where you put it.
 
 Each project has its own conversation, saved in its workspace (`WORKSPACE/assistant/conversation.json`) after every
 step and resumed after a restart; *Clear* empties it. It holds the messages, the plan, the tools you approved for the

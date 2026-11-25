@@ -1,5 +1,7 @@
 """What the command palette (Ctrl+K) searches besides commands: the project's worlds, rigs, scenarios, models and
-drive sets, the workspace's runs, evaluations and reports, the settings and the manual's headings.
+drive sets, the workspace's runs, evaluations and reports, the settings and the manual's headings — and, for a query
+the moments index understands ("cut-in ttc<1.5", "pedestrian crossing"), its best hits (moment_entries; only when
+core.moments is in this build and the query is not every moment).
 
 Each entry is a dict {kind, title, sub, ident, open: callable(win)}. Sources are read when the palette opens: the
 project's from memory; runs from the workspace's catalogue (SQLite, newest 1000); evaluations and reports by listing
@@ -26,6 +28,7 @@ KINDS = {          # kind: (group title, icon, priority when scores tie: lower f
     'setting': ('Settings', 'gear', 9),
     'doc': ('Manual', 'help', 10),
     'job': ('Job history', 'history', 11),
+    'moment': ('Moments', 'timeline', 12),
 }
 
 _cache: dict = {}            # (what, folder) -> (mtime, entries)
@@ -222,6 +225,49 @@ def entries(win) -> list:
         out += doc_entries()
     except OSError:
         pass
+    return out
+
+
+def _open_moment(m):
+    def go(win):
+        if m.get('source') == 'log':
+            page = win.go('replay')
+            if page is not None and hasattr(page, 'load_log'):
+                page.load_log(m['run'])
+            return
+        data = win.go('data')
+        if data is None or not hasattr(data, 'show_run'):
+            return
+        data.show_run(m['run'])
+        browse = getattr(data, 'browse', None)
+        if hasattr(browse, 'seek_time'):
+            browse.seek_time(float(m.get('t0') or 0.0))
+    return go
+
+
+def moment_entries(win, query: str, limit: int = 5) -> list:
+    """The moments index's best hits for a query (core.moments.parse_query → search), as palette entries; [] when
+    the build has no moments index, the query is short or means every moment, or the index cannot be read."""
+    q = (query or '').strip()
+    if len(q) < 3:
+        return []
+    try:
+        from ..core import moments as M
+        pq = M.parse_query(q)
+        if pq['filter'] == M.new_filter():
+            return []
+        res = M.search(win.workspace(), pq['filter'], limit=limit, strict=True)
+    except Exception:                          # noqa: BLE001 (an index being written, or none: no moment entries)
+        return []
+    out = []
+    for m in res.get('hits') or []:
+        if m.get('source') == 'nearmiss' or not m.get('run'):
+            continue
+        who = ', '.join(m.get('actors') or []) or '—'
+        ttc = f' · TTC {m["min_ttc_s"]:.2f} s' if m.get('min_ttc_s') is not None else ''
+        out.append({'kind': 'moment', 'title': f'{M.NAMES.get(m["type"], m["type"])} · {who}{ttc}',
+                    'sub': f'{m.get("rel") or os.path.basename(m["run"])} at {float(m.get("t0") or 0):.1f} s',
+                    'ident': m.get('id'), 'open': _open_moment(m)})
     return out
 
 
