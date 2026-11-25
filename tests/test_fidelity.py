@@ -18,6 +18,8 @@ def test_levels_and_lookup(tmp_path):
     assert F.of_doc({'fidelity': 'kinematic'}) == 'kinematic'
     assert F.of_doc({'provenance': {'fidelity': 'bogus'}}) == 'unknown'
     assert F.of_doc(None) == 'unknown'
+    assert F.of_doc({'fidelity': {'rho': 0.4}}) == 'unknown'
+    assert F.of_doc({'fidelity': {'rho': 0.4}, 'provenance': {'fidelity': 'fake'}}) == 'fake'
     run = tmp_path / 'r1'
     run.mkdir()
     (run / 'run.json').write_text(json.dumps({'provenance': {'fidelity': 'fake'}}))

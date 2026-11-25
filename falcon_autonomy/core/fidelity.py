@@ -55,8 +55,11 @@ def of_doc(doc: dict | None) -> str:
     """The level a run.json or a summary records: provenance.fidelity, a top-level fidelity, else unknown."""
     if not isinstance(doc, dict):
         return 'unknown'
-    lv = doc.get('fidelity') or (doc.get('provenance') or {}).get('fidelity')
-    return lv if lv in LEVELS else 'unknown'
+    lv = doc.get('fidelity')
+    if not isinstance(lv, str):                   # a pre-4.2 two-speed study kept a record (now `gap`) under this key
+        prov = doc.get('provenance')
+        lv = prov.get('fidelity') if isinstance(prov, dict) else None
+    return lv if isinstance(lv, str) and lv in LEVELS else 'unknown'
 
 
 def of_run(path: str) -> str:
