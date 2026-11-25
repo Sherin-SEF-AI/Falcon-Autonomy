@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### 4.2
+
+A response to a review of the 4.1 window. Everything was tested on the fake CARLA and offscreen only.
+
+- **Fidelity beside every result.** Runs record how real they are (`provenance.fidelity`: CARLA, CARLA UE5, Fake
+  simulator, Kinematic, Neural render, Recorded); studies, gates, campaigns, budgets, pack results and reports record
+  the combination of their runs (Mixed fidelity when they differ). A chip sits beside every run, chart and verdict, run
+  tables have a Fidelity column and the run index answers `fidelity:fake`. Runs made before 4.2 say "Fidelity
+  unknown" — nothing is guessed. Data ▸ Compare and Replay say when two runs are not like for like.
+- **No release-gate verdict across simulators.** When the old and the new version ran at different fidelity the gate
+  gives no verdict and says why, on the page, the command line and as a failing CI gate; a version whose own trials mix
+  levels keeps its verdict with a warning. Safety-case evidence from the fake simulator, the kinematic screen or mixed
+  results verifies amber at best ("not a real simulator").
+- **Side by side in Replay.** Two runs, or a log's original and changed replay, from above on one time slider; the
+  steps where they part (ego gap over 1 m, a collision or an actor in one run only, a TTC change over 1 s — thresholds
+  chosen, not a standard) are found and marked, with first/next/previous buttons. The release gate's newly failing
+  scenarios open there.
+- **Connected pages.** Send to ▸ on a run's menu hands it to Data, Replay, Rare cases (scenario and seed preselected),
+  Moments (indexed if needed), Fault tolerance (as offline input) or Reports (to attach as evidence); nothing starts
+  without a click. The top bar shows the active run, seed, rig, scenario and world as pills.
+- **Flags with next steps.** Unverified regulation values and failed or missing fault-tolerance checks offer Jump to
+  config, Attach evidence (undoable) and Run sensitivity check (the verdict re-judged at ±10 %, Falcon's band since no
+  pack states one; fault tolerance also at both ends of the bracket). The document and clause show with each value.
+- **Two-speed search explains itself.** The trust threshold is drawn on the rank-correlation chart and follows the
+  box; when the screen is not trusted a panel lists the measured causes (most-disagreeing runs, ties in the cheap score,
+  too few pairs, the parameter the disagreement grows with, a tiny camera).
+- **Fewer paragraphs.** Long notes on Worlds, Rare cases, Two-speed, Gate, Campaign, Fault tolerance, Regulation packs,
+  Latency, Monitors and Reports became key-value badges with the full text behind Details — every caveat kept. Run ids,
+  hashes and paths are short, mono and copy on a click; Home's tiles and recent runs no longer cut text at 1280×800.
+- **Focus mode** (View ▸ Focus mode, Ctrl+Shift+F; Esc leaves): the page across the whole window, the smaller panes of
+  each split view collapsed, all restored on leaving. The Assistant floats over split pages instead of squeezing them
+  when the window is not wide enough (at 1440 px it now floats).
+- **Assistant transparency.** Each reply lists the tools of its turn; numbers a tool returned are underlined ("from
+  <tool>"); run ids, `runs/<id>` paths and times are links; tool cards show `name(args)` and a one-line result. A
+  banner says "No model: key missing/refused", or "Not a live model: replies are scripted" when a demo sets
+  `FALCON_ASSISTANT_SCRIPTED=1` (Falcon cannot tell a scripted server from a real one by itself).
+- **Known import gaps.** OSM imports record what the world cannot represent (roads flattened from bridges, tunnels
+  and layers; buildings on the road surface — an estimate; unconverted road types; cut ways), shown with counts in the
+  Worlds inspector; older worlds are counted from their stored `area.osm`.
+- **Commands to copy.** `falcon monitor deploy --dry-run` validates a monitor package locally (no SSH); deploy keeps
+  the previous version on the device and `falcon monitor rollback` restores it (both against a fake SSH layer only).
+  Monitor, HIL setup, workstation-node and deploy commands show with a Copy button.
+- **Fixes.** A regulation-pack case whose actor lies beyond the lane's end (`cut-out-60-60-1`) no longer crashes the
+  director: the actor is placed at the lane's end, the run says so and the verdict is incomplete. "time to collision"
+  in a Moments query is a TTC condition, no longer the collision type. Latency budget, Regulation packs and Fault
+  tolerance have world and rig pickers, and warn when a large rig would make the fake simulator crawl (it renders
+  every pixel in Python: about 1.2 s per 1280×720 frame, measured). The version reads 4.2.0 (it said 2.3.0).
+- **Format changes.** Two-speed result files: the fidelity-gap block is now `gap` and the per-row record `screen`
+  (older files still read). The run index cache is `falcon.runindex/2` (rebuilt once).
+
 ### 4.1
 
 Eight features, each with a command, assistant tools, a section in the window and a page in docs/. All of them were

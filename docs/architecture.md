@@ -74,6 +74,13 @@ and stack configs; the delay line lives in the Director), `core/fastsim.py`, `co
 `core/campaign.py`; their window sections `ui/{monitor,latency,prescreen,gate,faulttol,regpack,moments,campaign}_tab.py`
 and tools `assistant/tools/{monitors,screening,robustness,moments}.py`.
 
+### Added in 4.2
+`core/fidelity.py` (how real a result is; workers record `provenance.fidelity`, summaries a top-level `fidelity`),
+`core/logreplay/sync.py` (two runs on one clock, divergences), `core/importgaps.py`; `ui/context.py` (the window's
+RunContext and Send to), shared widgets at the end of `ui/widgets.py` (fidelity chip, copyable ids, CommandBlock,
+Details, action_callout), `ui/replay_sync.py`, `ui/runfid.py`, `ui/study_bits.py`, `ui/robustkit.py` (world/rig picker,
+attach evidence, flag callouts), `ui/assistant_facts.py` (links, verified numbers, liveness), `ui/import_gaps.py`.
+
 ## A job's life
 
 1. A page (or a CLI command) builds a config with `core` (e.g. `core.drive.drive_config`) and hands it to
